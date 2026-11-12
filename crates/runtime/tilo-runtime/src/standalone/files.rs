@@ -6,10 +6,20 @@
 //! and the content store the profile's document media share. On Linux with a
 //! usable FUSE the workspace is mounted there ([`mount`]); everywhere else a
 //! plain folder mirrors it both ways ([`tilo_fs::sync_folder`]).
+//!
+//! A workspace this profile joined has its files too, held as a replica of
+//! the workspace's own Files record ([`replica`]).
 
 #[cfg(target_os = "linux")]
 mod mount;
+mod replica;
 mod serve;
+
+pub(super) use replica::{ReplicaHost, Replicas};
+
+/// The joined workspaces' files, once they are held: a member taking a
+/// workspace's work is set up before the broker their records travel on runs.
+pub(super) type ReplicaSlot = Arc<std::sync::OnceLock<Arc<Replicas>>>;
 
 use std::{
     io,
@@ -35,6 +45,7 @@ const INTERVAL: Duration = Duration::from_secs(2);
 
 /// Who the workspace attributes this host's versions to, and the device
 /// they come from.
+#[derive(Clone, Copy)]
 pub(super) struct Author {
     pub(super) person: [u8; 32],
     pub(super) device: [u8; 32],
@@ -91,7 +102,7 @@ impl WorkspaceFiles {
         author: &Author,
         projection: Projection,
     ) -> io::Result<Self> {
-        let files = Files::open(&profile.join(FILES), store, endpoint, author)?;
+        let files = Files::open(&profile.join(FILES), store, endpoint, author, None)?;
         let server = runtime_fs::workspace_server::serve_workspace(
             &profile.join(crate::FILES_SOCKET),
             Arc::new(serve::Backend(Arc::new(files.quick_fs()?))),
@@ -133,18 +144,25 @@ struct Files {
 }
 
 impl Files {
+    /// The files kept in `state`, their bytes in `store`; what this device
+    /// lacks is asked of `source` when one is named.
     fn open(
         state: &Path,
         store: Arc<tilo_fs::ContentStore>,
         endpoint: iroh::Endpoint,
         author: &Author,
+        source: Option<Arc<dyn tilo_fs::hydration::ContentSource>>,
     ) -> io::Result<Self> {
         crate::unix::private_directory(state)?;
         let namespace = NamespaceFile::open(state.join(NAMESPACE), hex::encode(author.device))?;
         import_legacy_history(&namespace, state)?;
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
-            Arc::new(Hydrator::new(endpoint, store))
+            let hydrator = Hydrator::new(endpoint, store);
+            Arc::new(match source {
+                Some(source) => hydrator.with_source(source),
+                None => hydrator,
+            })
         };
         Ok(Self {
             state: state.to_path_buf(),

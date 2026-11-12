@@ -11,7 +11,8 @@ use super::*;
 /// `published` as the workspace's file on disk holds it now: what a start after
 /// a hard stop would read.
 fn published_on_disk(path: &Path) -> usize {
-    let record: WorkspaceRecord = postcard::from_bytes(&std::fs::read(path).unwrap()).unwrap();
+    let record: super::record_format::StoredRecord =
+        postcard::from_bytes(&std::fs::read(path).unwrap()).unwrap();
     record.published
 }
 

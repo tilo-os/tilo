@@ -61,10 +61,10 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> 
 #[effect(operation = "settings.effect")]
 pub enum PermissionsEffect {
     /// Open the privacy settings of the workspace that owns the grants.
-    #[effect(job, label = "Open workspace privacy")]
+    #[effect(job)]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
-    #[effect(job, idempotent, label = "Set an app's access to saved secrets")]
+    #[effect(job, idempotent)]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
         app: String,
@@ -72,13 +72,13 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its record.
-    #[effect(job, label = "Forget an app's saved secrets")]
+    #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
     /// Stop a terminal tab controlling the desktop beyond its workspace.
-    #[effect(job, label = "Stop a tab controlling the desktop")]
+    #[effect(job)]
     StopDesktopControl {
         #[param("The grant, as the desktop listed it")]
         grant: String,
@@ -1821,5 +1821,25 @@ mod tests {
             assert_eq!(rows, 0);
             assert!(said(&mut app).contains(&"Workspace access can't be checked".to_string()));
         }
+    }
+
+    /// The switch of an app's secrets says the access it grants, which the
+    /// row's own caption (the app's name) does not: a control that names
+    /// itself apart from its row keeps its words, and says how it stands.
+    #[test]
+    fn a_secrets_switch_keeps_the_words_it_says_apart_from_its_row() {
+        let apps = vec![SecretApp {
+            id: "binary:/usr/bin/chromium".into(),
+            name: "chromium".into(),
+            access: "allowed".into(),
+            uses: 2,
+            items: 1,
+        }];
+        let mut app = window_over(Arc::new(Fixed {
+            secrets: Ok(apps),
+            ..Fixed::state(None)
+        }));
+        let switch = crate::testing::switch_named(&mut app, &t("perm-secrets-access"));
+        assert_eq!(switch.toggled(), Some(ui::accesskit::Toggled::True));
     }
 }

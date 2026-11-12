@@ -238,7 +238,8 @@ fn tree_view() -> Element {
             item("lib.rs", "4", Some("2"), false),
             item("README.md", "5", Some("1"), false),
             item("tests", "6", Some("1"), true),
-        ],
+        ]
+        .into(),
         expanded: Some(vec![ResourceId("1".into()), ResourceId("2".into())]),
         selection: Some(vec![ResourceId("3".into())]),
         ..TreeViewProps::default()

@@ -3,6 +3,7 @@ use automerge::AutoCommit;
 use tilo_desktop_model::{
     DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
 };
+use ui::widget::DrawChild;
 
 #[test]
 fn compact_workspace_identity_outranks_redundant_position() {
@@ -24,7 +25,7 @@ fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(2.0);
     let mut scene = Scene::new();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,
@@ -164,7 +165,7 @@ pub(super) fn lay_out_and_draw_with_text(
         )
         .expect("layout");
     bar.apply_layout(&taffy, node, Point::ORIGIN);
-    bar.draw(
+    bar.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         text_renderer,
@@ -216,7 +217,7 @@ fn lay_out_over_windows(bar: &mut TopBarChrome) -> f32 {
 
 fn painted(bar: &mut TopBarChrome) -> bool {
     let mut scene = Scene::new();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -311,10 +312,10 @@ fn quiet_mode_silences_the_bell_in_the_status_cluster() {
     let tray = node
         .children
         .iter()
-        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS))
-        .expect("the status cluster");
+        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_NOTIFICATIONS))
+        .expect("the bell");
     assert_eq!(
-        tray.description.as_deref(),
+        tray.name.as_deref(),
         Some("Notifications silenced, 2 unread"),
         "the silenced bell is named"
     );
@@ -364,21 +365,97 @@ fn the_unread_count_stays_inside_the_bar() {
 /// that is all it opens.
 #[test]
 fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
-    let mut bar = sample_chrome();
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     lay_out_and_draw(&mut bar, 1280.0);
     let desktop = bar.tray_pill_rect;
     assert_eq!(bar.tray_slots().len(), 1, "the bell, with nothing unread");
-    bar.bell.only = true;
+    chrome.borrow_mut().notifications_only = true;
     lay_out_and_draw(&mut bar, 1280.0);
     assert_eq!(bar.tray_slots().len(), 1, "the same bell");
     assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
+    assert_eq!(
+        bar.bell_hit_rect, bar.tray_hit_rect,
+        "the whole cluster is the bell's one target"
+    );
     let node = bar.accessibility().expect("topbar semantics");
     let tray = node
         .children
         .iter()
-        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS))
-        .expect("the status cluster");
+        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_NOTIFICATIONS))
+        .expect("the bell");
     assert_eq!(tray.name.as_deref(), Some("Notifications"));
+    assert!(
+        !node
+            .children
+            .iter()
+            .any(|child| child.action_target.as_deref()
+                == Some(TopBarChrome::CONTROL_QUICK_SETTINGS)),
+        "a host with no quick settings offers no quick settings control"
+    );
+    let middle = bar.tray_pill_rect.center();
+    assert!(click(&mut bar, middle));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[ChromeIntent::ToggleNotifications],
+        "the bell opens the notification centre"
+    );
+}
+
+/// The status cluster carries two targets: the bell at its leading end opens the notification
+/// centre, and the readings beside it open quick settings.
+#[test]
+fn the_bell_opens_the_centre_and_the_readings_open_quick_settings() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().status.volume = Some(crate::chrome::VolumeState {
+        level: 0.5,
+        muted: false,
+    });
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    lay_out_and_draw(&mut bar, 1280.0);
+    let bell = bar.bell_hit_rect;
+    assert!(!bell.is_zero_area(), "the bell is its own target");
+    let pill = bar.tray_pill_rect;
+    assert!(
+        bell.x0 >= pill.x0 - 0.5
+            && bell.x1 <= pill.x1 + 0.5
+            && bell.y0 >= pill.y0 - 0.5
+            && bell.y1 <= pill.y1 + 0.5,
+        "the bell's target {bell:?} lies inside the pill {pill:?}"
+    );
+    assert!(bell.x1 < pill.x1, "the readings keep a target of their own");
+    assert!(click(&mut bar, bell.center()));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[ChromeIntent::ToggleNotifications],
+        "a press on the bell opens the notification centre"
+    );
+
+    let readings = Point::new(
+        f64::midpoint(bell.x1, bar.tray_pill_rect.x1),
+        bell.center().y,
+    );
+    assert!(click(&mut bar, readings));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[
+            ChromeIntent::ToggleNotifications,
+            ChromeIntent::ToggleQuickSettings
+        ],
+        "a press on the readings opens quick settings"
+    );
 }
 
 #[test]
@@ -545,11 +622,7 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
     bar.activity_headline = Some("Ada · 2 permission changes".into());
     bar.activity_unread = 4;
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+    let mut renderer = ui::font_catalog::fixture_renderer();
     let theme = Theme::default().with_text_scale(1.3);
     let style = theme.text(TextRole::Caption);
     let max_width = bar.activity_content_width(&theme);
@@ -1034,7 +1107,7 @@ fn a_wheel_over_the_time_changes_nothing() {
 fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
     let mut scene = Scene::new();
     bar.cache_fp = CacheFingerprint::default();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -1300,6 +1373,45 @@ fn narrow_topbar_releases_center_width_for_workspace_identity() {
     );
 }
 
+/// On a phone the device shows the time above the page: the bar draws no clock of its own there,
+/// tells a reader none, and the workspace name takes the room the clock had rather than being cut
+/// to a few letters. A bar that is the device's only clock keeps it.
+#[test]
+fn a_phone_that_shows_the_time_gives_the_clocks_lane_to_the_workspace_name() {
+    let named = |device_clock: bool| {
+        let mut bar = sample_chrome();
+        if device_clock {
+            bar = bar.with_device_clock();
+        }
+        bar.workspace_name = "Workspace of the design team".to_string();
+        lay_out_and_draw(&mut bar, 390.0);
+        bar
+    };
+    let own = named(false);
+    let device = named(true);
+    assert!(
+        !own.center_rect.is_zero_area(),
+        "a bar that is the only clock keeps it"
+    );
+    assert!(
+        device.center_rect.is_zero_area(),
+        "the clock gives way: {:?}",
+        device.center_rect
+    );
+    assert!(
+        device.ws_pill_rect.width() > own.ws_pill_rect.width() + 32.0,
+        "the name takes the clock's room: {:?} against {:?}",
+        device.ws_pill_rect,
+        own.ws_pill_rect
+    );
+    let mut wide = sample_chrome().with_device_clock();
+    lay_out_and_draw(&mut wide, 1280.0);
+    assert!(
+        !wide.center_rect.is_zero_area(),
+        "wider than a phone, the bar keeps its clock"
+    );
+}
+
 #[test]
 fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
     let mut tree = DesktopTree {
@@ -1530,7 +1642,7 @@ fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
     let presence = PresenceCtx::default();
     let mut paint = |bar: &mut TopBarChrome| {
         let mut scene = Scene::new();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     };
     paint(&mut bar);
     let start = ui::time::now();
@@ -1624,7 +1736,7 @@ fn the_centre_selector_grows_into_the_lane_and_back() {
         ui::time::testing::with_monotonic_time(at, || {
             bar.refresh_status_and_media_state();
             let mut scene = Scene::new();
-            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         });
     };
     let start = ui::time::now();
@@ -1967,7 +2079,7 @@ fn unread_activity_paints_nothing_on_the_people_control() {
         bar.apply_layout(&taffy, node, Point::ORIGIN);
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        bar.draw(
+        bar.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -2040,7 +2152,7 @@ fn avatar_stack_has_breathing_room_to_tray_pill() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let avatar = bar.avatar_stack_rect;
     let tray = bar.tray_pill_rect();
@@ -2101,7 +2213,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     assert!(
         bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
@@ -2183,7 +2295,7 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
             )
             .unwrap();
         bar.apply_layout(&taffy, node, Point::ORIGIN);
-        bar.draw(
+        bar.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2243,6 +2355,85 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     assert!(people.children.iter().all(|face| face.bounds.is_some()));
 }
 
+/// On a phone the bar's clock keeps the band it reads in: nothing else of the bar stands on it, and
+/// the windows move down by the bar's height while it shows over them, so no window's own bar — its
+/// title, its Back — shares the clock's rows.
+#[test]
+fn a_phone_bar_keeps_its_clock_band_to_itself() {
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo Community");
+    workspace.collaborators = vec![
+        tilo_desktop_model::Collaborator::new("scribe", "Claude Code"),
+        tilo_desktop_model::Collaborator::new("ada", "Lively Heron"),
+    ];
+    let tree = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..DesktopTree::default()
+    };
+    let mut bar = TopBarChrome::from_tree(&tree);
+    bar.sync_from_tree(&tree);
+    lay_out_and_draw_with_theme(&mut bar, 390.0, &Theme::light());
+    let bar_rect = bar.get_rect();
+    let clock = bar.center_rect;
+    assert!(!clock.is_zero_area(), "a phone bar keeps the time");
+    assert!(
+        bar_rect.contains(clock.center()) && clock.y0 >= bar_rect.y0 && clock.y1 <= bar_rect.y1,
+        "the clock reads inside the bar: {clock:?} in {bar_rect:?}"
+    );
+    // The workspace's name and the people beside the clock yield to it instead of standing on it.
+    assert!(
+        bar.ws_pill_rect.x1 <= clock.x0 + 0.5,
+        "the workspace's name ends before the clock: {:?} {clock:?}",
+        bar.ws_pill_rect
+    );
+    assert!(
+        bar.avatar_stack_rect.x0 >= clock.x1 - 0.5,
+        "the faces begin past the clock: {:?} {clock:?}",
+        bar.avatar_stack_rect
+    );
+}
+
+/// A face on the bar wears the colour the workspace settled for that participant — the one its
+/// shell announced, which its People row, its card and its marks in every app wear too — and the
+/// one its kind's id gives it where nothing was announced. The bar picks no colour of its own.
+#[test]
+fn an_agents_face_wears_the_colour_the_workspace_settled() {
+    let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+    let announced = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
+    let faces = |colour: Option<&str>| {
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo");
+        let mut row = tilo_desktop_model::Collaborator::new("agent:helper@host", "Claude Code #1");
+        row.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
+        row.cursor_color = colour.map(str::to_owned);
+        workspace.collaborators = vec![row];
+        let tree = DesktopTree {
+            active: workspace.slot,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let mut bar = TopBarChrome::from_tree(&tree);
+        bar.sync_from_tree(&tree);
+        (
+            bar.collaborator_agents.clone(),
+            bar.collaborator_colors.clone(),
+        )
+    };
+    let (agents, announced_colours) = faces(Some(&announced));
+    assert_eq!(agents, vec![true]);
+    assert_eq!(
+        announced_colours,
+        vec![Color::from_rgb8(violet.0, violet.1, violet.2)],
+        "the face wears the colour its own shell announced"
+    );
+    // Nothing announced: the colour its kind's id wears, as every app paints it.
+    let (r, g, b) = ui::presence::participant_color("agent:helper@host", true);
+    assert_eq!(
+        faces(None).1,
+        vec![Color::from_rgb8(r, g, b)],
+        "and the rule's colour where it announced none"
+    );
+}
+
 #[test]
 fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     let mut tree = DesktopTree {
@@ -2283,7 +2474,7 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let bar_bottom = bar.rect.y1;
     assert!(
@@ -2485,4 +2676,91 @@ fn one_display_needs_no_places() {
     let covered = Placement::of(&tree, &["panel".to_owned()]);
     assert!(covered.bars.is_empty(), "one bar needs no placing");
     assert_eq!(covered.fullscreen, [None], "and it steps aside");
+}
+
+/// A hint for a gesture no control on screen does stands in the bar, right beside its clock: in
+/// the room the bar keeps between the clock and its own controls on its right. A bar that keeps
+/// none — hidden under a window that filled the display, or crowded by its own controls — shows
+/// no hint at all, rather than one over the clock, the names or the status beside it.
+#[test]
+fn a_control_hint_stands_in_the_room_beside_the_clock() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(
+            WorkspaceSlot(1),
+            "Customer support and escalations",
+        )],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    for person in 0..6 {
+        tree.workspaces[0]
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new(
+                format!("person-{person}"),
+                format!("Person {person}"),
+            ));
+    }
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().status = crate::chrome::SystemStatus {
+        battery_percent: Some(72),
+        link: Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Wifi,
+            name: Some("home".into()),
+            signal: 3,
+        }),
+        volume: Some(crate::chrome::VolumeState {
+            level: 0.6,
+            muted: false,
+        }),
+        ..crate::chrome::SystemStatus::default()
+    };
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    lay_out_and_draw(&mut bar, 1280.0);
+    let clock = bar.center_rect;
+    assert!(!clock.is_zero_area(), "fixture: the bar shows its clock");
+    let room = bar
+        .hint_room()
+        .expect("the bar keeps room beside its clock");
+    assert_eq!(room.x0, clock.x1 + 8.0, "right beside the clock: {room:?}");
+    assert_eq!(
+        (room.y0, room.y1),
+        (bar.rect.y0, bar.rect.y1),
+        "the bar's height across"
+    );
+    assert!(
+        room.x1 < bar.rect.x1,
+        "short of the bar's own end: {room:?}"
+    );
+    // The bar's own controls keep out of the room: the names on its left, the clock, and the
+    // people and the status on its right.
+    for (name, rect) in bar.test_rects() {
+        // The hit rects are deliberately larger than what the bar paints.
+        if rect.is_zero_area() || name.ends_with("_hit") {
+            continue;
+        }
+        assert!(
+            !room.overlaps(rect),
+            "the hint's room {room:?} stands over {name} {rect:?}"
+        );
+    }
+    // A bar narrower than the pill keeps room too small for it: the hint shows nowhere rather
+    // than over the controls beside it.
+    lay_out_and_draw(&mut bar, 640.0);
+    let narrow = bar
+        .hint_room()
+        .expect("the bar still keeps its clock's room");
+    assert!(
+        narrow.width() < 240.0,
+        "too narrow for the pill: {narrow:?}"
+    );
+    // A bar with no room beside its clock at all keeps no hint either.
+    lay_out_and_draw(&mut bar, 320.0);
+    assert_eq!(bar.hint_room(), None, "no room at all");
+    // Hidden under the window that filled the display, the bar teaches nothing either.
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert!(bar.hint_room().is_some(), "fixture: the wide bar has room");
+    bar.set_presence(TopBarPresence::Hidden);
+    lay_out_and_draw(&mut bar, 1280.0);
+    assert_eq!(bar.hint_room(), None, "a hidden bar shows no hint");
 }

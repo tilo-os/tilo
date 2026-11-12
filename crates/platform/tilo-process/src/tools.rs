@@ -57,6 +57,16 @@ impl ToolDirs {
     }
 }
 
+/// Whether this account can run `program`: a path that is an executable file,
+/// or a name [`ToolDirs`] finds one for.
+#[must_use]
+pub fn runs(program: &str) -> bool {
+    if program.contains('/') {
+        return backend::program(Path::new(program)).is_some();
+    }
+    ToolDirs::current().find(program).is_some()
+}
+
 /// Whether the login shell's PATH has been read, or found unreadable.
 #[must_use]
 pub fn login_path_read() -> bool {
@@ -98,10 +108,7 @@ mod backend {
     }
 
     pub(super) fn login_shell_path() -> Option<OsString> {
-        let shell = std::env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .or_else(passwd_shell)
-            .unwrap_or_else(|| "/bin/sh".into());
+        let shell = crate::login_shell::login_shell();
         let output = bounded_command::run_os(
             shell,
             &["-l", "-c", "printf %s \"$PATH\""],
@@ -112,21 +119,6 @@ mod backend {
         .ok()?;
         (output.status.success() && !output.stdout.is_empty())
             .then(|| OsString::from_vec(output.stdout))
-    }
-
-    /// The login shell the passwd database records for this user.
-    fn passwd_shell() -> Option<OsString> {
-        // SAFETY: `getpwuid` returns a pointer into libc's static buffer,
-        // valid until the next passwd call; both pointers are null-checked and
-        // the shell is copied out before anything else touches the buffer.
-        unsafe {
-            let entry = libc::getpwuid(crate::uid());
-            if entry.is_null() || (*entry).pw_shell.is_null() {
-                return None;
-            }
-            let shell = std::ffi::CStr::from_ptr((*entry).pw_shell).to_bytes();
-            (!shell.is_empty()).then(|| OsString::from_vec(shell.to_vec()))
-        }
     }
 
     pub(super) fn program(path: &Path) -> Option<PathBuf> {

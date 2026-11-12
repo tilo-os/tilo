@@ -301,6 +301,11 @@ pub(super) struct InputRuntime {
     /// The window has the keyboard: the one a person (or a test control's
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
+    /// Whether this window holds the keyboard: its fields keep their text and
+    /// selection without it, and paint no caret ([`crate::caret_owner`]).
+    pub(super) keyboard_held: bool,
+    /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
+    pub(super) keyboard_entry_owed: bool,
 }
 
 impl InputRuntime {
@@ -309,6 +314,8 @@ impl InputRuntime {
             modifiers: winit::event::Modifiers::default(),
             keyboard_layout: None,
             window_focused: false,
+            keyboard_held: true,
+            keyboard_entry_owed: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -423,6 +430,9 @@ pub(super) struct ActionRuntime {
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
     pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
+    /// The held answers wait for a record's route still joining: the pass
+    /// that finds it joined asks for the sync that answers them.
+    pub(super) answers_await_route: bool,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -503,6 +513,7 @@ impl ActionRuntime {
             hosted_requests: std::collections::HashSet::new(),
             awaited_resolutions: Vec::new(),
             held_answers: Vec::new(),
+            answers_await_route: false,
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
@@ -777,6 +788,9 @@ pub(super) struct WindowRuntime {
     pub(super) preferred_size: Option<(f64, f64)>,
     pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
+    /// The title the window system was last given ([`crate::App::refresh_window_title`]): what it
+    /// names the window by now.
+    pub(super) shown_title: Option<String>,
     pub(super) app_id: Option<String>,
 }
 
@@ -790,6 +804,7 @@ impl WindowRuntime {
             preferred_size: None,
             preferred_size_stated: None,
             title: None,
+            shown_title: None,
             app_id: None,
         }
     }

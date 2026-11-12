@@ -68,6 +68,9 @@ pub struct WindowSlots {
     shown: HashMap<TabId, WindowToolbar>,
     /// The desktop's items the person chose, by tab, not taken yet.
     host_actions: Vec<(TabId, String)>,
+    /// The tabs whose app was told its window floats over the desk
+    /// ([`ToolbarEvent::Floating`]).
+    told_floating: HashMap<TabId, bool>,
 }
 
 /// What [`WindowSlots::sync_hosted`] found.
@@ -93,6 +96,7 @@ impl WindowSlots {
             .filter(|toolbar| !toolbar.is_empty())
         else {
             self.shown.remove(&tab);
+            self.told_floating.remove(&tab);
             let had = self.by_tab.remove(&tab).is_some();
             if had {
                 self.cleared.push(tab);
@@ -137,6 +141,7 @@ impl WindowSlots {
         for tab in &gone {
             self.by_tab.remove(tab);
             self.shown.remove(tab);
+            self.told_floating.remove(tab);
         }
         let offered: Vec<TabId> = self
             .offers
@@ -246,7 +251,8 @@ impl WindowSlots {
             | ToolbarEvent::Forward
             | ToolbarEvent::Commit { .. }
             | ToolbarEvent::Edit { .. }
-            | ToolbarEvent::Action { .. } => {
+            | ToolbarEvent::Action { .. }
+            | ToolbarEvent::Floating { .. } => {
                 self.by_tab.get(&tab).map(|(connection, _)| *connection)
             }
         };
@@ -271,6 +277,7 @@ impl WindowSlots {
         self.hosted_seen.remove(&tab);
         self.host_items.remove(&tab);
         self.shown.remove(&tab);
+        self.told_floating.remove(&tab);
         if self.by_tab.remove(&tab).is_some() {
             self.cleared.push(tab);
         }
@@ -301,6 +308,15 @@ impl WindowSlots {
                     }
                 } else if cleared.contains(&id) {
                     group.set_tab_toolbar(id, None);
+                }
+                // The app hears when its window starts or stops floating, once it declared slots to
+                // hear it on.
+                let floating = group.is_floating();
+                if self.by_tab.contains_key(&id)
+                    && self.told_floating.get(&id).copied().unwrap_or(false) != floating
+                {
+                    self.told_floating.insert(id, floating);
+                    events.push((id, ToolbarEvent::Floating { floating }));
                 }
                 if let Some(offer) = self.window_offer(id) {
                     // Unchanged offers change nothing in the group.

@@ -33,13 +33,13 @@ mod nested {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use smithay::backend::allocator::Fourcc;
-    use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-    use smithay::utils::Transform;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use tilo_compositor::{
-        Compositor, HostFrame, HostLayer, NestedBackend, NestedConfig, OutputConfig, Screenshot,
-        StackPolicy, SurfaceHost,
+        Compositor, NestedBackend, NestedConfig, OutputConfig, Screenshot, StackPolicy,
     };
+    use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
 
     const WIDTH: i32 = 320;
     const HEIGHT: i32 = 200;
@@ -49,12 +49,12 @@ mod nested {
 
     /// A layer as tall as the output: red on top, blue below.
     struct Marker {
-        buffer: MemoryRenderBuffer,
+        pixels: Vec<u8>,
     }
 
     impl Marker {
         fn new() -> Self {
-            // Rows top first; ABGR8888 is R, G, B, A in memory.
+            // Rows top first, premultiplied R, G, B, A.
             let mut bytes = Vec::with_capacity(usize::try_from(WIDTH * HEIGHT * 4).unwrap());
             for row in 0..HEIGHT {
                 let pixel = if row < HEIGHT / 2 {
@@ -66,25 +66,17 @@ mod nested {
                     bytes.extend_from_slice(&pixel);
                 }
             }
-            Self {
-                buffer: MemoryRenderBuffer::from_slice(
-                    &bytes,
-                    Fourcc::Abgr8888,
-                    (WIDTH, HEIGHT),
-                    1,
-                    Transform::Normal,
-                    None,
-                ),
-            }
+            Self { pixels: bytes }
         }
     }
 
     impl SurfaceHost for Marker {
         fn layers(&self) -> Vec<HostLayer> {
             vec![HostLayer {
+                pose: tilo_session_core::surface::LayerPose::SETTLED,
                 location: (0, 0),
                 size: (WIDTH, HEIGHT),
-                frame: HostFrame::from_buffer(self.buffer.clone(), (WIDTH as u32, HEIGHT as u32)),
+                frame: HostFrame::from_pixels((WIDTH as u32, HEIGHT as u32), self.pixels.clone()),
             }]
         }
 
@@ -106,7 +98,7 @@ mod nested {
         outer
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        outer.add_host(Box::new(Marker::new()));
+        outer.add_host(Rc::new(RefCell::new(Marker::new())));
         let socket = outer.listen().expect("socket");
         // By its full path: the window's process gets a runtime directory of its own, so it cannot
         // find the socket by name.
@@ -196,7 +188,7 @@ mod nested {
             Ok(compositor) => compositor,
             Err(error) => panic!("the window did not open on the output here: {error}"),
         };
-        window.add_host(Box::new(Marker::new()));
+        window.add_host(Rc::new(RefCell::new(Marker::new())));
         for _ in 0..10 {
             window.dispatch(Duration::from_millis(16)).expect("wait");
             window.render().expect("render");
@@ -252,7 +244,7 @@ mod nested {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        compositor.add_host(Box::new(Marker::new()));
+        compositor.add_host(Rc::new(RefCell::new(Marker::new())));
         compositor.render().expect("render");
         compositor.screenshot("HEADLESS-1").expect("screenshot")
     }

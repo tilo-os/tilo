@@ -22,7 +22,7 @@ pub const APP_ID: &str = "so.tilo.onboarding";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Onboarding {}
 
-#[resource(kind = "onboarding.setup", label = "Setup")]
+#[resource(kind = "onboarding.setup")]
 impl Onboarding {}
 
 /// Setup as an app.
@@ -142,10 +142,11 @@ const SCENARIOS: &[&str] = &[
 
 const FINGERPRINT: &str = "3f8a21c94b07de5512aa90c3e4f61d28b97c0e3a5f4d12b6c8e09a7d3b1f5c24";
 
-/// A recovery key for review renders: real words, not anyone's key.
-const WORDS: &str = "abandon ability able about above absent absorb abstract absurd abuse access \
-                     accident account accuse achieve acid acoustic acquire across act action actor \
-                     actress actual";
+/// The catalogue message holding a sample recovery key for review renders:
+/// real BIP39 words, not anyone's key. A key's words are the key in every
+/// language, so the catalogue carries the same words on both sides and only
+/// the painter decides when they are shown.
+const WORDS: &str = "onboarding-sample-recovery-words";
 
 /// The page `name` shows.
 #[allow(
@@ -288,7 +289,10 @@ fn scenario(name: &str) -> Page {
         "backup-recovery-key" => Page {
             recovery_key_copy: Some(KeyCopy {
                 words: SecretText::new(Zeroizing::new(
-                    WORDS.split_whitespace().collect::<Vec<_>>().join(" "),
+                    crate::t(WORDS)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 )),
                 checks: [3, 11, 20],
             }),

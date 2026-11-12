@@ -69,9 +69,7 @@ impl ShellPayloads for NeighbourPayloads {
             revocations: Vec::new(),
         };
         // Persisted: retained identity frames are keyed by this channel.
-        let channel =
-            *blake3::hash(&[b"identity-hello\0".as_slice(), &cert.device_public_key].concat())
-                .as_bytes();
+        let channel = crate::store::compaction::hello_channel(&cert.device_public_key);
         let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
         Ok((channel, body))
     }
@@ -83,9 +81,7 @@ impl ShellPayloads for NeighbourPayloads {
             return None;
         }
         let kind = match &msg {
-            NeighbourMsg::MlsGovernance { .. }
-            | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. } => CheckpointKind::Governance,
+            msg if msg.channel_workspace().is_some() => CheckpointKind::Governance,
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key, ..
             } => CheckpointKind::Directory {
@@ -101,9 +97,32 @@ impl ShellPayloads for NeighbourPayloads {
     }
 
     fn audience(&self, body: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
+        // Only a channel's commit has an audience: nothing else is decoded.
+        if !NeighbourMsg::is_channel_governance(body) {
+            return None;
+        }
         let msg = postcard::from_bytes::<NeighbourMsg>(body).ok()?;
         let devices = audience(&msg)?;
         Some(devices.iter().map(|device| *device.as_bytes()).collect())
+    }
+
+    fn asks_admission(&self, body: &[u8]) -> bool {
+        NeighbourMsg::is_access_request(body)
+    }
+
+    fn identity(
+        &self,
+        body: &[u8],
+    ) -> Option<(
+        tilo_user_identity::DeviceCert,
+        Vec<tilo_user_identity::RevocationEntry>,
+    )> {
+        match postcard::from_bytes::<NeighbourMsg>(body).ok()? {
+            NeighbourMsg::IdentityHello {
+                cert, revocations, ..
+            } => Some((*cert, revocations)),
+            _ => None,
+        }
     }
 
     fn decoded_overhead(&self) -> usize {

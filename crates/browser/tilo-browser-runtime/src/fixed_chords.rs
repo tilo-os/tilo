@@ -6,7 +6,9 @@
 //! The rest of the fixed chords — closing the window in front, a new window,
 //! another window of the app in front, the terminal, the strip switcher and
 //! the workspace history — never reach here: the desk carries them out on its
-//! own tree, as the native desktop does.
+//! own tree, as the native desktop does. Alt+Shift+Tab, the walk over the
+//! windows, is the session's own and is taken before any of them
+//! ([`tilo_session::switcher::WindowWalk`]).
 
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::outcome::Outcome;
@@ -32,6 +34,8 @@ pub(crate) fn unserved(action: FixedAction) -> Option<Outcome> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// A chord the page cannot serve says what it is and why, in a notice the
     /// person can read, instead of doing nothing.
     #[test]

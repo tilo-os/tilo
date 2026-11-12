@@ -20,7 +20,26 @@ mod credential_owner_tests;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Passwords {}
 
-#[resource(kind = "passwords.vault", label = "Password vault")]
+impl Passwords {
+    /// What the record holds: nothing — the vault is this device's encrypted store, and no
+    /// secret syncs.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "passwords.vault",
+    read_content = Passwords::read_document
+)]
 impl Passwords {}
 
 /// A capture shows the fixture vault in place of the person's.
@@ -94,10 +113,14 @@ impl ResourceApp for PasswordsShell {
 fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared) {
     let (answer, status) = (vault.clone(), vault.clone());
     cx.effects(move |effect: PasswordsEffect, _| {
-        answer
-            .borrow_mut()
-            .perform(effect)
-            .map(|()| Effected::done())
+        let listing = matches!(effect, PasswordsEffect::ListLogins);
+        let mut vault = answer.borrow_mut();
+        vault.perform(effect)?;
+        Ok(if listing {
+            Effected::value(vault.logins())
+        } else {
+            Effected::done()
+        })
     })
     .status(move || {
         if status.borrow().is_editing() {
@@ -409,6 +432,76 @@ mod tests {
             app.effect(&PasswordsEffect::Save).is_err(),
             "the editor closed with the save"
         );
+    }
+
+    /// A login an agent or a script saves in one step lands in the vault and is listed by its
+    /// name; the password it was given is in the vault alone: the action takes it as a secret, and
+    /// it is in none of what Passwords publishes, answers or a log of the call would print.
+    #[test]
+    fn a_login_saved_in_one_step_lands_in_the_vault_and_its_password_nowhere_else() {
+        use ui::tilo_actions::{ActionArgs, ParamType};
+        const PASSWORD: &str = "secret-sentinel-41xq";
+        let _profile = profile();
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        let vault = published(&mut app, Passwords::KIND).unwrap();
+        let save = vault
+            .actions
+            .iter()
+            .find(|action| action.id == "save-login")
+            .expect("the vault offers save-login");
+        assert_eq!(
+            save.params()
+                .iter()
+                .find(|param| param.name == "password")
+                .map(|param| param.ty),
+            Some(ParamType::Secret),
+            "the password is a secret parameter"
+        );
+        let arguments = serde_json::json!({
+            "name": "Mail",
+            "origin": "https://mail.example",
+            "username": "ada@mail.example",
+            "password": PASSWORD,
+        });
+        let bound = ActionArgs::bind_json(save.params(), arguments.as_object().unwrap()).unwrap();
+        assert!(
+            !format!("{bound:?}").contains(PASSWORD),
+            "bound arguments print the password redacted"
+        );
+
+        let answered = app.call("save-login", arguments).unwrap();
+        assert!(!format!("{answered:?}").contains(PASSWORD));
+        let items = crate::PasswordsModel::open().items();
+        assert_eq!(items.len(), 1, "the login is in the vault");
+        assert_eq!(items[0].title, "Mail");
+        assert_eq!(items[0].kind, accounts::SecretItemKind::Login);
+        assert_eq!(items[0].password.as_str(), PASSWORD);
+        assert!(
+            app.effect(&PasswordsEffect::Save).is_err(),
+            "no editor is left open behind it"
+        );
+
+        let listed = app
+            .call("list-logins", serde_json::json!({}))
+            .unwrap()
+            .expect("the logins are answered");
+        let listed = listed.to_string();
+        assert!(listed.contains("Mail") && listed.contains(&items[0].id.0));
+        for private in [PASSWORD, "ada@mail.example", "mail.example"] {
+            assert!(!listed.contains(private), "the listing holds {private:?}");
+        }
+        let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
+        assert!(!published_text.contains(PASSWORD), "published the password");
+
+        assert!(
+            app.call(
+                "save-login",
+                serde_json::json!({"name": "", "origin": "", "username": "", "password": "x"})
+            )
+            .is_err(),
+            "a login with no name is refused as the editor refuses it"
+        );
+        assert_eq!(crate::PasswordsModel::open().items().len(), 1);
     }
 
     #[test]

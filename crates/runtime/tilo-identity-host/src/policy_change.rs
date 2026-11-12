@@ -1,43 +1,15 @@
-//! Change notification for what this host's authorization decisions read.
-//!
-//! The collaboration broker re-checks what it already admitted (native
-//! context subscribers, membership surfaces, the devices a channel participant
-//! lets read) when something those decisions read may have changed, instead
-//! of on a fixed clock: the workspace tree, the device fleet and
-//! identity registry, the native owner's task store, the devices the network
-//! authenticated. Every writer of those calls [`announce`]. A consumer holds a
-//! [`Watch`], which wakes it once on the next announcement after it armed it,
-//! and compares [`epoch`] with the epoch its last check read: a change made
-//! while it was busy with that check is never missed.
-//!
-//! Time changes decisions as well: a grant, a certificate or a revocation
-//! takes effect at an instant known in advance, which no writer announces. A
-//! consumer registers the earliest such instant its last check read with
-//! [`wake_at`], and is announced to when the wall clock reaches it. On Linux
-//! the timer is an absolute `CLOCK_REALTIME` timerfd that is also cancelled by
-//! any discontinuous change of the clock (it being set, a step, resume from
-//! suspend), so an expiry that passed while the machine slept or the clock
-//! jumped is announced at once, not after the monotonic clock caught up.
-//!
-//! Other processes write some of the inputs: the identity directory (its
-//! registry, records and fleets) and the home-peer registry. On Linux they are
-//! watched for changes ([`identity_files_watched`],
-//! [`tilo_files::native::watch_changes`]); reads are not changes, so a check
-//! reading the files does not announce itself.
-//!
-//! Where a signal cannot be held (no timerfd or inotify, as on macOS
-//! development builds, or a directory that cannot be watched),
-//! [`timers_reliable`] or [`identity_files_watched`] says so, and the consumer
-//! keeps its one-second re-check for the inputs concerned while they exist.
-//!
-//! The epoch is process-wide rather than per broker, like the relay's
-//! `authority_epoch`: writers announce without a handle threaded to
-//! them. Two hosts in one process (only tests do that) wake each other; a
-//! spurious announcement costs one re-check and never grants anything.
+//! Change notification for what this host's authorization decisions read: the workspace tree, the
+//! device fleet and identity registry, the owner's task store and the devices the network
+//! authenticated. Every writer calls [`announce`]; a consumer holds a [`Watch`] and compares
+//! [`epoch`], so a change made during its own check is never missed. Instants known in advance
+//! (a grant's or a certificate's expiry) are registered with [`wake_at`]. Where a signal cannot be
+//! held, [`timers_reliable`] or [`identity_files_watched`] says so and the consumer re-checks
+//! every second meanwhile.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +60,34 @@ impl std::fmt::Debug for Watch {
         f.debug_struct("Watch")
             .field("armed", &self.0.armed.load(Ordering::Relaxed))
             .finish_non_exhaustive()
+    }
+}
+
+/// Wait at most `wait` for something every authorization decision here reads to change, or until
+/// it does when `wait` is `None`.
+///
+/// The identity store and the device fleet announce every write, and the policy clock announces
+/// what another process writes to the identity directories, so nothing here is polled. A change
+/// that arrived between the caller's read and this arming is already there to read, and this
+/// returns at once for it instead of waiting for one that came before.
+pub fn wait_for_a_change(wait: Option<Duration>) {
+    let (woken, wake) = std::sync::mpsc::channel();
+    let watch = Watch::new(move || {
+        let _ = woken.send(());
+    });
+    let seen = watch.arm();
+    // Start the watch on the identity directories: a record another login's process writes is
+    // announced as well.
+    let _ = identity_files_watched();
+    if epoch() == seen {
+        match wait {
+            Some(wait) => {
+                let _ = wake.recv_timeout(wait);
+            }
+            None => {
+                let _ = wake.recv();
+            }
+        }
     }
 }
 
@@ -155,6 +155,12 @@ struct Clock {
 
 impl Clock {
     fn start() -> Option<&'static Self> {
+        // A page runs no threads of its own: without the clock, consumers keep their one-second
+        // re-check, as they do wherever the thread could not start, and the page's console is not
+        // told so on every load.
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
         let clock: &'static Self = Box::leak(Box::new(Self {
             deadlines: Mutex::new(BTreeSet::new()),
             platform: platform::Clock::open(),
@@ -460,6 +466,10 @@ mod platform {
 mod platform {
     //! Without timerfd: wait on the wall clock in steps of at most a second
     //! while an instant is registered, and report the timer unreliable.
+    #![allow(
+        clippy::unused_self,
+        reason = "the calls are the timerfd clock's, whose methods read the timer they hold"
+    )]
 
     use std::sync::{Condvar, Mutex, PoisonError};
     use std::time::Duration;

@@ -7,7 +7,7 @@ use ui::serde_json::json;
 use ui::tilo_resource::{Replica, Slot, evolution};
 
 use crate::agent_stream::AgentFinish;
-use crate::model::{AgentReasoning, AgentRoute, AgentStepOutcome, AgentWorkState};
+use crate::model::{AgentStepOutcome, AgentWorkState};
 use crate::parts::ChatPart;
 use crate::record::{Chat, Revision, ShownAs, Transition};
 
@@ -176,6 +176,9 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
     );
     assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
     let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    // How the agent planned is the run's own record: the part keeps none of it.
+    let messages = stored(&old, "messages").unwrap().to_string();
+    assert!(!messages.contains("its words"), "{messages}");
     let message = part.messages.values().next().unwrap();
     assert_eq!(message.body, body);
     assert_eq!(
@@ -209,13 +212,6 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
         Some(Transition {
             state: AgentWorkState::Taken,
             since: 11,
-        })
-    );
-    assert_eq!(
-        work.reasoning,
-        Some(AgentReasoning {
-            route: AgentRoute::Floor,
-            why: "its words".into(),
         })
     );
     assert_eq!(
@@ -558,7 +554,7 @@ fn a_message_part_from_before_a_quoted_run_keeps_its_messages_and_reads_no_run()
         }),
     )
     .unwrap();
-    at_version(doc, 4);
+    at_version(doc, 5);
     doc.commit();
     let old = doc.fork();
     // A message that quotes no run adds a field a part already reads as absent: nothing stored

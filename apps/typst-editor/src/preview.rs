@@ -23,6 +23,7 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
 
 use ui::gesture::{DragSelect, Granularity};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
@@ -35,6 +36,7 @@ use ui::widget::{
 };
 
 use crate::pages::TypstPages;
+use crate::resource::CATALOG;
 
 mod damage;
 mod raster;
@@ -1114,7 +1116,13 @@ impl PreviewPane {
             );
 
             // Page caption under the page.
-            let label = format!("Page {} of {page_count}", i + 1);
+            let label = CATALOG.t_args(
+                "typst-editor-page-of",
+                &[
+                    ("page", ArgValue::Text((i + 1).to_string())),
+                    ("pages", ArgValue::Text(page_count.to_string())),
+                ],
+            );
             tr.draw_style(
                 scene,
                 &label,

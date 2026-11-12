@@ -94,10 +94,12 @@ pub fn inspect(
     viewport: (u32, u32),
     declared: &Declared,
     step: f64,
+    title: Option<&str>,
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     columns(root, &mut out);
     first_level(root, None, step, &mut Vec::new(), &mut out);
+    group_first_rows(root, &mut Vec::new(), &mut out);
     selections(root, &mut Vec::new(), false, &mut out);
     chosen(root, &[], &mut Vec::new(), &mut out);
     adds(root, &mut Vec::new(), false, &mut out);
@@ -106,7 +108,15 @@ pub fn inspect(
     cards(root, &mut Vec::new(), false, &mut out);
     opens(root, None, &mut BTreeSet::new(), &mut Vec::new(), &mut out);
     repeated_row_titles(root, &mut Vec::new(), &mut out);
+    let mut titled = Vec::new();
+    headings(root, &mut titled);
+    if let Some(title) = title.map(one_line).filter(|title| !title.is_empty()) {
+        // The bar paints its title where no box stands for it.
+        titled.push((title, None));
+    }
+    listed_detail(&titled, root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
+    fields(root, &mut Vec::new(), &mut out);
     out
 }
 
@@ -319,17 +329,21 @@ fn first_level(
     // The heading a child stands under: the nearest one before it among its siblings, or the one
     // its box stood under.
     let mut running = above.cloned();
-    let mut last = heading_of(node);
+    let mut handed = heading_of(node);
+    // One thing holds one title: a header box (`Section` over its `SectionHeader`) hands the
+    // title it holds to the rows after it, and a page holding more than its title — a column of
+    // its own — keeps its titles to itself.
+    let one = node.children.len() == 1;
     for child in &node.children {
         if let Some(found) = first_level(child, running.as_ref(), step, keys, out) {
             running = Some(found.clone());
-            last = Some(found);
+            handed = one.then_some(found);
         }
     }
     if pushed {
         keys.pop();
     }
-    last
+    handed
 }
 
 /// The heading `node` says itself with, where it is one.
@@ -392,6 +406,62 @@ fn level_of_box(
             heading.x
         ),
     );
+}
+
+// --- a group opens on the level its list starts at ---------------------------------------------
+
+/// The target a group's heading is named by: the list's own disclosure of it
+/// ([`ui::widget::VirtualList`]).
+const GROUP_TARGET: &str = "group:";
+
+/// A heading heads a run of rows, and the depth a row says it stands at is which row it stands
+/// under: the first row under a heading stands on the level its list starts at, never one step in
+/// from it, because a row indented stands under the row over it and no row of its group stands
+/// there. An item whose row the grouping put elsewhere — a step of a task due another day — stands
+/// on the group's first level too, naming the item it belongs to in its own words.
+fn group_first_rows(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    if let Some(semantics) = &node.semantics {
+        let rows = &semantics.children;
+        // The level the box's rows start at: the least any of its rows stands at.
+        let base = rows.iter().filter_map(|row| row.level).min();
+        if let Some(base) = base {
+            for (at, heading) in rows.iter().enumerate() {
+                let heads = heading
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(GROUP_TARGET));
+                if !heads {
+                    continue;
+                }
+                // A closed group's heading heads no row here: the next heading stands after it.
+                let Some(level) = rows.get(at.saturating_add(1)).and_then(|row| row.level) else {
+                    continue;
+                };
+                if level > base {
+                    push(
+                        out,
+                        Kind::OrphanedRow,
+                        node,
+                        keys,
+                        format!(
+                            "the first row under {:?} stands {} nesting steps in from the level \
+                             its list starts at: a row indented stands under the row over it, and \
+                             no row of its group stands there",
+                            heading.name.as_deref().unwrap_or_default(),
+                            level.saturating_sub(base)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        group_first_rows(child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 // --- one choice, filled once -------------------------------------------------------------------
@@ -626,6 +696,95 @@ pub(super) fn is_list(node: &InspectionNode) -> bool {
     matches!(role(node), Some(Role::List | Role::Tree | Role::Table))
         || node.widget.to_ascii_lowercase().ends_with("list")
         || node.widget.to_ascii_lowercase().ends_with("lane")
+}
+
+// --- the row a page beside a list shows --------------------------------------------------------
+
+/// A heading over a page: its words, and where it stands; none for the title a window's bar
+/// paints, which stands over the page whatever column it is drawn in.
+type Titled = (String, Option<Rect>);
+
+/// The heading a box over a list is titled with: the words of the page the list stands beside.
+fn headings(node: &InspectionNode, out: &mut Vec<Titled>) {
+    if matches!(role(node), Some(Role::Heading { .. }))
+        && let Some(name) = semantics_name(node)
+        && !name.trim().is_empty()
+    {
+        out.push((one_line(name), Some(rect(node))));
+    }
+    for child in &node.children {
+        headings(child, out);
+    }
+}
+
+/// A list standing beside the page it opens highlights the row that page shows. The page's title
+/// is the heading standing to the right of the list, over it; where it names a row of the list,
+/// that row is the chosen one, and a list that highlights another says the person is somewhere
+/// else than where they are. A list of several chosen rows says a choice of its own, and one
+/// whose page is titled with words none of its rows carry (a title the rows do not say) names no
+/// row to highlight; neither is held to the rule.
+fn listed_detail(
+    titled: &[Titled],
+    node: &InspectionNode,
+    keys: &mut Vec<String>,
+    out: &mut Vec<Problem>,
+) {
+    // A navigation list offers places, not the items a page is of: its chosen place says where
+    // the person is, and a page may name a place inside the one chosen (`Inbox` under `All
+    // inboxes`). That is `UnchosenPlace`'s rule, not this one.
+    if is_list(node)
+        && node.widget != NAV_LIST
+        && let Some(semantics) = &node.semantics
+    {
+        let rows: Vec<(String, bool)> = semantics
+            .children
+            .iter()
+            .filter(|item| matches!(item.role, Role::ListItem | Role::TreeItem))
+            .filter_map(|item| {
+                let name = one_line(item.name.as_deref()?);
+                (!name.is_empty()).then_some((name, item.state.selected))
+            })
+            .collect();
+        let selected: Vec<&(String, bool)> = rows.iter().filter(|(_, chosen)| *chosen).collect();
+        if let [chosen] = selected.as_slice() {
+            let boxed = rect(node);
+            // The page's title is the heading over it, the topmost one naming a row of the list:
+            // a heading further down its page is a section's, and says nothing of which row is
+            // open.
+            let beside = titled
+                .iter()
+                .filter(|(words, at)| {
+                    at.is_none_or(|at| at.x0 >= boxed.x1 - SLACK)
+                        && rows.iter().any(|(name, _)| name == words)
+                })
+                .min_by(|(_, one), (_, other)| {
+                    let top = |at: &Option<Rect>| at.map_or(f64::NEG_INFINITY, |at| at.y0);
+                    top(one).total_cmp(&top(other))
+                });
+            if let Some((words, _)) = beside
+                && words != &chosen.0
+            {
+                push(
+                    out,
+                    Kind::DetailRowNotChosen,
+                    node,
+                    keys,
+                    format!(
+                        "the page beside it shows \"{words}\" while \"{}\" stands chosen: the \
+                         row a list highlights is the one the page beside it shows",
+                        chosen.0
+                    ),
+                );
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        listed_detail(titled, child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 fn starts_with_any(name: &str, verbs: &[&str]) -> bool {
@@ -864,6 +1023,9 @@ fn second_open(list: Option<&InspectionNode>, shown: &mut BTreeSet<String>) -> b
 /// A row that opened into its item is the item: its title stands once, in the field that edits it,
 /// and what the item holds follows under it. The row's title left standing over the document says
 /// the same words twice in one place.
+///
+/// The words counted are the ones a person reads ([`writes`]), never the name a box is announced
+/// by: the item is its own row and is announced by its title, which is written once.
 fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if is_list(node) {
         let open: Vec<(String, Rect)> = node
@@ -911,20 +1073,16 @@ fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut 
     }
 }
 
-/// How many widgets standing within `at` say `title`: a row's own label, the value of the field
-/// that edits it, a heading.
+/// How many widgets standing within `at` write `title` where a person reads it: a label, a
+/// heading, the value of the field that edits it.
 fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
     let own = rect(node);
     let mut count = usize::from(
         at.contains(own.center())
-            && node.semantics.as_ref().is_some_and(|semantics| {
-                semantics
-                    .name
-                    .as_deref()
-                    .into_iter()
-                    .chain(semantics.value.as_deref())
-                    .any(|written| one_line(written) == title)
-            }),
+            && node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| writes(semantics, title)),
     );
     for child in &node.children {
         count = count.saturating_add(titled_within(child, title, at));
@@ -932,9 +1090,75 @@ fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
     count
 }
 
+/// Whether this node writes `title` on the screen: the words of a label, a heading or a link, or
+/// the value of the field it is. A box's accessible name is not written anywhere: the row standing
+/// open into its item is named by the title that item states (`Role::ListItem` and its like), and a
+/// box that names what it holds says those words once, in what it holds.
+fn writes(semantics: &ui::a11y::AccessNode, title: &str) -> bool {
+    let drawn = matches!(
+        semantics.role,
+        Role::StaticText | Role::Label | Role::Heading { .. } | Role::Link
+    );
+    (drawn
+        && semantics
+            .name
+            .as_deref()
+            .is_some_and(|name| one_line(name) == title))
+        || semantics
+            .value
+            .as_deref()
+            .is_some_and(|value| one_line(value) == title)
+}
+
 /// `text` as one line of words: whitespace collapsed, ends trimmed.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// --- the line a field stands in ------------------------------------------------------------------
+
+/// A field whose one line of text stands toward the top of the control it is typed into: the
+/// band around the line grew — a phone's target, a row stretching the field to the face of the
+/// button beside it — while the line stayed where a field with no room over it puts it, so a
+/// person reads the placeholder or the words floating over empty room, and the caret away from
+/// the middle of the box their finger pressed. A field holding one line stands it in the middle
+/// of the band; one whose text wraps, and one given lines of its own (a note's box), starts at
+/// its inset and grows down, and is no line off centre.
+fn fields(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    if let Some(LayoutInfo::Text(text)) = node.layout
+        && matches!(role(node), Some(Role::TextInput | Role::MultilineTextInput))
+        && text.rows <= 1
+        && text.lines == 0
+        && !text.document
+    {
+        let field = rect(node);
+        let line = f64::from(text.line);
+        // Only a band's room is a band's: a field stretched to fill a pane starts its text at the
+        // inset, where it grows, and is no line off centre.
+        if field.height() > line + 2.0 * SLACK && field.height() <= f64::from(text.band) + SLACK {
+            let above = f64::from(text.top) - field.y0;
+            let under = field.y1 - (f64::from(text.top) + line);
+            if (above - under).abs() > SLACK {
+                push(
+                    out,
+                    Kind::LineOffCentre,
+                    node,
+                    keys,
+                    format!(
+                        "its one line stands {above:.0} px under the field's top and {under:.0} px \
+                         over its foot: the line a field holds stands in the middle of it"
+                    ),
+                );
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        fields(child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
 }
 
 // --- the gutter a narrow window keeps -----------------------------------------------------------
@@ -1005,6 +1229,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: role.map(AccessNode::new),
             children: Vec::new(),
         }
@@ -1072,6 +1297,25 @@ mod tests {
         found_as(kind, root, viewport, &Declared::default())
     }
 
+    /// What `root` holds wrong of `kind`, with `title` the words the window's bar says it shows.
+    fn found_beside(
+        kind: Kind,
+        root: &InspectionNode,
+        viewport: (u32, u32),
+        title: &str,
+    ) -> Vec<Problem> {
+        inspect(
+            root,
+            viewport,
+            &Declared::default(),
+            TOOLKIT_STEP,
+            Some(title),
+        )
+        .into_iter()
+        .filter(|problem| problem.kind == kind)
+        .collect()
+    }
+
     /// What `root` holds wrong of `kind`, as `declared` says what its controls do.
     fn found_as(
         kind: Kind,
@@ -1079,7 +1323,7 @@ mod tests {
         viewport: (u32, u32),
         declared: &Declared,
     ) -> Vec<Problem> {
-        inspect(root, viewport, declared, TOOLKIT_STEP)
+        inspect(root, viewport, declared, TOOLKIT_STEP, None)
             .into_iter()
             .filter(|problem| problem.kind == kind)
             .collect()
@@ -1193,6 +1437,145 @@ mod tests {
         assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
     }
 
+    /// A group's first row stands on the level its list starts at: a row indented there stands
+    /// under no row of its group, so it says what it belongs to in its own words instead.
+    #[test]
+    fn a_group_does_not_open_on_an_indented_row() {
+        /// One child of a list, as the check reads it: the heading over a group, or a row and
+        /// how deep it says it stands.
+        enum Line {
+            Heading(&'static str),
+            Row(usize),
+        }
+        let grouped = |lines: Vec<Line>| {
+            let mut list = node(
+                "DescribedList",
+                "list",
+                [0.0, 0.0, 400.0, 600.0],
+                Some(Role::Tree),
+            );
+            let mut semantics = AccessNode::new(Role::Tree);
+            let mut top = 0.0;
+            for line in lines {
+                match line {
+                    Line::Heading(name) => semantics.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("group:{name}"))
+                            .with_bounds(Rect::new(0.0, top, 400.0, top + 24.0)),
+                    ),
+                    Line::Row(level) => {
+                        semantics.children.push(
+                            AccessNode::new(Role::TreeItem)
+                                .with_name("A task")
+                                .with_level(level)
+                                .with_bounds(Rect::new(0.0, top, 400.0, top + 36.0)),
+                        );
+                        top += 36.0;
+                    }
+                }
+            }
+            list.semantics = Some(semantics);
+            list
+        };
+
+        // A step of a task due the same day stands under it, and one due another day opens its
+        // group on the list's own level.
+        let nested = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(1),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(1),
+        ]);
+        assert!(found(Kind::OrphanedRow, &nested, (390, 844)).is_empty());
+
+        // The day's first row stands a step in, under a row of the group above it.
+        let orphaned = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(1),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(2),
+        ]);
+        let problems = found(Kind::OrphanedRow, &orphaned, (390, 844));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].detail.contains("Thursday"), "{problems:?}");
+
+        // A list whose rows all stand the same depth starts there: the level it starts at is the
+        // one its rows share, and no group of it opens a step in.
+        let even = grouped(vec![
+            Line::Heading("Monday"),
+            Line::Row(2),
+            Line::Heading("Thursday"),
+            Line::Row(2),
+        ]);
+        assert!(found(Kind::OrphanedRow, &even, (390, 844)).is_empty());
+    }
+
+    /// A column keeps its titles to itself: the heading deep in the page behind a drawer names
+    /// no row of the drawer, whose box stands in a column of its own.
+    #[test]
+    fn a_column_hands_no_title_to_the_column_after_it() {
+        // The page in front of a narrow window: a section headed "History" over what it lists,
+        // under the page's stack, as a document's sections are.
+        let page = holding(
+            "Scrollable",
+            "page",
+            None,
+            vec![holding(
+                "Stack",
+                "sections",
+                None,
+                vec![holding(
+                    "Section",
+                    "history",
+                    None,
+                    vec![
+                        holding(
+                            "SectionHeader",
+                            "head",
+                            None,
+                            vec![named(
+                                "Text",
+                                "title",
+                                [24.0, 0.0, 200.0, 20.0],
+                                Role::Heading { level: 2 },
+                                "History",
+                            )],
+                        ),
+                        holding("Stack", "entries", None, vec![row("a", 0, 24.0, 400.0)]),
+                    ],
+                )],
+            )],
+        );
+        // The drawer over it: a tree whose rows stand one step in, as a tree's do.
+        let drawer = holding(
+            "DescribedTreeView",
+            "tree",
+            Some(Role::Tree),
+            vec![
+                holding(
+                    "HoverToolbar",
+                    "first",
+                    None,
+                    vec![row("b", 1, 52.0, 400.0)],
+                ),
+                holding(
+                    "HoverToolbar",
+                    "second",
+                    None,
+                    vec![row("c", 1, 52.0, 400.0)],
+                ),
+            ],
+        );
+        let both = holding("Stack", "columns", None, vec![page, drawer]);
+        assert!(
+            found(Kind::FirstLevelIndent, &both, (390, 844)).is_empty(),
+            "the page's title names no row of the drawer"
+        );
+    }
+
     /// One choice is filled once: a selected row inside a selected box draws the same choice
     /// twice, where a selected row in a plain box draws it once.
     #[test]
@@ -1301,6 +1684,77 @@ mod tests {
             found(Kind::UnchosenPlace, &shell(true), (1280, 800)).is_empty(),
             "a chosen place says where the person is"
         );
+    }
+
+    /// A field's one line stands in the middle of the band it is typed into: a band grown to a
+    /// finger's target centres it, a line left at the top does not, and wrapped text, a box given
+    /// rows and a document's page start at the inset.
+    #[test]
+    fn a_field_holding_one_line_stands_it_in_the_middle_of_the_band() {
+        fn field(
+            id: &str,
+            at: [f64; 4],
+            top: f64,
+            line: f64,
+            rows: u32,
+            lines: u32,
+        ) -> InspectionNode {
+            let mut field = node("TextInput", id, at, Some(Role::TextInput));
+            field.layout = Some(LayoutInfo::Text(ui::widget::TextLayout {
+                top: f64_to_f32(top),
+                line: f64_to_f32(line),
+                rows,
+                lines,
+                // A field stands one band tall as it is read here, whatever room it was given.
+                band: f64_to_f32(at[3]),
+                document: false,
+            }));
+            field
+        }
+        /// The field in a band `band` tall: the room a single-line field of its size keeps.
+        fn in_band(mut field: InspectionNode, band: f64) -> InspectionNode {
+            if let Some(LayoutInfo::Text(text)) = &mut field.layout {
+                text.band = f64_to_f32(band);
+            }
+            field
+        }
+        // A composer in a phone's window: the band grew to the target a finger needs, and its one
+        // line stands in the middle of it.
+        let centred = field("comment", [100.0, 20.0, 240.0, 48.0], 34.9, 18.2, 1, 0);
+        assert!(
+            found(Kind::LineOffCentre, &centred, (390, 844)).is_empty(),
+            "{:?}",
+            found(Kind::LineOffCentre, &centred, (390, 844))
+        );
+        // The same field with its line at the top: the words float over empty room, and the
+        // caret stands away from the middle of the box a finger pressed.
+        let pinned = field("comment", [100.0, 20.0, 240.0, 48.0], 28.0, 18.2, 1, 0);
+        let problems = found(Kind::LineOffCentre, &pinned, (390, 844));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        // Text that wrapped starts at its inset and grows down, as a document does.
+        let wrapped = field("comment", [100.0, 20.0, 240.0, 60.0], 28.0, 18.2, 2, 0);
+        assert!(found(Kind::LineOffCentre, &wrapped, (390, 844)).is_empty());
+        // A box given rows of its own (a note's six) starts at its inset, one line or not.
+        let note = in_band(
+            field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6),
+            32.0,
+        );
+        assert!(found(Kind::LineOffCentre, &note, (1280, 800)).is_empty());
+        // A field stretched to fill a pane keeps its line at its inset: the room is the pane's.
+        let filled = in_band(
+            field("composer", [0.0, 0.0, 320.0, 200.0], 8.0, 18.2, 1, 0),
+            48.0,
+        );
+        assert!(found(Kind::LineOffCentre, &filled, (1280, 800)).is_empty());
+        // A document's own page starts at its inset however tall the page stands.
+        let mut page = field("body", [0.0, 0.0, 320.0, 400.0], 8.0, 18.2, 1, 0);
+        if let Some(LayoutInfo::Text(text)) = &mut page.layout {
+            text.document = true;
+        }
+        assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
+        // A single-line field centres its band already, and stands one line tall.
+        let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
+        assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
     }
 
     /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
@@ -1701,6 +2155,100 @@ mod tests {
         assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
     }
 
+    /// The row a list highlights is the one the page beside it shows: a tree that says "Q3 plan"
+    /// while the page reads "Groceries" puts the person somewhere else than where they are, and
+    /// one that highlights nothing leaves the page beside it unattached to its rows.
+    #[test]
+    fn a_list_beside_its_page_highlights_the_row_the_page_shows() {
+        fn title(words: &str) -> InspectionNode {
+            named(
+                "Text",
+                "title",
+                [320.0, 12.0, 300.0, 24.0],
+                Role::Heading { level: 2 },
+                words,
+            )
+        }
+        fn tree(rows: Vec<(&str, bool)>) -> InspectionNode {
+            let mut list = holding(
+                "VirtualList",
+                "tree",
+                Some(Role::Tree),
+                vec![title("Groceries")],
+            );
+            list.rect = [0.0, 100.0, 280.0, 600.0];
+            list.semantics = Some(
+                AccessNode::new(Role::Tree).with_children(
+                    rows.into_iter()
+                        .enumerate()
+                        .map(|(at, (name, chosen))| {
+                            let y = 110.0 + 36.0 * f64::from(u32::try_from(at).unwrap());
+                            AccessNode::new(Role::TreeItem)
+                                .with_name(name)
+                                .with_state(ui::a11y::AccessState::new().selected(chosen))
+                                .with_bounds(Rect::new(16.0, y, 264.0, y + 28.0))
+                        })
+                        .collect(),
+                ),
+            );
+            list
+        }
+        let wrong = found(
+            Kind::DetailRowNotChosen,
+            &tree(vec![("Q3 plan", true), ("Groceries", false)]),
+            (1280, 800),
+        );
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert!(
+            wrong[0].detail.contains("Groceries") && wrong[0].detail.contains("Q3 plan"),
+            "{wrong:?}"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", false), ("Groceries", true)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "the page's own row stands chosen"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", false), ("Groceries", false)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "a list that highlights nothing says nothing of where the person is"
+        );
+        assert!(
+            found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", true), ("Groceries", true)]),
+                (1280, 800)
+            )
+            .is_empty(),
+            "a list of several chosen rows says a choice of its own"
+        );
+        // A window bar paints its own title: it names the page where no heading does.
+        let untitled = {
+            let mut list = tree(vec![("Q3 plan", true), ("Groceries", false)]);
+            list.children.clear();
+            list
+        };
+        let problems = found_beside(
+            Kind::DetailRowNotChosen,
+            &untitled,
+            (1280, 800),
+            "Groceries",
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            found_beside(Kind::DetailRowNotChosen, &untitled, (1280, 800), "Q3 plan").is_empty(),
+            "the bar names the row the tree highlights"
+        );
+    }
+
     /// A row that opened into its item writes its title once: in the field that edits it, not
     /// again over the document the row became.
     #[test]
@@ -1731,12 +2279,26 @@ mod tests {
             "the item's own title, in the field that edits it"
         );
 
+        // The item is its own row: the box the row opened into is announced by the title the
+        // document states, and says nothing of its own on screen.
+        let mut row = holding("RowOpen", "row", Some(Role::ListItem), vec![field()]);
+        row.rect = [0.0, 100.0, 400.0, 400.0];
+        row.semantics = Some(
+            AccessNode::new(Role::ListItem)
+                .with_name("Call the landlord about the boiler")
+                .with_state(ui::a11y::AccessState::new().expanded(true)),
+        );
+        assert!(
+            found(Kind::RepeatedRowTitle, &list(vec![row]), (1280, 800)).is_empty(),
+            "the row's name is the item's title, written once in the field that edits it"
+        );
+
         // The row's label left standing over the document: the same words twice.
         let label = named(
-            "ListRow",
-            "row",
+            "Text",
+            "label",
             [16.0, 100.0, 300.0, 36.0],
-            Role::ListItem,
+            Role::StaticText,
             "Call the landlord about the boiler",
         );
         let problems = found(

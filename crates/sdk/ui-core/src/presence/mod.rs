@@ -13,9 +13,13 @@ mod interaction;
 mod key;
 mod labels;
 mod layer;
+mod mark;
 mod placed;
 pub(crate) mod render;
-pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
+pub use caret_tag::{
+    CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, tag_faults, tag_gap,
+    tags_crowd,
+};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
@@ -23,14 +27,15 @@ pub use chat::{
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
-    TERMINAL_INTERACTION_DWELL,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
+    TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{ParticipantLabels, name_key};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
+pub use mark::PresenceMark;
 pub use placed::PlacedPointer;
 pub use render::{
     FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink, contrast_ink_dim,
@@ -89,8 +94,32 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use collab_types::presence::{
-    PEER_PALETTE, agent_client, assign_peer_colors, identity_rgb, user_color,
+    PEER_PALETTE, agent_client, agent_identity, assign_peer_colors, assign_peer_colors_from,
+    identity_rgb, user_color,
 };
+
+/// The hue a participant wears, from who they are: a person the one their identity
+/// derives ([`crate::tokens::PresenceHue::of_identity`]), software the one what it is
+/// wears ([`crate::tokens::PresenceHue::of_agent`], the same for every run of it and
+/// every surface that draws it). The one lookup every surface asks — the bar's faces,
+/// the People list, a profile card, an agent's card in a window, its pointer, its text
+/// marks and carets, and the run a change is attributed to — so one actor is one colour
+/// everywhere, and no surface picks its own.
+#[must_use]
+pub fn participant_hue(id: &str, is_agent: bool) -> crate::tokens::PresenceHue {
+    if is_agent {
+        crate::tokens::PresenceHue::of_agent(id)
+    } else {
+        crate::tokens::PresenceHue::of_identity(id)
+    }
+}
+
+/// [`participant_hue`] as the colour it travels as: what the workspace paints a
+/// participant in until it hears the colour they chose.
+#[must_use]
+pub fn participant_color(id: &str, is_agent: bool) -> (u8, u8, u8) {
+    identity_rgb(participant_hue(id, is_agent))
+}
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
 /// colour travels as ([`user_color`], a colour they chose), in the colour a
@@ -98,6 +127,89 @@ pub use collab_types::presence::{
 #[must_use]
 pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color {
     vello::peniko::Color::from_rgb8(red, green, blue)
+}
+
+/// What colour each of `ids` is drawn in, given the colours `chosen` already
+/// holds for some of them (a person's own, as they announced it): everyone else
+/// takes the ring entry their identity names, stepping to a free one where
+/// somebody already wears it, walked over sorted ids so every host settles a
+/// room alike ([`assign_peer_colors`]).
+///
+/// A colour two here announced is worn by `mine` — the reader themselves —
+/// and the other steps to a free entry: nobody here is ever drawn in the
+/// reader's own colour. Without `mine`, the first id in sorted order keeps it.
+///
+/// One settlement for the desk's faces, its roster and its cursors, so one
+/// person is one colour on every surface of a workspace.
+#[must_use]
+pub fn settle_colors<S: std::hash::BuildHasher>(
+    ids: &[&str],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+) -> HashMap<String, (u8, u8, u8)> {
+    settle_colors_around(ids, chosen, None)
+}
+
+/// [`settle_colors`], with `mine` the reader themselves: their announced
+/// colour is worn by them, and no other id here takes it.
+#[must_use]
+pub fn settle_colors_around<S: std::hash::BuildHasher>(
+    ids: &[&str],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+    mine: Option<&str>,
+) -> HashMap<String, (u8, u8, u8)> {
+    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
+    settle_colors_of(&naturals, chosen, mine)
+}
+
+/// [`settle_colors_around`] over participants the workspace knows the kind of: `naturals`
+/// pairs each id with the colour it wears before any settlement — a person's identity's
+/// ([`participant_color`]), software's own ([`participant_color`] of an agent) — so an agent
+/// settles on the colour it is known by and steps aside from one already spoken for, as
+/// everyone else does.
+#[must_use]
+pub fn settle_colors_of<S: std::hash::BuildHasher>(
+    naturals: &[(&str, (u8, u8, u8))],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+    mine: Option<&str>,
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut settled: Vec<(&str, (u8, u8, u8))> = naturals
+        .iter()
+        .copied()
+        .filter(|(id, _)| !chosen.contains_key(*id))
+        .collect();
+    settled.compact_sort_by_key(|(id, _)| *id);
+    settled.dedup_by(|a, b| a.0 == b.0);
+    // The colours here spoken for, in the order they are honoured: the
+    // reader's own first, then the ids in sorted order, so every host that
+    // sees the same claims settles them alike.
+    let mut claimants: Vec<&str> = naturals
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| chosen.contains_key(*id))
+        .filter(|id| Some(*id) != mine)
+        .collect();
+    claimants.compact_sort();
+    claimants.dedup();
+    if let Some(mine) = mine.filter(|mine| chosen.contains_key(*mine)) {
+        claimants.insert(0, mine);
+    }
+    let mut worn: Vec<(u8, u8, u8)> = Vec::new();
+    let mut claimed: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for id in claimants {
+        let Some(rgb) = chosen.get(id).copied() else {
+            continue;
+        };
+        if worn.contains(&rgb) {
+            // Someone here already wears it: this one takes a free entry.
+            settled.push((id, rgb));
+            continue;
+        }
+        worn.push(rgb);
+        claimed.insert(id.to_owned(), rgb);
+    }
+    let mut assigned = assign_peer_colors_from(&settled, &worn);
+    assigned.extend(claimed);
+    assigned
 }
 
 /// [`user_color`] as a colour: what a face of `user_id` wears when the workspace
@@ -126,6 +238,26 @@ pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
 #[cfg(test)]
 mod color_tests {
     use super::*;
+
+    /// A colour two people here announced is worn by the reader themselves: the other takes a
+    /// free entry, so nobody here is ever drawn in the reader's own colour.
+    #[test]
+    fn a_colour_two_here_announced_is_the_readers_own() {
+        let teal = identity_rgb(crate::tokens::PresenceHue::Teal);
+        let chosen: HashMap<String, (u8, u8, u8)> =
+            HashMap::from([("me".to_owned(), teal), ("helper".to_owned(), teal)]);
+        let settled = settle_colors_around(&["helper", "me"], &chosen, Some("me"));
+        assert_eq!(settled["me"], teal, "the reader wears what they announced");
+        assert_ne!(settled["helper"], teal, "nobody else wears it");
+        // Another reader settles the same claims with themselves first: the colour is theirs.
+        let theirs = settle_colors_around(&["helper", "me"], &chosen, Some("helper"));
+        assert_eq!(theirs["helper"], teal);
+        assert_ne!(theirs["me"], teal);
+        // Without a reader, the ids in sorted order decide who keeps it, so hosts agree.
+        let nobody = settle_colors_around(&["helper", "me"], &chosen, None);
+        assert_eq!(nobody["helper"], teal, "the first in sorted order keeps it");
+        assert_ne!(nobody["me"], teal);
+    }
 
     #[test]
     fn user_colours_are_pinned_or_hashed_onto_a_distinct_ring() {
@@ -569,6 +701,11 @@ pub struct PresenceCtx {
     /// coordinates, so the pointer layer drawn after the windows can leave
     /// out a second tag with the same name right beside it.
     caret_tags: std::cell::RefCell<Vec<CaretTag>>,
+    /// Where this frame drew each peer inside a text widget — the caret
+    /// painted in their name, or the band across their selection — in scene
+    /// coordinates, and what the words drawn with it say of them. What a
+    /// reader is told of a peer writing in text ([`Self::mark_words`]).
+    presence_marks: std::cell::RefCell<Vec<PresenceMark>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by gated widgets through [`Self::permits`]. `None` gates
@@ -605,6 +742,30 @@ pub struct PresenceCtx {
     /// process's to place. `None` fails closed: a pointer in the wrong window stays invisible
     /// rather than being placed wrong.
     surface: Option<String>,
+}
+
+/// Where the carets and name tags noted so far in this frame end
+/// ([`PresenceCtx::notes_boundary`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NotesBoundary {
+    marks: usize,
+    tags: usize,
+}
+
+/// The peers' carets, selections and name tags one drawing noted, in scene
+/// coordinates: what a replay of that drawing notes again moved with it, so a
+/// reader is told each peer where the frame shows them.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DrawnNotes {
+    marks: Vec<PresenceMark>,
+    tags: Vec<CaretTag>,
+}
+
+impl DrawnNotes {
+    /// Whether this drawing noted nothing a replay has to move.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.marks.is_empty() && self.tags.is_empty()
+    }
 }
 
 impl PresenceCtx {
@@ -686,6 +847,98 @@ impl PresenceCtx {
 
     pub(crate) fn note_caret_tag(&self, tag: CaretTag) {
         self.caret_tags.borrow_mut().push(tag);
+    }
+
+    /// Forget the peers' carets and selections drawn in text so far: a host
+    /// calls it before a frame that draws every window again.
+    pub fn clear_presence_marks(&self) {
+        self.presence_marks.borrow_mut().clear();
+    }
+
+    /// The peers' carets and selections a text widget drew since
+    /// [`Self::clear_presence_marks`], in scene coordinates.
+    pub fn presence_marks(&self) -> Vec<PresenceMark> {
+        self.presence_marks.borrow().clone()
+    }
+
+    pub(crate) fn note_presence_mark(&self, mark: PresenceMark) {
+        self.presence_marks.borrow_mut().push(mark);
+    }
+
+    /// Where the notes of the frame being drawn end now: a widget that keeps
+    /// a drawing of its own reads the notes it adds from here
+    /// ([`Self::notes_since`]), so a replay of that drawing moves them with
+    /// it ([`Self::note_notes_moved`]).
+    pub(crate) fn notes_boundary(&self) -> NotesBoundary {
+        NotesBoundary {
+            marks: self.presence_marks.borrow().len(),
+            tags: self.caret_tags.borrow().len(),
+        }
+    }
+
+    /// The carets and tags one drawing noted since `boundary`.
+    pub(crate) fn notes_since(&self, boundary: NotesBoundary) -> DrawnNotes {
+        DrawnNotes {
+            marks: self
+                .presence_marks
+                .borrow()
+                .get(boundary.marks..)
+                .unwrap_or_default()
+                .to_vec(),
+            tags: self
+                .caret_tags
+                .borrow()
+                .get(boundary.tags..)
+                .unwrap_or_default()
+                .to_vec(),
+        }
+    }
+
+    /// Note the carets and tags a replayed drawing holds again, moved by
+    /// `moved` as the drawing itself was: a reader is told a peer where the
+    /// frame shows them.
+    pub(crate) fn note_notes_moved(&self, notes: &DrawnNotes, moved: vello::kurbo::Affine) {
+        if notes.is_empty() {
+            return;
+        }
+        for mark in &notes.marks {
+            self.note_presence_mark(PresenceMark {
+                rect: moved.transform_rect_bbox(mark.rect),
+                ..mark.clone()
+            });
+        }
+        for tag in &notes.tags {
+            self.note_caret_tag(CaretTag {
+                rect: moved.transform_rect_bbox(tag.rect),
+                ..tag.clone()
+            });
+        }
+    }
+
+    /// The caret just noted says, in the words drawn beside it, what its peer
+    /// is doing here (an action's own label): a reader is told that rather
+    /// than that the peer is writing.
+    pub(crate) fn note_caret_saying(&self, words: &str) {
+        if let Some(mark) = self.presence_marks.borrow_mut().last_mut() {
+            mark.saying = Some(words.to_owned());
+        }
+    }
+
+    /// What a reader is told of one peer's caret or selection drawn in text:
+    /// the words the widget drew with it when they say what the peer is doing
+    /// there, else that the peer is writing — or selecting — there.
+    pub fn mark_words(&self, mark: &PresenceMark) -> String {
+        if let Some(saying) = &mark.saying {
+            return saying.clone();
+        }
+        crate::i18n::widget_format(
+            if mark.selection {
+                "presence-selecting-here"
+            } else {
+                "presence-writing-here"
+            },
+            &[("name", self.display_name(&mark.user).into())],
+        )
     }
 }
 
@@ -1216,10 +1469,37 @@ impl PresenceCtx {
     }
 
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
-        if let Some(rgb) = self.color_overrides.get(user) {
-            return *rgb;
-        }
-        user_color(&user.0)
+        self.color_overrides
+            .get(user)
+            .copied()
+            .unwrap_or_else(|| identity_rgb(self.identity_hue(user)))
+    }
+
+    /// The hue `user`'s identity derives where the workspace announced none: a person's
+    /// own, and for software the one what it is wears rather than the one its run's id
+    /// would — [`participant_hue`], the rule every surface asks.
+    fn identity_hue(&self, user: &UserId) -> crate::tokens::PresenceHue {
+        participant_hue(&user.0, self.is_agent(user))
+    }
+
+    /// The hue `user` wears: the one the workspace announced for them (their
+    /// choice, as the member list said it), else the one their identity
+    /// derives. [`Self::color_for`] is this hue's colour, and every surface
+    /// paints a person through one of the two, so their face, their caret and
+    /// their byline are one colour.
+    pub fn hue_for(&self, user: &UserId) -> crate::tokens::PresenceHue {
+        self.color_overrides
+            .get(user)
+            .and_then(|(red, green, blue)| {
+                crate::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
+            })
+            .unwrap_or_else(|| self.identity_hue(user))
+    }
+
+    /// [`Self::hue_for`] by the id a document or a roster spells, for a view
+    /// that paints an author, an assignee or a seat.
+    pub fn hue_of(&self, id: &str) -> crate::tokens::PresenceHue {
+        self.hue_for(&UserId(id.to_owned()))
     }
 
     /// When the workspace admitted `user`, as its roster records it; `None` when
@@ -1399,7 +1679,12 @@ impl PresenceCtx {
                 .map(|(_, name)| name.trim().to_owned())
                 .filter(|name| !name.is_empty())
         });
-        let name = name.unwrap_or_else(|| user.0.clone());
+        let name = match name {
+            Some(name) => name,
+            // Software the roster has not named is named by what it is, never by its id:
+            // "Today · App". Someone presence knows only an id of keeps it until it knows a name.
+            None => crate::history_source::software_name(&user.0).unwrap_or_else(|| user.0.clone()),
+        };
         self.kind_label(user, &name)
     }
 
@@ -1528,6 +1813,27 @@ impl PresenceCtx {
             }
         }
         out
+    }
+
+    /// Whether anyone else is shown at `key` now: their caret, their
+    /// selection, or what they are typing. A field that keeps the drawing it
+    /// made of itself asks before keeping it, since what others show there
+    /// comes and goes without the field's own content changing.
+    #[must_use]
+    pub fn shows_anyone_at(&self, key: &PresenceKey) -> bool {
+        self.carets.get(key).is_some_and(|list| !list.is_empty())
+            || self
+                .selections
+                .get(key)
+                .is_some_and(|list| !list.is_empty())
+            || self.typing.keys().any(|(_, typed)| typed == key)
+    }
+
+    /// Whether the room says anyone is typing anywhere: the clock is only
+    /// read to place a fading mark where it says so.
+    #[must_use]
+    pub fn has_typing_marks(&self) -> bool {
+        !self.typing.is_empty()
     }
 
     /// When the next typing mark steps down its fade (or ends): the host
@@ -2199,6 +2505,32 @@ mod color_override_tests {
         ctx.set_color_override(UserId("alice".into()), "#abcdef");
         ctx.set_color_override(UserId("alice".into()), "nonsense");
         assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
+    }
+
+    /// One person is one colour: the hue the workspace announced for them is
+    /// the one their face, their caret and their byline wear, and only someone
+    /// who announced none is painted in what their id derives.
+    #[test]
+    fn the_announced_hue_is_the_one_a_person_wears_everywhere() {
+        let mut ctx = PresenceCtx::empty();
+        let ada = UserId("ada".into());
+        assert_eq!(
+            ctx.hue_of("ada"),
+            crate::tokens::PresenceHue::of_identity("ada"),
+            "nobody announced a colour for her yet"
+        );
+        ctx.set_presence_hue(ada.clone(), crate::tokens::PresenceHue::Violet);
+        assert_eq!(ctx.hue_of("ada"), crate::tokens::PresenceHue::Violet);
+        assert_eq!(
+            ctx.color_for(&ada),
+            identity_rgb(crate::tokens::PresenceHue::Violet),
+            "the colour they are painted in is the hue they wear"
+        );
+        assert_eq!(
+            ctx.hue_of("bo"),
+            crate::tokens::PresenceHue::of_identity("bo"),
+            "someone else keeps their own"
+        );
     }
 }
 

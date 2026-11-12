@@ -44,11 +44,10 @@ impl App {
                 if self.native_workspace_route.as_ref() == Some(&route)
                     || workspace_route.is_some_and(|witness| *witness.route() == route)
                 {
-                    let workspace = self
-                        .persistence
-                        .room_index
-                        .as_mut()
-                        .ok_or("committed workspace owner unavailable".to_string())?;
+                    // Not open yet: try again on the next pump.
+                    let Some(workspace) = self.persistence.room_index.as_mut() else {
+                        return Ok(None);
+                    };
                     if workspace.document().pending_ops() != 0 {
                         return Ok(None);
                     }
@@ -77,10 +76,10 @@ impl App {
                     .iter_mut()
                     .find(|entry| entry.route == route)
                 {
-                    let owner = entry
-                        .owners
-                        .first()
-                        .ok_or("committed document owner missing")?;
+                    // Not installed yet: try again on the next pump.
+                    let Some(owner) = entry.owners.first() else {
+                        return Ok(None);
+                    };
                     if entry.owners.iter().any(|other| !owner.same_document(other)) {
                         return Err("committed document owner ambiguous".into());
                     }
@@ -173,6 +172,9 @@ impl App {
             match result {
                 Ok(Ok(Some(changed))) => {
                     read.applied();
+                    if read.is_whole() {
+                        self.clear_unreadable_history();
+                    }
                     if changed {
                         self.invalidate_widget_resource_cache();
                         self.needs_sync = true;
@@ -184,10 +186,24 @@ impl App {
                     self.committed_documents.push((route, read));
                 }
                 Ok(Err(error)) | Err(error) => {
-                    tracing::warn!(%error,"committed history remains blocked at document owner");
-                    // Preserve unfinished local work and this exact immutable
-                    // capture. Never acknowledge a failed or deferred merge.
-                    self.committed_documents.push((route, read));
+                    // The owner cannot read this capture: keeping it would
+                    // hold the route's delivery turn on bytes no pass can
+                    // merge, so the window would stop receiving and its own
+                    // edits stay here. Refuse it, which the reader answers by
+                    // reading the record whole (changes) or by keeping this
+                    // device's copy and saying so (a whole document), and
+                    // keep the window's unfinished local work as it is.
+                    tracing::warn!(
+                        %error,
+                        whole = read.is_whole(),
+                        app = %route.app_id,
+                        record = route.record.as_deref().unwrap_or("-"),
+                        "committed history could not be read here"
+                    );
+                    read.refuse();
+                    if read.is_whole() {
+                        self.report_unreadable_history();
+                    }
                 }
             }
         }
@@ -200,6 +216,23 @@ impl App {
             // its actions. Ask for the next pass now.
             let _entry = self.enter_wake_scope();
             crate::wake::WakeHandle::new().notify_events();
+        }
+    }
+
+    /// The workspace's copy of a record could not be read here: the window
+    /// says so, and goes on with the record it holds on this device.
+    fn report_unreadable_history(&mut self) {
+        self.document_routes.status = Some(crate::i18n::I18nManager::lookup_plain(
+            "history-sync-unreadable",
+        ));
+    }
+
+    /// A whole capture of a record did arrive: what said it could not be read
+    /// here is no longer true.
+    fn clear_unreadable_history(&mut self) {
+        let unreadable = crate::i18n::I18nManager::lookup_plain("history-sync-unreadable");
+        if self.document_routes.status.as_deref() == Some(unreadable.as_str()) {
+            self.document_routes.status = None;
         }
     }
 }

@@ -245,6 +245,20 @@ impl FilePicker for UnavailableFilePicker {
     fn launch(&self, _request: LaunchRequest) -> LaunchChannel {
         answered(LaunchOutcome::Failed(UNAVAILABLE.to_string()))
     }
+
+    fn pick_contents(&self, _request: PickRequest) -> ContentsChannel {
+        answered(portal::ContentsOutcome::Failed(UNAVAILABLE.to_string()))
+    }
+
+    fn save_destination(&self, _request: PickRequest) -> portal::DestinationChannel {
+        portal::DestinationChannel::answered(portal::DestinationOutcome::Failed(
+            UNAVAILABLE.to_string(),
+        ))
+    }
+
+    fn save_contents(&self, _request: PickRequest, _bytes: Vec<u8>) -> SaveChannel {
+        answered(portal::SaveOutcome::Failed(UNAVAILABLE.to_string()))
+    }
 }
 
 struct UnavailableOpener;

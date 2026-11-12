@@ -48,9 +48,11 @@ pub enum AdmissionOutcome {
     clippy::too_many_lines,
     reason = "one atomic governance transaction; on error the document stays unchanged"
 )]
-pub fn admit_invited_member(
+pub(crate) fn admit_invited_member(
     document: &mut AutoCommit,
+    held: &crate::cached_document::CachedDocument,
     redemption: &crate::join::VerifiedRedemption,
+    name: Option<&str>,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
     let now_ns: u64 = now
@@ -66,9 +68,10 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed workspace id is missing")?;
-    let policy = tilo_desktop_model::projection::workspace_policy_of(document, &declared_workspace);
+    // Read once per governance state, not once per admission.
+    let policy = held.workspace_policy(&declared_workspace);
     let grant = crate::workspace::membership::invitation_admits(
-        &policy,
+        policy,
         &declared_workspace,
         redemption.join().signed_invitation(),
         cert.user_public_key,
@@ -81,32 +84,26 @@ pub fn admit_invited_member(
         device_public_key: cert.device_public_key,
         request_id: redemption.request_id(),
         role: grant.role,
-        invitation: Some(crate::join::encode_invitation_text(
-            redemption.join().signed_invitation(),
-        )),
     };
-    let governance = crate::workspace::governance_of(Some(document));
-    let invitation_receipts = crate::workspace::invitation_receipts(document)?;
+    // The receipts of this invitation: the ledger's under its key, and the
+    // ones device rows keep ([`crate::cached_document::CachedDocument::redemptions`]).
     let mut exact_redemption = false;
-    let spent = invitation_receipts
-        .values()
-        .flatten()
-        .map(|bytes| serde_json::from_slice::<RedemptionReceipt>(bytes))
-        .chain(governance.identities.values().flat_map(|bytes| {
-            match serde_json::from_slice::<GovernedIdentity>(bytes) {
-                Ok(identity) => identity
-                    .admission
-                    .into_iter()
-                    .chain(identity.admissions)
-                    .map(Ok)
-                    .collect::<Vec<_>>(),
-                Err(error) => vec![Err(error)],
-            }
-        }));
-    for existing in spent {
-        let existing = existing.map_err(|error| error.to_string())?;
+    let ledgered =
+        crate::workspace::invitation_receipts_of(document, &hex::encode(receipt.invite_id))?
+            .into_iter()
+            .map(|bytes| {
+                crate::state::LedgerReceipt::decode(&bytes)
+                    .map(|ledgered| ledgered.receipt)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+    let on_rows = held.redemptions().map_err(ToOwned::to_owned)?;
+    for existing in ledgered
+        .iter()
+        .chain(on_rows.get(&receipt.invite_id).into_iter().flatten())
+    {
         if existing.invite_id == receipt.invite_id {
-            if existing.on_row() != receipt.on_row() {
+            if *existing != receipt {
                 return Err("invitation was already redeemed by another request or device".into());
             }
             exact_redemption = true;
@@ -121,12 +118,11 @@ pub fn admit_invited_member(
         return Err("this person is banned from the workspace".into());
     }
     let id = hex::encode(cert.device_public_key);
-    let prior = governance
-        .identities
+    let prior = held
+        .identities()
         .get(&id)
-        .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
-        .transpose()
-        .map_err(|error| error.to_string())?;
+        .map(|identity| identity.clone().map_err(|error| error.to_string()))
+        .transpose()?;
     if prior.as_ref().is_some_and(|old| {
         old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
     }) {
@@ -150,21 +146,34 @@ pub fn admit_invited_member(
         .ok_or("governed members missing")?
         .1;
     let ledger = match candidate
-        .get(ROOT, "invitation_receipts_v1")
+        .get(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
     {
         Some((_, object)) => object,
         None => candidate
-            .put_object(ROOT, "invitation_receipts_v1", automerge::ObjType::Map)
+            .put_object(
+                ROOT,
+                crate::state::invitation_ledger::RECEIPTS_KEY,
+                automerge::ObjType::Map,
+            )
             .map_err(|error| error.to_string())?,
     };
+    // The invitation goes into the ledger with its issuer's certificate and
+    // transport details named by digest, kept once for every receipt of an
+    // invitation they signed alike ([`crate::state::invitation_ledger`]).
+    let signed = redemption.join().signed_invitation();
+    let shared = crate::join::invitation_shared_runs(signed);
+    let (ledgered, parts) = crate::state::LedgerReceipt::new(
+        receipt.clone(),
+        signed,
+        &shared.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    );
+    crate::state::invitation_ledger::put_parts(&mut candidate, &parts)?;
     candidate
         .put(
             &ledger,
             hex::encode(receipt.invite_id),
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&receipt).map_err(|error| error.to_string())?,
-            ),
+            automerge::ScalarValue::Bytes(ledgered.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
     // An agent identity stays bound to its delegation whatever else it
@@ -181,9 +190,9 @@ pub fn admit_invited_member(
         },
     );
     if admission.is_none() {
-        admission = Some(receipt.on_row());
+        admission = Some(receipt);
     } else {
-        admissions.push(receipt.on_row());
+        admissions.push(receipt);
         retain_latest_admissions(&mut admissions);
     }
     let identity = GovernedIdentity {
@@ -198,14 +207,36 @@ pub fn admit_invited_member(
         .put(
             &identities,
             &id,
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
-            ),
+            automerge::ScalarValue::Bytes(identity.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
     candidate
-        .put(&names, &id, member_display_name(&grant, cert))
+        .put(
+            &names,
+            &id,
+            name.unwrap_or_else(|| member_display_name(&grant, cert)),
+        )
         .map_err(|error| error.to_string())?;
+    // The name the person gave as they joined is theirs on each of their
+    // admitted devices' rows, written in the admission's own change: a
+    // change of its own cost a second whole governance write per arrival.
+    if let Some(name) = name {
+        let held_names = &held.policy().names;
+        for (other, identity) in held.identities() {
+            let Ok(identity) = identity else {
+                continue;
+            };
+            if *other != id
+                && identity.device_cert.user_public_key == cert.user_public_key
+                && identity.has_admission()
+                && held_names.get(other).map(String::as_str) != Some(name)
+            {
+                candidate
+                    .put(&names, other, name)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
     // The workspace's owner is not one of its members: they hold it from its
     // beginning, whatever role an invitation names, and their device's
     // certificate is what admits it. A member row for them would be a
@@ -514,6 +545,52 @@ mod retention_tests {
         crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
     }
 
+    /// A device the workspace removed the person of is told apart from one it
+    /// never named: its host's links end at the removal and refuse it after.
+    #[test]
+    fn a_removed_members_device_is_told_apart() {
+        let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
+        let now_ns: u64 = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .try_into()
+            .unwrap();
+        let guest = device(&SigningKey::from_bytes(&[71; 32]), 72);
+        let stranger = device(&SigningKey::from_bytes(&[73; 32]), 74);
+        let owner = peer.owner_certificates()[0].device_public_key;
+        let admitted = redemption(&peer, &authority, 75, &guest, now_ns);
+        assert!(
+            peer.governance_mut()
+                .admit_invited_member(&admitted, &authority, now)
+                .unwrap()
+        );
+        let device = guest.1.device_public_key;
+        assert!(
+            !peer.governance().removed_device(device),
+            "a member's device"
+        );
+        assert!(
+            peer.governance_mut()
+                .remove_member(guest.1.user_public_key, &authority, now)
+                .unwrap()
+        );
+        assert!(
+            peer.governance().removed_device(device),
+            "a removed member's device"
+        );
+        assert!(
+            !peer.governance().removed_device(owner),
+            "the owner's device"
+        );
+        assert!(
+            !peer
+                .governance()
+                .removed_device(stranger.1.device_public_key),
+            "a device the workspace never named"
+        );
+    }
+
     #[test]
     fn identity_admissions_are_bounded_and_a_pruned_admission_cannot_readmit() {
         let (mut peer, authority, _, _, now) = crate::admission_tests::seeded();
@@ -541,8 +618,8 @@ mod retention_tests {
         }
         let invite = |r: &VerifiedRedemption| r.join().invite_id();
         let governed = governance(&peer);
-        let row: GovernedIdentity =
-            serde_json::from_slice(&governed.identities[&hex::encode(guest.1.device_public_key)])
+        let row =
+            GovernedIdentity::decode(&governed.identities[&hex::encode(guest.1.device_public_key)])
                 .unwrap();
         assert_eq!(
             row.admission.as_ref().map(|r| r.invite_id),

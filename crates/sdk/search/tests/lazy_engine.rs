@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tilo_search::{
-    Document, FieldWeight, Page, SearchIndex, engine_generation, engine_ready, install_engine,
+    Document, ENGINE, FieldWeight, Page, SearchIndex, engine_generation, engine_ready,
     tantivy_engine,
 };
 
@@ -23,7 +23,7 @@ fn rows(count: u64) -> impl Iterator<Item = Document> {
 
 #[test]
 fn only_a_large_index_waits_for_the_engine() {
-    tilo_search::defer_engine(fetch);
+    ENGINE.defer(fetch);
 
     let mut small = SearchIndex::default();
     small.replace_all(rows(10));
@@ -50,7 +50,7 @@ fn only_a_large_index_waits_for_the_engine() {
     assert_eq!(FETCHES.load(Ordering::SeqCst), 1, "one fetch at a time");
 
     let generation = engine_generation();
-    install_engine(tantivy_engine);
+    ENGINE.install(tantivy_engine);
     assert!(engine_ready());
     assert_eq!(engine_generation(), generation + 1);
     assert_eq!(large.search("row 1999", Page::first(5)).hits[0].key, 1999);

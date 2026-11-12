@@ -379,8 +379,16 @@ pub fn resolve(
     let mut all = Vec::new();
     let mut clocked = Vec::new();
     // Free text finds the type's own `Text` fields: each word must appear inside one of them.
-    if !query.text.is_empty() {
-        all.push(text_pred(&query.text, ty));
+    // A first word the search read as a type's name that is not this type's is one of them: a
+    // list narrowed to "Monday" looks for a note called that, not for a type it does not have.
+    let mut words = query.text.clone();
+    if let Some(named) = &query.ty
+        && !names_type(named, ty)
+    {
+        words.insert(0, named.clone());
+    }
+    if !words.is_empty() {
+        all.push(text_pred(&words, ty));
     }
     for term in &query.terms {
         all.push(term_pred(term, ty, enums, clock, viewer, &mut clocked)?);
@@ -401,14 +409,25 @@ pub fn resolve(
     })
 }
 
+/// Whether `named`, as a search's first word wrote it, names `ty`: its name, with or without the
+/// app it belongs to (`notes.Note`), in any case.
+fn names_type(named: &str, ty: &TypeMeta) -> bool {
+    let last = named.rsplit('.').next().unwrap_or(named);
+    last.eq_ignore_ascii_case(&ty.name)
+}
+
 /// Free text as a predicate over the type's text fields: the conjunction of each word being
 /// found inside some one of them, so `launch plan` finds a body holding both. A type with no
 /// text field holds none of it.
+///
+/// A rich text is compared as the text it is written as ([`crate::store::field_lit_of`]), which
+/// is the same for every reader, since what its references read as is not what it holds: free
+/// text finds a word in any field the store indexes as text (search.md, "What a type declares").
 fn text_pred(words: &[String], ty: &TypeMeta) -> Pred<String> {
     let fields: Vec<&str> = ty
         .fields
         .iter()
-        .filter(|f| matches!(f.ty.trim(), "Text" | "RichText"))
+        .filter(|f| f.holds_text())
         .map(|f| f.id.as_str())
         .collect();
     let each: Vec<Pred<String>> = words
@@ -931,5 +950,49 @@ mod tests {
         assert_eq!(q.text, ["83(b)", "Y C"]);
         assert!(find("from:").is_err());
         assert!(find("\"open").is_err());
+    }
+
+    /// A first word a search reads as a type's name is that type's resource when the type is the
+    /// one asked of, and a word to find when it is not: a notebook narrowed to "Monday" looks for
+    /// the note called that.
+    #[test]
+    fn a_word_that_names_another_type_is_searched_for() {
+        let note = TypeMeta {
+            id: "t1".into(),
+            name: "Note".into(),
+            doc: String::new(),
+            fields: vec![tilolang::meta::FieldMeta {
+                id: "title".into(),
+                name: "title".into(),
+                ty: "Text".into(),
+                merge: tilolang::types::MergeKind::Register,
+                doc: String::new(),
+                default: None,
+            }],
+            search: tilolang::meta::SearchMeta::default(),
+            origin: None,
+            title: None,
+            untitled: None,
+        };
+        let clock = Clock::at("2026-01-01T00:00:00Z").unwrap().in_zone(0);
+        let resolve_with = |text: &str| {
+            let query = find(text).unwrap();
+            resolve(&query, &note, &[], &clock, None).unwrap().pred
+        };
+        assert_eq!(
+            resolve_with("Monday"),
+            Pred::Text("title".into(), "Monday".into()),
+            "a name that is not this type's text is searched for"
+        );
+        assert_eq!(
+            resolve_with("Note Monday"),
+            Pred::Text("title".into(), "Monday".into()),
+            "the type's own name narrows nothing further"
+        );
+        assert_eq!(
+            resolve_with("notes.Note"),
+            Pred::Const(true),
+            "naming the type alone finds every one of them"
+        );
     }
 }

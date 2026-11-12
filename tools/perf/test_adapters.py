@@ -23,13 +23,18 @@ def report(**workload: float) -> dict:
         "idle_per_s": [0.0], "transfer_bytes": [8_400_000.0], "request_count": [70.0],
         "start_module_bytes": [6_900_000.0],
     }
-    options = {"rounds": 1, "demoSeconds": 0, "typingKeys": 0, **workload}
+    options = {"rounds": 1, "demoSeconds": 0, "typingKeys": 0, "scrollSteps": 0, **workload}
     if options["demoSeconds"]:
         samples["demo_interval_ms"] = [8.0]
         samples["demo_work_ms"] = [2.0]
     if options["typingKeys"]:
         samples["typing_ms"] = [30.0]
         samples["typing_work_ms"] = [4.0]
+        samples["typing_dom_ms"] = [6.0]
+        samples["typing_over_dom"] = [24.0]
+    if options["scrollSteps"]:
+        samples["scroll_ms"] = [24.0]
+        samples["scroll_vs_dom"] = [150.0]
     return {"schema": 1, "renderer": "swiftshader",
             "bundle": {"profile": "release", "revision": "a" * 40, "dirty": False, "digest": "d", "runtimeSha256": "r"},
             "browser": {"product": "Chrome/test"},
@@ -41,7 +46,7 @@ def report(**workload: float) -> dict:
 
 class BrowserQualification(unittest.TestCase):
     def test_names_a_kpi_for_every_sample_field(self):
-        records = adapters.browser_qualification(report(demoSeconds=5, typingKeys=16), ENV)
+        records = adapters.browser_qualification(report(demoSeconds=5, typingKeys=16, scrollSteps=24), ENV)
         names = {item.kpi for item in records}
         self.assertEqual(names, {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
 
@@ -57,6 +62,18 @@ class BrowserQualification(unittest.TestCase):
         typed = {item.kpi: item for item in records if item.kpi.startswith("browser.typing.")}
         self.assertEqual(typed["browser.typing.key_to_frame"].p50, 30.0)
         self.assertEqual(typed["browser.typing.frame_work"].p50, 4.0)
+        self.assertEqual(typed["browser.typing.plain_page_key_to_frame"].p50, 6.0)
+        self.assertEqual(typed["browser.typing.past_plain_page"].p50, 24.0)
+
+    def test_records_the_scroll_beside_the_plain_page(self):
+        records = adapters.browser_qualification(report(typingKeys=16, scrollSteps=24), ENV)
+        scrolled = {item.kpi: item for item in records if item.kpi.startswith("browser.scroll.")}
+        self.assertEqual(scrolled["browser.scroll.wheel_to_frame"].p50, 24.0)
+        self.assertEqual(scrolled["browser.scroll.share_of_plain_page"].p50, 150.0)
+        unscrolled = report(typingKeys=16)
+        unscrolled["samples"]["scroll_ms"] = [24.0]
+        with self.assertRaisesRegex(ValueError, "scroll samples"):
+            adapters.browser_qualification(unscrolled, ENV)
 
     def test_demo_and_typing_workloads_are_required_together_with_their_samples(self):
         misspelled = report()

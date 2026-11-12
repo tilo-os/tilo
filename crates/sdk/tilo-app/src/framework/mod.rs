@@ -80,11 +80,11 @@
 //!   message, a saved query's SQL — is a child resource: a resource type of
 //!   its own stored at a place in its parent's document, whose edits the
 //!   parent carries in one of its own actions (`EditBody { page, edit }`).
-//!   The parent publishes it from `children` with
-//!   [`publish_child`](tilo_resource::publish_child); a view or surface
-//!   edits it through [`RecordEnv::child`], a
+//!   A view or surface edits it through [`RecordEnv::child`], a
 //!   [`Dispatcher`] of the child type that wraps each edit into the
-//!   parent's action. The child is addressed, permissioned, undone (by its
+//!   parent's action; the framework publishes it there
+//!   ([`publish_child`](tilo_resource::publish_child)), so the palette,
+//!   agents and scripts address it too. The child is addressed, permissioned, undone (by its
 //!   own coalescing) and named in history like a root, and applies as the
 //!   parent. Rich text is `tilo_rich_text::RichTextField` over such a
 //!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
@@ -336,9 +336,7 @@ mod effect;
 mod endpoint;
 mod env;
 mod form;
-mod hosted;
 mod hosted_actions;
-mod hosted_readings;
 // The headless host discovers native presentation, which the browser has not got.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
@@ -367,7 +365,6 @@ mod scenario;
 mod section;
 mod settings;
 mod share_link;
-mod source;
 mod stage;
 mod surface;
 mod switch;
@@ -407,9 +404,8 @@ pub use effect::{
 pub use endpoint::{EffectCaller, EffectEndpoint};
 pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
-pub use hosted::{Answers, Ask, Connection};
 pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
-pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_workspace};
+pub use kinds::{hosted_kinds, resource_kind, seed_record};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use opening::Opened;
@@ -427,7 +423,6 @@ pub use scenario::{Fixture, RunMode};
 pub use section::SettingsRecords;
 pub use settings::Setting;
 pub use share_link::host_link;
-pub(crate) use source::Source;
 pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
@@ -444,5 +439,6 @@ pub use workspace::{WorkspaceHandle, WorkspaceRecord};
 pub mod content {
     pub use tilo_content::{
         ContentStore, ImageFormat, hash_bytes, image_format, image_size, valid_hash,
+        valid_reference,
     };
 }

@@ -100,9 +100,31 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         Manifest::from_toml_str(&std::fs::read_to_string(&today.manifest).unwrap()).unwrap();
     assert_eq!(today_manifest.package.name.as_deref(), Some("Today"));
     assert_eq!(today_manifest.package.category.as_deref(), Some("Office"));
-    // Today uses Notes: it reads their records, declared, and carries their schema.
-    let surface = std::fs::read(today.payload.join("surface.toml")).unwrap();
-    let surface = collab_types_surface(&surface);
+    // What the app is called where it is not English: its catalogue's own word for its name, so
+    // every surface that names it — a launcher, a search row, a change it made — reads "Heute".
+    assert_eq!(
+        today_manifest
+            .package
+            .names
+            .get("de-DE")
+            .map(String::as_str),
+        Some("Heute"),
+    );
+    assert!(
+        !today_manifest.package.names.contains_key("en-US"),
+        "the name its declaration gives needs no table of its own"
+    );
+    let installed = today_reads_notes(today, notes);
+    declared_actions(&apps, &today_manifest);
+    every_payload_carries_the_standard_library(&apps, &installed);
+}
+
+/// Today uses Notes: it declares that it reads their kinds, carries their module and their schema.
+fn today_reads_notes(
+    today: &package::BuiltApp,
+    notes: &package::BuiltApp,
+) -> tilolang_tilo::bundle::Bundle {
+    let surface = collab_types_surface(&std::fs::read(today.payload.join("surface.toml")).unwrap());
     let notes_surface =
         collab_types_surface(&std::fs::read(notes.payload.join("surface.toml")).unwrap());
     assert!(
@@ -123,7 +145,37 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             .iter()
             .any(|import| import.meta.app == "so.tilo.lang.notes")
     );
-    every_payload_carries_the_standard_library(&apps, &installed);
+    installed
+}
+
+/// The action door each package's manifest declares: Today's morning cleanup calls Tasks' and
+/// Notes' actions, so Today declares that it invokes another app's actions, which the broker
+/// reads as the ceiling on what it may ask of their doors; a package that calls only its own
+/// actions declares nothing beyond them.
+fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
+    let declared = |app: &package::BuiltApp| {
+        Manifest::from_toml_str(&std::fs::read_to_string(&app.manifest).unwrap())
+            .unwrap()
+            .actions
+    };
+    assert!(
+        today.actions.invoke,
+        "Today declares it invokes another app's actions: {:?}",
+        today.actions
+    );
+    assert!(
+        !today.actions.query,
+        "it reads no catalogue of the person's actions"
+    );
+    let discussion = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.lang.discussion")
+        .expect("the package Tasks and Notes are made with is built");
+    let discussion = declared(discussion);
+    assert!(
+        !discussion.invoke && !discussion.query,
+        "Discussion calls only its own actions: {discussion:?}"
+    );
 }
 
 /// Every app compiles with the standard library and carries it: the package its declarations

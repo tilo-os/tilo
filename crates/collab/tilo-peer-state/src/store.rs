@@ -159,6 +159,12 @@ struct Entry {
     bytes: u64,
     authored_at_ns: u64,
     retention: ContentRetention,
+    /// Whether the store's first copy came over one of the device's links,
+    /// rather than from the device itself or another carrier: what a reader
+    /// of those links that fell behind is handed again
+    /// ([`Store::taken_from_link`]). Known for the frames kept since the store
+    /// opened, which is all a reader that subscribed since can miss.
+    from_link: bool,
 }
 
 impl Store {
@@ -184,7 +190,7 @@ impl Store {
         {
             let mut held = store.held.lock_recover();
             for (workspace, frame, bytes) in store.stored()? {
-                add(&mut held, workspace, &frame, bytes);
+                add(&mut held, workspace, &frame, bytes, false);
             }
             retire_to_appetite(&store.root, appetite, &mut held);
         }
@@ -234,6 +240,38 @@ impl Store {
     /// Returns an error when the frame cannot be written. The store is
     /// unchanged then.
     pub fn retain(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+        self.retain_from(workspace, frame, false)
+    }
+
+    /// [`Self::retain`] a frame one of the device's links brought it: the
+    /// store remembers it came that way ([`Self::taken_from_link`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::retain`].
+    pub fn retain_from_link(&self, workspace: u64, frame: &Frame) -> Result<Retained, StoreError> {
+        self.retain_from(workspace, frame, true)
+    }
+
+    /// Whether the store's first copy of `frame` came over one of the device's
+    /// links since the store opened.
+    #[must_use]
+    pub fn taken_from_link(&self, workspace: u64, frame: &Frame) -> bool {
+        self.held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .and_then(|held| held.lineages.get(&frame.lineage))
+            .and_then(|entries| entries.iter().find(|entry| entry.seq == frame.seq))
+            .is_some_and(|entry| entry.from_link)
+    }
+
+    fn retain_from(
+        &self,
+        workspace: u64,
+        frame: &Frame,
+        from_link: bool,
+    ) -> Result<Retained, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let mut held = self.held.lock_recover();
@@ -256,7 +294,7 @@ impl Store {
             fs::create_dir_all(parent)?;
         }
         tilo_files::native::atomic::write(&path, &bytes)?;
-        add(&mut held, workspace, frame, len);
+        add(&mut held, workspace, frame, len, from_link);
         if frame.retention == ContentRetention::Checkpoint {
             let retired = retire_before(&self.root, workspace, frame.lineage, frame.seq, &mut held);
             tracing::debug!(
@@ -287,9 +325,9 @@ impl Store {
         let Some(stored) = held.workspaces.get(&workspace) else {
             return Ok(replay);
         };
-        let mut carried = 0_usize;
-        let mut carried_bytes = 0_u64;
-        'lineages: for (lineage, entries) in &stored.lineages {
+        // Each author line's frames after its cursor, in the line's order.
+        let mut pending: Vec<(Lineage, &[Entry])> = Vec::new();
+        for (lineage, entries) in &stored.lineages {
             let after = cursors
                 .iter()
                 .filter(|cursor| cursor.lineage == *lineage)
@@ -305,22 +343,56 @@ impl Store {
                     earliest_seq: first,
                 });
             }
-            for entry in entries {
-                if entry.seq <= after {
-                    continue;
-                }
-                if carried >= budget.max_frames
-                    || carried_bytes.saturating_add(entry.bytes) > budget.max_bytes
-                {
-                    replay.more = true;
-                    break 'lineages;
-                }
-                replay
-                    .frames
-                    .push(self.frame_at(workspace, *lineage, *entry)?);
-                carried = carried.saturating_add(1);
-                carried_bytes = carried_bytes.saturating_add(entry.bytes);
+            let from = entries.partition_point(|entry| entry.seq <= after);
+            if let Some(rest) = entries.get(from..)
+                && !rest.is_empty()
+            {
+                pending.push((*lineage, rest));
             }
+        }
+        // The lines are merged rather than sent one after another: a change
+        // is taken in only once its record holds a baseline, so each record's
+        // baselines go first, then every change in the order it was written.
+        // A line sent whole before the line holding the baseline left that
+        // line's changes held back for a baseline that came after them.
+        let mut carried = 0_usize;
+        let mut carried_bytes = 0_u64;
+        loop {
+            let next = pending
+                .iter()
+                .enumerate()
+                .filter_map(|(at, (lineage, rest))| {
+                    rest.first().map(|entry| {
+                        let key = (
+                            entry.retention != ContentRetention::Checkpoint,
+                            entry.authored_at_ns,
+                            *lineage,
+                        );
+                        (key, at)
+                    })
+                })
+                .min();
+            let Some((_, at)) = next else {
+                break;
+            };
+            let Some((lineage, rest)) = pending.get_mut(at) else {
+                break;
+            };
+            let Some((entry, after)) = rest.split_first() else {
+                break;
+            };
+            if carried >= budget.max_frames
+                || carried_bytes.saturating_add(entry.bytes) > budget.max_bytes
+            {
+                replay.more = true;
+                break;
+            }
+            replay
+                .frames
+                .push(self.frame_at(workspace, *lineage, *entry)?);
+            carried = carried.saturating_add(1);
+            carried_bytes = carried_bytes.saturating_add(entry.bytes);
+            *rest = after;
         }
         drop(held);
         Ok(replay)
@@ -547,12 +619,13 @@ fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64) {
+fn add(held: &mut Held, workspace: u64, frame: &Frame, bytes: u64, from_link: bool) {
     let entry = Entry {
         seq: frame.seq,
         bytes,
         authored_at_ns: frame.authored_at_ns,
         retention: frame.retention,
+        from_link,
     };
     let stored = held.workspaces.entry(workspace).or_default();
     let entries = stored.lineages.entry(frame.lineage).or_default();
@@ -830,7 +903,36 @@ mod tests {
                 other => panic!("a document frame, not {other:?}"),
             })
             .collect();
-        assert_eq!(seqs, vec![3, 4, 1], "lineage by lineage, in sequence order");
+        assert_eq!(
+            seqs,
+            vec![3, 1, 4],
+            "the baseline first, then the changes in the order they were written"
+        );
+    }
+
+    /// A member that catches up takes a change in only once its record holds a
+    /// baseline: the record's baseline is sent before any author's changes,
+    /// whichever author's line sorts first. A line sent whole before the
+    /// baseline's left the late member without that author's changes.
+    #[test]
+    fn replay_sends_a_records_baseline_before_its_changes() {
+        let (_dir, store) = open();
+        let channel = ChannelId::new();
+        let (mut founder, mut editor) = (device(2), device(3));
+        if frame(&editor, channel, 2, ContentRetention::Delta).lineage
+            > frame(&founder, channel, 1, ContentRetention::Checkpoint).lineage
+        {
+            // The editor's line sorts first, as a line sent whole once did.
+            std::mem::swap(&mut founder, &mut editor);
+        }
+        let baseline = frame(&founder, channel, 1, ContentRetention::Checkpoint);
+        let edit = frame(&editor, channel, 2, ContentRetention::Delta);
+        assert!(edit.lineage < baseline.lineage);
+        store.retain(WORKSPACE, &edit).unwrap();
+        store.retain(WORKSPACE, &baseline).unwrap();
+
+        let replay = store.replay(WORKSPACE, &[], Budget::default()).unwrap();
+        assert_eq!(replay.frames, vec![baseline.message, edit.message]);
     }
 
     #[test]

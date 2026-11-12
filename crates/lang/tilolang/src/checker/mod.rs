@@ -54,6 +54,10 @@ use std::collections::HashMap;
 
 type Ex = ir::Expr;
 
+/// How many people a rich input's `@` drawer offers from the conversation, unless a view asks
+/// for another number (`speakers(items, max)`, chat.md "Completion drawers").
+pub(crate) const DRAWER_SPEAKERS: i64 = 5;
+
 /// What kind of code is being checked; each has its own effect discipline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Ctx {
@@ -113,6 +117,10 @@ pub(crate) enum Invoked {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about the code being checked"
+)]
 struct FnState {
     ctx: Ctx,
     /// The declaration's name, as a message says it.
@@ -127,6 +135,10 @@ struct FnState {
     result: Ty,
     facts: Facts,
     view_id: String,
+    /// The declaration whose message the words this code shows are attributes of, where it is
+    /// not [`Self::view_id`]: an action's, for its label read where a view applies it and for a
+    /// default an invocation computes.
+    words_of: Option<String>,
     /// The string literals a component shows as words (by span): each is a message.
     shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
@@ -194,6 +206,9 @@ struct FnState {
     /// runs when that action is invoked (`Self::at_event`): it may read the clock, as the
     /// invocation it belongs to does, and what it reads is recorded there.
     press: bool,
+    /// Whether the expression being checked is the action `file.choose` runs, whose file fills
+    /// the parameter the action leaves out.
+    choosing: bool,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -361,7 +376,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         c.at = Some(a.name.span.start);
-        funcs.push(c.run_present(&view, &a.opts, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, action));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -723,6 +738,8 @@ impl Checker<'_> {
         self.st.uses.clone_from(&c.uses);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
+            // Why it cannot run is words the person reads where it is refused.
+            self.mark_shown(&r.reason);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
@@ -789,8 +806,10 @@ impl Checker<'_> {
         // What the view answers when the window is asked to show an item of one of its types:
         // each a function of its own, run with the item, applied in the view's state.
         let (shows, rest) = Self::view_shows(&rest);
+        let params: std::collections::BTreeSet<String> =
+            c.params.iter().map(|p| p.name.clone()).collect();
         for show in &shows {
-            self.run_show(&c.id, &c.name, show, &v.body);
+            self.run_show(&c.id, &c.name, show, &v.body, &params);
         }
         let rest = rest.as_slice();
         let env = self.env;

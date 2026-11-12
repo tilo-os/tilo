@@ -227,97 +227,7 @@ fn a_linux_launch_without_tilo_launcher_is_refused() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn original_launch_declarations_stay_with_the_live_process_after_upgrade() {
-    let (_temp, root) = canonical_temp();
-    let mut store = Store::new(&root);
-    let installed = store.install(
-        VIEWER,
-        &manifest(
-            VIEWER,
-            "gui",
-            "\n[resources]\nkinds = [\"viewer.document\"]\n",
-        ),
-        &[("probe", b"binary")],
-    );
-    let apps = apps(&store, &root, Vec::new());
-    let original = apps
-        .original_launch(&apps.launchable(VIEWER).unwrap())
-        .unwrap();
-    assert_eq!(original.package_hash, installed.package_id_hex);
-    let declarations = original.creation.unwrap();
-    assert!(declarations.valid());
-    assert_eq!(declarations.declared_kinds, ["viewer.document"]);
-    let pid = std::process::id();
-    assert!(
-        apps.launched
-            .record(pid, VIEWER, WORKSPACE, Some(declarations.clone()))
-    );
-    assert_eq!(
-        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
-            .unwrap(),
-        Some(declarations.clone())
-    );
-
-    let replacement = store.install(
-        VIEWER,
-        &manifest(
-            VIEWER,
-            "gui",
-            "\n[resources]\nkinds = [\"viewer.notebook\"]\n",
-        ),
-        &[("probe", b"upgraded binary")],
-    );
-    store.registry = registry_row(&replacement);
-    std::fs::write(Layout::new(&store.root).registry(), &store.registry).unwrap();
-    let current = apps
-        .original_launch(&apps.launchable(VIEWER).unwrap())
-        .unwrap();
-    assert_eq!(current.package_hash, replacement.package_id_hex);
-    assert_ne!(current.package_hash, declarations.package_hash);
-    assert_eq!(
-        current.creation.unwrap().declared_kinds,
-        ["viewer.notebook"]
-    );
-    assert_eq!(
-        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
-            .unwrap(),
-        Some(declarations),
-        "an upgrade cannot rewrite the original running launch"
-    );
-    assert!(
-        apps.application_creation_evidence(pid, "so.tilo.other", WORKSPACE)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        apps.application_creation_evidence(pid, VIEWER, "another-workspace")
-            .unwrap()
-            .is_none()
-    );
-    apps.launched
-        .0
-        .lock()
-        .unwrap()
-        .get_mut(&pid)
-        .unwrap()
-        .start_time += 1;
-    assert!(
-        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
-            .unwrap()
-            .is_none(),
-        "a reused pid has no original declarations"
-    );
-    apps.launched.forget(pid);
-    assert!(
-        apps.application_creation_evidence(pid, VIEWER, WORKSPACE)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn original_launch_declarations_refuse_a_changed_or_missing_signed_manifest() {
+fn an_original_launch_refuses_a_changed_or_missing_signed_manifest() {
     let (_temp, root) = canonical_temp();
     let mut store = Store::new(&root);
     let source = manifest(
@@ -373,10 +283,6 @@ fn original_launch_hash_is_checked_by_the_actual_launcher_before_spawn() {
     let original = apps
         .original_launch(&apps.launchable(VIEWER).unwrap())
         .unwrap();
-    assert!(
-        original.creation.is_none(),
-        "a package with no resources gains no creation authority"
-    );
     assert_eq!(original.package_hash, installed.package_id_hex);
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment
@@ -515,7 +421,7 @@ fn attestation_holds_only_for_the_launched_process_itself() {
         !launched.attest(pid, VIEWER, WORKSPACE),
         "unknown until recorded"
     );
-    assert!(launched.record(pid, VIEWER, WORKSPACE, None));
+    assert!(launched.record(pid, VIEWER, WORKSPACE));
     assert!(launched.attest(pid, VIEWER, WORKSPACE));
     assert!(!launched.attest(pid, "so.tilo.other", WORKSPACE));
     assert!(!launched.attest(pid, VIEWER, "another-workspace"));
@@ -526,7 +432,7 @@ fn attestation_holds_only_for_the_launched_process_itself() {
     launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
     assert!(!launched.attest(pid, VIEWER, WORKSPACE));
     launched.forget(pid);
-    assert!(launched.record(pid, VIEWER, WORKSPACE, None));
+    assert!(launched.record(pid, VIEWER, WORKSPACE));
 
     child.kill().unwrap();
     child.wait().unwrap();
@@ -549,8 +455,8 @@ fn a_connecting_process_names_the_launch_that_started_it() {
         .spawn_locked()
         .unwrap();
     let ours = std::process::id();
-    assert!(apps.launched.record(ours, VIEWER, WORKSPACE, None));
-    assert!(apps.launched.record(child.id(), VIEWER, WORKSPACE, None));
+    assert!(apps.launched.record(ours, VIEWER, WORKSPACE));
+    assert!(apps.launched.record(child.id(), VIEWER, WORKSPACE));
     let ticket = |pid| {
         apps.authenticated_launch(pid, VIEWER, WORKSPACE, None)
             .unwrap()

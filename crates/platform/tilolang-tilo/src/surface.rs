@@ -10,8 +10,8 @@
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 use tilo_actions::surface::{
-    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
-    VerbSurface,
+    FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface, TypeCase, TypeField,
+    TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
@@ -28,19 +28,6 @@ pub use crate::publish::COMMIT;
 
 /// The storage version of every generated resource.
 pub const VERSION: u32 = 1;
-
-/// The resource kind and type name of `ty` when it names a record type of another app than
-/// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
-#[must_use]
-pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
-    // ignored-failure: a probe: a type that does not parse names no other app's record.
-    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app).ok()? {
-        tilolang_runtime::meta::Ty::Record(key) if key.app != meta.app => {
-            Some((format!("tl.{}.{}", key.app, key.name), key.name))
-        }
-        _ => None,
-    }
-}
 
 /// The resource kind of the record type `key`: `tl.<app>.<Type>`.
 pub(crate) fn record_kind(key: &tilolang_runtime::meta::TypeKey) -> String {
@@ -151,20 +138,6 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Collection(inner) => FieldType::Collection(boxed(inner, types)),
         Ty::Map(inner) => FieldType::Map(boxed(inner, types)),
         _ => FieldType::Any,
-    }
-}
-
-/// The JSON Schema of a value of the tilolang type `ty`, as the door takes it: a record as the
-/// catalogue's reference to a resource of its kind ([`tilo_actions::picked_resource_schema`]),
-/// a plain enum as the names of its cases, a principal as the workspace subject it is.
-#[must_use]
-pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
-    // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
-    // loaded); one that does not takes any value.
-    // ignored-failure: checked where the package is loaded
-    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
-        Ok(parsed) => schema_of(meta, &parsed),
-        Err(_) => json!({}),
     }
 }
 
@@ -337,6 +310,10 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
                 }
             })
             .collect(),
+        returns: action.result.as_ref().map(|result| ReturnsSurface {
+            schema: Json::Null,
+            ty: field_type_of_type(meta, result, types),
+        }),
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     }
@@ -406,6 +383,7 @@ fn edit_verbs(ty: &TypeMeta) -> Vec<VerbSurface> {
                     within: None,
                 },
             ],
+            returns: None,
             writes: vec![RECORD_UNIT.to_owned()],
             field: None,
         };
@@ -419,6 +397,7 @@ fn edit_verbs(ty: &TypeMeta) -> Vec<VerbSurface> {
         destructive: false,
         incoming_message: false,
         params: Vec::new(),
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
@@ -543,6 +522,7 @@ fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>)
         destructive: false,
         incoming_message: false,
         params,
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     }

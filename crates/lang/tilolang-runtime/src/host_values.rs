@@ -58,6 +58,8 @@ impl Core {
             // Every count, place and cut is `tilolang::text`'s: graphemes, so what a person
             // sees as one character is one.
             Imp::StrLen => ret_i64(len_to_i64(tilolang::text::len(&self.text(a.h(0)?)?))),
+            // The words of a text, as a person counts them.
+            Imp::StrWords => ret_i64(len_to_i64(tilolang::text::words(&self.text(a.h(0)?)?))),
             Imp::IntToStr => self.ret_h(Value::Text(a.long(0)?.to_string())),
             Imp::StrToInt => {
                 let number = self.text(a.h(0)?)?.trim().parse::<i64>().ok();
@@ -227,20 +229,25 @@ impl Core {
     fn index_of(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         // A scalar item comes boxed (`some_i`, `some_f`), as a set's elements do.
         let want = crate::host_res::unboxed(self.val_whole(a.h(1)?)?);
-        let at = self.with_val(a.h(0)?, |v| match v {
+        let mut at: Option<Option<usize>> = self.with_val(a.h(0)?, |v| match v {
             Value::List(items) => Ok(Some(items.iter().position(|item| same_value(item, &want)))),
             Value::Coll(_) => Ok(None),
             other => trap(format!("expected a list, got {}", other.kind_name())),
         })?;
-        // A collection's items are the store's to order, so it is read through its items.
-        let at = match at {
-            Some(at) => at,
-            None => self
-                .items_of(self.val(a.h(0)?)?, "index_of")?
-                .iter()
-                .position(|item| same_value(item, &want)),
-        };
-        let at = at.map_or_else(Value::none, |at| {
+        // A collection's items are the store's to order: where one stands is read of its
+        // listing, which finds it by what orders it rather than by reading the items before it.
+        if at.is_none() {
+            let held = self.val(a.h(0)?)?;
+            let found = match (&held, Self::item_id(&want)) {
+                (Value::Coll(coll), Some(id)) => self.coll_index_of(coll, id)?,
+                _ => self
+                    .items_of(held, "index_of")?
+                    .iter()
+                    .position(|item| same_value(item, &want)),
+            };
+            at = Some(found);
+        }
+        let at = at.flatten().map_or_else(Value::none, |at| {
             Value::some(Value::Int(i64::try_from(at).unwrap_or(i64::MAX)))
         });
         self.ret_h(at)
@@ -492,9 +499,43 @@ impl Core {
     }
 
     /// `Map<T>.keys()` and `Map<T>.get(key)` on a map the code holds as a value (one
-    /// `json.decode<Map<T>>` read, or a `json.Value` object's fields), as against the map a
-    /// record's field is.
+    /// `json.decode<Map<T>>` read, a `json.Value` object's fields, or the `Map<T>()` a function
+    /// fills), as against the map a record's field is — and the writes that fill one, which
+    /// every holder of the map reads, the caller of the function included.
     pub(crate) fn map_value_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        if imp == Imp::MapNew {
+            return self.ret_h(Value::Map(Vec::new()));
+        }
+        if imp == Imp::MapPutValue || imp == Imp::MapRemoveValue {
+            let key = Value::Text(self.text(a.h(1)?)?);
+            let value = if imp == Imp::MapPutValue {
+                Some(self.val(a.h(2)?)?)
+            } else {
+                None
+            };
+            let mut frames = self.frames.borrow_mut();
+            match frames.get_mut(a.h(0)?)? {
+                Value::Map(entries) => {
+                    let at = entries
+                        .iter()
+                        .position(|(held, _)| held.as_text() == key.as_text());
+                    match (at, value) {
+                        (Some(at), Some(value)) => {
+                            if let Some(held) = entries.get_mut(at) {
+                                held.1 = value;
+                            }
+                        }
+                        (Some(at), None) => {
+                            entries.remove(at);
+                        }
+                        (None, Some(value)) => entries.push((key, value)),
+                        (None, None) => {}
+                    }
+                }
+                other => return trap(format!("expected a map, got {}", other.kind_name())),
+            }
+            return ret_void();
+        }
         let Value::Map(entries) = self.val(a.h(0)?)? else {
             return trap("expected a map");
         };

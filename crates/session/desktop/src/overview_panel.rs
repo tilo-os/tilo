@@ -131,6 +131,9 @@ pub enum OverviewPick {
     Feedback,
     /// Take back the agent door's grant by its id; the overview stays to show it go.
     RevokeGrant(String),
+    /// Open an agent's own card, by its client's name, as its face anywhere else does: the same
+    /// ask Console answers, which brings the card forward beside the work. The overview goes.
+    OpenAgent(String),
     /// Open the person's account in Settings, where billing is too.
     AccountSettings,
     /// Say what this Tilo is.
@@ -151,6 +154,7 @@ impl OverviewPick {
                 | Self::AboutTilo
                 | Self::HostAction(_)
                 | Self::Feedback
+                | Self::OpenAgent(_)
         )
     }
 }
@@ -196,6 +200,13 @@ pub struct OverviewPanel {
     tilo_rows: Vec<crate::overview_tilo::TiloRow>,
     /// How wide the rows' trailing controls stand: their widest label, as last drawn.
     tilo_action_width: f64,
+    /// The row, by its key, whose irreversible control is asking: nothing is carried out until
+    /// the person answers there.
+    tilo_asking: Option<String>,
+    /// How tall the asking row's question stands at the rows' width, as last measured, and how
+    /// wide its two answers do.
+    tilo_question_h: f64,
+    tilo_answers_w: (f64, f64),
     /// The host may make workspaces at all.
     offer_add: bool,
     /// The panel as last recorded, and the revision it shows.
@@ -224,6 +235,9 @@ impl OverviewPanel {
             desk: OverviewDesk::default(),
             tilo_rows: Vec::new(),
             tilo_action_width: 0.0,
+            tilo_asking: None,
+            tilo_question_h: 0.0,
+            tilo_answers_w: (0.0, 0.0),
             flight: None,
             metrics: Metrics::default(),
             grid: GridMetrics::for_theme(&Theme::default()),
@@ -281,6 +295,7 @@ impl OverviewPanel {
             self.open = open;
             self.scroll_y = 0.0;
             self.naming = None;
+            self.tilo_asking = None;
             self.press = None;
             self.window_selection = None;
             self.window_interrupted = false;
@@ -315,6 +330,13 @@ impl OverviewPanel {
                 .is_some_and(|card| card.strips.iter().any(|strip| strip.id == naming.strip))
         {
             self.naming = None;
+        }
+        // A question about a row the desk no longer shows goes with it: there is nothing left to
+        // decide about a grant the door already took back.
+        if let Some(key) = self.tilo_asking.clone()
+            && self.tilo_row(&key).is_none()
+        {
+            self.tilo_asking = None;
         }
         self.reconcile_window_selection();
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y());
@@ -490,12 +512,32 @@ impl OverviewPanel {
     }
 
     /// Act on semantic `target` ; whether it named something here.
-    fn activate(&mut self, target: &str) -> bool {
+    pub(crate) fn activate(&mut self, target: &str) -> bool {
         let number = |prefix: &str| {
             target
                 .strip_prefix(prefix)
                 .and_then(|n| n.parse::<u64>().ok())
         };
+        // A row asking keeps things as they are when its Keep is pressed; the answer that goes
+        // ahead is the row's own control, so it needs nothing of its own here.
+        if let Some(key) = target.strip_suffix(":keep")
+            && self.tilo_asking.as_deref() == Some(key)
+            && self.tilo_keep()
+        {
+            return true;
+        }
+        // An irreversible control asks first, however it is pressed: a reader or a script that
+        // presses it again is answering the question it asked.
+        if let Some(key) = target.strip_suffix(":action")
+            && self
+                .tilo_row(key)
+                .is_some_and(|item| item.confirm.is_some())
+            && self.tilo_asking.as_deref() != Some(key)
+        {
+            self.tilo_asking = Some(key.to_owned());
+            self.bump();
+            return true;
+        }
         if let Some(pick) = self.tilo_target(target) {
             self.choose(pick);
         } else if target == "overview-new-workspace" && self.can_add() {
@@ -613,7 +655,15 @@ impl Widget for OverviewPanel {
         self.measure_tilo_actions(text, theme);
         self.reconcile_window_selection();
         let p = ui::num::f32_of_f64(progress);
-        ui::overlay::scrim::whole_view(scene, transform, self.rect, p, theme);
+        // The ground only fades as the overview comes and goes: the host fades it, drawn once.
+        let rect = self.rect;
+        ui::lift::lifted(
+            scene,
+            transform,
+            (ui::scene_parts::PartKey::new("overview.ground", 0), rect),
+            ui::lift::Pose::faded(p),
+            |scene, transform| ui::overlay::scrim::whole_view(scene, transform, rect, theme),
+        );
         self.paint_panel_at(scene, transform, text, theme, panel_curve(p));
         let pictures = self.paint_picture(scene, transform, text, theme, progress);
         if let Some(flight) = &self.flight {
@@ -666,7 +716,19 @@ impl Widget for OverviewPanel {
         if !self.open {
             return None;
         }
-        let pressable = self.window_at(point).is_some()
+        // A row below the workspaces is pressable when it does something, or when its control
+        // does: the pointer says so before the press.
+        let row = self.tilo_hit(point).is_some_and(|(index, on_action)| {
+            self.tilo_item(index).is_some_and(|item| {
+                if on_action {
+                    item.action.is_some()
+                } else {
+                    item.press.is_some()
+                }
+            })
+        });
+        let pressable = row
+            || self.window_at(point).is_some()
             || self.hit_workspace(point).is_some()
             || self.add_hit_rect().is_some_and(|r| r.contains(point))
             || self.join_hit_rect().is_some_and(|r| r.contains(point));
@@ -890,8 +952,10 @@ mod tests {
     use crate::overview::{
         OverviewGroup, OverviewStrip, OverviewTab, WorkspaceCard, WorkspaceShare,
     };
+    use crate::overview_tilo::TiloDesk;
     use crate::window_switcher::WindowApp;
     use ui::widget::AppKind;
+    use ui::widget::DrawChild;
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn tab(id: u64, title: &str, active: bool) -> OverviewTab {
@@ -937,6 +1001,11 @@ mod tests {
 
     const WIDE: Rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     const NARROW: Rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+    /// A display tall enough for every row of the person's Tilo to stand whole: what a reader or
+    /// a script reaches without scrolling.
+    const TALL: Rect = Rect::new(0.0, 0.0, 900.0, 1600.0);
+    /// A phone: the rows are narrow enough that a question wraps, and the columns still line up.
+    const PHONE: Rect = Rect::new(0.0, 0.0, 390.0, 844.0);
 
     fn opened_in(area: Rect, desk: OverviewDesk) -> OverviewPanel {
         let mut panel = OverviewPanel::new();
@@ -958,6 +1027,278 @@ mod tests {
 
     fn press(panel: &mut OverviewPanel, key: NamedKey) -> bool {
         panel.key(&Key::Named(key), ModifiersState::empty())
+    }
+
+    /// A desk whose Tilo let one agent in, working now, with what the overview measured of it.
+    fn desk_with_an_agent() -> OverviewDesk {
+        use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+        let mut desk = desk();
+        desk.tilo.door = Some(Door {
+            grants: vec![Grant {
+                id: "g1".into(),
+                agent: "Claude Code".into(),
+                reach: Reach::Account,
+                runs: vec![Run {
+                    name: "Claude Code #2".into(),
+                    started_ms: 1,
+                }],
+                ..Grant::default()
+            }],
+            ..Door::default()
+        });
+        desk.tilo.account = Some(crate::overview_tilo::AccountLine {
+            name: "Ada".into(),
+            ..crate::overview_tilo::AccountLine::default()
+        });
+        desk
+    }
+
+    /// The panel as a frame draws it: laid out and measured, so the rows stand where the person
+    /// sees them.
+    fn drawn(area: Rect, desk: OverviewDesk) -> OverviewPanel {
+        ui::i18n::I18nManager::init("en-US");
+        let mut panel = OverviewPanel::new();
+        panel.open_on(true, desk);
+        panel.rect = area;
+        panel.resolve_layout(&Theme::dark());
+        settle(&mut panel);
+        panel
+    }
+
+    /// What the frame after a press does before it paints: measures the rows, so a question a
+    /// press opened stands where the person sees it.
+    fn settle(panel: &mut OverviewPanel) {
+        panel.resolve_layout(&Theme::dark());
+        panel.measure_tilo_actions(&mut ui::text_render::TextRenderer::new(), &Theme::dark());
+    }
+
+    /// Revoking ends an agent's access and its runs: the control asks at the row, naming what the
+    /// agent loses, and nothing is taken back until the person answers there.
+    #[test]
+    fn revoking_an_agents_access_asks_at_the_control_first() {
+        let mut panel = drawn(TALL, desk_with_an_agent());
+        let control = panel
+            .test_rects()
+            .into_iter()
+            .find(|(key, _)| key == "overview-agent:g1:action")
+            .expect("the row offers Revoke")
+            .1;
+        panel.click_at(control.center());
+        assert_eq!(panel.take_pick(), None, "the press that asks takes nothing");
+        settle(&mut panel);
+        let rows: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+        let question = rows["overview-agent:g1:question"];
+        assert!(
+            question.y0 >= rows["overview-agent:g1"].y0,
+            "the question stands on the row it asked on"
+        );
+        // The question is the row's own: what the agent loses, said under its name.
+        let a11y = panel.tilo_accessibility();
+        let row = a11y
+            .iter()
+            .flat_map(|node| node.children.iter())
+            .find(|node| node.action_target.as_deref() == Some("overview-agent:g1"))
+            .expect("the agent's row reads out");
+        assert_eq!(
+            row.description.as_deref(),
+            Some("Claude Code loses access to all your workspaces and stops now")
+        );
+        let answers: Vec<(&str, &str)> = row
+            .children
+            .iter()
+            .map(|child| {
+                (
+                    child.action_target.as_deref().unwrap_or_default(),
+                    child.name.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            answers,
+            [
+                ("overview-agent:g1:keep", "Keep"),
+                ("overview-agent:g1:action", "Revoke access: Claude Code"),
+            ],
+            "the two answers stand in reading order"
+        );
+        // The answer at the control is the one that goes ahead.
+        let going = rows["overview-agent:g1:action"];
+        panel.click_at(going.center());
+        assert_eq!(
+            panel.take_pick(),
+            Some(OverviewPick::RevokeGrant("g1".into()))
+        );
+    }
+
+    /// Shift is how a person skips a question about something Undo takes back; a revocation is
+    /// nobody's to take back, so Shift asks it too.
+    #[test]
+    fn shift_does_not_skip_the_question_a_revocation_asks() {
+        ui::widget::note_shift(true);
+        let mut panel = drawn(TALL, desk_with_an_agent());
+        assert!(panel.activate("overview-agent:g1:action"));
+        assert_eq!(panel.take_pick(), None, "Shift or not, it asks first");
+        assert!(panel.activate("overview-agent:g1:keep"));
+        assert_eq!(panel.take_pick(), None, "Keep keeps things as they are");
+        ui::widget::note_shift(false);
+    }
+
+    /// Anywhere but an answer keeps things as they are: the question is put away, the grant
+    /// stands, and the press does not also go where it landed.
+    #[test]
+    fn a_press_away_from_the_answers_keeps_the_grant() {
+        let mut panel = drawn(TALL, desk_with_an_agent());
+        let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+        panel.click_at(rects["overview-agent:g1:action"].center());
+        assert_eq!(panel.take_pick(), None);
+        settle(&mut panel);
+        // The row's own face, away from the answers, and then Escape: both keep.
+        panel.click_at(rects["overview-agent:g1"].center());
+        assert_eq!(panel.take_pick(), None, "a press on the row keeps");
+        assert!(
+            !panel
+                .test_rects()
+                .iter()
+                .any(|(key, _)| key == "overview-agent:g1:question"),
+            "the question is put away"
+        );
+        panel.activate("overview-agent:g1:action");
+        settle(&mut panel);
+        assert!(press(&mut panel, NamedKey::Escape));
+        assert_eq!(panel.take_pick(), None, "Escape keeps too");
+        assert!(panel.is_open(), "and leaves the overview where it was");
+    }
+
+    /// The agent's row is the agent: pressing it opens the card its face opens everywhere else.
+    #[test]
+    fn an_agents_row_opens_its_card() {
+        let mut panel = drawn(TALL, desk_with_an_agent());
+        let row = panel
+            .test_rects()
+            .into_iter()
+            .find(|(key, _)| key == "overview-agent:g1")
+            .expect("the agent's own row")
+            .1;
+        // Below its name, away from the control at its trailing edge.
+        panel.click_at(Point::new(row.x0 + 8.0, row.center().y));
+        assert_eq!(
+            panel.take_pick(),
+            Some(OverviewPick::OpenAgent("Claude Code".into()))
+        );
+    }
+
+    /// The faces and glyphs that lead these rows stand in one slot, so the rows below the
+    /// workspaces keep one text column: the agent's name starts where the account's does, on a
+    /// desk and on a phone, and where the list row itself puts it.
+    #[test]
+    fn a_face_leads_its_row_in_the_column_every_other_row_keeps() {
+        ui::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark();
+        for area in [TALL, PHONE] {
+            let panel = drawn(area, desk_with_an_agent());
+            let index = |key: &str| {
+                (0..panel.tilo_rows.len())
+                    .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
+                    .expect("the row is on the desk")
+            };
+            let agent = index("overview-agent:g1");
+            let account = index("overview-account");
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut drawn_x = |index: usize| {
+                let item = panel.tilo_item(index).expect("a row of the list");
+                let mut face = ui::widget::ListRowFace::new(&item.title);
+                if let Some(leading) = super::tilo::tilo_leading(item) {
+                    face = face.leading(leading);
+                }
+                face.text_column(panel.tilo_rect(index), &mut text, &theme)
+            };
+            let agent_x = drawn_x(agent);
+            let account_x = drawn_x(account);
+            assert!(
+                (agent_x - account_x).abs() < 0.01,
+                "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {account_x}"
+            );
+            assert!(
+                (panel.tilo_text_x(agent) - agent_x).abs() < 0.01,
+                "what the row says under its name starts where the row's own text does"
+            );
+        }
+    }
+
+    /// A question about something that cannot be undone stands under the row's name, its words
+    /// in the rows' text column rather than at the row's own left edge.
+    #[test]
+    fn a_questions_words_stand_in_the_rows_text_column() {
+        ui::i18n::I18nManager::init("en-US");
+        for area in [TALL, PHONE] {
+            let mut panel = drawn(area, desk_with_an_agent());
+            assert!(panel.activate("overview-agent:g1:action"));
+            settle(&mut panel);
+            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
+            let question = rects["overview-agent:g1:question"];
+            let agent = (0..panel.tilo_rows.len())
+                .find(|&index| {
+                    panel
+                        .tilo_item(index)
+                        .is_some_and(|item| item.key == "overview-agent:g1")
+                })
+                .expect("the agent's row");
+            let agent_x = panel.tilo_text_x(agent);
+            assert!(
+                (question.x0 - agent_x).abs() < 0.01,
+                "the question starts in the text column on {area:?}: {} and {agent_x}",
+                question.x0
+            );
+            assert!(
+                question.x0 > rects["overview-agent:g1"].x0 + panel.metrics.row_pad,
+                "the question's words are not at the row's own edge"
+            );
+        }
+    }
+
+    /// A row too narrow for both facts keeps the live one: what an agent is doing now is what the
+    /// person acts on, and what it may reach is its card's to say.
+    #[test]
+    fn a_narrow_row_keeps_what_the_agent_is_doing() {
+        use tilo_actions::remote::agent_door::{Grant, Reach, Run};
+        ui::i18n::I18nManager::init("en-US");
+        let row = crate::overview_tilo::rows(&TiloDesk {
+            door: Some(tilo_actions::remote::agent_door::Door {
+                grants: vec![Grant {
+                    id: "g1".into(),
+                    agent: "Claude Code".into(),
+                    reach: Reach::Account,
+                    runs: vec![Run {
+                        name: "Claude Code #2".into(),
+                        started_ms: 1,
+                    }],
+                    ..Grant::default()
+                }],
+                ..Default::default()
+            }),
+            ..TiloDesk::default()
+        });
+        let agent = row
+            .iter()
+            .find_map(|row| match row {
+                crate::overview_tilo::TiloRow::Item(item) => Some(item),
+                crate::overview_tilo::TiloRow::Caption(_) => None,
+            })
+            .expect("the agent's own row");
+        let mut text = ui::text_render::TextRenderer::new();
+        let theme = Theme::dark();
+        let facts = ui::widget::FactsFace::new(&agent.facts);
+        assert_eq!(
+            facts.shown_in(facts.natural_width(&mut text, &theme), &mut text, &theme),
+            [0, 1],
+            "a wide row says both"
+        );
+        assert_eq!(
+            facts.shown_in(60.0, &mut text, &theme),
+            [1],
+            "a narrow one keeps what it is doing"
+        );
+        assert_eq!(agent.facts[1].text, "Working now");
     }
 
     #[test]
@@ -1181,7 +1522,7 @@ mod tests {
         panel.set_flight(flight.clone());
         flight.set_clock(1.0, HashMap::new());
         let mut scene = Scene::new();
-        panel.draw(
+        panel.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1212,7 +1553,7 @@ mod tests {
         // Closed and settled back, nothing is pictured.
         panel.open_on(false, OverviewDesk::default());
         flight.set_clock(0.0, HashMap::new());
-        panel.draw(
+        panel.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1230,7 +1571,7 @@ mod tests {
         let mut text = TextRenderer::new();
         for step in 1..=4 {
             flight.set_clock(f64::from(step) / 4.0, HashMap::new());
-            panel.draw(
+            panel.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut text,
@@ -1306,7 +1647,7 @@ mod tests {
         assert!(panel.accessibility().is_none());
         assert_eq!(panel.get_rect(), Rect::ZERO);
         let mut scene = Scene::new();
-        panel.draw(
+        panel.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),

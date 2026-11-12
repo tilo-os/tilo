@@ -84,10 +84,7 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
         .unwrap_or_else(|| tilo_desktop_search::names::app_name(app_id))
 }
 
-pub use tilo_desktop_model::{
-    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
-    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, REVOKE_ACTION_ID,
-};
+pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
 
 pub fn role_label(role: CapRole) -> String {
     t(match role {
@@ -223,6 +220,10 @@ pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDi
                 _ => None,
             }
         }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
+        }
     }
     tilo_action_policy::sentences(grants, &Named(apps))
 }
@@ -239,6 +240,10 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
                 Level::Resource | Level::Item => self.0.resource_label(id),
                 _ => None,
             }
+        }
+
+        fn everything(&self) -> String {
+            t("workspace-settings-scope-everything")
         }
     }
     let below_workspace = node.within_workspace();
@@ -616,8 +621,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     }
     for grant in &ws.policy.grants {
         if let tilo_action_policy::Subject::App(app) = &grant.subject
-            && !tilo_action_policy::roles::is_session_app(grant)
-            && !tilo_action_policy::roles::is_device_panel(grant)
+            && !tilo_action_policy::roles::is_make_up(grant)
         {
             apps.push(app.clone());
         }
@@ -1012,9 +1016,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                     && grant.id.as_str().starts_with("role:");
                 let admission = matches!(grant.subject, tilo_action_policy::Subject::Agent(_))
                     && grant.id.as_str().starts_with("agent-member:");
-                let session = tilo_action_policy::roles::is_session_app(grant);
-                let panel = tilo_action_policy::roles::is_device_panel(grant);
-                !preset && !admission && !session && !panel
+                let make_up = tilo_action_policy::roles::is_make_up(grant);
+                !preset && !admission && !make_up
             })
             .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
     );

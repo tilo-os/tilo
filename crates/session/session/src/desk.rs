@@ -10,13 +10,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use crate::platform::surfaces::{DesktopHost, StripPolicy, desktop_with};
 use serde_json::{Map, Value};
 use tilo_desktop::desk_widgets::music::MusicAction as Action;
 use tilo_desktop::desk_widgets::{DeskFold, DeskMusic};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
 use tilo_lock::MutexRecover as _;
-use tilo_surface_host::{DesktopHost, StripPolicy, desktop_with};
 use ui::desk_widgets::DeskWidgetPrefs;
 
 use crate::Options;
@@ -46,7 +46,7 @@ impl crate::Shared {
         if let Err(error) = self.doors.invoke(
             &address,
             &serde_json::Map::new(),
-            &mut tilo_surface_host::Look::none(),
+            &mut tilo_session_core::door::Look::none(),
         ) {
             tracing::warn!(%error, ?action, "the desk's music control did not reach the player");
         }
@@ -157,7 +157,7 @@ pub(crate) fn desk(
 /// the whole screen.
 pub(crate) enum DeskPolicy {
     Strips(StripPolicy),
-    Wells(tilo_surface_host::WellPolicy),
+    Wells(crate::platform::surfaces::WellPolicy),
 }
 
 impl DeskPolicy {
@@ -182,7 +182,7 @@ impl DeskPolicy {
     /// Follow the windows the compositor opens and closes with `observer` .
     pub(crate) fn observe_windows(
         &mut self,
-        observer: std::sync::Arc<dyn tilo_surface_host::WindowObserver>,
+        observer: std::sync::Arc<dyn crate::platform::surfaces::WindowObserver>,
     ) {
         match self {
             Self::Strips(policy) => policy.observe_windows(observer),
@@ -213,7 +213,7 @@ struct BarSamples {
     reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
 }
 
-impl tilo_surface_host::PointerSamples for BarSamples {
+impl crate::platform::surfaces::PointerSamples for BarSamples {
     fn moved(&mut self, x: f64, y: f64) {
         let now = ui::time::now();
         self.reveals

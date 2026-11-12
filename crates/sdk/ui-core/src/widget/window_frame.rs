@@ -34,6 +34,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
+use crate::widget::DrawChild;
 use crate::widget::arrange::{Align, At, Fit, Layers, Length, Slot, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
@@ -424,8 +425,6 @@ impl WindowFrame {
         }
         let bar = WindowBar {
             controls_width: self.controls_width + m.inset,
-            revealed: true,
-            top_inset: 0.0,
             lists_actions: self.lists_actions,
         };
         self.merged = self.body_mut().is_some_and(|body| {
@@ -891,14 +890,14 @@ impl WindowFrame {
         {
             let mut children = self.layers.children_mut();
             if let Some(content) = children.get_mut(CONTENT) {
-                content.draw(scene, transform, text, &on, presence);
+                content.draw_child(scene, transform, text, &on, presence);
             }
         }
         crate::widget::window_controls::paint_pill(scene, transform, pill, theme);
         {
             let mut children = self.layers.children_mut();
             if let Some(controls) = children.get_mut(CONTROLS) {
-                controls.draw(scene, transform, text, &on, presence);
+                controls.draw_child(scene, transform, text, &on, presence);
             }
         }
         scene.pop_layer();

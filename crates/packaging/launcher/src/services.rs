@@ -175,12 +175,6 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     crate::system_stats::CHILD_FD,
     #[cfg(target_os = "linux")]
     runtime_portal::windows::CHILD_FD,
-    #[cfg(target_os = "linux")]
-    crate::retained_view::SELECTED_PARENT_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
-    #[cfg(target_os = "linux")]
-    crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
 ];
 
 fn child_fd_reserved(fd: i32) -> bool {
@@ -1491,14 +1485,14 @@ mod tests {
     }
 
     #[test]
-    fn declared_services_cannot_replace_selected_parent_view_descriptor() {
+    fn declared_services_cannot_replace_a_reserved_view_descriptor() {
         let dir = tempfile::tempdir().unwrap();
         let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let mut services = BTreeMap::new();
         let mut listeners = Vec::new();
         for index in 0..48 {
-            let name = format!("selected-parent-{index:02}");
+            let name = format!("reserved-view-{index:02}");
             listeners.push(
                 std::os::unix::net::UnixListener::bind(root.join(format!("{name}.sock"))).unwrap(),
             );
@@ -1515,21 +1509,9 @@ mod tests {
         // one from the reservation table cannot make the test pass.
         #[cfg(target_os = "linux")]
         {
-            assert!(
-                resolved
-                    .iter()
-                    .any(|service| { service.child_fd > crate::retained_view::SELECTED_PARENT_FD })
-            );
-            assert!(
-                resolved.iter().all(|service| {
-                    service.child_fd != crate::retained_view::SELECTED_PARENT_FD
-                })
-            );
             for reserved in [
                 crate::retained_view::ALIAS_VIEW_FD,
                 crate::retained_view::ALIAS_ARGS_FD,
-                crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
-                crate::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD,
             ] {
                 assert!(resolved.iter().any(|service| service.child_fd > reserved));
                 assert!(resolved.iter().all(|service| service.child_fd != reserved));

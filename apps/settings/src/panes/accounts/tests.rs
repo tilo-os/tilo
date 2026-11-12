@@ -984,13 +984,14 @@ impl ui::linked_accounts::LinkedAccountsHost for Bridged {
     }
 }
 
-/// Every name and value the page of `app` gives assistive technology,
-/// built again over what its area holds now.
+/// Every name, value and description the page of `app` gives assistive
+/// technology, built again over what its area holds now.
 fn said(app: &mut TestApp<SettingsShell>) -> Vec<String> {
     fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
         if let Some(node) = widget.accessibility() {
             out.extend(node.name);
             out.extend(node.value);
+            out.extend(node.description);
         }
         for child in widget.children() {
             walk(child, out);

@@ -821,6 +821,25 @@ fn any_motion_value_started_asks_the_clock_for_its_frames() {
     );
 }
 
+/// A motion started for one surface asks frames of that surface alone: another surface drawing on
+/// the same thread (a banner over the overview coming up) has nothing to draw for it.
+#[test]
+fn a_motion_asks_frames_of_its_own_surface_only() {
+    let start = crate::time::now();
+    let (moving, still) = (super::MotionSurface::new(), super::MotionSurface::new());
+    let mut v = MotionValue::new(0.0_f64);
+    super::on_surface(moving, || {
+        v.set(40.0, base_timing(), start);
+        assert!(frames_wanted(start), "its own surface draws it");
+    });
+    super::on_surface(still, || {
+        assert!(
+            !frames_wanted(start),
+            "the other surface draws nothing for it"
+        );
+    });
+}
+
 /// A motion jumped to its end mid-way (a shortcut landing what it changed,
 /// an owner letting it go) takes back its wish: the clock asks for no frame
 /// it would never draw, while another motion still moving keeps its own.

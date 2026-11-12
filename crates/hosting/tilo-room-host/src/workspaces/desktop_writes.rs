@@ -12,7 +12,7 @@ use collab_types::DocumentMutation;
 use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
-use super::{GovernedWorkspace, SystemTime, Workspaces};
+use super::{GovernedWorkspace, Workspaces};
 use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 
 pub(crate) use tilo_desktop_model::shared_record::guard::is_shared_desktop as is_desktop;
@@ -75,6 +75,25 @@ impl GovernedWorkspace {
         }
     }
 
+    /// Follow `envelope`, the host's own write to the shared desktop, in the desktop the
+    /// members' writes are decided against, once that is followed at all: before, it starts
+    /// from the governor's copy, which holds it.
+    async fn absorb_host_desktop_write(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        if self.desktop.is_none() {
+            return Ok(());
+        }
+        let Readable::Whole(mutation) = self.readable_mutation(envelope).await? else {
+            return Ok(());
+        };
+        self.desktop_guard()
+            .await?
+            .absorb_write(&mutation)
+            .map_err(|error| error.to_string())
+    }
+
     /// What `envelope` carries, opened with the channel's keys when it is
     /// sealed and put back together when it is one segment of a larger
     /// write.
@@ -113,7 +132,7 @@ impl GovernedWorkspace {
             // anywhere, when the whole write is.
             collab_types::DocumentFrame::Segment(segment) => match self
                 .desktop_segments
-                .accept(envelope, segment, std::time::Instant::now())
+                .accept(envelope, segment, tilo_clock::now())
                 .map_err(|error| error.to_string())?
             {
                 None => Ok(Readable::Partial),
@@ -152,9 +171,7 @@ impl Workspaces {
         author: [u8; 32],
         body: &[u8],
     ) -> Result<(), String> {
-        if author == self.inner.host.cert.device_public_key {
-            return Ok(());
-        }
+        let host = author == self.inner.host.cert.device_public_key;
         // ignored-failure: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
@@ -173,7 +190,13 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let now = SystemTime::now();
+        if host {
+            // What the host itself writes (a window an agent's action opened through the host's
+            // own session) is the workspace's: not decided, but followed, so the members' writes
+            // that build on it are decided against the desktop they saw.
+            return governed.absorb_host_desktop_write(&envelope).await;
+        }
+        let now = tilo_clock::wall();
         let member = governed
             .peer()
             .permissions(author, now)

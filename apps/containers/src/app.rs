@@ -33,6 +33,7 @@ use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::Effect as _;
 use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AppModel, Column, Element, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text,
@@ -70,16 +71,13 @@ impl Confirm {
         format!("Remove {}?", self.name)
     }
 
-    fn body(&self) -> &'static str {
-        match self.target {
-            ConfirmTarget::Container { .. } => {
-                "The container and the changes made inside it are deleted. Its volumes stay."
-            }
-            ConfirmTarget::Image { .. } => {
-                "The image is deleted from this computer. You can pull it again later."
-            }
-            ConfirmTarget::Volume { .. } => "The volume and the data stored in it are deleted.",
-        }
+    fn body(&self) -> String {
+        let message = match self.target {
+            ConfirmTarget::Container { .. } => "containers-remove-container-body",
+            ConfirmTarget::Image { .. } => "containers-remove-image-body",
+            ConfirmTarget::Volume { .. } => "containers-remove-volume-body",
+        };
+        crate::resource::CATALOG.t(message)
     }
 
     fn verb(&self) -> &'static str {
@@ -118,12 +116,12 @@ impl Prompt {
         }
     }
 
-    fn label(&self) -> &'static str {
-        match self.kind {
-            PromptKind::NewVolume => "Name",
-            PromptKind::TagImage => "New tag",
-            PromptKind::PullImage => "Image",
-        }
+    fn label(&self) -> String {
+        crate::resource::CATALOG.t(match self.kind {
+            PromptKind::NewVolume => "containers-prompt-name",
+            PromptKind::TagImage => "containers-prompt-tag",
+            PromptKind::PullImage => "containers-prompt-image",
+        })
     }
 
     fn placeholder(&self) -> &'static str {
@@ -560,7 +558,7 @@ impl ContainersApp {
                 let dismiss = self.intents.clone();
                 ModalDialog::new(
                     confirm.title(),
-                    Text::new(confirm.body()).with_role(TextRole::Body),
+                    Text::new(&confirm.body()).with_role(TextRole::Body),
                 )
                 .with_test_id("containers-confirm-dialog")
                 .with_destructive(true)
@@ -576,7 +574,7 @@ impl ContainersApp {
                 let submit = self.intents.clone();
                 let cancel = self.intents.clone();
                 let dismiss = self.intents.clone();
-                let body = PromptBody::new(prompt.label(), prompt.placeholder())
+                let body = PromptBody::new(&prompt.label(), prompt.placeholder())
                     .with_initial(&prompt.value);
                 ModalDialog::new(prompt.title(), body)
                     .with_test_id("containers-prompt-dialog")
@@ -1946,7 +1944,8 @@ impl Widget for ContainersApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.window.draw(scene, transform, tr, theme, presence);
+        self.window
+            .draw_child(scene, transform, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -2049,7 +2048,7 @@ impl Widget for ContainersApp {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Containers")
+                .with_name(crate::resource::CATALOG.t("containers-a11y-window"))
                 .with_description(&self.state.borrow().engine.connection)
                 .with_bounds(self.rect),
         )
@@ -2145,18 +2144,19 @@ impl ContainersApp {
 
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
+/// The catalogue message saying why a container's engine action cannot run.
+const ENGINE_OFFLINE: &str = "containers-engine-offline-message";
+
 /// `effect`, as a row offers it: an engine effect only while the engine
-/// answers.
-fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+/// answers; otherwise it says why it cannot run, in `message`'s words.
+fn offered(effect: &ContainersEffect, engine_live: bool, message: &str) -> ActionSpec {
     let spec = effect.bound();
     if engine_live || effect.engine_operation().is_none() {
         spec
     } else {
-        spec.unavailable("engine_offline", offline)
+        spec.unavailable("engine_offline", crate::resource::CATALOG.t(message))
     }
 }
-
-const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
 
 pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
     let id = || container.id.clone();
@@ -2172,7 +2172,10 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
     )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.type_mut().label = format!("Open {}", container.name);
+        open.type_mut().label = crate::resource::CATALOG.t_args(
+            "containers-action-open",
+            &[("name", ui::i18n::ArgValue::Text(container.name.clone()))],
+        );
         open
     });
     let effects = match container.status {
@@ -2250,7 +2253,7 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
             distrobox: distrobox.name.clone(),
         },
         engine_live,
-        "Distrobox actions are unavailable in demo mode",
+        "containers-demo-unavailable",
     ))
 }
 

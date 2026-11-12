@@ -17,9 +17,7 @@
               lives until the app it starts is done"
 )]
 
-mod common;
-
-use common::audio::Card;
+use crate::common::audio::Card;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -124,7 +122,7 @@ fn reading(report: &str, prefix: &str) -> Value {
 
 #[test]
 fn a_panel_the_session_starts_reads_and_changes_what_its_services_publish() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
@@ -161,7 +159,7 @@ fn a_panel_the_session_starts_reads_and_changes_what_its_services_publish() {
 
 #[test]
 fn a_process_the_session_did_not_start_reaches_no_service() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut session = session_alone(&socket);

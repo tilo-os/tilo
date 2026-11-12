@@ -12,7 +12,7 @@ use crate::paint::PaintCtx;
 use crate::widget::AvatarFace;
 
 /// One person's face in a stack.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Face<'a> {
     pub name: &'a str,
     /// Their stable id: picks their picture and, without a colour, their hue.
@@ -59,6 +59,12 @@ const RING: f64 = 2.0;
 const GAP: f64 = 1.0;
 /// How far the call ring reaches past the colour ring.
 const CALL_REACH: f64 = 3.0;
+/// The widest a face's initials stand, as a share of the face's side: two
+/// letters at [`initials_style`](crate::widget::avatar)'s size, a little wide.
+const INITIALS_SPAN: f64 = 0.6;
+/// The ground a stacked face keeps between its neighbour's initials and the
+/// ring of the face drawn over it, so both letters stay whole.
+const INITIALS_CLEARANCE: f64 = 1.0;
 
 impl FaceStack {
     /// The top bar: up to four faces, 24 px, overlapping by 8.
@@ -128,6 +134,19 @@ impl FaceStack {
         self.width_of(shown, more)
     }
 
+    /// How far apart two faces stand: their [`Self::overlap`], but never so
+    /// close that the face drawn over covers the one under past its ring and
+    /// gap. Each face's initials are centred in its disc, so the ground of
+    /// the next face must start past them; otherwise the letters of the
+    /// earlier face are cut in half ("CO" reading as "C") and a stack of
+    /// people stops naming them.
+    #[must_use]
+    pub fn step(&self) -> f64 {
+        let outer = self.side + 2.0 * (RING + GAP);
+        let past_initials = Face::REACH + self.side / 2.0 + self.side * INITIALS_SPAN / 2.0;
+        (outer - self.overlap).max(past_initials + INITIALS_CLEARANCE)
+    }
+
     /// How wide `shown` faces and a badge counting `more` are.
     #[must_use]
     pub fn width_of(&self, shown: usize, more: usize) -> f64 {
@@ -136,7 +155,7 @@ impl FaceStack {
             return 0.0;
         }
         let outer = self.side + 2.0 * (RING + GAP);
-        outer + (slots - 1) as f64 * (outer - self.overlap)
+        outer + (slots - 1) as f64 * self.step()
     }
 
     /// Paint `faces` (the ones shown, [`Self::split`]) and a badge counting
@@ -153,7 +172,7 @@ impl FaceStack {
         let shown = faces.len();
         let slots = shown + usize::from(more > 0);
         let outer = self.side + 2.0 * (RING + GAP);
-        let step = outer - self.overlap;
+        let step = self.step();
         let left = right - self.width_of(shown, more);
         let center_of = |slot: usize| Point::new(left + outer / 2.0 + slot as f64 * step, center_y);
         let mut rects = Vec::with_capacity(shown);
@@ -285,9 +304,10 @@ mod tests {
         assert_eq!(bar.width(0), 0.0);
         let one = bar.width(1);
         assert!(
-            (bar.width(2) - one - (one - bar.overlap)).abs() < 1e-9,
-            "each face overlaps by 8"
+            (bar.width(2) - one - bar.step()).abs() < 1e-9,
+            "each face stands one step past the one before"
         );
+        assert!(bar.step() < one, "neighbours overlap");
         assert_eq!(
             bar.width(4),
             bar.width(16),
@@ -452,5 +472,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A face in a stack keeps both its initials: the ground of the face drawn over it starts past
+    /// them, never across them. Two letters at the initials' size are what a face wears
+    /// (`initials_for_name`), so the measured "CC" is the widest a face can show.
+    #[test]
+    fn a_stacked_face_keeps_its_initials_whole() {
+        for (label, stack) in [
+            ("bar", FaceStack::BAR),
+            ("window", FaceStack::WINDOW),
+            ("small", FaceStack::SMALL),
+            ("in a control", FaceStack::in_face(24.0)),
+        ] {
+            let theme = crate::theme::Theme::dark();
+            let mut tr = crate::text_render::TextRenderer::new();
+            let style = crate::widget::avatar::initials_style(&theme, stack.side);
+            let (advance, _) = tr.measure_style("CC", None, &style);
+            let initials_right = stack.side / 2.0 + f64::from(advance) / 2.0;
+            // Where the next face's ground begins, from the step the stack stands by.
+            let covered_from = stack.step() - Face::REACH;
+            assert!(
+                covered_from > initials_right,
+                "{label}: the next face covers from {covered_from:.2} of {:.0} px, initials end at \
+                 {initials_right:.2}",
+                stack.side
+            );
+            // And it is the rule that decides the step for every stack the desktop draws, not the
+            // overlap each was handed: an overlap alone stands closer than the letters are wide.
+            let outer = stack.side + 2.0 * (RING + GAP);
+            let plain = outer - stack.overlap;
+            let rule = Face::REACH
+                + stack.side / 2.0
+                + stack.side * INITIALS_SPAN / 2.0
+                + INITIALS_CLEARANCE;
+            assert!(
+                plain <= rule,
+                "{label}: an overlap of {:.1} stands wider than the letters need",
+                stack.overlap
+            );
+            assert!(
+                (stack.step() - rule.max(plain)).abs() < 1e-9,
+                "{label}: the step is the rule's, not the overlap's"
+            );
+        }
+    }
+
+    /// The overlap still reads as a stack: each face stands nearer than its whole width, and the
+    /// bar's four faces fit the room a bar gives them.
+    #[test]
+    fn stacked_faces_still_overlap_and_fit_a_bar() {
+        let bar = FaceStack::BAR;
+        let outer = bar.side + 2.0 * (RING + GAP);
+        assert!(bar.step() < outer, "neighbours overlap");
+        assert!(
+            bar.width(4) < 4.0 * outer,
+            "four faces stand narrower than four rings"
+        );
     }
 }

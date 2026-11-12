@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, HostKey};
+use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;
@@ -201,6 +203,12 @@ impl Platform for SlotPlatform {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
+    /// The time of day as the person reads a clock: a slot's view runs in the session, which
+    /// holds their settings.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
     fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
         if window {
             tilo_ui_host::i18n::add_catalogues(catalogues);
@@ -228,6 +236,13 @@ impl Platform for SlotPlatform {
         ui::time::local_zone_name()
     }
 
+    /// The day the person's region starts its week on, as they chose it in Settings: a slot's
+    /// view runs in the session, which holds their formats, so a day's `start_of_week()` goes
+    /// back to the day their desk's calendar starts a week on.
+    fn week_start(&self) -> i64 {
+        i64::from(ui::format::first_weekday().num_days_from_monday())
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }
@@ -240,8 +255,12 @@ impl NameHost for Person {
     fn name(&self, who: &Principal) -> String {
         if who.0.is_empty() {
             self.0.clone()
+        } else if who.1.trim().is_empty() {
+            // Named by what the actor is: an app by its own name in the person's language, an
+            // agent by its name, a person by theirs. Never a principal id.
+            ui::history_source::participant_name(&who.0)
         } else {
-            who.0.clone()
+            who.1.clone()
         }
     }
 }
@@ -293,12 +312,10 @@ impl Open {
             let applied = self
                 .instance
                 .host()
-                .and_then(|host| host.store().take_ticket(ticket))
+                .and_then(|host| Some((host.store().take_ticket(ticket)?, host)))
                 .ok_or_else(|| format!("no committed action {ticket}"))
-                .and_then(|action| {
-                    action
-                        .apply_as_step(&mut self.record)
-                        .map_err(|error| error.to_string())
+                .and_then(|(action, host)| {
+                    crate::commit::recorded(&host, &mut self.record, &action)
                 });
             if let Err(why) = &applied {
                 tracing::error!(why, "a slot view's change could not be committed");
@@ -701,7 +718,7 @@ impl SurfaceHost for SlotView {
         }
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
             .map(|output| {
@@ -719,7 +736,7 @@ impl SurfaceHost for SlotView {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
-        self.scale = tilo_compositor::HostedOutput::scale_at(
+        self.scale = tilo_session_core::surface::HostedOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -779,4 +796,45 @@ fn anchor_of(reading: &str) -> Option<(f64, f64)> {
     let reading: Json = serde_json::from_str(reading).ok()?;
     let anchor = reading.get("anchor")?;
     Some((anchor.get("x")?.as_f64()?, anchor.get("y")?.as_f64()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slot's view runs in the session, which holds the person's formats: a day's
+    /// `start_of_week()` goes back to the day their region starts a week on, as their desk's
+    /// calendar and their app windows read it, not to the Monday a view with no formats falls back
+    /// on.
+    #[test]
+    fn a_slots_week_starts_on_the_persons_first_day() {
+        let platform = SlotPlatform {
+            meta: Meta::default(),
+            bundle: Bundle {
+                wasm: Vec::new(),
+                meta: Meta::default(),
+                ids: String::new(),
+                imports: Vec::new(),
+            },
+            waker: std::sync::Arc::new(|| {}),
+            why: Rc::new(RefCell::new(None)),
+        };
+        let before = ui::format::region::current();
+        let monday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Monday,
+            ..before
+        };
+        ui::format::region::install(monday);
+        assert_eq!(platform.week_start(), 0, "a week that starts on Monday");
+        ui::format::region::install(ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Saturday,
+            ..monday
+        });
+        assert_eq!(
+            platform.week_start(),
+            5,
+            "the person starts their week on Saturday"
+        );
+        ui::format::region::install(before);
+    }
 }

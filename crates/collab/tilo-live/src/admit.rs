@@ -1,9 +1,8 @@
 //! The client half of the carrier: present a grant, wait for the host's
 //! answer, and run `moq-lite` on an admitted session.
 //!
-//! A native device and a browser page run the same code here. Only how the
-//! transport is opened differs ([`Dial`]: WebTransport or a direct iroh
-//! connection), and that step is the caller's. Nothing in this module needs a
+//! A native device and a browser page run the same code here. How the
+//! transport is opened ([`Dial`], an iroh connection) is the caller's step. Nothing in this module needs a
 //! thread or a runtime beyond plain future polling, so it builds for the page
 //! (no Tokio) as it does for the desktop.
 
@@ -22,8 +21,8 @@ pub fn version() -> Option<moq_net::Version> {
 
 /// A carrier transport: [`moq_net`]'s poll session interface, clonable (each
 /// clone makes its own progress), thread-safe, and `'static` so its driver
-/// runs on a task of its own. WebTransport and iroh both qualify; nothing in
-/// this module names either.
+/// runs on a task of its own. An iroh connection qualifies; nothing in
+/// this module names it.
 pub trait Carrier: moq_net::transport::poll::Session + Send + Sync + 'static {}
 
 impl<T> Carrier for T where T: moq_net::transport::poll::Session + Send + Sync + 'static {}
@@ -299,6 +298,56 @@ pub trait Dial: Send + Sync + 'static {
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
     ) -> Dialling<'a>;
+
+    /// Whether this dial opens another carrier after the one it opened is gone. A connection
+    /// dialled between two endpoints can be dialled again, so a plane whose network dropped is
+    /// carried again without anyone above it noticing. A carrier the caller already opened
+    /// ([`Opened`]) is handed over once: a plane on one ends with it, and what holds the plane
+    /// joins again, proving itself anew.
+    fn redials(&self) -> bool {
+        false
+    }
+}
+
+/// A carrier the caller already opened, handed to the plane once: a
+/// transport whose dial runs steps of its own before the admission (a
+/// WebTransport session the device first proved itself on). A second dial
+/// finds nothing to hand over and is unavailable.
+pub struct Opened<S>(std::sync::Mutex<Option<S>>);
+
+impl<S> Opened<S> {
+    /// Hand `session` to the next dial.
+    #[must_use]
+    pub const fn new(session: S) -> Self {
+        Self(std::sync::Mutex::new(Some(session)))
+    }
+}
+
+impl<S> Dial for Opened<S>
+where
+    S: Carrier,
+    S::SendStream: Send,
+    S::RecvStream: Send,
+{
+    fn dial<'a>(
+        &'a self,
+        grant: &'a [u8],
+        publish: Option<moq_net::origin::Consumer>,
+        subscribe: Option<moq_net::origin::Producer>,
+        timeout: Duration,
+    ) -> Dialling<'a> {
+        let session = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        Box::pin(async move {
+            let session = session.ok_or(AdmissionError::Unavailable)?;
+            n0_future::time::timeout(timeout, start(session, grant, publish, subscribe))
+                .await
+                .map_err(|_| AdmissionError::Unavailable)?
+        })
+    }
 }
 
 /// Runs an origin's driver for as long as it lives. An origin makes no

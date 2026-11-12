@@ -128,7 +128,7 @@ impl Capture {
             return Err("invalid native document capture".into());
         }
         reservation.keep(len);
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         Ok(Self {
             body,
             _reservation: reservation,
@@ -173,7 +173,7 @@ impl Capture {
         offset: u32,
         token: [u8; 16],
     ) -> Result<runtime_collab::committed_document::Reply, String> {
-        self.check_deadline(std::time::Instant::now())?;
+        self.check_deadline(tilo_clock::now())?;
         if token != self.token {
             return Err("committed document continuation token mismatch".into());
         }
@@ -249,11 +249,9 @@ mod tests {
     }
 
     #[test]
-    fn actual_empty_record_passes_the_broker_capture_and_creation_wire_codec() {
+    fn actual_empty_record_passes_the_broker_capture() {
         use automerge::ReadDoc as _;
-        use runtime_collab::committed_document::{
-            CreationChunk, CreationReceipt, CreationWorkspace, Reply,
-        };
+        use runtime_collab::committed_document::Reply;
         use tilo_peer_state::{SeedDocument, SeedState, StatePeer};
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
         let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
@@ -271,7 +269,7 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
         let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let roster = vec![certificate.clone()];
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let mut source = StatePeer::new(
             workspace,
             certificate.clone(),
@@ -317,21 +315,12 @@ mod tests {
             [3; 32],
         )
         .unwrap();
-        let reply = Reply::Created {
-            receipt: CreationReceipt {
-                token: [7; 16],
-                workspace: CreationWorkspace {
-                    id: workspace.into(),
-                    name: "Empty fixture workspace".into(),
-                },
-            },
-            chunk: CreationChunk::from_reply(stream.chunk(0, [0; 16]).unwrap()).unwrap(),
-        };
+        let reply = stream.chunk(0, [0; 16]).unwrap();
         assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        let Reply::Created { chunk, .. } = reply else {
-            panic!("actual creation chunk")
+        let Reply::Chunk { bytes, .. } = reply else {
+            panic!("the record's first capture chunk")
         };
-        let document = automerge::AutoCommit::load(&chunk.bytes).unwrap();
+        let document = automerge::AutoCommit::load(&bytes).unwrap();
         assert_eq!(
             document.keys(automerge::ROOT).count(),
             0,
@@ -375,7 +364,7 @@ mod tests {
         );
         assert!(
             capture
-                .check_deadline(std::time::Instant::now() + std::time::Duration::from_secs(6))
+                .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
                 .is_err()
         );
         assert!(

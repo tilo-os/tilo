@@ -1,138 +1,96 @@
-//! Telling this page's person when someone mentions them, wherever in the
-//! workspace: every record of the workspace the page holds is looked at as a
-//! peer's change reaches it, open in a window or not
-//! ([`ui::mentions::in_record`]), and each new mention of the person is one
-//! notice through the host's notifications. Choosing it opens the place
-//! the mention is in, as any open goes: through the desktop's session, as
-//! this person.
+//! Telling this page's person when someone mentions them, wherever in the workspace.
 //!
-//! What was told is kept in the page's storage, per workspace and person, so a
-//! reload or a record arriving again tells nothing twice; what the workspace
-//! held before this device first followed one of its records is taken as
-//! seen.
+//! The records are what this page's replication took in from the workspace and wrote
+//! ([`crate::replicated::changes`], [`crate::replicated::record_document`]), so a record open in
+//! a window or not is looked at as the change reaches it, and the notices are the session's own
+//! role ([`tilo_session::mentions`]) shown through this host's notifications
+//! ([`tilo_session::platform::notice::Toolkit`]). Choosing one opens the place the mention is in,
+//! as any open goes: through the desktop's session, as this person.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
-use ui::mentions::{Look, MentionInbox, Place, SCHEME};
+use tilo_session::mentions::Mentions;
+use tilo_session::platform::notice::{Place, open_target};
+use tilo_session::platform::records::{Changed, Changes, Records};
+use ui::automerge::AutoCommit;
 
 use super::Desktop;
 
-/// Least time between two looks, in milliseconds: changes arriving in a
-/// burst (a replay, someone typing) are looked at together.
-const LOOK_EVERY_MS: f64 = 750.0;
-
-/// One person's mentions on this page.
-pub(super) struct Mentions {
-    inbox: MentionInbox,
-    /// Where what was told is kept.
-    key: String,
-    last_ms: f64,
-    /// Records reached since the last look, each with whether every change
-    /// that reached it came before the workspace had replayed what it held.
-    pending: std::collections::BTreeMap<(String, String), bool>,
-    /// Places the person chose from a notice, for the next frame.
-    opens: Arc<Mutex<Vec<Place>>>,
+/// The records this page holds from the workspace it replicated, as the mention role reads them.
+struct Taken {
+    /// The workspace's peer on this page, as replication names it.
+    peer: u32,
+    /// The stream of record changes the page's replication feeds.
+    changes: Changes,
+    /// The kind of the records an app keeps, as the page's own bundle declares it.
+    kind: Rc<dyn Fn(&str) -> String>,
 }
 
-impl Mentions {
-    pub(super) fn new(workspace: &str, author: &str) -> Self {
-        let key = format!("tilo.mentions.{workspace}.{author}");
-        let mut inbox = MentionInbox::new([author.to_owned()]);
-        if let Some(state) = storage_get(&key) {
-            inbox.restore(&state);
-        }
-        let opens: Arc<Mutex<Vec<Place>>> = Arc::default();
-        let chosen = Arc::clone(&opens);
-        ui::notify::set_activation_handler(SCHEME, move |uri| {
-            if let Some(place) = Place::from_activation(uri) {
-                chosen
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(place);
-            }
-        });
-        Self {
-            inbox,
-            key,
-            last_ms: f64::NEG_INFINITY,
-            pending: std::collections::BTreeMap::new(),
-            opens,
-        }
+impl Records for Taken {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.changes.take()
+    }
+
+    fn document(&self, app: &str, _workspace: &str, record: &str) -> Option<AutoCommit> {
+        crate::replicated::record_document(self.peer, app, record)
+    }
+
+    fn kind(&self, app: &str, _workspace: &str) -> String {
+        (self.kind)(app)
     }
 }
 
+/// This page's mentions of `person` in the workspace `peer` replicated into `store`, drawn by the
+/// frame `wake` asks for.
+pub(super) fn role(
+    store: tilo_session::platform::Store,
+    peer: u32,
+    person: &str,
+    name: Rc<dyn Fn(&str) -> String>,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Mentions {
+    Mentions::over(tilo_session::mentions::Given {
+        person: vec![person.to_owned()],
+        store: Some(store),
+        records: Some(Rc::new(Taken {
+            peer,
+            changes: crate::replicated::changes(),
+            kind: Rc::new(|app| {
+                crate::desktop::application(app)
+                    .map(|definition| definition.record_kind.as_str().to_owned())
+                    .unwrap_or_default()
+            }),
+        })),
+        notices: Some(crate::host_services::notices()),
+        name,
+        wake: Some(wake),
+    })
+}
+
 impl Desktop {
-    /// Look for new mentions of this person in what reached the page, and
-    /// open what they chose from a notice.
+    /// Look for new mentions of this person in what reached the page, and open what they chose
+    /// from a notice.
     pub(super) fn tell_mentions(&self) {
+        self.mentions.borrow().step();
         self.open_chosen_mentions();
         self.show_asked_in_apps();
-        let Some(peer) = self.asks.peer() else {
-            return;
-        };
-        let mut mentions = self.mentions.borrow_mut();
-        let (ready, touched) = crate::replication::take_touched(peer);
-        for record in touched {
-            *mentions.pending.entry(record).or_insert(true) &= !ready;
-        }
-        if mentions.pending.is_empty() {
-            return;
-        }
-        let now = js_sys::Date::now();
-        if now - mentions.last_ms < LOOK_EVERY_MS {
-            // Looked at on a frame once the pause is over.
-            self.shared.wake();
-            return;
-        }
-        mentions.last_ms = now;
-        let touched = std::mem::take(&mut mentions.pending);
-        let notifier = ui::host::current().notifications;
-        let name = |user: &str| self.person_name(user);
-        let mut changed = false;
-        for ((app, record), replayed) in touched {
-            let Some(doc) = crate::replication::record_document(peer, &app, &record) else {
-                continue;
-            };
-            let tree = ui::mentions::chain_of(&record)
-                .and_then(|chain| crate::replication::record_document(peer, &app, chain));
-            let kind = crate::desktop::application(&app)
-                .map(|definition| definition.record_kind.as_str())
-                .unwrap_or_default();
-            // What the workspace held before this device followed the record is
-            // not news.
-            let quiet = replayed && !mentions.inbox.knows(&app, &record);
-            let told = mentions.inbox.look(
-                &Look {
-                    app: &app,
-                    record: &record,
-                    kind,
-                    doc: &doc,
-                    tree: tree.as_ref(),
-                    quiet,
-                    // The page cannot tell what the person holds of what a text refers to:
-                    // an excerpt names no resource, never a title they may not read.
-                    read: &ui::mentions::reading_nothing,
-                },
-                &name,
-            );
-            for tag in &told.withdraw {
-                // A host without notifications has nothing to take back.
-                drop(notifier.withdraw(tag));
-            }
-            for notice in &told.show {
-                drop(notifier.show(&notice.notification()));
-            }
-            changed |= !told.show.is_empty() || !told.withdraw.is_empty() || quiet;
-        }
-        if changed {
-            storage_set(&mentions.key, &mentions.inbox.told_state());
+    }
+
+    /// Open, as this person, each place they chose from a mention's notice: the app on the record,
+    /// showing the item the mention is in.
+    fn open_chosen_mentions(&self) {
+        for place in self.mentions.borrow().take_chosen() {
+            self.open(open_target(&self.workspace, &place));
         }
     }
 
     /// Show, as this person, what the desktop asked to see in an app's window
-    /// ([`crate::shell::HostRequest::ShowInApp`]): the app's `open` of the
-    /// resource, through the session, which opens the window and shows it there.
+    /// ([`crate::shell::HostRequest::ShowInApp`]): the app's `open` of the resource, through the
+    /// session, which opens the window and shows it there.
     fn show_asked_in_apps(&self) {
         let mut asked = Vec::new();
         self.requests.borrow_mut().retain(|request| match request {
@@ -143,98 +101,75 @@ impl Desktop {
             _ => true,
         });
         for (app, resource) in asked {
-            let request = InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::application_action_target(
-                    &self.workspace,
-                    &app,
-                    resource,
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                ),
-                argument: InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
+            let place = Place {
+                app,
+                record: String::new(),
+                resource,
             };
-            // A refused open is the session's to report.
-            drop(self.session.invoke(&self.caller(), request));
-            self.shared.wake();
+            self.open(open_target(&self.workspace, &place));
         }
     }
 
-    /// Open, as this person, each place they chose from a mention's notice:
-    /// the app on the record, showing the item the mention is in.
-    fn open_chosen_mentions(&self) {
-        let chosen = std::mem::take(
-            &mut *self
-                .mentions
-                .borrow()
-                .opens
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-        for place in chosen {
-            let target = if place.record.is_empty() {
-                tilo_actions::remote::application_action_target(
-                    &self.workspace,
-                    &place.app,
-                    place.resource.clone(),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                )
-            } else {
-                tilo_actions::remote::application_record_target(
-                    &self.workspace,
-                    &place.app,
-                    &place.record,
-                    place.resource.clone(),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                )
-            };
-            let request = InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target,
-                argument: InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            // A refused open is the session's to report.
-            drop(self.session.invoke(&self.caller(), request));
-            self.shared.wake();
-        }
+    /// Ask the session to open `target` as this person, and draw the frame that shows what it
+    /// opened. A refused open is the session's to report.
+    fn open(&self, target: tilo_actions::remote::RemoteActionTarget) {
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target,
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        drop(self.session.invoke(&self.caller(), request));
+        self.shared.wake();
     }
 }
 
-fn local_storage() -> Option<js_sys::Object> {
-    js_sys::Reflect::get(&js_sys::global(), &"localStorage".into())
-        .ok()
-        .filter(|storage| !storage.is_undefined() && !storage.is_null())
-        .map(Into::into)
+/// What the person's mentions are told by, kept where their settings are
+/// ([`crate::browser`]'s mount hands them in): the session's role over what this page replicated,
+/// told through the host's notifications, drawing the frame `woken` asks for.
+pub(super) fn over(
+    store: Rc<dyn durable_store::DurableStore>,
+    asks: &crate::browser::session_asks::Asks,
+    person: &str,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    here: &tilo_desktop::here::Here,
+    woken: &Arc<std::sync::atomic::AtomicBool>,
+) -> Mentions {
+    role(
+        store,
+        asks.peer().unwrap_or_default(),
+        person,
+        name_of(here, people),
+        waking(woken),
+    )
 }
 
-fn storage_get(key: &str) -> Option<String> {
-    let storage = local_storage()?;
-    let get: js_sys::Function = js_sys::Reflect::get(&storage, &"getItem".into())
-        .ok()?
-        .into();
-    get.call1(&storage, &key.into()).ok()?.as_string()
+/// The name the person's page knows `user` by: who is here, else who it has met, else a guest's.
+fn name_of(
+    here: &tilo_desktop::here::Here,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+) -> Rc<dyn Fn(&str) -> String> {
+    let seen = Rc::clone(here);
+    let known = Rc::clone(people);
+    Rc::new(move |user: &str| {
+        seen.borrow()
+            .person(user)
+            .or_else(|| known.borrow().get(user).cloned())
+            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+    })
 }
 
-fn storage_set(key: &str, value: &str) {
-    let Some(storage) = local_storage() else {
-        return;
-    };
-    let Ok(set) = js_sys::Reflect::get(&storage, &"setItem".into()) else {
-        return;
-    };
-    let set: js_sys::Function = set.into();
-    // A full or refused storage forgets what was told: at worst a reload
-    // tells it again.
-    drop(set.call2(&storage, &key.into(), &value.into()));
+/// What tells the page it has something to read.
+fn waking(
+    woken: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+    let woken = std::sync::Arc::clone(woken);
+    std::sync::Arc::new(move || {
+        woken.store(true, std::sync::atomic::Ordering::Release);
+    })
 }

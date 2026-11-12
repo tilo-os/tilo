@@ -5,7 +5,10 @@
 //! ([`ChannelEncryption`]). What its members send for a channel reaches it
 //! through the workspace host's [`ChannelSink`], and what it settles is
 //! retained by the workspace as its own governance, so whoever joins the
-//! workspace later reads the group's history from it. Each workspace hands the
+//! workspace later reads the group's history from it, and handed to the
+//! workspace's direct link, so a member device linked there hears this
+//! device's access requests and commits as it hears every other member's
+//! ([`Workspaces::publish_channel_governance`]). Each workspace hands the
 //! service its governance as the workspace settles
 //! ([`ChannelSink::settled`]), so the service decides a record's channel from
 //! the same state the host does, at the same moment.
@@ -26,13 +29,10 @@ use channel_crypto::VaultKey;
 use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_action_broker::{
-    channel_encryption::{
-        ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider, GovernancePark, GovernancePump, GovernanceTransport,
-        InboundChannelGovernance,
-    },
-    collab_core::BrokerChannels,
+use tilo_action_broker::channel_encryption::{
+    ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+    ChannelKeyProvider, ChannelsDir, GovernancePark, GovernancePump, GovernanceTransport,
+    InboundChannelGovernance, NoGates,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
@@ -41,8 +41,20 @@ use tilo_room_host::workspaces::{
 };
 use tokio::task::JoinHandle;
 
-/// How long a first write to a record's channel waits for its group.
-const OPEN_WAIT: Duration = Duration::from_secs(5);
+/// How long a first write to a record's channel waits for its group: half a
+/// minute, which is far more than the wait before this device creates the
+/// group itself (`channel_encryption::founding_wait`) and the work a start
+/// does beside it — creating the workspace, its listing and its settings, and
+/// writing the genesis of each app the operator seeded. A fresh start's first
+/// seed waits for all of that, so a wait as short as the channel's own is
+/// refused for keys that are about to arrive; keys that have not arrived in
+/// half a minute are not about to.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// A first write must outlast the wait before the group is created here, or a
+/// fresh workspace's first seed is refused for keys that do arrive.
+const _: () = assert!(
+    OPEN_WAIT.as_secs() > tilo_action_broker::channel_encryption::founding_wait().as_secs()
+);
 /// Where the shared channel service keeps its state under the state root.
 const STATE: &str = "channels";
 /// Where the workspace host keeps the workspaces this relay governs.
@@ -52,6 +64,8 @@ const ROOMS: &str = "rooms";
 /// groups of the workspaces it governs. Stops when dropped.
 pub(crate) struct Channels {
     device: DeviceKeys,
+    /// The service itself, to forget the workspaces deleted here.
+    access: ChannelKeyAccess,
     link: Arc<Link>,
     _pump: GovernancePump,
     following: Mutex<Vec<JoinHandle<()>>>,
@@ -73,12 +87,13 @@ impl Channels {
         };
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
-                root,
+                state: Arc::new(ChannelsDir::new(&root)),
                 vault: vault_key(&device),
-                device_key: device,
+                signer: Arc::new(device),
+                role: tilo_action_broker::channel_encryption::Role::Participant,
             },
             Box::new(directory.clone()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(NoGates),
         )?;
         let link = Link::new(directory);
         let park = Arc::clone(&link.park);
@@ -86,6 +101,7 @@ impl Channels {
         let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
         let keys = ChannelKeyProvider::default();
         keys.set(Some(access.clone()));
+        let kept = access.clone();
         let pump = GovernancePump::spawn(
             "tilo-relay-channels",
             park,
@@ -95,6 +111,7 @@ impl Channels {
         )?;
         Ok(Self {
             device: Arc::new(Keys(keys)),
+            access: kept,
             link,
             _pump: pump,
             following: Mutex::new(Vec::new()),
@@ -120,7 +137,7 @@ impl Channels {
         let writing = workspaces.clone();
         let publisher = tokio::spawn(async move {
             while let Some(message) = outgoing.recv().await {
-                let Some(workspace) = channel_workspace(&message) else {
+                let Some(workspace) = message.channel_workspace() else {
                     continue;
                 };
                 let workspace = workspace.to_owned();
@@ -133,6 +150,29 @@ impl Channels {
             }
         });
         lock(&self.following).push(publisher);
+        // A workspace deleted here takes its channels with it.
+        let mut deletions = workspaces.deletions();
+        let (access, directory) = (self.access.clone(), self.link.directory.clone());
+        let forgetting = tokio::spawn(async move {
+            loop {
+                let workspace = match deletions.recv().await {
+                    Ok((workspace, _)) => workspace,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::error!(missed, "deleted workspaces' channels were not forgotten");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                lock(&directory.states).remove(&workspace);
+                let Some(id) = WorkspaceId::parse(&workspace) else {
+                    continue;
+                };
+                if let Err(error) = access.forget_workspace(id) {
+                    tracing::warn!(%workspace, %error, "a deleted workspace's channels stay");
+                }
+            }
+        });
+        lock(&self.following).push(forgetting);
         self.link.park.poke();
     }
 }
@@ -249,7 +289,8 @@ impl ChannelDirectory for Directory {
         route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at =
+            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         // Governance that cannot be read says nothing of who reads it.
         let readers = state
@@ -270,19 +311,10 @@ impl ChannelDirectory for Directory {
         route: &ChannelRoute,
         now: u64,
     ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at =
+            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         state.governance().unit_scope(at, route).ok()
-    }
-}
-
-/// The workspace a channel governance message names.
-fn channel_workspace(message: &NeighbourMsg) -> Option<&str> {
-    match message {
-        NeighbourMsg::MlsGovernance { workspace, .. }
-        | NeighbourMsg::MlsAccessRequest { workspace, .. } => Some(workspace),
-        NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room),
-        _ => None,
     }
 }
 

@@ -10,9 +10,10 @@
 //! nothing loading.
 
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
-use super::super::{common, enrol, record_provider, start_browser};
+use super::super::{enrol, record_provider, start_browser};
 use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
+use tilo_session_client::Outbox;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -96,7 +97,7 @@ pub async fn run(bundle: &str) {
     let mut native = Browser::open_workspace(&hosted, &writer, &host, &workspace.workspace).await;
 
     let author = "Fixture owner".to_string();
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         &author,
@@ -106,7 +107,7 @@ pub async fn run(bundle: &str) {
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
     for name in ["general", ARCHIVE] {
-        common::add_channel(&mut doc, &author, name, None);
+        crate::common::add_channel(&mut doc, &author, name, None);
     }
     let channels = chat::projection::read(&doc).channel_rows();
     let channel_of = |name: &str| {
@@ -175,10 +176,10 @@ pub async fn run(bundle: &str) {
     };
     native
         .peer
-        .publish(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
     let mut handed = Vec::new();
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         let part = chat::parts::part_index(&changed).expect("only parts change beside the chat");
         // The host never had part 0: nobody can send the reader its history.
         if part == 0 {
@@ -186,7 +187,7 @@ pub async fn run(bundle: &str) {
         }
         native
             .peer
-            .publish(part_route(&workspace.workspace, &changed), &mutation)
+            .write(part_route(&workspace.workspace, &changed), &mutation)
             .unwrap();
         handed.push(part);
     }
@@ -198,10 +199,10 @@ pub async fn run(bundle: &str) {
         loop {
             match barrier.try_recv() {
                 Ok(result) => break result.unwrap(),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                Err(tilo_session_client::TryRecvError::Empty) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(tilo_session_client::TryRecvError::Disconnected) => {
                     panic!("durability barrier closed before acknowledgement");
                 }
             }

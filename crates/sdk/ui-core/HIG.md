@@ -43,7 +43,11 @@ sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
 unified toolbar: a `Heading` title in sentence case after the shell's
 leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
-column. The title starts at the content gutter (`rhythm.group`) or after
+column. Each column's header is the app's own — the words that name what
+the column shows and the buttons that act on it — and stands at the top of
+its column at every time, every row at the same height and baseline: the
+window's bar never takes a column's title or buttons, and never shows a
+second copy of them. The title starts at the content gutter (`rhythm.group`) or after
 the shell's leading button; an optional count follows it as a quiet
 `Caption.numeric` pill; the actions start after the title's measured
 width. Where they do not fit, labelled buttons show their icons alone,
@@ -111,6 +115,14 @@ email client's accounts + folders.
     narrowing a docked window keeps the person's place (they land on the
     page they were on, Back goes to the list), and widening docks again
     with the same page open. Choosing a destination pushes the content.
+    Back walks toward the screen the window opens on: a screen deeper than
+    it goes one step back, and the **places** themselves, which stand in
+    front of it, take Back to the screen they covered — the leading chip of
+    their header row, or the window's bar's Back where the app declares its
+    toolbar there — with the toggle standing aside for it, so a phone is
+    never left on the places with no way to the list they came from. Esc
+    and the system's back gesture take the same steps (and the gesture puts
+    a floating drawer away too).
   - **A floating drawer** only for a *content-primary* app
     (`ContentKind::Document`: a document or editor whose sidebar is an
     occasional outline or list of documents) too narrow to dock. It opens
@@ -302,10 +314,25 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   its outcome ("Move", "Allow"), never "Continue" or "OK".
 - One thing has one name everywhere; `tools/policy/copy_glossary.toml` lists
   the names that had rivals ("Password", "Power", "Keyboard shortcuts").
+- A window that ships a translation resolves everything it paints through its
+  catalogue, values included: a sentence built around a name, a count or a
+  date is a message with variables and, where it counts, plural branches, not
+  a `format!` handed to a label. A count reads in the reader's grammar
+  ("1 message", "2 Nachrichten"). The catalogue is the crate's own:
+  `CATALOG.t(key)` and `CATALOG.t_args(key, args)` from the
+  `ui::embedded_catalog!` it declares, which load it onto the thread first. A
+  lookup through `I18nManager` reads only what that thread had already loaded,
+  so it shows a raw key (`disks-select-whole-disk`) on any path that paints
+  before something loaded the words; those lookups are the toolkit's own.
 - `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
   these classes (old copy is listed per catalogue in
-  `copy_language_baseline/`, which only shrinks), and `tilo_copy_lint`
-  rejects `{:?}` handed to a copy builder.
+  `copy_language_baseline/`, which only shrinks), and rejects an English
+  literal or `format!` sentence handed to a window's text constructors (a
+  label, a section title, a property's name, an accessible name), directly or
+  through a wrapper, a conversion, a default or a local, and a literal assigned
+  to an action's label, unless `copy_source_literals.toml` says why no
+  catalogue carries it; `tilo_copy_lint` rejects `{:?}` handed to a copy
+  builder.
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.
 - Never present fabricated content as live data (no synthesized "video feed"
@@ -491,9 +518,10 @@ completeness does not exempt a screen from these requirements.
   (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
   **one bar**: the window's controls stand at the row's trailing end in room
   the row keeps for them (`WindowHeader::set_window_bar`), never stacked
-  above or painted over the app's controls. An app may put its header *in*
-  the bar (`NavShell::with_header_in_window_bar`): maximized, the header
-  then hides with the bar and comes back over the content with it.
+  above or painted over the app's controls. The row stands at rest too:
+  maximized, the window's controls come into the room it keeps for them when
+  the person reaches for the bar, and no column's title or buttons wait on
+  that reach.
 - **The window's controls are a group of their own.** History, Full screen
   and Close stand at the bar's trailing edge, `rhythm.group` apart from the
   app's controls and the window's search before them; space parts the two
@@ -878,7 +906,7 @@ its own is a defect of the same class as a hand-rolled text field (§8).
 
 | Piece | The rule |
 |---|---|
-| `ConversationClock`, `DayBreaks`, `DayDividerFace` | A divider appears before the first line of each local day and never otherwise, labelled "Today", "Yesterday", the weekday inside the week, then the date. Every line can name its own time. No conversation may show a clock with no day anywhere near it. |
+| `ConversationClock`, `DayBreaks`, `SectionDividerFace` | A divider appears before the first line of each local day and never otherwise, labelled "Today", "Yesterday", the weekday inside the week, then the date. Every line can name its own time. No conversation may show a clock with no day anywhere near it. |
 | `DeliveryState` / `DeliveryFace` | One vocabulary — Queued, Sending, Submitted, Sent, Delivered, Read, Failed, Uncertain — from one table of steps, with one glyph and one tone each. A transport renames its states into `DeliveryStep`; it never invents a word of its own, and "unknown" is a state rather than a silence. |
 | `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
 | `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |

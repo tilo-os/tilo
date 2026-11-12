@@ -19,3 +19,77 @@ video-player-timestamp-annotation-text = Edited the note { $item }
 video-player-timestamp-annotation-time-ms = Moved the note { $item }
 video-player-library-playlists = Changed the playlists
 video-player-library-annotations = Changed the notes
+video-add-to-watch-later = Add current video to Watch later
+video-bookmark-timestamp = Bookmark current timestamp
+video-clear-recent = Clear recent videos
+video-remove-from-queue = Remove from queue
+video-delete = Delete
+video-jump-to-bookmark = Jump to bookmark
+video-local-only-detail = Opens this device-local video
+video-clear-recent-detail = Removes recent-history entries from this device
+video-remove-from-queue-detail = Removes this item from the session-only queue
+video-back-to-video = Back to video
+video-queue = Queue
+video-recent = Recent
+video-shared = Shared
+video-open-video = Open video
+video-jump-to-note = Jump to timestamp annotation
+video-delete-note = Delete timestamp annotation
+video-delete-shared-playlist = Delete shared playlist
+
+## The library drawer
+video-library-clear = Clear
+video-queue-empty = Your queue is empty
+video-recent-empty = No recent videos
+video-watch-later = Watch later
+video-bookmark-time = Bookmark time
+video-shared-empty = No shared playlists or bookmarks yet
+video-shared-empty-detail = Everyone in this workspace sees the playlists and bookmarks added here.
+video-playlists = Playlists
+video-bookmarks = Bookmarks
+video-local-video = Local video
+video-play = Play { $title }
+
+## Facts, property labels and section titles
+video-player-too-large = { $title } was too large to reopen after a reload (over { $size })
+video-title = Video Player
+
+## What the window shows
+video-player-selected-video = Selected video
+
+## Actions
+
+video-player-effect-open-formats = Open more formats
+video-player-effect-play-queued = Play queued video
+video-player-effect-show-library = Show library
+video-player-effect-hide-library = Close library
+video-player-effect-close = Close video
+video-player-effect-toggle-playback = Play or pause
+video-player-effect-toggle-mute = Mute or unmute
+video-player-effect-reveal = Show player controls
+video-player-effect-seek = Seek to a time
+video-player-effect-seek-by = Seek by a step
+video-player-effect-restart = Restart
+video-player-effect-jump-to-end = Jump to end
+video-player-effect-set-volume = Set volume
+video-player-effect-set-autoplay = Set autoplay
+video-player-effect-set-loop = Repeat the video
+video-player-effect-set-playback-rate = Set playback speed
+video-player-effect-select-audio-track = Use this audio track
+video-player-effect-select-subtitles = Show subtitles
+video-player-effect-subtitles-off = Turn subtitles off
+video-player-effect-jump-to-chapter = Go to chapter
+video-player-effect-jump-to-annotation = Jump to timestamp
+video-player-effect-picture-in-picture = Open Picture-in-Picture
+video-player-effect-toggle-fullscreen = Toggle fullscreen
+video-player-recent = Recent videos
+video-player-recent-keep = Record a recent video
+video-player-recent-stood = Record where playback stopped
+video-player-library = Video Player
+video-player-library-create-playlist = Create playlist
+video-player-library-delete-playlist = Delete playlist
+video-player-library-add-to-playlist = Add to playlist
+video-player-library-add-to-watch-later = Add to Watch later
+video-player-library-add-annotation = Add annotation
+video-player-library-delete-annotation = Delete annotation
+video-player-library-set-transport = Record playback position

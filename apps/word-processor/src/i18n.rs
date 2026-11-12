@@ -17,7 +17,7 @@ use ui::i18n::ArgValue;
 // Add a locale by dropping a `locales/<lang>.ftl` next to `en-US.ftl` and
 // listing it here. Any key a translation omits falls back to the English
 // string.
-ui::embedded_catalog!(pub fn, ["en-US", "de"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Switch the active locale at runtime (used by tests and by callers that want
 /// to honour a locale change without restarting). Accepts a BCP-47 or POSIX
@@ -27,7 +27,7 @@ pub fn set_locale(locale: &str) {
     CATALOG.set_locale(locale);
 }
 
-/// The active locale's BCP-47 tag (e.g. `"de"` or `"en-US"`). Useful for tests
+/// The active locale's BCP-47 tag (e.g. `"de-DE"` or `"en-US"`). Useful for tests
 /// and diagnostics.
 pub fn current_locale() -> String {
     CATALOG.current_locale()
@@ -58,7 +58,7 @@ mod tests {
 
         // Phase: de_returns_german_string.
         {
-            set_locale("de");
+            set_locale("de-DE");
             assert_eq!(t("toolbar-styles"), "Stile");
             assert_eq!(t("template-report"), "Bericht");
             set_locale("de_DE.UTF-8");
@@ -68,7 +68,7 @@ mod tests {
 
         // Phase: missing_key_falls_back_to_key_without_panicking.
         {
-            set_locale("de");
+            set_locale("de-DE");
             assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
             set_locale("en-US");
             assert_eq!(t("this.key.does.not.exist"), "this.key.does.not.exist");
@@ -78,7 +78,7 @@ mod tests {
         {
             // `find.match-case` is intentionally English-only in the de catalog test
             // surface; assert it falls through to en-US rather than to the key.
-            set_locale("de");
+            set_locale("de-DE");
             let v = t("layout-margins");
             // The de catalog DOES translate this; assert it is neither the key nor
             // empty (proves resolution worked at all).
@@ -93,7 +93,7 @@ mod tests {
             let s = t_args("page-indicator", &[arg("n", 7)]);
             assert_eq!(s, "Page 7");
 
-            set_locale("de");
+            set_locale("de-DE");
             let s = t_args("page-indicator", &[arg("n", 9)]);
             assert_eq!(s, "Seite 9");
             set_locale("en-US");
@@ -126,7 +126,7 @@ mod tests {
 
             // German has the same one/other split, and `Zeichen` is invariant —
             // the catalog must not have grown an English-shaped plural for it.
-            set_locale("de");
+            set_locale("de-DE");
             assert_eq!(t_args("status-words", &[arg("words", 1)]), "1 Wort");
             assert_eq!(t_args("status-chars", &[arg("chars", 1)]), "1 Zeichen");
             assert_eq!(t_args("status-words", &[arg("words", 3)]), "3 Wörter");

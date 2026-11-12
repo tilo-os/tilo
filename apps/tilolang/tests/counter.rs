@@ -9,8 +9,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 
@@ -42,7 +40,7 @@ fn control_named(app: &mut HostedApp, name: &str) -> String {
 
 #[test]
 fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
-    let mut app = HostedApp::open(support::installed("counter"), "ada").unwrap();
+    let mut app = HostedApp::open(crate::support::installed("counter"), "ada").unwrap();
     settle(&mut app);
     for _ in 0..3 {
         let plus = control_named(&mut app, "Increment");

@@ -889,22 +889,41 @@ fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
 }
 
 #[test]
-fn every_rich_input_is_given_its_drawers_people_by_the_system() {
+fn every_rich_input_is_given_its_drawers_members_by_the_system() {
     let (m, _) = lower(
         "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
     );
     let chat = host_imports(func(&m, "chat"));
-    for want in [Imp::Speakers, Imp::Members] {
-        assert!(chat.contains(&want), "{want:?} in {chat:?}");
-    }
     assert!(
-        strings(func(&m, "chat")).iter().any(|s| s == "people")
-            && strings(func(&m, "chat")).iter().any(|s| s == "speakers")
+        chat.contains(&Imp::Members),
+        "who can read what it writes into: {chat:?}"
     );
+    assert!(
+        !chat.contains(&Imp::Speakers),
+        "a drawer reads no history of what a mention lands in to say who is in the conversation: \
+         {chat:?}"
+    );
+    assert!(strings(func(&m, "chat")).iter().any(|s| s == "people"));
     let loose = host_imports(func(&m, "loose"));
     assert!(
-        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Speakers),
+        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Members),
         "without a resource, the workspace's members: {loose:?}"
+    );
+}
+
+#[test]
+fn a_rich_input_offers_the_people_of_the_conversation_it_is_given() {
+    let (m, _) = lower(
+        "type Comment {\n    text: Text\n}\ntype Log {\n    comments: Collection<Comment>\n}\nview chat(l: Log) {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft, speakers: speakers(l.comments))\n}",
+    );
+    let chat = host_imports(func(&m, "chat"));
+    assert!(
+        chat.contains(&Imp::Speakers),
+        "who spoke in the conversation, read from its own items: {chat:?}"
+    );
+    assert!(
+        chat.contains(&Imp::Members),
+        "and the members, which the system still gives: {chat:?}"
     );
 }
 
@@ -1294,4 +1313,35 @@ fn only_an_action_reads_the_day_it_is() {
         "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) uses time { n.stamp = now.day() }",
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
+}
+
+/// A file is a value: a field holds one, an action takes one as its parameter, its parts read
+/// on it, an action makes one of what it holds, and a view asks the person for one and runs an
+/// action with it.
+#[test]
+fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
+    let (m, _) = lower(
+        "type N {\n    body: RichText\n    picture: Option<File>\n}\n
+         action put(n: N, f: File) (did: \"added a file\") {\n    n.picture = f\n    n.body = RichText(f.name, f.url, \"{f.size}\")\n}\n
+         action read(n: N, f: File) {\n    match f.text() {\n        .ok(words) => { n.body = RichText(words) },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n
+         action write(n: N) -> File {\n    File.of_text(\"n.md\", n.body.text)\n}\n
+         action archive(n: N) -> File {\n    File.zip(\"n.zip\", [File.of_text(\"a.md\", n.body.text)])\n}\n
+         action bytes(n: N) -> File uses web {\n    File.of_bytes(\"n.html\", web.get(\"https://example.com\").body)\n}\n
+         action again(n: N) -> File {\n    File.at(\"n.png\", n.picture?.url ?? \"\")\n}\n
+         action export(n: N) -> Text {\n    n.body.text\n}\n
+         view v(n: N) {\n    stack {\n        button(\"Put\", on: file.choose(put(n), accept: [\"image/png\"]))\n        button(\"Save\", on: file.save(export(n), name: \"n.md\"))\n    }\n}",
+    );
+    let put = imports(func(&m, "put"));
+    assert!(put.contains(&Imp::FilePart), "its parts: {put:?}");
+    assert!(put.contains(&Imp::FileSize), "its size: {put:?}");
+    assert!(imports(func(&m, "read")).contains(&Imp::FileText));
+    assert!(imports(func(&m, "write")).contains(&Imp::FileOfText));
+    assert!(imports(func(&m, "archive")).contains(&Imp::FileZip));
+    assert!(imports(func(&m, "bytes")).contains(&Imp::FileOfBytes));
+    assert!(imports(func(&m, "again")).contains(&Imp::FileAt));
+    let view = imports(func(&m, "v"));
+    assert!(view.contains(&Imp::ActChoose), "the chooser: {view:?}");
+    assert!(view.contains(&Imp::ActSave), "the save: {view:?}");
+    // The parameter is the file itself: no form asks for it, the person's chooser fills it.
+    assert!(!Ty::File.asked_by_form());
 }

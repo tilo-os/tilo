@@ -17,7 +17,6 @@ pub const APP_TITLE: &str = "QR Code";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// What the code encodes. Stored, synced and undoable.
@@ -40,11 +39,11 @@ impl Code {
 fn code_view(payload: &str) -> Element {
     if payload.is_empty() {
         return Box::new(
-            EmptyState::new(I18nManager::lookup_plain("qr-empty-title"))
-                .with_message(I18nManager::lookup_plain("qr-empty-message")),
+            EmptyState::new(crate::locales::CATALOG.t("qr-empty-title"))
+                .with_message(crate::locales::CATALOG.t("qr-empty-message")),
         );
     }
-    let alt = I18nManager::format("qr-output-alt", &[("payload", payload.into())]);
+    let alt = crate::locales::CATALOG.t_args("qr-output-alt", &[("payload", payload.into())]);
     Box::new(
         QrWidget::new(payload.as_bytes().to_vec())
             .with_id("qr-output")

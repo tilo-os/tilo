@@ -2,12 +2,8 @@
 //! and revoking trust changes the next decision.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{InvokeOutcome, Resolution, RunOutcome, Value};
 
     struct Setup {

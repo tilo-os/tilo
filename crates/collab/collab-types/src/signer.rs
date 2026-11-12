@@ -45,12 +45,46 @@ pub trait DeviceSigner: MaybeSendSync {
     fn device_public_key(&self) -> [u8; 32];
     /// Ed25519-sign `message`.
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_>;
-    /// The Ed25519 key itself, when this signer holds it in the clear: the
-    /// key a native carrier dials from, so its handshake names the device its
-    /// certificate does. A signer that keeps the key unextractable (a
-    /// browser's) answers `None` and needs no carrier of its own.
-    fn device_signing_key(&self) -> Option<[u8; 32]> {
+    /// The secret of this device's iroh endpoint: a native device dials as its device key, so
+    /// the transport names the device its certificate does. The one place the key's bytes leave
+    /// custody; nothing signs with them. A page's signer answers `None` and delegates to an
+    /// endpoint key of its own.
+    fn endpoint_secret(&self) -> Option<[u8; 32]> {
         None
+    }
+}
+
+/// What `signer` signs `message` with when it answers at once, as a key held
+/// in the clear does: a write made in one turn signs this way.
+///
+/// # Errors
+/// The signer refused, or it would answer only later (a browser's key signs
+/// through a promise; its writes are signed outside the turn).
+pub fn sign_now(signer: &dyn DeviceSigner, message: Vec<u8>) -> Result<[u8; 64], SignError> {
+    let mut signing = signer.sign(message);
+    match signing
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(answer) => answer,
+        std::task::Poll::Pending => Err(SignError(
+            "the device signer answers only later, outside this turn".into(),
+        )),
+    }
+}
+
+/// A shared handle to one device's custody signs as that custody does.
+impl<T: DeviceSigner + ?Sized> DeviceSigner for std::sync::Arc<T> {
+    fn device_public_key(&self) -> [u8; 32] {
+        (**self).device_public_key()
+    }
+
+    fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {
+        (**self).sign(message)
+    }
+
+    fn endpoint_secret(&self) -> Option<[u8; 32]> {
+        (**self).endpoint_secret()
     }
 }
 
@@ -59,7 +93,7 @@ impl DeviceSigner for ed25519_dalek::SigningKey {
         self.verifying_key().to_bytes()
     }
 
-    fn device_signing_key(&self) -> Option<[u8; 32]> {
+    fn endpoint_secret(&self) -> Option<[u8; 32]> {
         Some(self.to_bytes())
     }
 

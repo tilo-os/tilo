@@ -5,6 +5,11 @@
 //! fetched in batched `GetMany` requests (`batch`). File-backed content is
 //! read from the store's area, and the missing byte ranges are fetched into
 //! it with ranged, BAO-verified `GET`s of the content id (`ranges`).
+//!
+//! A tree whose bytes travel beside its record rather than between daemons
+//! (a workspace a host serves, whose members reach each other only through
+//! it) names a [`ContentSource`] instead: what no peer serves is asked of it,
+//! one blob at a time, and kept as a loose blob once it hashes to its name.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -74,6 +79,13 @@ struct PeerHealth {
     latency: Option<Duration>,
 }
 
+/// Where blobs come from when no peer of the sync plane serves them.
+pub trait ContentSource: Send + Sync {
+    /// The bytes named `hash`, when the source can hand them over. They are
+    /// checked against `hash` before anything keeps them.
+    fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>>;
+}
+
 pub struct Hydrator {
     pub endpoint: Endpoint,
     pub store: Arc<ContentStore>,
@@ -109,6 +121,8 @@ pub struct Hydrator {
     /// Woken by the first peer: a device that knows a peer may be dialled
     /// by it.
     reachability: crate::reachability::Reachability,
+    /// Asked for what no peer served.
+    source: Option<Arc<dyn ContentSource>>,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so
@@ -157,7 +171,49 @@ impl Hydrator {
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
             reachability: crate::reachability::Reachability::default(),
+            source: None,
         }
+    }
+
+    /// Ask `source` for every blob no peer serves.
+    #[must_use]
+    pub fn with_source(mut self, source: Arc<dyn ContentSource>) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// Make `hashes` local from the content source, as loose blobs; the
+    /// ones it did not hand over, or handed over as other bytes, are
+    /// returned.
+    pub(crate) async fn fetch_from_source(&self, hashes: Vec<Hash>) -> Vec<Hash> {
+        let Some(source) = self.source.clone() else {
+            return hashes;
+        };
+        let asks = hashes.into_iter().map(|hash| {
+            let source = Arc::clone(&source);
+            async move {
+                let _guard = self.mark_fetching(hash);
+                let Some(bytes) = source.fetch(hash).await else {
+                    return Err(hash);
+                };
+                let length = bytes.len() as u64;
+                match self.store.store_fetched(hash, bytes).await {
+                    Ok(()) => {
+                        self.count_blob_bytes(length);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        tracing::debug!(%hash, %error, "the content source's bytes are not kept");
+                        Err(hash)
+                    }
+                }
+            }
+        });
+        let results: Vec<Result<(), Hash>> = futures_util::StreamExt::collect(
+            futures_util::StreamExt::buffer_unordered(futures_util::stream::iter(asks), 8),
+        )
+        .await;
+        results.into_iter().filter_map(Result::err).collect()
     }
 
     /// Wake `reachability` when the first peer is added: every peer the
@@ -403,6 +459,21 @@ impl Hydrator {
             })
             .await
             .clone();
+        let fetched = match fetched {
+            Err(_) if self.source.is_some() => {
+                if self.fetch_from_source(vec![hash]).await.is_empty() {
+                    self.store
+                        .local(hash)
+                        .await
+                        .ok_or_else(|| format!("{hash} was evicted as it arrived"))
+                } else {
+                    Err(format!(
+                        "neither a peer nor the content source holds {hash}"
+                    ))
+                }
+            }
+            fetched => fetched,
+        };
 
         // Remove only our completed cell. A later caller may already have
         // installed a new retry cell after a failed request.
@@ -554,6 +625,42 @@ impl Hydrator {
         self.store
             .read_local(manifest_hash, &manifest, offset..end)
             .await
+    }
+
+    /// The blobs `manifest_hash`'s content is made of, as a
+    /// [`ContentSource`] hands them over: the manifest first, then each
+    /// distinct chunk. `None` when the manifest is not local.
+    pub async fn content_blobs(&self, manifest_hash: Hash) -> Option<Vec<Hash>> {
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        let mut seen = std::collections::HashSet::new();
+        let mut blobs = vec![manifest_hash];
+        for chunk in manifest.chunks() {
+            let chunk = Hash::from(chunk.hash);
+            if seen.insert(chunk) {
+                blobs.push(chunk);
+            }
+        }
+        Some(blobs)
+    }
+
+    /// One blob of `manifest_hash`'s content ([`Self::content_blobs`]) when
+    /// it is local: a loose blob as it is kept, a chunk of file-backed
+    /// content read from the store's area. Never touches the network.
+    pub async fn local_content_blob(&self, manifest_hash: Hash, blob: Hash) -> Option<Bytes> {
+        if let Some(bytes) = self.store.local(blob).await {
+            return Some(bytes);
+        }
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        let index = manifest
+            .chunks()
+            .iter()
+            .position(|chunk| Hash::from(chunk.hash) == blob)?;
+        let range = manifest.chunk_range(index)?;
+        let bytes = self
+            .store
+            .read_local(manifest_hash, &manifest, range)
+            .await?;
+        (Hash::new(&bytes) == blob).then(|| Bytes::from(bytes))
     }
 
     /// The manifest if it is cached or stored locally; never fetched.
@@ -827,7 +934,7 @@ fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
 /// Peers for tests of what a fetch does when a peer stops answering.
 #[cfg(test)]
 pub(crate) mod test_peers {
-    use iroh::endpoint::{Connection, Endpoint, presets};
+    use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
     /// Accepts blob connections and never answers a request on them, as a
@@ -844,7 +951,7 @@ pub(crate) mod test_peers {
 
     /// A running silent peer; it stops when the router is dropped.
     pub(crate) async fn silent() -> Router {
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = test_relay::direct_endpoint().await;
         Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, Silent)
             .spawn()
@@ -889,10 +996,70 @@ mod tests {
         assert_eq!(quick, 7, "a read inside its bound returns its bytes");
     }
 
+    /// A content source over another device's store, as a record's route
+    /// hands over what that device keeps.
+    struct OtherDevice(Arc<Hydrator>, Hash);
+
+    impl ContentSource for OtherDevice {
+        fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
+            let (hydrator, content) = (Arc::clone(&self.0), self.1);
+            Box::pin(async move { hydrator.local_content_blob(content, hash).await })
+        }
+    }
+
+    async fn local_endpoint() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    /// With no peer, small and file-backed content alike arrive from the
+    /// content source, blob by blob, and read as the bytes that were written.
+    #[tokio::test]
+    async fn content_no_peer_serves_arrives_from_the_content_source() {
+        for length in [11_usize, 300_000, 3 * 1024 * 1024] {
+            let written: Vec<u8> = (0..length)
+                .map(|i| {
+                    (u32::try_from(i).unwrap().wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0]
+                })
+                .collect();
+            let there = Arc::new(ContentStore::memory());
+            let content = there.write_content(&written).await.unwrap().unwrap();
+            let there = Arc::new(Hydrator::new(local_endpoint().await, there));
+            let blobs = there.content_blobs(content).await.unwrap();
+            assert_eq!(blobs[0], content, "the manifest comes first");
+            for blob in &blobs {
+                assert!(there.local_content_blob(content, *blob).await.is_some());
+            }
+
+            let here = Hydrator::new(local_endpoint().await, Arc::new(ContentStore::memory()))
+                .with_source(Arc::new(OtherDevice(Arc::clone(&there), content)));
+            let read = here.read(content, 0, length as u64).await.unwrap();
+            assert!(read == written, "{length} bytes read back as written");
+        }
+
+        let nowhere = Hydrator::new(local_endpoint().await, Arc::new(ContentStore::memory()))
+            .with_source(Arc::new(OtherDevice(
+                Arc::new(Hydrator::new(
+                    local_endpoint().await,
+                    Arc::new(ContentStore::memory()),
+                )),
+                Hash::from([3; 32]),
+            )));
+        assert!(
+            nowhere.read(Hash::from([3; 32]), 0, 10).await.is_err(),
+            "content the source lacks does not read"
+        );
+    }
+
     #[tokio::test]
     async fn local_content_is_read_without_peers() {
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hash = store.write_content(b"hello local").await.unwrap().unwrap();
 
@@ -904,7 +1071,7 @@ mod tests {
             assert_eq!(&mid, b"local");
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let data: Vec<u8> = (0..200_000_u32)
                 .map(|i| u8::try_from(i % 251).unwrap())
@@ -928,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn chunked_ranges_read_locally_and_missing_blobs_error_without_peers() {
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             // A multi-chunk buffer (well over MAX_CHUNK).
             let data: Vec<u8> = (0..300_000u32)
@@ -955,7 +1122,7 @@ mod tests {
             }
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let absent = Hash::from([9u8; 32]);
@@ -970,7 +1137,7 @@ mod tests {
     )]
     async fn sync_state_reports_local_projected_and_downloading_content() {
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             // A multi-chunk file so we exercise the per-chunk presence check.
             let data: Vec<u8> = (0..250_000u32)
@@ -985,7 +1152,7 @@ mod tests {
             );
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hyd = Hydrator::new(endpoint, store);
             // A manifest hash the store never ingested: exactly what a freshly-joined peer holds — projected metadata, no content.
@@ -998,7 +1165,7 @@ mod tests {
         }
         {
             // Manifest present locally but one referenced chunk was never stored: partially projected (the state after a torn/partial fetch).
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let present = store
                 .ingest(Bytes::from_static(b"chunk that exists"))
@@ -1027,7 +1194,7 @@ mod tests {
             );
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             // Ingest a real file (so absent state would otherwise be Local)...
             let data: Vec<u8> = (0..200_000u32)
@@ -1054,7 +1221,7 @@ mod tests {
             );
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let mh = store
                 .write_content(b"already local")
@@ -1084,7 +1251,7 @@ mod tests {
             assert_eq!(hyd.sync_state(mh).await, SyncState::Local);
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let a = Hash::from([0xA1; 32]);
             let b = Hash::from([0xB2; 32]);
@@ -1107,7 +1274,7 @@ mod tests {
     async fn peers_hydrate_real_bytes_and_unhealthy_peers_are_backed_off() {
         // Phase `failed_peer_is_backed_off_behind_a_healthy_peer`.
         async fn failed_peer_is_backed_off_behind_a_healthy_peer() {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let failed = iroh::SecretKey::from_bytes(&[0x51; 32]).public();
@@ -1123,7 +1290,7 @@ mod tests {
             assert_eq!(hydrator.known_peers()[0].id, failed);
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(endpoint, store);
             let key = iroh::SecretKey::from_bytes(&[0x41; 32]).public();
@@ -1151,7 +1318,7 @@ mod tests {
         // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
         {
             // --- node A: serve a blob over iroh-blobs ---
-            let server_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let server_ep = test_relay::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload = Bytes::from_static(b"collaborative filesystem payload");
             let hash = server_store
@@ -1165,7 +1332,7 @@ mod tests {
             let server_addr = server_ep.addr();
 
             // --- node B: empty store, must hydrate from A ---
-            let client_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let client_ep = test_relay::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store.clone());
 
@@ -1189,7 +1356,7 @@ mod tests {
             );
         }
         {
-            let server_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let server_ep = test_relay::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload = Bytes::from_static(b"healthy replica wins the hedge");
             let hash = server_store.ingest(payload.clone()).await.unwrap();
@@ -1197,7 +1364,7 @@ mod tests {
                 .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
                 .spawn();
 
-            let client_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let client_ep = test_relay::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store);
             let ghost = iroh::SecretKey::from_bytes(&[0x61; 32]).public();
@@ -1225,7 +1392,7 @@ mod tests {
     #[tokio::test]
     async fn prefetch_hydrates_every_chunk_within_the_policy_limit() {
         {
-            let server_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let server_ep = test_relay::direct_endpoint().await;
             let server_store = ContentStore::memory();
             let payload: Vec<u8> = (0..400_000u32)
                 .map(|i| (i.wrapping_mul(2_654_435_761) >> 11).to_le_bytes()[0])
@@ -1235,7 +1402,7 @@ mod tests {
                 .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
                 .spawn();
 
-            let client_ep = Endpoint::bind(presets::N0).await.unwrap();
+            let client_ep = test_relay::direct_endpoint().await;
             let client_store = Arc::new(ContentStore::memory());
             let hydrator = Hydrator::new(client_ep, client_store);
             hydrator.add_peer(server_ep.addr());
@@ -1265,7 +1432,7 @@ mod tests {
             );
         }
         {
-            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let endpoint = test_relay::direct_endpoint().await;
             let store = Arc::new(ContentStore::memory());
             let payload = vec![7u8; 1024];
             let manifest_hash = store.write_content(&payload).await.unwrap().unwrap();

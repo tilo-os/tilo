@@ -1,5 +1,7 @@
 //! Text that does not fit what layout gave it: a widget's own measurement read against its
-//! box while walking the tree, one widget at a time.
+//! box while walking the tree, one widget at a time, and every box a widget paints text into
+//! read against the text it holds, so rows laid out and cut off are found rather than read as
+//! a line that never had anything to say.
 
 use ui::kurbo::Rect;
 use ui::widget::Widget;
@@ -78,7 +80,9 @@ fn measure_walk(
         .map(|id| keys.push(id.to_owned()))
         .is_some();
     measure_one(widget, keys, clip, text, out);
+    cut_text(widget, keys, text, out);
     selection_lifts(widget, keys, out);
+    chevrons_on_their_lines(widget, keys, out);
     prompt_fits(widget, keys, out);
     let inner = widget
         .child_clip_rect()
@@ -164,6 +168,31 @@ fn measure_one(
     }
 }
 
+/// A box that paints text but cannot hold it: the rows past the box are laid out and painted
+/// nowhere, so a person sees one line cut short over space that stands empty.
+fn cut_text(
+    widget: &mut dyn Widget,
+    keys: &[String],
+    text: &mut ui::TextRenderer,
+    out: &mut Vec<Problem>,
+) {
+    let Some(cut) = ui::widget::capability::capability_mut::<dyn ui::widget::TextFits>(widget)
+        .and_then(|fits| fits.cut_text(text))
+    else {
+        return;
+    };
+    out.push(Problem {
+        kind: Kind::ClippedText,
+        keys: keys.iter().rev().cloned().collect(),
+        widget: widget.name().to_owned(),
+        id: widget.test_id().map(str::to_owned),
+        detail: format!(
+            "needs {:.0} high at its width, has {:.0}, so its last rows are never painted ({:?})",
+            cut.needs, cut.has, cut.said
+        ),
+    });
+}
+
 /// A lift a list painted past the row it selects: it stands around what the row shows, grown by
 /// the bleed a row grows its own face by ([`ui::widget::RowLift`]), so a lift reaching further
 /// fills the gutters beside the row with the person's choice.
@@ -189,6 +218,45 @@ fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>)
             ),
         });
     }
+}
+
+/// A chevron a list painted off the line of the row it folds: the box a tree's chevron takes holds
+/// the step in front of its row's words, so the two share one centre ([`ui::widget::virtual_list::RowChevron`]).
+/// A chevron riding a taller slot than its row — the room a finger's row takes, a row's own height
+/// under enlarged text — hangs under the words it folds.
+fn chevrons_on_their_lines(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
+    let Some(chevrons) = ui::widget::capability::capability::<
+        dyn ui::widget::virtual_list::PaintedRowChevrons,
+    >(widget)
+    .map(ui::widget::virtual_list::PaintedRowChevrons::painted_row_chevrons) else {
+        return;
+    };
+    for chevron in chevrons {
+        let Some(off) = chevron_off_line(chevron) else {
+            continue;
+        };
+        out.push(Problem {
+            kind: Kind::ChevronOffLine,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: widget.name().to_owned(),
+            id: widget.test_id().map(str::to_owned),
+            detail: format!(
+                "its chevron centres {off:.0} px off the line of the row it folds: {} against {}",
+                chevron.rect.center().y,
+                chevron.line.center().y
+            ),
+        });
+    }
+}
+
+/// How far a chevron's centre stands from its row's line centre, past the half pixel a layout on
+/// fractions of a pixel leaves.
+pub(super) fn chevron_off_line(chevron: ui::widget::virtual_list::RowChevron) -> Option<f64> {
+    if chevron.line.height() <= 0.0 {
+        return None;
+    }
+    let off = (chevron.rect.center().y - chevron.line.center().y).abs();
+    (off > 0.5).then_some(off)
 }
 
 /// A prompt a field painted wider than the line it prompts for: the text a person reads cut off

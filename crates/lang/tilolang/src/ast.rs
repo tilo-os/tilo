@@ -629,14 +629,9 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct RefLit {
-    /// The app part as written (an app id or an alias); empty for `@kind:id`.
-    pub app: String,
-    pub ty: String,
-    pub id: String,
-    pub version: Option<String>,
-}
+// The reference literal is the lexer's: it reads `@app.Type:id` as one token, and the tree keeps
+// the same value a token held.
+pub use tilolang_lex::RefLit;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPart {

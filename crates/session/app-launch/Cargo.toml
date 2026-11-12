@@ -58,6 +58,13 @@ uuid.workspace = true
 # launch takes it with.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 launcher = { path = "../../packaging/launcher" }
+# A tilolang window's instance, handed to the host of its workspace and author:
+# the installation verified as a launch verifies it, its module sealed, its
+# publisher's key, and where windows kept its record before.
+package-store = { path = "../../packaging/package-store", features = ["store"] }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-app-state = { path = "../../system/app-state" }
+hex.workspace = true
 # The window request the door carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
@@ -71,6 +78,10 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# A record a window kept, written as its own process writes it, read back
+# where its host keeps it.
+automerge.workspace = true
+durable-store = { path = "../../system/durable-store" }
 # The subscriber a test reads what an app wrote back through.
 tracing-subscriber = { workspace = true }
 tilo-test-env = { path = "../../dev/test-env" }

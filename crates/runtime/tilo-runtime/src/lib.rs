@@ -19,11 +19,13 @@ pub mod cli;
 mod daemon;
 #[cfg(target_os = "macos")]
 pub mod device_grants;
+pub mod enter;
 #[cfg(target_os = "macos")]
 mod i18n;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;
+pub mod mcp_windows;
 pub mod offload;
 mod os_search;
 pub mod profile;

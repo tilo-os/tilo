@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 
 use crate::Source;
 
@@ -343,7 +343,7 @@ pub fn playback_sessions() -> Vec<PlaybackSession> {
         reports.extend(external.values().flatten().cloned());
     }
     if let Ok(system) = system_registry().lock()
-        && system_reports_are_fresh(system.replaced_at, Instant::now())
+        && system_reports_are_fresh(system.replaced_at, tilo_clock::now())
     {
         append_discovered_reports(&mut reports, &system.reports);
     }
@@ -371,7 +371,7 @@ pub fn replace_system_reports(reports: Vec<PlaybackReport>) {
         .collect();
     if let Ok(mut system) = system_registry().lock() {
         system.reports = reports;
-        system.replaced_at = Some(Instant::now());
+        system.replaced_at = Some(tilo_clock::now());
     }
 }
 
@@ -396,7 +396,7 @@ pub fn playback_report(session_id: &str) -> Option<PlaybackReport> {
         return Some(report);
     }
     system_registry().lock().ok().and_then(|system| {
-        system_reports_are_fresh(system.replaced_at, Instant::now()).then_some(())?;
+        system_reports_are_fresh(system.replaced_at, tilo_clock::now()).then_some(())?;
         system
             .reports
             .iter()
@@ -634,7 +634,7 @@ mod tests {
             assert_eq!(reports, vec![explicit, other]);
         }
         {
-            let now = Instant::now();
+            let now = tilo_clock::now();
             assert!(system_reports_are_fresh(Some(now), now));
             assert!(!system_report_age_is_fresh(
                 SYSTEM_REPORT_TTL.saturating_add(Duration::from_millis(1))

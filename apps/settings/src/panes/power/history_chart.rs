@@ -139,7 +139,7 @@ impl HistoryChart {
             Span::Week => 24 * 60,
         };
         let first = (local(from).div_euclid(step) + 1) * step;
-        let style = ui::clock::TimeStyle::configured();
+        let style = ui::clock::configured();
         let mut ticks = Vec::new();
         let mut at = first;
         while at <= local(self.now) {
@@ -147,7 +147,7 @@ impl HistoryChart {
             let label = match self.span {
                 Span::Day => {
                     let of_day = at.rem_euclid(24 * 60);
-                    style.format_hm((of_day / 60) as u32, 0)
+                    style.format_hm((of_day / 60) as u32, 0, ui::format::words())
                 }
                 Span::Week => weekday_label(at.div_euclid(24 * 60)),
             };
@@ -174,8 +174,11 @@ impl HistoryChart {
     fn time_label(&self, minute: u64) -> String {
         let local = minute as i64 + self.local_offset / 60;
         let of_day = local.rem_euclid(24 * 60);
-        let time = ui::clock::TimeStyle::configured()
-            .format_hm((of_day / 60) as u32, (of_day % 60) as u32);
+        let time = ui::clock::configured().format_hm(
+            (of_day / 60) as u32,
+            (of_day % 60) as u32,
+            ui::format::words(),
+        );
         match self.span {
             Span::Day => time,
             Span::Week => t_args(

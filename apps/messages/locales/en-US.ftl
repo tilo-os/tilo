@@ -183,3 +183,19 @@ messages-person-accounts-active = The account in use for a service
 messages-message-drafts-drafts = The unsent words kept for each conversation
 
 messages-conversation-with = Conversation with { $person }
+
+## Actions
+
+tilo-messages = Messages
+tilo-messages-deliver-message = Deliver message
+tilo-messages-send-message = Send message
+tilo-messages-reply = Reply
+tilo-messages-view-select-setup-account = Choose account
+tilo-messages-view-open-person = Open person
+tilo-messages-view-open-conversation = Open conversation
+tilo-messages-view-select-route = Choose a route
+tilo-messages-view-back = Back to people
+tilo-messages-view-confirm-account = Review account
+tilo-messages-view-search-messages = Search messages
+tilo-messages-view-export-content = Export conversations
+tilo-messages-view-send = Send message

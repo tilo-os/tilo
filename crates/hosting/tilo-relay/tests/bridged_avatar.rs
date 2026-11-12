@@ -13,13 +13,9 @@
     reason = "the relay and the member's session live until the test ends"
 )]
 
-use std::sync::Arc;
-
 use neighbour_wire::NeighbourMsg;
-use tilo_connector::BlobAccess as _;
 use tilo_peer_state::peer_handle;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::room_bots::installed::FsBlobs;
 use tilo_relay::workspaces::WorkspaceSummary;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -61,7 +57,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     let host = alice.enrol("alice-home", DeviceCapabilities::host());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             ..RelayConfig::default()
@@ -76,17 +72,18 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     .await
     .unwrap();
 
-    // What a bridge fetched from the other service, kept as the host keeps
-    // it: larger than one piece, so the member reassembles it.
-    let blobs = Arc::new(FsBlobs::new(state.path().join("blobs"), None).unwrap());
-    let avatar: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
-    let hash = blobs.store(&avatar).unwrap();
-    relay
-        .workspaces()
-        .expect("the host governs rooms")
-        .serve_content(blobs);
-
     let (room, session) = member_in_a_new_room(&relay, &laptop).await;
+
+    // What a bridge fetched from the other service, kept as the host keeps
+    // it, in the workspace's content: larger than one piece, so the member
+    // reassembles it.
+    let avatar: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
+    let hash = relay
+        .content()
+        .get(&room.workspace)
+        .unwrap()
+        .put(&avatar)
+        .unwrap();
 
     let requester = peer_handle(&laptop.device_pubkey());
     let want = |hash: &str| {
@@ -95,6 +92,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
             app_id: CHAT.into(),
             cluster_id: room.workspace.clone(),
             hash: hash.into(),
+            have: Vec::new(),
         })
         .unwrap()
     };

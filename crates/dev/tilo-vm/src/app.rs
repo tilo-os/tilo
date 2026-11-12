@@ -101,12 +101,12 @@ fn start_connect_disposition(result: &Result<Remote, CliError>) -> StartConnectD
     }
 }
 
-fn foreign_frames_args() -> &'static [String] {
+fn windows_args() -> &'static [String] {
     static ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     ARGS.get_or_init(|| {
         vec![
             "raw".into(),
-            serde_json::json!({ "op": "foreign_frames" }).to_string(),
+            serde_json::json!({ "op": "windows" }).to_string(),
         ]
     })
 }
@@ -138,55 +138,55 @@ fn control_json(
     })
 }
 
-fn foreign_rows(value: &Value) -> impl Iterator<Item = &Value> {
+fn window_rows(value: &Value) -> impl Iterator<Item = &Value> {
     value
-        .get("foreign_frames")
-        .and_then(|frames| frames.get("frames"))
+        .get("answer")
+        .and_then(|answer| answer.get("windows"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
 }
 
-fn foreign_surface_ids(value: &Value) -> std::collections::HashSet<u64> {
-    foreign_rows(value)
-        .filter_map(|frame| frame.get("surface_id").and_then(Value::as_u64))
+fn window_ids(value: &Value) -> std::collections::HashSet<u64> {
+    window_rows(value)
+        .filter_map(|row| row.get("window").and_then(Value::as_u64))
         .collect()
 }
 
-fn parse_foreign_frame(value: &Value) -> Option<ForeignFrame> {
-    let rect = value.get("rect").and_then(|rect| {
+fn parse_window(value: &Value) -> Option<ForeignFrame> {
+    let rect = value.get("rect").and_then(Value::as_array).and_then(|at| {
         Some(ForeignRect {
-            x: rect.get("x")?.as_f64()?,
-            y: rect.get("y")?.as_f64()?,
-            w: rect.get("w")?.as_f64()?,
-            h: rect.get("h")?.as_f64()?,
+            x: at.first()?.as_f64()?,
+            y: at.get(1)?.as_f64()?,
+            w: at.get(2)?.as_f64()?,
+            h: at.get(3)?.as_f64()?,
         })
     });
     Some(ForeignFrame {
-        surface_id: value.get("surface_id")?.as_u64()?,
-        frame_seq: value.get("frame_seq")?.as_u64()?,
+        surface_id: value.get("window")?.as_u64()?,
+        frame_seq: value.get("frames")?.as_u64()?,
         rect,
     })
 }
 
-fn matching_presented_frame(
+fn matching_presented_window(
     value: &Value,
     app_id: &str,
     baseline_ids: &std::collections::HashSet<u64>,
 ) -> Option<ForeignFrame> {
-    foreign_rows(value).find_map(|frame| {
-        let parsed = parse_foreign_frame(frame)?;
-        (frame.get("app_id").and_then(Value::as_str) == Some(app_id)
-            && frame.get("presented").and_then(Value::as_bool) == Some(true)
+    window_rows(value).find_map(|row| {
+        let parsed = parse_window(row)?;
+        (row.get("app_id").and_then(Value::as_str) == Some(app_id)
+            && parsed.rect.is_some()
             && parsed.frame_seq > 0
             && !baseline_ids.contains(&parsed.surface_id))
         .then_some(parsed)
     })
 }
 
-fn matching_surface(value: &Value, surface_id: u64) -> Option<ForeignFrame> {
-    foreign_rows(value).find_map(|frame| {
-        let parsed = parse_foreign_frame(frame)?;
+fn matching_window(value: &Value, surface_id: u64) -> Option<ForeignFrame> {
+    window_rows(value).find_map(|row| {
+        let parsed = parse_window(row)?;
         (parsed.surface_id == surface_id).then_some(parsed)
     })
 }
@@ -209,30 +209,29 @@ fn flight_failure(message: impl Into<String>) -> CliError {
 mod flight_tests {
     use super::*;
 
-    fn frames(rows: &Value) -> Value {
-        json!({ "foreign_frames": { "frames": rows } })
+    fn windows(rows: &Value) -> Value {
+        json!({ "answer": { "windows": rows } })
     }
 
     #[test]
-    fn presented_flight_surface_must_be_new_matching_and_real() {
-        let baseline = frames(&json!([
-            { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 8, "presented": true }
+    fn presented_flight_window_must_be_new_matching_and_mapped() {
+        let baseline = windows(&json!([
+            { "window": 4, "app_id": "chatgpt", "frames": 8, "rect": [0, 0, 100, 100] }
         ]));
-        let ids = foreign_surface_ids(&baseline);
-        let current = frames(&json!([
-            { "surface_id": 4, "app_id": "chatgpt", "frame_seq": 9, "presented": true },
-            { "surface_id": 5, "app_id": "other", "frame_seq": 1, "presented": true },
-            { "surface_id": 6, "app_id": "chatgpt", "frame_seq": 0, "presented": false },
+        let ids = window_ids(&baseline);
+        let current = windows(&json!([
+            { "window": 4, "app_id": "chatgpt", "frames": 9, "rect": [0, 0, 100, 100] },
+            { "window": 5, "app_id": "other", "frames": 1, "rect": [0, 0, 100, 100] },
+            { "window": 6, "app_id": "chatgpt", "frames": 0, "rect": null },
             {
-                "surface_id": 7,
+                "window": 7,
                 "app_id": "chatgpt",
-                "frame_seq": 2,
-                "presented": true,
-                "rect": { "x": 10.0, "y": 20.0, "w": 300.0, "h": 200.0 }
+                "frames": 2,
+                "rect": [10, 20, 300, 200]
             }
         ]));
 
-        let selected = matching_presented_frame(&current, "chatgpt", &ids).expect("new frame");
+        let selected = matching_presented_window(&current, "chatgpt", &ids).expect("new window");
         assert_eq!(selected.surface_id, 7);
         assert_eq!(selected.frame_seq, 2);
         let rect = selected.rect.expect("placement");
@@ -240,14 +239,14 @@ mod flight_tests {
     }
 
     #[test]
-    fn frame_lookup_tracks_the_same_surface_after_input() {
-        let value = frames(&json!([
-            { "surface_id": 12, "app_id": "chatgpt", "frame_seq": 41, "presented": true },
-            { "surface_id": 13, "app_id": "chatgpt", "frame_seq": 99, "presented": true }
+    fn window_lookup_tracks_the_same_window_after_input() {
+        let value = windows(&json!([
+            { "window": 12, "app_id": "chatgpt", "frames": 41, "rect": [0, 0, 10, 10] },
+            { "window": 13, "app_id": "chatgpt", "frames": 99, "rect": [0, 0, 10, 10] }
         ]));
 
-        assert_eq!(matching_surface(&value, 12).expect("surface").frame_seq, 41);
-        assert!(matching_surface(&value, 14).is_none());
+        assert_eq!(matching_window(&value, 12).expect("window").frame_seq, 41);
+        assert!(matching_window(&value, 14).is_none());
     }
 }
 
@@ -2490,7 +2489,7 @@ impl App {
         };
         next.push(format!("tilo-vm vm status {name}"));
         next.push(format!("tilo-vm vm use {name}"));
-        next.push("tilo-vm swap --slot device shell --from sha:<commit>".into());
+        next.push("tilo-vm swap --slot device tilo-session --from sha:<commit>".into());
         self.warnings.clear();
         Ok(Outcome {
             next,
@@ -5283,13 +5282,8 @@ impl App {
             .checked_add(timeout)
             .ok_or_else(|| flight_failure("flight timeout is too large"))?;
         let mut worst_control = Duration::ZERO;
-        let baseline = control_json(
-            &mut remote,
-            &slot,
-            foreign_frames_args(),
-            &mut worst_control,
-        )?;
-        let baseline_ids = foreign_surface_ids(&baseline);
+        let baseline = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+        let baseline_ids = window_ids(&baseline);
 
         let launched_at = Instant::now();
         control_json(
@@ -5306,13 +5300,8 @@ impl App {
 
         let (surface_id, initial_frame_seq) = loop {
             ensure_before(deadline, "app did not present before the flight deadline")?;
-            let value = control_json(
-                &mut remote,
-                &slot,
-                foreign_frames_args(),
-                &mut worst_control,
-            )?;
-            if let Some(frame) = matching_presented_frame(&value, app_id, &baseline_ids) {
+            let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+            if let Some(frame) = matching_presented_window(&value, app_id, &baseline_ids) {
                 break (frame.surface_id, frame.frame_seq);
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -5326,13 +5315,8 @@ impl App {
             )));
         }
 
-        let value = control_json(
-            &mut remote,
-            &slot,
-            foreign_frames_args(),
-            &mut worst_control,
-        )?;
-        let rect = matching_surface(&value, surface_id)
+        let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+        let rect = matching_window(&value, surface_id)
             .and_then(|frame| frame.rect)
             .ok_or_else(|| flight_failure(format!("surface {surface_id} has no focusable rect")))?;
         control_json(
@@ -5357,13 +5341,8 @@ impl App {
                 deadline,
                 "focused app did not present a frame after injected input",
             )?;
-            let value = control_json(
-                &mut remote,
-                &slot,
-                foreign_frames_args(),
-                &mut worst_control,
-            )?;
-            if let Some(frame) = matching_surface(&value, surface_id)
+            let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+            if let Some(frame) = matching_window(&value, surface_id)
                 && frame.frame_seq > initial_frame_seq
             {
                 break frame.frame_seq;
@@ -8229,7 +8208,7 @@ mod tests {
                 added
                     .next
                     .iter()
-                    .any(|n| n.starts_with("tilo-vm swap --slot device shell")),
+                    .any(|n| n.starts_with("tilo-vm swap --slot device tilo-session")),
                 "{:?}",
                 added.next
             );

@@ -26,7 +26,7 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
     Box::new(
         EmptyState::new("No response yet")
             .with_icon(Icon::Globe)
-            .with_message("Send the request to see what comes back.")
+            .with_message(crate::locales::CATALOG.t("api-tester-no-response-hint"))
             .into_scrollable(),
     )
 }
@@ -35,7 +35,7 @@ pub(crate) fn empty(_sink: &Sink) -> Element {
 pub(crate) fn sending(sink: &Sink) -> Element {
     let waiting = EmptyState::new("Sending request")
         .with_icon(Icon::Send)
-        .with_message("Waiting for the server to respond.")
+        .with_message(crate::locales::CATALOG.t("api-tester-waiting-response"))
         .with_action("Cancel request")
         .with_action_id("api.response.cancel");
     Box::new(
@@ -90,7 +90,7 @@ pub(crate) fn response(
     let switch = ui::widget::ViewTabs::new(
         ResponseView::ALL
             .iter()
-            .map(|v| Segment::new(v.label()))
+            .map(|v| Segment::new(crate::locales::CATALOG.t(v.message())))
             .collect(),
         ResponseView::ALL
             .iter()
@@ -121,25 +121,25 @@ pub(crate) fn response(
         sink,
         "api.copy.body",
         Icon::Copy,
-        "Copy body",
+        &crate::locales::CATALOG.t("api-tester-copy-body"),
         "body",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.headers",
         Icon::List,
-        "Copy headers",
+        &crate::locales::CATALOG.t("api-tester-copy-headers"),
         "headers",
     ));
     let summary = summary.push(copy_control(
         sink,
         "api.copy.request",
         Icon::ClipboardPaste,
-        "Copy request",
+        &crate::locales::CATALOG.t("api-tester-copy-request"),
         "request",
     ));
     let summary = summary.push(Box::new(switch));
-    let (slot, handle) = Slot::new(body(data, view));
+    let (slot, handle) = Slot::new(body_view(data, view));
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(summary))
@@ -172,7 +172,10 @@ pub(crate) fn size_caption(data: &ResponseData) -> String {
     if data.size_exact {
         size(data.size_bytes)
     } else {
-        format!("More than {}", size(data.size_bytes))
+        crate::locales::CATALOG.t_args(
+            "api-tester-size-more-than",
+            &[("size", size(data.size_bytes).into())],
+        )
     }
 }
 
@@ -189,7 +192,7 @@ pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
     }
 }
 
-pub(crate) fn body(data: &ResponseData, view: ResponseView) -> Element {
+pub(crate) fn body_view(data: &ResponseData, view: ResponseView) -> Element {
     match view {
         ResponseView::Pretty if data.is_json() => Box::new(
             Scrollable::new_vertical()
@@ -220,7 +223,8 @@ fn headers(rows: &[KeyValue]) -> Element {
             .with_kind(TextKind::Identifier)
             .with_text(|row: &KeyValue| row.value.clone()),
     ];
-    let mut table = DataTable::new(columns).with_accessible_name("Response headers");
+    let mut table = DataTable::new(columns)
+        .with_accessible_name(crate::locales::CATALOG.t("api-tester-response-headers"));
     table.set_rows(rows.to_vec());
     Box::new(
         Scrollable::new_vertical()

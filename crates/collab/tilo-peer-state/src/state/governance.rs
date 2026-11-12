@@ -3,10 +3,11 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, SigningKey,
-    Subject, SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    member_role_from_role, now_ns, workspace,
+    GrantId, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role, Subject,
+    SystemTime, Transactable, administrator_grant_id, err, governed_map, member_role_from_role,
+    now_ns, workspace,
 };
+use collab_types::signer::DeviceSigner;
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the workspace's governance grants its apps.
@@ -31,31 +32,53 @@ impl PeerGovernance<'_> {
         now: SystemTime,
     ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
         let access = self.peer.governance().governed_access(now)?;
-        Ok(access
-            .member_devices
-            .into_iter()
-            .filter_map(|device| {
-                self.peer
-                    .permissions(device, now)
-                    .ok()
-                    .map(|member| (device, member.standing()))
-            })
-            .collect())
+        self.standings_of(&access.member_devices, now)
     }
-    /// Current governed access derived from the admitted workspace document.
-    pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
-        let policy = self
+    /// [`Self::governed_standings`] of `devices`, the member devices
+    /// [`Self::governed_access`] at `now` answered: a host that just listed
+    /// them for its access does not list them again.
+    pub fn standings_of(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+        let doc = self
             .peer
             .core
             .workspace_doc
             .as_ref()
-            .ok_or("workspace governance missing")?
-            .policy();
-        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
+            .ok_or("workspace governance missing")?;
+        // One policy, shared by every device's standing.
+        let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
+        Ok(devices
+            .iter()
+            .copied()
+            .filter_map(|device| {
+                self.peer
+                    .member_with(device, std::sync::Arc::clone(&policy), now)
+                    .ok()
+                    .map(|member| (device, member))
+            })
+            .collect())
+    }
+    /// Current governed access derived from the admitted workspace document.
+    ///
+    /// Each identity row is decoded and its certificate's signature verified
+    /// once per document state: a page in a workspace of hundreds of people
+    /// lists its member devices for every frame its channels take in.
+    pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        let certificates = doc.identity_certificates();
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
-        for bytes in policy.identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        for (key, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             // An agent outside its delegation reads and writes nothing.
             if identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
@@ -63,10 +86,13 @@ impl PeerGovernance<'_> {
             {
                 continue;
             }
-            let cert = identity.device_cert;
-            if tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).is_err()
-                || self.peer.core.revocations.refuses(&cert)
-            {
+            let Some(cert) = certificates
+                .get(key)
+                .and_then(|cert| cert.current_typed(now_ns(now)).ok())
+            else {
+                continue;
+            };
+            if self.peer.core.revocations.refuses(cert) {
                 continue;
             }
             let person = hex::encode(cert.user_public_key);
@@ -85,17 +111,44 @@ impl PeerGovernance<'_> {
         })
     }
 
+    /// Whether the workspace's governance names `device` as a device of a
+    /// person it no longer has as a member: one it removed, or whose part
+    /// ended. A device it never named is not one; neither is any while no
+    /// governance is held here.
+    pub fn removed_device(self, device: [u8; 32]) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        let policy = doc.policy();
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        let mut named = false;
+        for bytes in policy.identities.values() {
+            let Ok(identity) = GovernedIdentity::decode(bytes) else {
+                continue;
+            };
+            if identity.device_cert.device_public_key != device {
+                continue;
+            }
+            let person = hex::encode(identity.device_cert.user_public_key);
+            if workspace_policy.active_role(&person).is_some() {
+                return false;
+            }
+            named = true;
+        }
+        named
+    }
+
     /// Whether `key`'s device may issue an invitation into the workspace at
     /// `now`: a current member whose part there grants inviting. What the
     /// surfaces that offer inviting show; an invitation's write path asks it
     /// again, with the part its link hands out.
-    pub fn may_invite(self, key: &SigningKey, now: SystemTime) -> bool {
+    pub fn may_invite(self, key: &dyn DeviceSigner, now: SystemTime) -> bool {
         self.peer.require_inviter(key, now).is_ok()
     }
 
     /// Whether `key`'s device may hand out `role` in an invitation into the
     /// workspace at `now`: what the surfaces offering a part to grant list.
-    pub fn may_invite_role(self, key: &SigningKey, role: Role, now: SystemTime) -> bool {
+    pub fn may_invite_role(self, key: &dyn DeviceSigner, role: Role, now: SystemTime) -> bool {
         self.peer
             .require_invitation_authority(key, role, now)
             .is_ok()
@@ -121,17 +174,23 @@ impl PeerGovernance<'_> {
             let access = self.peer.governance().governed_access(now)?;
             return Ok(Some(access.member_devices.into_iter().collect()));
         }
-        let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
-        let readers = self
-            .peer
-            .governance()
-            .withheld_record_readers(now, &routes)?;
-        let Some(withheld) = readers.withheld.get(&channel) else {
+        // Only the asked channel's record is decided: a frame on one record's
+        // channel never pays for every record the workspace's grants name.
+        let access = self.peer.governance().governed_access(now)?;
+        let policy = self.governed_policy()?;
+        let workspace = self.peer.core.workspace.as_str();
+        let Some((app, record)) = collab_types::named_records(&policy.grants, workspace)
+            .chain(route.map(|route| (route.app.as_str(), route.record.as_str())))
+            .find(|(app, record)| {
+                collab_types::document_channel_id(app, workspace, record) == channel
+            })
+        else {
             return Ok(None);
         };
+        let withheld = self.withheld_from(&access, &policy, now, app, record);
         Ok(Some(
-            readers
-                .readers
+            access
+                .member_devices
                 .into_iter()
                 .filter(|device| !withheld.contains(device))
                 .collect(),
@@ -149,23 +208,14 @@ impl PeerGovernance<'_> {
         now: SystemTime,
         route: &collab_types::ChannelRoute,
     ) -> Result<collab_types::ChannelId, String> {
-        let readers = self
-            .peer
-            .governance()
-            .withheld_record_readers(now, std::slice::from_ref(route))?;
-        let unit =
-            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record);
-        Ok(
-            if readers
-                .withheld
-                .get(&unit)
-                .is_some_and(|denied| !denied.is_empty())
-            {
-                unit
-            } else {
-                collab_types::workspace_scope(&self.peer.core.workspace)
-            },
-        )
+        let access = self.peer.governance().governed_access(now)?;
+        let policy = self.governed_policy()?;
+        let withheld = self.withheld_from(&access, &policy, now, &route.app, &route.record);
+        Ok(if withheld.is_empty() {
+            collab_types::workspace_scope(&self.peer.core.workspace)
+        } else {
+            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record)
+        })
     }
 
     /// The governed member devices a Read Deny keeps out of a record's
@@ -193,27 +243,8 @@ impl PeerGovernance<'_> {
         routes: &[collab_types::ChannelRoute],
     ) -> Result<RecordReaders, String> {
         let access = self.peer.governance().governed_access(now)?;
-        let policy = self
-            .peer
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("workspace governance missing")?
-            .policy()
-            .workspace_policy(&self.peer.core.workspace);
+        let policy = self.governed_policy()?;
         let workspace = self.peer.core.workspace.as_str();
-        let denied = |app: &str, record: &str| -> BTreeSet<[u8; 32]> {
-            access
-                .member_devices
-                .iter()
-                .copied()
-                .filter(|device| {
-                    self.peer
-                        .check_document_read(*device, app, record, now)
-                        .is_err()
-                })
-                .collect()
-        };
         let mut records: BTreeSet<(&str, &str)> =
             collab_types::named_records(&policy.grants, workspace).collect();
         records.extend(
@@ -221,27 +252,15 @@ impl PeerGovernance<'_> {
                 .iter()
                 .map(|route| (route.app.as_str(), route.record.as_str())),
         );
-        let mut withheld = std::collections::HashMap::new();
-        for (app, record) in records {
-            // Only a grant below the workspace or a member's own record (read
-            // by that person alone) can decide a record otherwise than the
-            // workspace: a record neither covers is read by every member.
-            let node = collab_types::document_node(workspace, app, record);
-            let covered = collab_types::member_record(record).is_some()
-                || policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
-            let devices = if covered {
-                denied(app, record)
-            } else {
-                BTreeSet::new()
-            };
-            withheld.insert(
-                collab_types::document_channel_id(app, workspace, record),
-                devices,
-            );
-        }
+        let withheld = records
+            .into_iter()
+            .map(|(app, record)| {
+                (
+                    collab_types::document_channel_id(app, workspace, record),
+                    self.withheld_from(&access, &policy, now, app, record),
+                )
+            })
+            .collect();
         // Every channel whose record the node cannot name may be any record, a
         // member's own included: no device is admitted to it until a device
         // names its record.
@@ -252,6 +271,55 @@ impl PeerGovernance<'_> {
             withheld,
             unrouted,
         })
+    }
+
+    /// The devices of `access` that may not read `app`'s `record` at `now`
+    /// under `policy`, the workspace's current policy, built once by the
+    /// caller for every device it decides.
+    fn withheld_from(
+        self,
+        access: &GovernedAccess,
+        policy: &tilo_action_policy::WorkspacePolicy,
+        now: SystemTime,
+        app: &str,
+        record: &str,
+    ) -> BTreeSet<[u8; 32]> {
+        // Only a grant below the workspace or a member's own record (read
+        // by that person alone) can decide a record otherwise than the
+        // workspace: a record neither covers is read by every member.
+        let node = collab_types::document_node(&self.peer.core.workspace, app, record);
+        let covered = collab_types::member_record(record).is_some()
+            || policy
+                .grants
+                .iter()
+                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
+        if !covered {
+            return BTreeSet::new();
+        }
+        // A member's own record is that person's alone, whatever the grants
+        // say: a device of anyone else is withheld without deciding it, so a
+        // workspace of hundreds of people decides each such record for one
+        // person's devices, not for everyone's.
+        let theirs = collab_types::member_record(record)
+            .and_then(|(person, _)| <[u8; 32]>::try_from(hex::decode(person).ok()?).ok());
+        access
+            .member_devices
+            .iter()
+            .copied()
+            .filter(|device| {
+                if let Some(person) = theirs
+                    && self
+                        .peer
+                        .certificate(device, now)
+                        .is_ok_and(|cert| cert.user_public_key != person)
+                {
+                    return true;
+                }
+                self.peer
+                    .check_document_read_under(policy, *device, app, record, now)
+                    .is_err()
+            })
+            .collect()
     }
 
     /// The workspace's people and grants as its governance records them: its
@@ -265,7 +333,57 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        Ok(doc.policy().workspace_policy(&self.peer.core.workspace))
+        Ok(doc.workspace_policy(&self.peer.core.workspace).clone())
+    }
+    /// How the workspace's membership log stands against its rows, for an
+    /// operator: how many operations it holds, whether it has started, and
+    /// each way the membership it replays to differs from the one the rows
+    /// hold (log first). Where they differ, every membership change this
+    /// host writes on top is refused.
+    pub fn membership_log(self) -> Result<Vec<String>, String> {
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        let workspace = &self.peer.core.workspace;
+        let held = crate::members::ops(doc);
+        let rows = crate::members::rows(doc, workspace);
+        let mut said = vec![format!(
+            "{} membership operations; log {}; owner {:?}",
+            held.len(),
+            if crate::members::starts(doc, workspace) {
+                "started"
+            } else {
+                "not started"
+            },
+            rows.owner
+        )];
+        for op in held.values() {
+            let command = match &op.command {
+                crate::members::MembershipOpCommand::Genesis { .. } => "genesis".to_owned(),
+                crate::members::MembershipOpCommand::Governance { rows } => {
+                    format!("governance of {} rows", rows.len())
+                }
+                crate::members::MembershipOpCommand::Project { changes } => {
+                    format!("{changes:?}").chars().take(400).collect()
+                }
+            };
+            said.push(format!(
+                "  op by {} on device {} at {}: {command}",
+                op.person(),
+                hex::encode(op.author.device_public_key),
+                op.at_ns
+            ));
+        }
+        let log = crate::members::replay(doc, workspace);
+        said.extend(
+            crate::members::differences(&log, &rows)
+                .into_iter()
+                .map(|line| format!("  log against rows: {line}")),
+        );
+        Ok(said)
     }
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
@@ -276,12 +394,18 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        let policy = doc.policy();
-        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
-        let names = workspace::governance_of(Some(doc)).peers;
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        // Read once per document state ([`crate::cached_document`]), so
+        // listing the people costs no decoding or signature check for a row
+        // a change left as it was.
+        let names = &doc.policy().names;
+        let certificates = doc.identity_certificates();
         let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
-        for (id, bytes) in &policy.identities {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        // The name each person goes by here, which one of their own devices
+        // says and no key of theirs does ([`Naming`]).
+        let mut naming: BTreeMap<[u8; 32], Naming> = BTreeMap::new();
+        for (id, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             let Some(receipt) = identity
                 .admission
                 .as_ref()
@@ -292,20 +416,26 @@ impl PeerGovernance<'_> {
             let root = identity.device_cert.user_public_key;
             let person = hex::encode(root);
             let role = workspace_policy.active_role(&person);
-            let administrator = role == Some(Role::Owner)
-                || workspace_policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.id == administrator_grant_id(root));
+            // Named once for the person, not once for each grant it is held
+            // against: every member's row asks this.
+            let administrator = role == Some(Role::Owner) || {
+                let id = administrator_grant_id(root);
+                workspace_policy.grants.iter().any(|grant| grant.id == id)
+            };
             let active_role = if role == Some(Role::Owner) {
                 Some(crate::join::MemberRole::Editor)
             } else {
                 role.and_then(member_role_from_role)
             };
+            naming.entry(root).or_default().learn(
+                &identity.device_cert,
+                identity.delegate.is_none(),
+                names.get(id).map(String::as_str),
+            );
             let row = rows.entry(root).or_insert_with(|| GovernedMember {
                 user_public_key: root,
                 role: active_role.unwrap_or(receipt.role),
-                display_name: names.get(id).cloned(),
+                display_name: None,
                 active_device_keys: Vec::new(),
                 removed: active_role.is_none(),
                 administrator,
@@ -314,20 +444,23 @@ impl PeerGovernance<'_> {
                 row.role = role;
                 row.removed = false;
                 let cert = &identity.device_cert;
-                if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                if certificates
+                    .get(id)
+                    .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
                     && !self.peer.core.revocations.refuses(cert)
                 {
                     row.active_device_keys.push(cert.device_public_key);
                 }
-            }
-            if row.display_name.is_none() {
-                row.display_name = names.get(id).cloned();
             }
         }
         let mut rows = rows.into_values().collect::<Vec<_>>();
         for row in &mut rows {
             row.active_device_keys.sort_unstable();
             row.active_device_keys.dedup();
+            row.display_name = naming
+                .get(&row.user_public_key)
+                .and_then(Naming::name)
+                .map(str::to_owned);
         }
         Ok(rows)
     }
@@ -395,6 +528,58 @@ impl PeerGovernance<'_> {
         Ok(member_role_from_role(role).unwrap_or(crate::join::MemberRole::Moderator))
     }
 }
+
+/// How one person is named in a workspace, from the identities of theirs it
+/// recorded: the name their own oldest device goes by, or none.
+///
+/// A person holds a workspace through devices of their own — a laptop, a
+/// phone, a page — and through keys made to act for them: an agent's grant, a
+/// server key a backend holds, a key minted for one workspace. Every one of
+/// them is an identity of the same person, each named in the workspace by its
+/// own label or by the invitation that admitted it, so the person's row takes
+/// its name from a device of theirs and never from a key's label: "Jane Doe's
+/// agent" names the agent, not Jane. A person who names themself
+/// ([`Self::name_person`]'s caller) has that name on every identity of
+/// theirs, their own devices included, so it is what their row says. A person
+/// the workspace knows only through keys made for them has no name here, and
+/// the row says so rather than borrowing a key's.
+#[derive(Default)]
+struct Naming {
+    /// The name of their own device whose certificate was issued earliest,
+    /// with when it was issued and that device's key, the tie-break.
+    own: Option<(u64, [u8; 32], String)>,
+}
+
+impl Naming {
+    /// Take the name `identity` goes by when it is a device of the person's
+    /// own: one they hold and act with, not one made to act for them. `theirs`
+    /// is false for a delegate of theirs — an agent or an installed bot — which
+    /// goes by a name of its own whatever its certificate says.
+    fn learn(&mut self, identity: &DeviceCert, theirs: bool, name: Option<&str>) {
+        let capabilities = &identity.capabilities;
+        if !theirs || capabilities.agent.is_some() || capabilities.stand_in {
+            return;
+        }
+        let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+            return;
+        };
+        let issued = identity.issued_at_ns;
+        let device = identity.device_public_key;
+        if self
+            .own
+            .as_ref()
+            .is_some_and(|(at, key, _)| (issued, device) >= (*at, *key))
+        {
+            return;
+        }
+        self.own = Some((issued, device, name.to_owned()));
+    }
+
+    /// The person's name here, when the workspace recorded one.
+    fn name(&self) -> Option<&str> {
+        self.own.as_ref().map(|(_, _, name)| name.as_str())
+    }
+}
 impl PeerGovernanceMut<'_> {
     /// Publish root-signed revocations into pinned governance, so every
     /// replica refuses the revoked devices. The authority's root revokes any
@@ -409,7 +594,7 @@ impl PeerGovernanceMut<'_> {
     pub fn publish_governed_revocations(
         self,
         entries: &[tilo_user_identity::RevocationEntry],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let owner = self.peer.core.owner;
@@ -478,9 +663,33 @@ impl PeerGovernanceMut<'_> {
     pub fn admit_invited_member(
         self,
         redemption: &crate::join::VerifiedRedemption,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.admit_named_member(redemption, None, key, now)
+    }
+    /// [`Self::admit_invited_member`], naming the person `name` in the same
+    /// change, as [`Self::name_person`] would after it: the name every member
+    /// shows for them on each of their admitted devices' rows. `None` keeps
+    /// the name their invitation and certificate give.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit_invited_member`], and when `name` is not a display
+    /// name ([`tilo_user_identity::display_name`]).
+    pub fn admit_named_member(
+        self,
+        redemption: &crate::join::VerifiedRedemption,
+        name: Option<&str>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let name = name
+            .map(|name| {
+                tilo_user_identity::display_name(name)
+                    .map_err(tilo_user_identity::DisplayNameError::reason)
+            })
+            .transpose()?;
         if redemption.join().grant().room != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
@@ -504,7 +713,8 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        match crate::governance::admit_invited_member(&mut document, redemption, now)? {
+        match crate::governance::admit_invited_member(&mut document, cached, redemption, name, now)?
+        {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 self.peer
@@ -524,7 +734,7 @@ impl PeerGovernanceMut<'_> {
     pub fn admit_member_device(
         self,
         device: &DeviceCert,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -547,7 +757,6 @@ impl PeerGovernanceMut<'_> {
         let owner = self.peer.core.owner == device.user_public_key;
         if !owner
             && doc
-                .policy()
                 .workspace_policy(&self.peer.core.workspace)
                 .active_role(&person)
                 .is_none()
@@ -572,7 +781,7 @@ impl PeerGovernanceMut<'_> {
         doc.put(
             &identities,
             hex::encode(device.device_public_key),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&identity).map_err(err)?),
+            automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
         )
         .map_err(err)?;
         doc.commit();
@@ -592,20 +801,21 @@ impl PeerGovernanceMut<'_> {
     ///
     /// Returns an error if the change is not `key`'s device's to make, a row does not
     /// read back, or governance cannot be updated.
-    pub fn forget_expired_devices(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        let Some(doc) = self
-            .peer
-            .core
-            .workspace_doc
-            .as_ref()
-            .map(crate::cached_document::CachedDocument::policy)
-        else {
+    pub fn forget_expired_devices(
+        self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return Ok(false);
         };
+        // The rows as read once per governance state: a settle after every
+        // change looks for expired rows, and decoding every member's row each
+        // time made each change cost the workspace.
         let expired: Vec<[u8; 32]> = doc
-            .identities
+            .identities()
             .values()
-            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).map_err(err))
+            .map(|row| row.as_ref().map_err(err))
             .collect::<Result<Vec<_>, String>>()?
             .into_iter()
             .filter(|row| row.revocations.is_empty())
@@ -630,7 +840,7 @@ impl PeerGovernanceMut<'_> {
     fn forget_identity_rows(
         self,
         devices: &[[u8; 32]],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -663,7 +873,7 @@ impl PeerGovernanceMut<'_> {
         self,
         user_public_key: [u8; 32],
         role: crate::join::MemberRole,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
@@ -679,7 +889,7 @@ impl PeerGovernanceMut<'_> {
     pub fn set_member_administrator(
         self,
         user_public_key: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer
@@ -700,7 +910,7 @@ impl PeerGovernanceMut<'_> {
         self,
         user_public_key: [u8; 32],
         name: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let name = tilo_user_identity::display_name(name)
@@ -711,11 +921,10 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let policy = doc.policy();
-        let names = workspace::governance_of(Some(&doc)).peers;
+        let names = &doc.policy().names;
         let mut devices = Vec::new();
-        for (id, bytes) in &policy.identities {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        for (id, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             if identity.device_cert.user_public_key == user_public_key && identity.has_admission() {
                 devices.push(id.clone());
             }
@@ -753,7 +962,7 @@ impl PeerGovernanceMut<'_> {
     /// change it, or governance cannot be updated.
     pub fn reconcile_administrator_grants(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
@@ -810,7 +1019,7 @@ impl PeerGovernanceMut<'_> {
     pub fn remove_governed_grants(
         self,
         ids: &[GrantId],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -841,7 +1050,7 @@ impl PeerGovernanceMut<'_> {
     pub fn put_governed_grants(
         self,
         grants: &[Grant],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -883,7 +1092,7 @@ impl PeerGovernanceMut<'_> {
     pub fn remove_member(
         self,
         user_public_key: [u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.peer.require_member_writer(key, now)?;
@@ -925,7 +1134,7 @@ impl PeerGovernanceMut<'_> {
         // them takes them.
         if self
             .peer
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .is_ok_and(|cert| cert.user_public_key == user_public_key)
         {
             let identities = governed_map(&doc, "peer_identities_v1")?;
@@ -933,7 +1142,7 @@ impl PeerGovernanceMut<'_> {
                 .identities
                 .into_iter()
                 .filter(|(_, bytes)| {
-                    serde_json::from_slice::<super::GovernedIdentity>(bytes).is_ok_and(|identity| {
+                    super::GovernedIdentity::decode(bytes).is_ok_and(|identity| {
                         identity.device_cert.user_public_key == user_public_key
                     })
                 })
@@ -951,15 +1160,19 @@ impl PeerGovernanceMut<'_> {
 impl super::StatePeer {
     /// The current member writing with `key`, as its own device's authority
     /// holds it: what inviting is decided by.
-    fn inviter(&self, key: &SigningKey, now: SystemTime) -> Result<super::MemberAuthority, String> {
-        let device = key.verifying_key().to_bytes();
+    fn inviter(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<super::MemberAuthority, String> {
+        let device = key.device_public_key();
         self.require_member_writer(key, now)?;
         self.membership(device, now)
     }
 
     /// A current member's device whose person may invite: what an
     /// admission through an invitation is written by.
-    fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+    fn require_inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<(), String> {
         let member = self.inviter(key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
@@ -978,7 +1191,7 @@ impl super::StatePeer {
     /// no surface issues a link its person could not redeem itself.
     pub(crate) fn require_invitation_authority(
         &self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         role: Role,
         now: SystemTime,
     ) -> Result<(), String> {

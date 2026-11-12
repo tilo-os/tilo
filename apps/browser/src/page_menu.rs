@@ -142,7 +142,7 @@ impl PageMenu {
         use ui::a11y::{AccessNode, Role};
         self.menu.is_open().then(|| {
             AccessNode::new(Role::Menu)
-                .with_name("Page context menu")
+                .with_name(crate::resource::CATALOG.t("browser-page-menu-name"))
                 .with_children(self.access_rows(&self.items))
         })
     }

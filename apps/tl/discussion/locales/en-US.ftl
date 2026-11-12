@@ -24,12 +24,16 @@ d-3g3duquj = Items
 d-l7s2czjp = Comment
     .doc = Says something about the resource the comment is made from: the thread under a task, a note or a mail says it with `.made_from(r)`, so the comment records what it is about.
     .did = commented
+    .w-write-a-comment-first = Write a comment first
 
 d-iae4o5k3 = Edit
     .doc = Changes what a comment says.
+    .w-only-its-author-can-edit-a = Only its author can edit a comment
+    .w-write-a-comment-first = Write a comment first
 
 d-l3wyj42h = Delete
     .doc = Deletes a comment.
+    .w-only-its-author-can-delete-a = Only its author can delete a comment
 
 d-vzn4frig = Comment~present
 
@@ -39,7 +43,7 @@ d-kflwfuct = Delete~present
 
 d-upy33rnt = Thread
     .w-discussion = Discussion
-    .w-comment-on-this = Comment on this { $noun }
+    .w-add-a-comment = Add a comment
     .w-send = Send
 
 d-nsv2jvpu = Written

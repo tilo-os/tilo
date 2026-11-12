@@ -21,6 +21,7 @@ use winit::event::WindowEvent;
 
 use super::{DesktopAsk, desk_is_empty, fill};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadPress};
+use ui::widget::DrawChild;
 
 /// Where one display shows the start cards: which display it belongs to,
 /// where that display stands in the desk, whether it shows no window, and
@@ -204,7 +205,8 @@ impl Widget for EmptyWorkspace {
     ) {
         for pad in &mut self.pads {
             if pad.shown {
-                pad.launchpad.draw(scene, transform, text, theme, presence);
+                pad.launchpad
+                    .draw_child(scene, transform, text, theme, presence);
             }
         }
     }
@@ -264,10 +266,11 @@ impl Widget for EmptyWorkspace {
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ui::automerge::ObjId) {
         for pad in &self.pads {
             match pad.launchpad.take_press() {
-                Some(LaunchpadPress::Card(card)) => self
-                    .asks
-                    .borrow_mut()
-                    .push(DesktopAsk::HostAction(card.host_id())),
+                Some(LaunchpadPress::Card(card)) => super::ask(
+                    &self.handle,
+                    &self.asks,
+                    DesktopAsk::HostAction(card.host_id()),
+                ),
                 Some(LaunchpadPress::OpenApp) => {
                     self.handle.open_search(Scope::WindowGroup(None), None);
                 }

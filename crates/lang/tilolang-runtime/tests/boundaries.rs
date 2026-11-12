@@ -2,12 +2,8 @@
 //! the rows of a `list` render when the host shows them.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Patch, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
         ViewInstance,
@@ -83,6 +79,40 @@ view chosen(bag: Bag) {
 
 view item_line(item: Item) {
     row(item.title, checkbox: item.done)
+}
+
+/// A list whose rows open into their item's document where they stand: the document is built
+/// for the row standing open, and for no other row on screen.
+view documents(bag: Bag) {
+    state opened: Option<Item> = .none
+    std.list(bag.items, opened) { (item, at) ->
+        ui.ListItem(item: item, presence: at) {
+            item_line(item)
+            detail: {
+                item_document(item)
+            }
+        }
+    }
+}
+
+/// A list whose rows' documents read what the rows themselves do not: the bag they are in.
+view bag_documents(bag: Bag) {
+    state opened: Option<Item> = .none
+    std.list(bag.items, opened) { (item, at) ->
+        ui.ListItem(item: item, presence: at) {
+            item_line(item)
+            detail: {
+                text("{item.title} is in {bag.name}")
+            }
+        }
+    }
+}
+
+view item_document(item: Item) {
+    section("About {item.title}") {
+        text("what {item.title} is for")
+        checkbox("Done", bind: item.done)
+    }
 }
 
 view item_row(item: Item) {
@@ -271,6 +301,116 @@ view tinted_row(item: Item, tint: Text) {
             .key
             .clone();
         view.fire(&place, "select").unwrap();
+    }
+
+    /// An app whose one view reads a card's title and nothing of its body.
+    const CARDS: &str = r#"app so.tilo.cards "Cards"
+
+type Card {
+    title: Text
+    body: RichText
+}
+
+type Deck {
+    cards: Collection<Card>
+}
+
+action add(d: Deck) -> Card {
+    return d.cards.insert(Card(title: "Card"))
+}
+
+action write(c: Card, body: RichText) {
+    c.body = body
+}
+
+root Deck
+
+default view card for Card
+
+default view deck for Deck
+
+view card(c: Card) {
+    section(c.title) {
+        text(c.title)
+    }
+}
+
+view deck(d: Deck) {
+    for c in d.cards {
+        card(c)
+    }
+}
+"#;
+
+    #[test]
+    fn what_a_host_shows_beside_what_the_view_read_runs_it_again() {
+        let app = App::compile(CARDS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let deck = rt.create("Deck").unwrap();
+        let card = match rt
+            .invoke_action(
+                &me(),
+                (app.action("add").as_str(), vec![Value::resource(&deck)]),
+            )
+            .unwrap()
+        {
+            InvokeOutcome::Done(Value::Ref(target)) => target.target,
+            other => panic!("{other:?}"),
+        };
+        let mut view = rt
+            .open_view(&me(), &app.view("card"), vec![Value::resource(&card)])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let _ = view.poll_patches().unwrap();
+
+        // The card's body is not what this view read: a change to it alone does not run it.
+        let write = |body: &str| {
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("write").as_str(),
+                    vec![
+                        Value::resource(&card),
+                        Value::Rich(tilolang_runtime::rich::RichValue::from_text(body)),
+                    ],
+                ),
+            )
+            .unwrap()
+        };
+        let opened = view.stats();
+        write("two");
+        let _ = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().root_runs,
+            opened.root_runs,
+            "a field the view read nothing of runs nothing it shows"
+        );
+
+        // What the host converted it reads: the view runs again when it changes, and the host
+        // converts the card again.
+        let body = app
+            .meta()
+            .types
+            .iter()
+            .find(|ty| ty.name == "Card")
+            .and_then(|ty| ty.fields.iter().find(|field| field.name == "body"))
+            .map(|field| field.id.clone())
+            .expect("the card's body");
+        view.shows([
+            (card.id_string(), body),
+            (
+                card.id_string(),
+                tilolang_runtime::store::ANY_FIELD.to_owned(),
+            ),
+        ]);
+        let shown = view.stats();
+        write("three");
+        let _ = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().root_runs,
+            shown.root_runs.saturating_add(1),
+            "what it shows changed: the view runs again, so the host converts it again"
+        );
     }
 
     #[test]
@@ -488,6 +628,159 @@ view tinted_row(item: Item, tint: Text) {
         let patches = view.poll_patches().unwrap();
         assert!(!patches.is_empty(), "the shown rows ran again");
         assert_eq!(shown(&mut view), ["item 1", "groceries"]);
+    }
+
+    /// The document of a row is built for the row standing open into its item, and for no other
+    /// row on screen: a list of ten thousand tasks costs the one page a person reads, and the
+    /// rows that stand closed carry none of theirs.
+    /// A closed row runs none of the document it would open into: what that document reads and
+    /// the row does not is no read of the row, so renaming the bag every document names runs
+    /// no row standing closed, and the row a person opens shows the bag's name now.
+    #[test]
+    fn a_closed_rows_document_reads_nothing() {
+        let rows = Rows::new(20);
+        let mut view = rows.view("bag_documents");
+        let list = list_key(&view);
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        let before = view.stats().renders;
+        rows.call(
+            "rename",
+            vec![Value::resource(&rows.bag), Value::text("groceries")],
+        );
+        view.poll_patches().unwrap();
+        // The view holding the list reads the bag; no row does.
+        let ran = view.stats().renders - before;
+        assert!(
+            ran <= 1,
+            "renaming the bag ran {ran} boundaries: the rows standing closed ran"
+        );
+
+        let third = view.row_key(&list, 2).expect("the third row");
+        view.open_row(&list, Some(&third));
+        view.poll_patches().unwrap();
+        let opened = view.row(&list, 2).unwrap().unwrap();
+        assert!(
+            texts(opened)
+                .iter()
+                .any(|text| text == "item 2 is in groceries"),
+            "the row standing open shows its document as the bag is now: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn a_rows_document_is_built_for_the_row_standing_open_alone() {
+        let rows = Rows::new(100);
+        let mut view = rows.view("documents");
+        let list = list_key(&view);
+        let opened = view.stats();
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        // Every row shows its item's line, and none shows a document: the row's `detail` slot
+        // holds what the item is about only while the row stands open into it.
+        for i in 0..10 {
+            let row = view.row(&list, i).unwrap().unwrap();
+            assert_eq!(titles(row), [format!("item {i}")]);
+            assert!(
+                texts(row).iter().all(|text| !text.contains("what item")),
+                "row {i} built the document of an item nobody opened"
+            );
+        }
+        // Two boundaries per row: the row and the line its item shows. A document would be a
+        // third.
+        assert_eq!(
+            view.stats().renders - opened.renders,
+            20,
+            "showing ten rows ran ten rows and their lines, and no document"
+        );
+
+        // The person opens the fourth row where it stands: its document arrives, built once.
+        let fourth = view.row_key(&list, 3).expect("the fourth row");
+        let before = view.stats().renders;
+        view.open_row(&list, Some(&fourth));
+        let patches = view.poll_patches().unwrap();
+        let opened_row = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(opened_row)
+                .iter()
+                .any(|text| text == "what item 3 is for"),
+            "the row standing open shows its item's document: {opened_row:?}"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|patch| matches!(patch, Patch::Insert { .. })),
+            "the document is sent where it stands: {patches:?}"
+        );
+        // The row, the line it shows, and the document it now stands open into.
+        assert_eq!(
+            view.stats().renders - before,
+            3,
+            "opening a row runs it, its line and its document, and no other row"
+        );
+        for i in 0..10 {
+            if i == 3 {
+                continue;
+            }
+            let row = view.row(&list, i).unwrap().unwrap();
+            assert!(
+                texts(row).iter().all(|text| !text.contains("what item")),
+                "row {i} built a document of its own beside the one the person reads"
+            );
+        }
+
+        // A change to the open row's item reaches its document as it ever did.
+        rows.retitle(3, "three");
+        view.poll_patches().unwrap();
+        let opened_row = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(opened_row)
+                .iter()
+                .any(|text| text == "what three is for"),
+            "{opened_row:?}"
+        );
+
+        // Closed again, the row drops its document, and no document of it runs from then on.
+        let before = view.stats().renders;
+        view.open_row(&list, None);
+        let patches = view.poll_patches().unwrap();
+        let closed = view.row(&list, 3).unwrap().unwrap();
+        assert!(
+            texts(closed).iter().all(|text| !text.contains("what")),
+            "the row that closed dropped its document: {closed:?}"
+        );
+        assert!(
+            patches
+                .iter()
+                .any(|patch| matches!(patch, Patch::Remove { .. })),
+            "the document is taken where it stood: {patches:?}"
+        );
+        // The row and the line it shows again; the document is gone, not built.
+        assert_eq!(
+            view.stats().renders - before,
+            2,
+            "closing a row runs it and its line again, and builds no document"
+        );
+        // The row still shows its item's line, and runs for that alone: the document of the
+        // item it no longer stands open into is not built again.
+        let before = view.stats().renders;
+        rows.retitle(3, "drei");
+        assert!(!view.poll_patches().unwrap().is_empty());
+        assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
+        assert!(
+            texts(view.row(&list, 3).unwrap().unwrap())
+                .iter()
+                .all(|text| !text.contains("what")),
+            "the closed row builds no document when its item changes"
+        );
+        assert!(
+            view.stats().renders - before <= 3,
+            "the closed row's item changing runs the view that holds the list, the row and its \
+             line, and no document: {} ran",
+            view.stats().renders - before
+        );
     }
 
     #[test]

@@ -87,9 +87,9 @@ impl ShellPart {
         let mut applied = false;
         for committed in host.take_committed_from(first) {
             let result = match host.store().take_ticket(committed.ticket) {
-                Some(action) => action
-                    .apply_as_step(&mut self.record.borrow_mut())
-                    .map_err(|error| error.to_string()),
+                Some(action) => {
+                    crate::commit::recorded(host, &mut self.record.borrow_mut(), &action)
+                }
                 None => Err(format!("no committed action {}", committed.ticket)),
             };
             match result {

@@ -70,8 +70,10 @@ use crate::editor_view::{EditorView, LspAsk, SyncText};
 use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
+use crate::resource::CATALOG;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 
 pub(crate) fn language_from_label(label: &str) -> Option<Language> {
@@ -576,7 +578,13 @@ impl CodeApp {
     fn failed_to_open(path: &std::path::Path, reason: &str) -> Self {
         let mut app = Self::new();
         app.notice = Some(Notice {
-            text: format!("Could not open {}: {reason}", path.display()),
+            text: CATALOG.t_args(
+                "code-editor-open-failed",
+                &[
+                    ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
+                    ("detail", ui::i18n::ArgValue::Text(reason.to_string())),
+                ],
+            ),
             is_error: true,
         });
         app
@@ -2747,9 +2755,12 @@ impl Widget for CodeApp {
         }
         Some(
             AccessNode::new(Role::Document)
-                .with_name(format!("Code: {}", self.session.project.name))
+                .with_name(CATALOG.t_args(
+                    "code-editor-a11y-code",
+                    &[("project", ArgValue::Text(self.session.project.name.clone()))],
+                ))
                 .with_description(
-                    "Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.",
+                    crate::resource::CATALOG.t("code-editor-a11y-document-description"),
                 )
                 .with_value(active)
                 .with_state(AccessState::new().focusable(true))

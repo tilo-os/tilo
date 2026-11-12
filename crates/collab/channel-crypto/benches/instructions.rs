@@ -125,9 +125,7 @@ fn admitting() -> Box<Admit> {
         .access_request_now(1, false, &fixture.vault)
         .expect("request")
         .expect("waiting");
-    founder
-        .learn_request(request, &fixture.vault)
-        .expect("learn");
+    founder.learn_request(request).expect("learn");
     Box::new(Admit {
         founder,
         allowed,
@@ -163,14 +161,12 @@ fn welcomed() -> Box<Welcome> {
         .access_request_now(1, false, &fixture.vault)
         .expect("request")
         .expect("waiting");
-    founder
-        .learn_request(request, &fixture.vault)
-        .expect("learn");
+    founder.learn_request(request).expect("learn");
     founder
         .reconcile_now(&allowed, &fixture.vault)
         .expect("admit");
     let frames = founder.outbox().to_vec();
-    founder.published(&fixture.vault).expect("published");
+    founder.published();
     Box::new(Welcome {
         joiner,
         frames,
@@ -221,13 +217,13 @@ fn membership_change() -> Box<MembershipChange> {
         .access_request_now(1, false, &vault)
         .expect("request")
         .expect("waiting");
-    founder.learn_request(request, &vault).expect("learn");
+    founder.learn_request(request).expect("learn");
     let two: BTreeSet<Ed25519PublicKey> = [public(&founder_key), public(&second_key)]
         .into_iter()
         .collect();
     founder.reconcile_now(&two, &vault).expect("admit");
     let frames = founder.outbox().to_vec();
-    founder.published(&vault).expect("published");
+    founder.published();
     for frame in &frames {
         if frame.added().contains(&public(&second_key)) {
             second
@@ -244,7 +240,7 @@ fn membership_change() -> Box<MembershipChange> {
         .access_request_now(1, false, &vault)
         .expect("request")
         .expect("waiting");
-    founder.learn_request(request, &vault).expect("learn");
+    founder.learn_request(request).expect("learn");
     let three: BTreeSet<Ed25519PublicKey> = [
         public(&founder_key),
         public(&second_key),

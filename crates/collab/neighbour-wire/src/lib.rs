@@ -20,14 +20,16 @@ pub mod colorimetry;
 /// pieces: what every participant of a workspace speaks, host or page.
 pub mod content;
 pub mod hdr_metadata;
+pub mod input;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
-pub mod record_sync;
 pub mod retention;
 pub mod unit_chain;
 
-pub use record_sync::{RecordSync, on_demand_record, record_chunk, record_part, record_sync};
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
+pub use tilo_actions::record_sync::{
+    RecordSync, chain_head, on_demand_record, record_chunk, record_part, record_sync,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 32;
+pub const PEER_PROTOCOL_VERSION: u32 = 41;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -300,16 +302,17 @@ impl WriteRefusal {
         postcard::to_allocvec(&unsigned).map_err(|error| error.to_string())
     }
 
-    /// Sign this fact with the refusing device's key, as the device that made
-    /// the verdict does.
+    /// Sign this fact with the refusing device's `signer`, which answers at
+    /// once ([`collab_types::signer::sign_now`]), as the device that made the
+    /// verdict does.
     ///
     /// # Errors
-    /// The fact does not encode.
-    pub fn sign(&mut self, key: &ed25519_dalek::SigningKey) -> Result<(), String> {
-        use ed25519_dalek::Signer as _;
-        self.by = key.verifying_key().to_bytes();
-        let signature = key.sign(&self.signed_bytes()?);
-        self.signature = signature.to_bytes().to_vec();
+    /// The fact does not encode, or the signer did not sign.
+    pub fn sign(&mut self, signer: &dyn collab_types::signer::DeviceSigner) -> Result<(), String> {
+        self.by = signer.device_public_key();
+        let signature = collab_types::signer::sign_now(signer, self.signed_bytes()?)
+            .map_err(|error| error.to_string())?;
+        self.signature = signature.to_vec();
         Ok(())
     }
 
@@ -347,7 +350,9 @@ pub enum NeighbourMsg {
     /// `room` is the workspace id as text that scopes the
     /// answer — an empty/unparseable value names no workspace (not a wildcard) and gets
     /// no document back. The transport emits one on peer-join, before it knows
-    /// what workspace the peer is in.
+    /// what workspace the peer is in. A device on a direct link sends one when
+    /// a frame the link brought leaves a change it cannot apply, and the other
+    /// end answers on that link with the state it holds.
     SyncReq {
         since: Vec<u8>,
         room: String,
@@ -658,13 +663,18 @@ pub enum NeighbourMsg {
     /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
     /// the workspace's topic, so only peers admitted to read the workspace see it;
     /// any of them holding the content answers with
-    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// [`Self::RecordContentPiece`]. `have` is what the asker already holds of
+    /// it, which an answer leaves out: a device asks again while it is missing
+    /// pieces, and every answer carries the next of them rather than all of
+    /// them, so a large piece of content arrives without one device filling
+    /// its peers' outbound queues. Appended to preserve every existing
     /// Postcard discriminant.
     RecordContentWant {
         requester: PeerId,
         app_id: String,
         cluster_id: String,
         hash: String,
+        have: Vec<content::Span>,
     },
     /// One bounded piece of a record's content, answering
     /// `requester`'s [`Self::RecordContentWant`]: `bytes` start at `offset` of the
@@ -760,6 +770,18 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         hosts: Vec<PersonalHost>,
     },
+    /// A workspace's host answering `device`'s access request for `channel`
+    /// when it carries no genesis of it: no group exists yet, so `device`
+    /// creates it now rather than waiting to hear of one. A host carrying a
+    /// genesis answers with it instead. Live only, never retained, and
+    /// unsigned: a false one makes a second genesis, which the channel's
+    /// members resolve to one. Appended to preserve every existing Postcard
+    /// discriminant.
+    MlsChannelUnfounded {
+        workspace: String,
+        channel: collab_types::ChannelId,
+        device: collab_types::Ed25519PublicKey,
+    },
 }
 
 /// Where one of the person's workspaces is hosted, as their other devices
@@ -790,6 +812,33 @@ impl NeighbourMsg {
     pub fn is_app_document(bytes: &[u8]) -> bool {
         const _: () = assert!(NeighbourMsg::APP_DOCUMENT_TAG < 0x80);
         bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
+    }
+
+    /// Postcard variant index of [`NeighbourMsg::MlsGovernance`], pinned to
+    /// a real encoding by a unit test as [`Self::APP_DOCUMENT_TAG`] is.
+    pub const MLS_GOVERNANCE_TAG: u8 = 20;
+    /// Postcard variant index of [`NeighbourMsg::MlsAccessRequest`].
+    pub const MLS_ACCESS_REQUEST_TAG: u8 = 21;
+    /// Postcard variant index of [`NeighbourMsg::MlsRoutedAccessRequest`].
+    pub const MLS_ROUTED_ACCESS_REQUEST_TAG: u8 = 25;
+
+    /// Whether `bytes` encode a frame of channel governance
+    /// ([`NeighbourMsg::MlsGovernance`]), reading only the variant tag as
+    /// [`Self::is_app_document`] does.
+    pub fn is_channel_governance(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::MLS_GOVERNANCE_TAG < 0x80);
+        bytes.first() == Some(&Self::MLS_GOVERNANCE_TAG)
+    }
+
+    /// Whether `bytes` encode a device's request to be admitted to a
+    /// channel's group, plain or routed, reading only the variant tag as
+    /// [`Self::is_app_document`] does.
+    pub fn is_access_request(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::MLS_ROUTED_ACCESS_REQUEST_TAG < 0x80);
+        matches!(
+            bytes.first(),
+            Some(&(Self::MLS_ACCESS_REQUEST_TAG | Self::MLS_ROUTED_ACCESS_REQUEST_TAG))
+        )
     }
 
     /// Whether this is a retired wire generation that no current build
@@ -834,7 +883,24 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::PersonalHosts { .. } => false,
+            | Self::PersonalHosts { .. }
+            | Self::MlsChannelUnfounded { .. } => false,
+        }
+    }
+
+    /// The workspace a channel's governance names: a frame of a channel's
+    /// group, a device asking to join one, or a host's word that one has none.
+    /// `None` for any other message.
+    #[must_use]
+    pub fn channel_workspace(&self) -> Option<&str> {
+        match self {
+            Self::MlsGovernance { workspace, .. }
+            | Self::MlsAccessRequest { workspace, .. }
+            | Self::MlsRoutedAccessRequest {
+                room: workspace, ..
+            }
+            | Self::MlsChannelUnfounded { workspace, .. } => Some(workspace),
+            _ => None,
         }
     }
 
@@ -874,6 +940,7 @@ impl NeighbourMsg {
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::PersonalHosts { .. } => "PersonalHosts",
+            Self::MlsChannelUnfounded { .. } => "MlsChannelUnfounded",
         }
     }
 }
@@ -1113,6 +1180,14 @@ mod tests {
                     delivery: 10,
                 },
             ),
+            (
+                "channel unfounded",
+                NeighbourMsg::MlsChannelUnfounded {
+                    workspace: WORKSPACE.into(),
+                    channel,
+                    device: Ed25519PublicKey::from_bytes([2; 32]),
+                },
+            ),
         ]
     }
 
@@ -1337,6 +1412,7 @@ mod tests {
                     app_id: "so.tilo.slides".into(),
                     cluster_id: "workspace".into(),
                     hash: "ab".into(),
+                    have: Vec::new(),
                 },
             ),
             (
@@ -1415,6 +1491,39 @@ mod tests {
         assert!(!NeighbourMsg::is_app_document(&[]));
     }
 
+    /// The channel-governance tag peeks agree with a full decode on a real
+    /// encoding of every variant.
+    #[test]
+    fn channel_governance_tags_match_encoding() {
+        let (mut governance, mut requests) = (0, 0);
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let is_governance = matches!(message, NeighbourMsg::MlsGovernance { .. });
+            let is_request = matches!(
+                message,
+                NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::MlsRoutedAccessRequest { .. }
+            );
+            assert_eq!(
+                NeighbourMsg::is_channel_governance(&bytes),
+                is_governance,
+                "{case}"
+            );
+            assert_eq!(
+                NeighbourMsg::is_access_request(&bytes),
+                is_request,
+                "{case}"
+            );
+            governance += usize::from(is_governance);
+            requests += usize::from(is_request);
+        }
+        assert!(
+            governance > 0 && requests > 1,
+            "no channel governance fixture"
+        );
+        assert!(!NeighbourMsg::is_channel_governance(&[]));
+        assert!(!NeighbourMsg::is_access_request(&[]));
+    }
+
     /// Only generations no build produces any more are retired: the two
     /// identity predecessors and the presence messages that live-plane frames
     /// replaced. Every other variant, including both identity successors,
@@ -1445,7 +1554,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 32;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1506,7 +1615,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b20",
+                "0b29",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1577,7 +1686,7 @@ mod tests {
         ),
         (
             "record content want",
-            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
+            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616200",
         ),
         (
             "record content piece",
@@ -1640,6 +1749,14 @@ mod tests {
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
+            ),
+        ),
+        (
+            "channel unfounded",
+            concat!(
+                "202436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030631055555555555555555555555555555555020202020202020202",
+                "0202020202020202020202020202020202020202020202",
             ),
         ),
         ("live presence", "1b0303010203"),

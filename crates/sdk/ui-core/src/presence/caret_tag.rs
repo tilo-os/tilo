@@ -7,14 +7,22 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use vello::kurbo::Rect;
 
-/// A peer's caret to label, and the highest its name chip may reach.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A peer's caret to label, the highest its name chip may reach, and where
+/// the text around it has glyphs, which the chip never covers.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LabeledCaret {
     /// The caret bar, in the widget's own coordinates.
     pub rect: Rect,
     /// The top of the text the caret is in, in the same coordinates: a
     /// chip that would rise above it hangs below the caret instead.
     pub top: f64,
+    /// Where the text around the caret has glyphs, one rect per visual
+    /// line (its own line's, and the lines above and below it). Empty when
+    /// the caller does not know: the chip then hangs a line above.
+    pub ink: Vec<Rect>,
+    /// The right edge of the text's column: a chip beside the caret ends
+    /// before it.
+    pub right: f64,
 }
 
 impl LabeledCaret {
@@ -24,28 +32,109 @@ impl LabeledCaret {
         Self {
             rect,
             top: f64::NEG_INFINITY,
+            ink: Vec::new(),
+            right: f64::INFINITY,
         }
     }
 
     /// A caret in text whose first line starts at `top`.
     #[must_use]
     pub fn within(rect: Rect, top: f64) -> Self {
-        Self { rect, top }
+        Self {
+            top,
+            ..Self::new(rect)
+        }
     }
 
-    /// Where a `w` by `h` name chip goes: above the caret, or below it when
-    /// above would cross [`Self::top`].
+    /// The glyphs around the caret, one rect per visual line, and the right
+    /// edge of the text's column: the chip goes where none of them are.
+    #[must_use]
+    pub fn among(mut self, ink: Vec<Rect>, right: f64) -> Self {
+        self.ink = ink;
+        self.right = right;
+        self
+    }
+
+    /// Where a `w` by `h` name chip goes.
+    ///
+    /// Where the glyphs around the caret are known ([`Self::among`]), the chip
+    /// never covers one: right of the caret on its own line where the line has
+    /// room there (an agent writing at the end of a line), else in the gap
+    /// above the caret's line where no glyph is, else below the line. Hung a
+    /// line above, it sat on the previous line's words ("write it."); pinned
+    /// to the caret's top, across its own line's.
+    ///
+    /// Not knowing the glyphs, it hangs one line box clear above the caret,
+    /// or below it when that would cross [`Self::top`].
     #[must_use]
     pub fn chip_rect(&self, w: f64, h: f64) -> Rect {
-        let x = self.rect.x0;
-        let above = self.rect.y0 - h - CARET_CHIP_GAP;
-        let y = if above < self.top {
-            self.rect.y1 + CARET_CHIP_GAP
-        } else {
-            above
-        };
-        Rect::new(x, y, x + w, y + h)
+        if self.ink.is_empty() {
+            let x = self.rect.x0;
+            let line = self.rect.height().max(0.0);
+            let above = self.rect.y0 - line - h - CARET_CHIP_GAP;
+            let y = if above < self.top {
+                self.rect.y1 + CARET_CHIP_GAP
+            } else {
+                above
+            };
+            return Rect::new(x, y, x + w, y + h);
+        }
+        let covers = |chip: Rect| self.ink.iter().any(|glyphs| overlaps(chip, *glyphs));
+        // The caret's own line box: the caret, and its line's glyphs where it stands among them.
+        let centre = self.rect.center().y;
+        let (line_top, line_bottom) = self
+            .ink
+            .iter()
+            .filter(|glyphs| glyphs.y0 <= centre && centre <= glyphs.y1)
+            .fold((self.rect.y0, self.rect.y1), |(top, bottom), glyphs| {
+                (top.min(glyphs.y0), bottom.max(glyphs.y1))
+            });
+        let beside_x = self.rect.x1 + 2.0 * CARET_CHIP_GAP;
+        let beside_y = f64::midpoint(line_top, line_bottom) - h / 2.0;
+        let beside = Rect::new(beside_x, beside_y, beside_x + w, beside_y + h);
+        if beside.x1 <= self.right && !covers(beside) {
+            return beside;
+        }
+        // Above and below start at the caret and keep inside the column where it allows.
+        let x = self.rect.x0.min(self.right - w).max(self.rect.x0 - w);
+        let above_y = line_top - CARET_CHIP_GAP - h;
+        let above = Rect::new(x, above_y, x + w, above_y + h);
+        if above_y >= self.top && !covers(above) {
+            return above;
+        }
+        // Below the line, and past whatever words stand under it: the first
+        // gap down the column no glyph is in.
+        let first = Rect::new(
+            x,
+            line_bottom + CARET_CHIP_GAP,
+            x + w,
+            line_bottom + CARET_CHIP_GAP + h,
+        );
+        let mut below = first;
+        for _ in 0..8 {
+            let Some(bottom) = self
+                .ink
+                .iter()
+                .filter(|glyphs| overlaps(below, **glyphs))
+                .map(|glyphs| glyphs.y1)
+                .reduce(f64::max)
+            else {
+                return below;
+            };
+            below = Rect::new(
+                x,
+                bottom + CARET_CHIP_GAP,
+                x + w,
+                bottom + CARET_CHIP_GAP + h,
+            );
+        }
+        first
     }
+}
+
+/// Whether `a` and `b` share any area.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 /// Space between a caret and its name chip.
@@ -55,6 +144,8 @@ const CARET_CHIP_GAP: f64 = 2.0;
 /// coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaretTag {
+    /// Whose name it carries.
+    pub user: crate::permissions::UserId,
     pub label: String,
     pub rect: Rect,
 }
@@ -135,8 +226,10 @@ mod tests {
     fn a_chip_rises_above_its_caret_while_there_is_room() {
         let caret = LabeledCaret::within(Rect::new(30.0, 100.0, 32.0, 120.0), 40.0);
         let chip = caret.chip_rect(80.0, 20.0);
-        assert!(chip.y1 <= caret.rect.y0, "above the caret: {chip:?}");
-        assert!(chip.y0 >= caret.top, "inside the text: {chip:?}");
+        assert!(
+            chip.y1 <= caret.rect.y0 - caret.rect.height(),
+            "a line above the caret, clear of its words: {chip:?}"
+        );
     }
 
     #[test]
@@ -147,10 +240,91 @@ mod tests {
         assert!((chip.x0 - caret.rect.x0).abs() < f64::EPSILON);
     }
 
+    /// Lines of text 20 px tall at y = 100, 120, 140, the column 300 px wide:
+    /// each visual line's glyphs from x = 10 to `ends[i]`.
+    fn lines(ends: &[f64]) -> Vec<Rect> {
+        ends.iter()
+            .enumerate()
+            .map(|(i, end)| {
+                let y = 100.0 + 20.0 * i as f64;
+                Rect::new(10.0, y, *end, y + 20.0)
+            })
+            .collect()
+    }
+
+    fn covers_none(chip: Rect, ink: &[Rect]) -> bool {
+        ink.iter().all(|glyphs| !overlaps(chip, *glyphs))
+    }
+
+    /// An agent writing at the end of a line has its name right of the caret,
+    /// on that line, covering none of the text above or before it.
+    #[test]
+    fn a_chip_stands_beside_a_caret_at_the_end_of_its_line() {
+        // A full line above, the caret's own line ending at x = 120.
+        let ink = lines(&[290.0, 120.0]);
+        let caret = LabeledCaret::within(Rect::new(120.0, 120.0, 122.0, 140.0), 100.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.x0 >= caret.rect.x1, "right of the caret: {chip:?}");
+        assert!(
+            chip.y0 >= 120.0 && chip.y1 <= 140.0,
+            "on its own line: {chip:?}"
+        );
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+    }
+
+    /// With text right of the caret, or no room before the column's edge,
+    /// the chip goes into the gap above where that gap has no glyphs.
+    #[test]
+    fn a_chip_rises_into_a_free_gap_when_its_line_is_full() {
+        // A short line above (to x = 40), the caret mid-way along a full line.
+        let ink = lines(&[40.0, 290.0]);
+        let caret = LabeledCaret::within(Rect::new(150.0, 120.0, 152.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.y1 <= 120.0, "above the caret's line: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+        // At the end of a line that reaches the column's edge, there is no room beside it.
+        let ink = lines(&[40.0, 280.0]);
+        let caret = LabeledCaret::within(Rect::new(280.0, 120.0, 282.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.x1 <= 300.0, "inside the column: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+    }
+
+    /// Text above and to the right: the chip hangs below the caret's line,
+    /// never on the words above it.
+    #[test]
+    fn a_chip_hangs_below_when_text_stands_above_and_beside() {
+        let ink = lines(&[290.0, 290.0]);
+        let caret = LabeledCaret::within(Rect::new(150.0, 120.0, 152.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(90.0, 18.0);
+        assert!(chip.y0 >= 140.0, "below the caret's line: {chip:?}");
+        assert!(covers_none(chip, &ink), "covering no text: {chip:?}");
+        // The wrapped paragraph the follower saw: "...as I / write it." above, the caret after
+        // "of you." on the second line of the next paragraph, with room beside it.
+        let ink = vec![
+            Rect::new(10.0, 60.0, 290.0, 80.0),
+            Rect::new(10.0, 80.0, 60.0, 100.0),
+            Rect::new(10.0, 100.0, 290.0, 120.0),
+            Rect::new(10.0, 120.0, 52.0, 140.0),
+        ];
+        let caret = LabeledCaret::within(Rect::new(52.0, 120.0, 54.0, 140.0), 0.0)
+            .among(ink.clone(), 300.0);
+        let chip = caret.chip_rect(130.0, 18.0);
+        assert!(
+            covers_none(chip, &ink),
+            "\"write it.\" and its own line stay readable: {chip:?}"
+        );
+        assert!(chip.x0 >= caret.rect.x1, "beside \"of you.\": {chip:?}");
+    }
+
     #[test]
     fn a_caret_with_no_top_keeps_its_chip_above() {
         let caret = LabeledCaret::new(Rect::new(30.0, 4.0, 32.0, 24.0));
-        assert!(caret.chip_rect(80.0, 20.0).y1 <= 4.0);
+        assert!(caret.chip_rect(80.0, 20.0).y1 <= 4.0 - 20.0);
     }
 
     #[test]
@@ -167,18 +341,53 @@ mod tests {
             Affine::scale(2.0),
             &UserId("ada".into()),
             "Ada",
-            caret,
+            caret.clone(),
         );
         let (w, h) = crate::presence::render::peer_pill_size(&mut text, &theme, "Ada");
         assert_eq!(
             ctx.caret_tags(),
             vec![CaretTag {
+                user: crate::permissions::UserId("ada".into()),
                 label: "Ada".into(),
                 rect: Affine::scale(2.0).transform_rect_bbox(caret.chip_rect(w, h)),
             }]
         );
         ctx.clear_caret_tags();
         assert!(ctx.caret_tags().is_empty());
+    }
+
+    #[test]
+    fn drawing_a_caret_notes_where_a_reader_is_told_the_peer_is_writing() {
+        let mut ctx = PresenceCtx::empty();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let user = UserId("claude".into());
+        ctx.set_display_name(user.clone(), "Claude Code");
+        let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
+        ctx.draw_action_caret_labeled_in(
+            &mut scene,
+            &theme,
+            &mut text,
+            Affine::scale(2.0),
+            &user,
+            "Claude Code: Appending paragraph",
+            LabeledCaret::within(caret, 40.0),
+        );
+        let marks = ctx.presence_marks();
+        let [mark] = marks.as_slice() else {
+            panic!("one caret mark");
+        };
+        assert_eq!(mark.user, user);
+        assert_eq!(mark.rect, Affine::scale(2.0).transform_rect_bbox(caret));
+        assert!(!mark.selection);
+        assert_eq!(
+            ctx.mark_words(mark),
+            "Claude Code: Appending paragraph",
+            "an action's own words say who is writing and what they are doing"
+        );
+        ctx.clear_presence_marks();
+        assert!(ctx.presence_marks().is_empty());
     }
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -195,6 +404,7 @@ mod tests {
     fn first_line_tag(label: &str, x: f64) -> CaretTag {
         let caret = LabeledCaret::within(Rect::new(x, 100.0, x + 2.0, 120.0), 100.0);
         CaretTag {
+            user: crate::permissions::UserId(label.to_owned()),
             label: label.into(),
             rect: caret.chip_rect(90.0, 20.0),
         }
@@ -284,3 +494,65 @@ mod tests {
         assert_eq!(shown(vec![talking], &tags), vec![1.0]);
     }
 }
+
+/// What is wrong with the name tags presence drew in the frame `root`, as
+/// its inspection publishes them (`PresenceTag` nodes): a tag over a word of
+/// the frame's text, and a second tag for one actor. A tag names who is
+/// there; a word it covers is lost, and two tags of one actor read as two.
+pub fn tag_faults(root: &crate::headless::InspectionNode) -> Vec<String> {
+    fn walk<'a>(
+        node: &'a crate::headless::InspectionNode,
+        tags: &mut Vec<&'a crate::headless::InspectionNode>,
+        words: &mut Vec<&'a crate::headless::InspectionNode>,
+    ) {
+        if node.widget == TAG_WIDGET {
+            tags.push(node);
+            return;
+        }
+        let worded = node.semantics.as_ref().is_some_and(|access| {
+            access
+                .name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+                || access
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        });
+        // A field places a tag among its own glyphs; a mark is presence itself.
+        let own = matches!(node.widget.as_str(), "TextInput" | "PresenceMark");
+        if node.children.is_empty() && worded && !own {
+            words.push(node);
+        }
+        for child in &node.children {
+            walk(child, tags, words);
+        }
+    }
+    let rect = |r: [f64; 4]| Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3]);
+    let (mut tags, mut words) = (Vec::new(), Vec::new());
+    walk(root, &mut tags, &mut words);
+    let mut faults = Vec::new();
+    for (index, tag) in tags.iter().enumerate() {
+        let at = rect(tag.rect);
+        for word in &words {
+            if overlaps(at, rect(word.rect)) {
+                let said = word
+                    .semantics
+                    .as_ref()
+                    .and_then(|access| access.name.clone().or_else(|| access.value.clone()))
+                    .unwrap_or_default();
+                faults.push(format!("{} covers \"{said}\" ({})", tag.path, word.path));
+            }
+        }
+        if tags[..index]
+            .iter()
+            .any(|before| before.test_id == tag.test_id)
+        {
+            faults.push(format!("{} is a second tag of one actor", tag.path));
+        }
+    }
+    faults
+}
+
+/// The inspection widget a drawn name tag is published as.
+pub const TAG_WIDGET: &str = "PresenceTag";

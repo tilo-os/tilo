@@ -2,11 +2,10 @@
 //! the invitations they redeemed, whose view this device follows, and where this person is on the
 //! desk for everyone here to read.
 
-use crate::sync::presence::live_record;
+use crate::sync::layout::live_record_as;
 use collab_types::presence::{ShellPresence, ShellWindow};
 use tilo_desktop_surface::navigation;
 use tilo_live::presence::{Point, Tile, anchor};
-use tilo_relay_protocol::live::{LiveLayout, LiveRecord};
 
 use crate::Session;
 
@@ -36,6 +35,8 @@ impl Session {
         // Where this person is on this desk, so a page here draws their pointer, follows them to the
         // record they work in and shows a mini view of their screen.
         self.say_where_i_am(sync);
+        // The agents the person admitted at this device's door are here with them.
+        self.say_agents_here(sync);
         // What became of the invitations redeemed is the directory's to say, and the desk's to
         // show.
         self.shared.follow_enrollments();
@@ -46,7 +47,6 @@ impl Session {
     /// named by its app and its record's short digest only. Said again only when one of them moved,
     /// so a desk at rest publishes nothing.
     fn say_where_i_am(&self, sync: &crate::sync::Client) {
-        let records = self.shared.notes.records();
         let shown = self.shared.handle.shown_tiles();
         let area = self.shared.handle.shown_strip().map(|(_, area, _)| area);
         let (place, focused) = self.shared.handle.read(|tree| {
@@ -67,27 +67,92 @@ impl Session {
             y,
         });
         let own = sync.own();
-        let (r, g, b) = sync
-            .here()
-            .borrow()
-            .own_rgb()
-            .unwrap_or(ui::presence::UNSETTLED_RGB);
+        let (label, identity) = crate::people::own_face(&own, &self.shared.person);
+        let (r, g, b) = crate::people::own_rgb(&identity);
         let shell = self.shared.handle.read(|tree| {
             shell(
                 tree,
-                &records,
+                &self.shared.notes,
                 &shown,
                 area,
                 &Focus {
-                    place,
+                    place: place.clone(),
                     focused,
-                    label: own.label.trim().to_owned(),
+                    label: label.clone(),
                     colour: format!("#{r:02x}{g:02x}{b:02x}"),
                 },
             )
         });
         sync.set_where(pointer, shell);
     }
+
+    /// Speak for the agents the person admitted at this device's door, each in the workspace it
+    /// works in: a member of its own there, listed beside everyone else for everyone there, in its
+    /// own colour, saying what it is doing and the window of the app it does it in.
+    fn say_agents_here(&self, sync: &crate::sync::Client) {
+        use tilo_session_client::narration::lines;
+        let seated = self.shared.seats.here();
+        let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
+            seated
+                .into_iter()
+                .map(|seated| {
+                    let (line, focus) = match &seated.doing {
+                        // The window of the app it acts in, and what that window is called: the
+                        // note, the sheet, the meeting. What it does is said on that record, as
+                        // the window's own activity cards say it.
+                        Some(doing) => {
+                            let window = doing.app.as_deref().and_then(|app| {
+                                app_window(tree, &self.shared.notes, &seated.workspace, app)
+                            });
+                            let line = lines::acting(
+                                &doing.action,
+                                window.as_ref().map(|(_, title)| title.as_str()),
+                            );
+                            (line, window.map(|(record, _)| record))
+                        }
+                        None => (lines::waiting(), None),
+                    };
+                    let (r, g, b) = collab_types::presence::agent_rgb(&seated.agent);
+                    let face = tilo_session_client::presence::view(
+                        0,
+                        ui::time::unix_now_ms(),
+                        &seated.name,
+                        [r, g, b],
+                        Some(line),
+                        focus.as_ref(),
+                        None,
+                    );
+                    (seated.workspace, seated.agent, face)
+                })
+                .collect()
+        });
+        sync.speak_for(&runs);
+    }
+}
+
+/// The window of `app` in `workspace` an agent at work there is placed in, by the record it shows,
+/// and what the window is called (the note's title, the sheet's name): where an agent at work in
+/// that app is, and the record it says it works in.
+fn app_window(
+    tree: &tilo_desktop_model::DesktopTree,
+    notes: &crate::continuations::Continuations,
+    workspace: &str,
+    app: &str,
+) -> Option<(tilo_relay_protocol::live::LiveRecord, String)> {
+    let records = notes.records();
+    let held = tree
+        .workspaces
+        .iter()
+        .find(|held| held.id().to_string() == workspace)?;
+    held.tabs().find_map(|tab| {
+        let record = live_record_as(
+            tree,
+            tab.id,
+            records.get(&tab.id)?,
+            notes.app_of(tab.id).as_deref(),
+        )?;
+        (record.app == app).then(|| (record, tab.title.trim().to_owned()))
+    })
 }
 
 /// What the shell says about the person and the screen it is of, beside the desk itself.
@@ -108,24 +173,22 @@ struct Focus {
 /// place by. `None` while the desk shows no screen to place anything on.
 fn shell(
     tree: &tilo_desktop_model::DesktopTree,
-    records: &std::collections::BTreeMap<tilo_desktop_model::TabId, String>,
+    notes: &crate::continuations::Continuations,
     shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
     area: Option<ui::kurbo::Rect>,
     focus: &Focus,
 ) -> Option<Box<ShellPresence>> {
-    let windows: Vec<(LiveRecord, [f64; 4], bool)> = shown
-        .iter()
-        .filter_map(|&(tab, rect)| {
-            let record = live_record(tree, tab, records.get(&tab)?)?;
-            Some((
-                record,
-                [rect.x0, rect.y0, rect.x1, rect.y1],
-                focus.focused == Some(tab),
-            ))
-        })
-        .collect();
-    let area = area?;
-    let layout = LiveLayout::place([area.x0, area.y0, area.x1, area.y1], &windows)?;
+    let records = notes.records();
+    let layout = crate::sync::layout::placed(
+        area,
+        shown,
+        |tab| {
+            let record =
+                live_record_as(tree, tab, records.get(&tab)?, notes.app_of(tab).as_deref());
+            record.map(|record| (record.app, record.record))
+        },
+        focus.focused,
+    )?;
     Some(Box::new(ShellPresence {
         // The board numbers each view it says: this one only says what changed.
         seq: 0,
@@ -154,8 +217,6 @@ fn shell(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use collab_types::PeerPresencePayload;
     use collab_types::presence::{Payload, Presence};
     use tilo_desktop_model::{
@@ -240,10 +301,10 @@ mod tests {
     /// are called here.
     fn said_shell() -> Box<collab_types::presence::ShellPresence> {
         let tree = desk();
-        let records = BTreeMap::from([(NOTES, RECORD.to_owned())]);
+        let notes = named(&[(NOTES, RECORD)]);
         shell(
             &tree,
-            &records,
+            &notes,
             &[standing(NOTES)],
             Some(Rect::new(0.0, 36.0, 1280.0, 800.0)),
             &Focus {
@@ -254,6 +315,43 @@ mod tests {
             },
         )
         .expect("the desk has a screen to place its windows on")
+    }
+
+    /// The desk's windows as their apps named them, with no app said: read from the tree.
+    fn named(held: &[(u64, &str)]) -> crate::continuations::Continuations {
+        let notes = crate::continuations::Continuations::default();
+        for (tab, record) in held {
+            notes.note(*tab, NOTES_APP, WORKSPACE, record);
+        }
+        notes
+    }
+
+    /// An agent's place is the window of the app it acts in, named as that window is: a page here
+    /// following it opens the record and reads the same title beside its face.
+    #[test]
+    fn an_agents_place_names_the_record_its_window_shows() {
+        let tree = desk();
+        let notes = named(&[(NOTES, RECORD)]);
+        let (record, title) = super::app_window(&tree, &notes, WORKSPACE, NOTES_APP)
+            .expect("the Notes window is there");
+        assert_eq!(record.app, NOTES_APP);
+        assert_eq!(record.record, RECORD);
+        assert_eq!(title, "Notes", "what the window is called");
+        assert_eq!(
+            super::app_window(&tree, &notes, WORKSPACE, "so.tilo.sheets"),
+            None,
+            "no window of an app that shows none"
+        );
+        // Without the window's record, nothing names where it works: never a wrong window.
+        assert_eq!(
+            super::app_window(
+                &tree,
+                &crate::continuations::Continuations::default(),
+                WORKSPACE,
+                NOTES_APP
+            ),
+            None
+        );
     }
 
     /// A desk says where this person is: the app and the record the window they work in shows, so
@@ -295,8 +393,8 @@ mod tests {
         }
         let (from, presence) = said(0xf0, PeerPresencePayload::Shell(shell));
         page.heard_presence(WORKSPACE, from, &presence);
-        let records = BTreeMap::from([(NOTES, RECORD.to_owned())]);
-        let people = page.people(&desk(), &records, &|_: &str| Some("Notes".to_owned()));
+        let notes = named(&[(NOTES, RECORD)]);
+        let people = page.people(&desk(), &notes, &|_: &str| Some("Notes".to_owned()));
         let them = people
             .iter()
             .find(|person| person.id == device(0xf0).to_string())

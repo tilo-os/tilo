@@ -22,8 +22,8 @@
 //! - **The window:** the instance sends it patches and hears what the person did over the patch
 //!   connection.
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
+use tilolang_tilo::instance::record::{InstanceRecord, ReadRecord, RecordError};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
@@ -49,6 +49,7 @@ use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Moved, Planner, Publications, host_resource, publish_package, reached,
 };
+use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 use crate::phrases::Phrases;
@@ -64,6 +65,12 @@ thread_local! {
 fn sync_record(host: &Host, record: &InstanceRecord) {
     host.sync_chunks(record.chunks());
     host.sync_from(record.doc());
+}
+
+/// The person's date and time now: the device's clock, which is the one their window reads, so a
+/// day an instance writes and a day their window heads a row by are the same day.
+fn local_now() -> chrono::DateTime<chrono::Local> {
+    chrono::DateTime::<chrono::Local>::from(tilo_clock::to_std(tilo_clock::wall()))
 }
 
 /// Who invokes, as the runtime reads the invoker the broker admitted.
@@ -86,6 +93,56 @@ pub struct Spec {
     pub instance: u64,
     /// The participant at the window.
     pub person: String,
+    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
+    /// package the app uses that is one of them is another app, read from its own record.
+    pub installed: BTreeMap<String, String>,
+    /// The person's language (`de-DE`), the one their windows read in, as the session resolved it
+    /// (`InstanceRequest::language`): the window speaks it where the package ships it, and the
+    /// package's source language otherwise. Empty for a session that names none, whose host reads
+    /// its own process's language.
+    pub language: String,
+}
+
+impl Spec {
+    /// The instance `instance` of `app`, of the workspace `workspace`, with `person` at its
+    /// window: no other app is installed for it to read, so what it uses is its own.
+    #[must_use]
+    pub fn new(
+        app: impl Into<String>,
+        workspace: impl Into<String>,
+        instance: u64,
+        person: impl Into<String>,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            workspace: workspace.into(),
+            instance,
+            person: person.into(),
+            installed: BTreeMap::new(),
+            language: String::new(),
+        }
+    }
+
+    /// [`Self::new`] for the window `person` reads at, in the language `language` names.
+    #[must_use]
+    pub fn in_language(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
+    }
+}
+
+/// The words the window of `spec` reads in: the language the session named for the person, or,
+/// where it named none, the one this host's process runs in, against the languages `bundle`'s
+/// package ships (`tilo_history::window_language`). Every word the window paints — its app's own
+/// and the frames' — comes from a catalogue in that language.
+fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
+    let catalogues = bundle.catalogues();
+    let shipped: Vec<&str> = catalogues
+        .iter()
+        .map(|(locale, _)| locale.as_str())
+        .collect();
+    let language = (!spec.language.is_empty()).then_some(spec.language.as_str());
+    base.for_window(language, &shipped)
 }
 
 /// What a [`Surface`]'s resources are built from: the published records' revision, the
@@ -266,6 +323,15 @@ impl Publication for Held {
         self.0.publications.borrow().is_building()
     }
 
+    /// `Publications::settle` waits for each record being read off the frame, and reads again
+    /// what it took in: what a window of a host without frames reads once it covers the record.
+    fn settle(&self) -> bool {
+        let mut publications = self.0.publications.borrow_mut();
+        !publications
+            .settle(&self.0.host, &self.0.planner)
+            .is_empty()
+    }
+
     fn visited(&self) -> u64 {
         self.0.publications.borrow().visited()
     }
@@ -277,14 +343,9 @@ impl Publication for Held {
 
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
 /// of its record, `read` and "Show this window".
-fn with_app_actions(
-    mut resource: ResourceSpec,
-    activate: &tilo_actions::ActionSpec,
-) -> ResourceSpec {
-    let every = verbs::specs()
-        .into_iter()
-        .chain([tilo_resource::read::spec(None), activate.clone()]);
-    for spec in every {
+fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec) -> ResourceSpec {
+    let mut resource = tilolang_tilo::history::with_verbs(resource);
+    for spec in [tilo_resource::read::spec(None), activate.clone()] {
         if !resource
             .actions
             .iter()
@@ -298,18 +359,32 @@ fn with_app_actions(
 
 type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
+/// The person's formats, as the session handed them over the host's door: shared by every
+/// instance the host runs, so a change in Settings reaches them together.
+pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
+
 /// What the instance asks of the host: its package, the platform's phrases and clock, waking the
 /// host, and publishing on its connection.
 struct HostPlatform {
     bundle: Arc<Bundle>,
+    /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
+    /// is loaded as another app's.
+    installed: BTreeMap<String, String>,
+    /// The words of this window: its app's own and its frames', in the language the window speaks
+    /// (the person's where the package ships it), so what its dates and clocks read in is the same
+    /// language the toolkit's own say them in.
     phrases: Rc<Phrases>,
+    /// The person's formats, which their clock and dates read by.
+    formats: Formats,
     wake: Waker,
     surface: SurfaceSlot,
 }
 
 impl Platform for HostPlatform {
     fn load(&self, host: &Host) -> u64 {
-        if let Err(error) = host.load_bundle(&self.bundle) {
+        if let Err(error) =
+            host.load_bundle_using(&self.bundle, |app| self.installed.contains_key(app))
+        {
             tracing::error!(app = self.bundle.meta.app, %error, "the package did not load");
         }
         0
@@ -329,7 +404,58 @@ impl Platform for HostPlatform {
     }
 
     fn now(&self) -> String {
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        local_now()
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    }
+
+    /// The zone the person's clock stands in, which their day begins in: the device's, as their
+    /// window's dates read it, so a day an action writes is the day their window shows it under.
+    fn zone(&self) -> i64 {
+        i64::from(local_now().offset().local_minus_utc())
+    }
+
+    /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
+    /// change of clocks, as their window's dates do.
+    fn zone_name(&self) -> Option<String> {
+        tilo_clock::local_zone_name()
+    }
+
+    /// The day the person's region starts its week on, as they chose it in Settings: the same
+    /// first day their window's dates start a week on.
+    fn week_start(&self) -> i64 {
+        i64::from(
+            self.formats
+                .get()
+                .first_day
+                .weekday()
+                .num_days_from_monday(),
+        )
+    }
+
+    /// The clock the person reads: the one they chose in Settings, which the session handed the
+    /// host, so a time an app writes (`a.fetched.clock()`) reads as the same clock its window shows.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        self.formats
+            .get()
+            .time
+            .format_hm(hour, minute, &*self.phrases)
+    }
+
+    /// A day or a time of day in a sentence, in the person's styles and their language: the zone
+    /// its times read in is the one this host's clock answers in, so a sentence and a view agree.
+    fn shown(&self, kind: &str, value: &str) -> String {
+        let now = local_now();
+        tilo_formats::shown(
+            kind,
+            value,
+            self.formats.get(),
+            now.date_naive(),
+            now.naive_local(),
+            i64::from(now.offset().local_minus_utc()),
+            &*self.phrases,
+        )
     }
 
     fn web(
@@ -337,6 +463,34 @@ impl Platform for HostPlatform {
         request: &tilolang_tilo::runtime::run::WebRequest,
     ) -> tilolang_tilo::runtime::web::WebReply {
         crate::web::fetch(request)
+    }
+
+    fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
+        crate::files::read(hash)
+    }
+
+    fn choose_file(
+        &self,
+        request: &tilolang_tilo::runtime::blob::FileRequest,
+    ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
+        crate::files::choose(request)
+    }
+
+    fn save_file(
+        &self,
+        request: &tilolang_tilo::runtime::blob::SaveRequest,
+        content: &[u8],
+    ) -> Result<(), String> {
+        crate::files::save(request, content)
+    }
+
+    fn keep_content(
+        &self,
+        name: &str,
+        media: &str,
+        bytes: &[u8],
+    ) -> Result<tilolang_tilo::runtime::blob::FileValue, String> {
+        crate::files::keep(name, media, bytes)
     }
 
     fn waker(&self) -> Waker {
@@ -354,11 +508,32 @@ impl Platform for HostPlatform {
     }
 }
 
-/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes, under
-/// its package's directory in the host's storage.
+/// Where an instance keeps what it keeps: its workspace record's on-disk copy and its indexes,
+/// under its package's directory in the host's storage.
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
+}
+
+/// The directory of the indexes of `record` of `workspace` under `indexes`: one per record, read by
+/// every window of it ([`tilolang_tilo::index::Held`]). A window opened again reads what the last
+/// one kept. Copies an earlier build kept per window beside it are derived and go.
+fn record_indexes(
+    indexes: &std::path::Path,
+    workspace: &str,
+    record: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = tilolang_tilo::index::record_dir(indexes, workspace, record);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("instance-")
+                && let Err(error) = std::fs::remove_dir_all(entry.path())
+            {
+                tracing::warn!(path = %entry.path().display(), %error, "a window's own index copy was not removed");
+            }
+        }
+    }
+    dir
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -375,12 +550,48 @@ struct Answers {
 struct Answered {
     /// Where the publications stood when the answer was read ([`Publications::moved`]).
     at: u64,
-    /// What can run on the resource by the action: `None` for an action whose app keeps no
-    /// requirement it can decide, which is offered as it is published.
-    said: Option<tilo_actions::Availability>,
+    /// What the app says of the action on the resource: what it is called there, the icon beside
+    /// it and whether it can run; `None` for an action whose app says nothing its subject
+    /// decides, which is offered as it is published.
+    said: Option<tilolang_tilo::host::Offered>,
     /// The fields reading the answer read; `None` for an answer that read beyond the workspace
     /// (the clock, the window's space, the person's view state), which moves without it moving.
     reads: Option<Vec<(String, String)>>,
+}
+
+/// A row that shows what an app says of an action on it: what it is called there, the icon
+/// beside it and whether it can run. The window's catalogue and the action directory carry the
+/// same answer, so both are shown it the same way.
+trait Shows {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered);
+}
+
+impl Shows for ActionDescriptor {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
+    }
+}
+
+impl Shows for collaboration::ExportedAction {
+    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
+    }
 }
 
 /// How many answers a window's rows keep: a person scrolling a list of ten thousand asks about
@@ -389,8 +600,8 @@ struct Answered {
 const ANSWERS_KEPT: usize = 8_192;
 
 impl Answers {
-    /// What can run on `resource` by `action`, as `host` says it now, with the publications
-    /// where `at` says: an answer read earlier stands while nothing it read moved
+    /// What the action `action` offers on `resource`, as `host` says it now, with the
+    /// publications where `at` says: an answer read earlier stands while nothing it read moved
     /// ([`Self::forget`]).
     fn answer(
         &mut self,
@@ -398,16 +609,13 @@ impl Answers {
         at: u64,
         resource: &str,
         action: &str,
-    ) -> Option<tilo_actions::Availability> {
+    ) -> Option<tilolang_tilo::host::Offered> {
         let key = (resource.to_owned(), action.to_owned());
         if let Some(answered) = self.said.get(&key) {
             return answered.said.clone();
         }
-        let (said, reads) = match host.availability_reading(resource, action) {
-            Some((availability, reading)) => (
-                Some(availability),
-                (!reading.beyond).then_some(reading.reads),
-            ),
+        let (said, reads) = match host.offered_reading(resource, action) {
+            Some((offered, reading)) => (Some(offered), (!reading.beyond).then_some(reading.reads)),
             None => (None, Some(Vec::new())),
         };
         if self.said.len() >= ANSWERS_KEPT {
@@ -426,33 +634,38 @@ impl Answers {
 
     /// Forget what a change reached since an answer was read ([`Publications::changed_since`]),
     /// and every answer when the packages loaded changed: an answer read nothing but the
-    /// workspace, so it stands until a field it read moves.
+    /// workspace, so it stands until a field it read moves. Whether a change reached one, which
+    /// is what a surface offering the actions must read again.
     fn forget(
         &mut self,
         publications: &Publications,
         packages: &[tilolang_tilo::runtime::PackageId],
-    ) {
+    ) -> bool {
         if packages != self.packages.as_slice() {
             self.packages = packages.to_vec();
             self.said.clear();
-            return;
+            return true;
         }
         let mut since: std::collections::HashMap<u64, Option<Moved>> =
             std::collections::HashMap::new();
+        let mut moved = false;
         self.said.retain(|_, answered| {
             let Some(reads) = &answered.reads else {
                 return false;
             };
-            match since
+            let reached_now = match since
                 .entry(answered.at)
                 .or_insert_with(|| publications.changed_since(answered.at))
             {
-                None | Some(Moved::Everything) => false,
-                Some(Moved::These(changed)) => !changed
+                None | Some(Moved::Everything) => true,
+                Some(Moved::These(changed)) => changed
                     .iter()
                     .any(|changed| reads.iter().any(|read| reached(changed, read))),
-            }
+            };
+            moved |= reached_now;
+            !reached_now
         });
+        moved
     }
 }
 
@@ -464,6 +677,9 @@ pub struct Hosted {
     /// The app's resource, by its id and kind: where its history verbs are published.
     resource: (String, String),
     instance: Instance,
+    /// The words of the window, which the instance's platform reads: the person's language
+    /// chosen again ([`Self::speak`]) relabels the window where it stands.
+    phrases: Rc<Phrases>,
     record: InstanceRecord,
     surface: SurfaceSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
@@ -511,6 +727,12 @@ pub struct Hosted {
     /// the action back in every unit that holds a change of it, all under one commit, whether
     /// this endpoint's logs still remember the action or only the records do.
     undo_ask: Option<InvocationId>,
+    /// The other apps the app uses, each read from its own record ([`Used`]).
+    used: Vec<Used>,
+    /// What the app's views and actions asked of the other apps' doors, waiting to be sent.
+    asks: Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>,
+    /// Whether the runtime sends what it changes of another app's resources to [`Self::asks`].
+    asking: bool,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -529,12 +751,13 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: &Phrases,
+        phrases: &Rc<Phrases>,
+        formats: &Formats,
         wake: Waker,
     ) -> Result<Self, RecordError> {
         let record = InstanceRecord::open(manager, &kept.documents, spec.person.clone())?;
         Ok(Self::with_record(
-            spec, record, bundle, kept, window, phrases, wake,
+            spec, record, bundle, kept, window, phrases, formats, wake,
         ))
     }
 
@@ -546,7 +769,8 @@ impl Hosted {
         bundle: Arc<Bundle>,
         kept: &Kept,
         window: Box<dyn Transport>,
-        phrases: &Phrases,
+        phrases: &Rc<Phrases>,
+        formats: &Formats,
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
@@ -554,18 +778,20 @@ impl Hosted {
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
         );
-        // The window speaks the language its package ships, the person's when it ships it: the
-        // frames' words and the history's sentences follow the app's own copy.
-        let catalogues = bundle.catalogues();
-        let shipped: Vec<&str> = catalogues
-            .iter()
-            .map(|(locale, _)| locale.as_str())
-            .collect();
-        let phrases = Rc::new(phrases.for_window(&shipped));
-        let record = record.speaking(phrases.locale());
+        // The window speaks the person's language where its package ships it, and the package's
+        // source language otherwise: the frames' words, the app's own words and the history's
+        // sentences all follow that language, never the one this host's process runs in.
+        let phrases = Rc::new(window_phrases(phrases, &spec, &bundle));
+        // The names the session sends for the apps installed here read in the language this
+        // window speaks, whatever language the workspace's people are named in.
+        collaboration::history_source::authors::set_names_language(&phrases.locale());
+        let mut record = record.speaking(phrases.locale());
+        let used = used_apps(&spec, &bundle, &mut record);
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
-            phrases,
+            installed: spec.installed.clone(),
+            phrases: Rc::clone(&phrases),
+            formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
         };
@@ -576,11 +802,7 @@ impl Hosted {
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {
-                    tilolang_tilo::index::record_dir(
-                        indexes,
-                        &spec.workspace,
-                        record.route().record.as_deref(),
-                    )
+                    record_indexes(indexes, &spec.workspace, record.route().record.as_deref())
                 }),
                 record_loader: None,
                 root: tilolang_tilo::host::RootView::default(),
@@ -594,12 +816,13 @@ impl Hosted {
         // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        let registry = ActionRegistry::with(tilolang_tilo::instance::record::register);
+        let registry = ActionRegistry::with(tilolang_tilo::history::register);
         Self {
             spec,
             bundle,
             resource,
             instance,
+            phrases,
             record,
             surface,
             published: None,
@@ -617,8 +840,19 @@ impl Hosted {
             search_index_whole: None,
             wake,
             undo_ask: None,
+            used,
+            asks: Rc::default(),
+            asking: false,
             identity: None,
         }
+    }
+
+    /// Show `anchor` in the window, as a search hit or an agent's `open` of it does.
+    pub fn reveal(&mut self, anchor: String) {
+        self.instance
+            .open_requests()
+            .borrow_mut()
+            .push(OpenEffect::Open { anchor });
     }
 
     /// What the broker was last handed of the instance's actions.
@@ -680,6 +914,30 @@ impl Hosted {
         self.instance.add_origin(origin);
     }
 
+    /// The person's formats changed: what the instance wrote of a time or a day is written again
+    /// in the new style, and its window shows it.
+    pub fn formats_changed(&mut self) {
+        self.instance.formats_changed();
+    }
+
+    /// The person chose `language` (`de-DE`) in Settings: the window reads its words in it where
+    /// its package ships it, at once and where it stands — its views, the labels it publishes and
+    /// its history's sentences. Whether its words read in another language now.
+    pub fn speak(&mut self, language: &str) -> bool {
+        if !self.phrases.speak(language) {
+            return false;
+        }
+        let locale = self.phrases.locale();
+        collaboration::history_source::authors::set_names_language(&locale);
+        self.record.speak(locale.clone());
+        // Every word is read again: the views drawn, the window's own chrome and the surface
+        // published.
+        self.instance.speak(locale);
+        self.published_from = None;
+        self.answers = Answers::default();
+        true
+    }
+
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
     /// stages one: its changes are the person's steps on the instance's record.
     pub fn stage(&mut self, scenario: &str) {
@@ -698,11 +956,15 @@ impl Hosted {
         // the window shows reaches into them, and the indexes are built over them.
         self.instance.sync_chunks(self.record.chunks());
         changed |= self.instance.update();
-        changed |= self.chosen();
+        let chose = self.chosen();
+        changed |= chose;
         if let Some(why) = self.instance.take_stage_failure() {
             tracing::error!(%why, "the staged scenario failed");
         }
         changed |= self.commit();
+        if chose {
+            self.instance.show_ran();
+        }
         // After what the person did before asking is committed: an undo takes back their last
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
@@ -719,6 +981,8 @@ impl Hosted {
         for event in events {
             changed |= self.delivered(event);
         }
+        changed |= self.read_used();
+        self.send_asks();
         self.publish();
         self.answer_directory();
         self.publish_search_index();
@@ -993,15 +1257,22 @@ impl Hosted {
             if !shown.contains(&descriptor.address.resource) {
                 continue;
             }
-            if let Some(availability) = self.answers.answer(
-                &host,
-                at,
-                &descriptor.address.resource,
-                &descriptor.address.action,
-            ) {
-                descriptor.contract.availability = availability;
-            }
+            self.show_offer(&host, at, descriptor);
         }
+    }
+
+    /// What the app says of `descriptor`'s action on its resource now, as the window shows it:
+    /// what it is called there, the icon beside it, and whether it can run ([`Answers`]).
+    fn show_offer(&mut self, host: &Host, at: u64, descriptor: &mut ActionDescriptor) {
+        let Some(offered) = self.answers.answer(
+            host,
+            at,
+            &descriptor.address.resource,
+            &descriptor.address.action,
+        ) else {
+            return;
+        };
+        descriptor.shows(&offered);
     }
 
     /// Where the publications stand now: what an answer is read at, and how far it stands
@@ -1015,14 +1286,15 @@ impl Hosted {
 
     /// Forget the answers a change since reached ([`Answers::forget`]): what a window shows is
     /// answered again only where what it read moved, and rows no change reached keep theirs.
-    fn forget_answers(&mut self) {
+    /// Whether a change reached one, which is what a surface offering the actions reads again.
+    fn forget_answers(&mut self) -> bool {
         let surface = self.surface.borrow().clone();
         let Some(surface) = surface else {
-            return;
+            return false;
         };
         let publications = surface.publications.borrow();
         let packages = surface.host.package_ids();
-        self.answers.forget(&publications, &packages);
+        self.answers.forget(&publications, &packages)
     }
 
     /// The entries of the resources the change moved, and the keys of the entries it deleted:
@@ -1111,10 +1383,10 @@ impl Hosted {
                 let Some(descriptor) = row.descriptor.as_mut() else {
                     return;
                 };
-                if let Some(availability) =
+                if let Some(offered) =
                     answers.answer(&host, at, &descriptor.resource, &descriptor.action)
                 {
-                    descriptor.contract.availability = availability;
+                    descriptor.shows(&offered);
                 }
             });
         }
@@ -1138,8 +1410,24 @@ impl Hosted {
     /// Run what the broker delivered on the instance's connection. Every event that waits on an
     /// answer from the instance is answered: an invocation with its outcome, a handoff step with
     /// what the host does of it. The rest says something the instance does not keep (presence,
-    /// cursors, the workspace's context, results of requests it never makes).
+    /// cursors, results of requests it never makes), but for what it names: what each app
+    /// installed here is called rides with the context, and is what this window's history reads
+    /// another app's change as.
     fn delivered(&mut self, event: CollabEvent) -> bool {
+        for used in &mut self.used {
+            if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {
+                used.moved |= moved;
+                return false;
+            }
+        }
+        if let CollabEvent::Context { apps, .. } = &event {
+            // Apps installed or removed since the last frame: what the views show of who made a
+            // change is published again.
+            if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
+                self.instance.names_changed();
+            }
+            return true;
+        }
         let (id, invocation, resource, action, argument, actor, context) = match event {
             CollabEvent::Invocation {
                 id,
@@ -1153,6 +1441,10 @@ impl Hosted {
             CollabEvent::Handoff { request } => {
                 self.handoff(&request);
                 return true;
+            }
+            CollabEvent::RemoteAction { message } => {
+                said_back(&self.spec.app, &message);
+                return false;
             }
             CollabEvent::InvocationCancellation { id } => {
                 // An invocation runs to its end in the frame it arrives in and is answered
@@ -1201,6 +1493,79 @@ impl Hosted {
         };
         self.answer_invocation(id, update);
         true
+    }
+
+    /// Bring the other apps' readings up to date: what their records took in is read again, and
+    /// the readings the views asked for since are answered. A reading that moved runs the views
+    /// that read it again on the next frame. Whether any did.
+    fn read_used(&mut self) -> bool {
+        if self.used.is_empty() {
+            return false;
+        }
+        let Some(host) = self.instance.host() else {
+            return false;
+        };
+        let runtime = host.runtime();
+        if !self.asking {
+            runtime.set_foreign_invoker(Doors(Rc::clone(&self.asks)));
+            self.asking = true;
+        }
+        let mut moved = false;
+        for used in &mut self.used {
+            if std::mem::take(&mut used.moved) {
+                used.app.host().sync_chunks(used.record.chunks());
+                if let Some(first) = used.record.chunks().first() {
+                    used.app.host().sync_from(first);
+                }
+                moved |= used.app.refresh(runtime);
+            }
+        }
+        let mut apps: Vec<&mut UsedApp> = self.used.iter_mut().map(|used| &mut used.app).collect();
+        moved |= tilolang_tilo::used::answer(runtime, &mut apps);
+        if moved {
+            (self.wake)();
+        }
+        moved
+    }
+
+    /// Send what the views and actions changed of the other apps' resources to those apps'
+    /// doors, each as that app's action on its resource: a change comes back as its next reading.
+    fn send_asks(&mut self) {
+        let asks = std::mem::take(&mut *self.asks.borrow_mut());
+        for invocation in asks {
+            let Some((app, resource, action, argument)) = door_ask(&invocation) else {
+                tracing::warn!(
+                    app = self.spec.app,
+                    ?invocation,
+                    "a change of another app names no resource of it"
+                );
+                continue;
+            };
+            let request = tilo_actions::remote::InvokeRequest {
+                invocation: InvocationId::new(),
+                target: tilo_actions::remote::application_action_target(
+                    &self.spec.workspace,
+                    &app,
+                    resource,
+                    action,
+                ),
+                argument,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            if let Err(error) = self
+                .record
+                .manager_mut()
+                .try_send(CollabRequest::RemoteAction { message })
+            {
+                tracing::warn!(app = self.spec.app, to = app, %error, "a change of another app did not reach its door");
+            }
+        }
     }
 
     /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
@@ -1284,6 +1649,7 @@ impl Hosted {
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
         let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
+        let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
         let encoded = encode(&resources, address, argument);
@@ -1364,6 +1730,11 @@ impl Hosted {
             let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.instance.open_requests().borrow_mut().push(open);
+            // A person who chose it comes to see it: the window showing it comes forward. An
+            // agent's `open` leaves the person where they are.
+            if by_person {
+                self.instance.activate_window();
+            }
             return Ok(tilo_actions::ActionOutput::default());
         }
         Err(Refused::new(
@@ -1569,7 +1940,8 @@ impl Hosted {
     /// Run the next action the person chose at the window as their own step: the same door an
     /// invocation the broker delivered for them takes, so the action runs for them however it
     /// reached the app. One a frame, so what a press opened is sent, and the window hears it
-    /// ran, before the press after it. Whether there was one.
+    /// ran, before the press after it ([`tilolang_tilo::instance::Instance::show_ran`]).
+    /// Whether there was one.
     fn chosen(&mut self) -> bool {
         let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
@@ -1588,8 +1960,8 @@ impl Hosted {
             }
             Err(refused) => self.instance.action_refused(refused.message),
         }
-        // The press ran: the frame after it sends what it opened, then tells the window it
-        // ran, so what the person typed after it goes there.
+        // The press ran: once it is in the record this frame sends what it opened, then tells
+        // the window it ran, so what the person typed after it goes there.
         self.instance.press_ran(press);
         true
     }
@@ -1621,7 +1993,11 @@ impl Hosted {
     /// Whether this turn's publishing is done; when the surface changed in more than labels
     /// since the broker took it, the caller builds it whole.
     ///
-    /// Nothing is validated again: no rule reads a label.
+    /// Nothing is validated again: no rule reads a label. A change no label moved with is done
+    /// here too when it read nothing an action offered on the window's rows reads either (a note's
+    /// body typed into): otherwise the caller reads what the app says of those actions again,
+    /// since that is not a label and the change may have moved it (a task checked off, and
+    /// `Clear done` can run now).
     fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
         let Some((from, taken)) = &self.published_from else {
             return false;
@@ -1632,6 +2008,21 @@ impl Hosted {
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
+        // What the app says of an action on a resource the surface holds — what it is called
+        // there, the icon beside it and whether it can run — is read again when a change reached
+        // it: a change the surface shows nothing of (a task checked off, and `Clear done` can run
+        // now) moves that and no label.
+        let answered = self.forget_answers();
+        if labels.is_empty() {
+            if answered {
+                return false;
+            }
+            self.published_from = Some((Rc::clone(surface), inputs));
+            return true;
+        }
+        if answered {
+            return false;
+        }
         let Some((descriptors, state)) = &mut self.published else {
             return false;
         };
@@ -1649,7 +2040,7 @@ impl Hosted {
                 }
             }
         }
-        self.directory_behind |= !labels.is_empty();
+        self.directory_behind = true;
         let changed: Vec<&str> = labels
             .iter()
             .map(|(resource, _)| resource.as_str())
@@ -1683,6 +2074,166 @@ impl Hosted {
     /// Write what the record holds to its on-disk copy, as the instance ends.
     pub fn flush(&mut self) {
         self.record.flush();
+    }
+}
+
+/// Another app the app uses, read from its own record.
+struct Used {
+    record: ReadRecord,
+    app: UsedApp,
+    /// Whether the record took in a change its readings have not been read again for.
+    moved: bool,
+}
+
+/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `record`'s connection
+/// and read through its own package.
+fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<Used> {
+    let workspace = record.route().cluster_id;
+    bundle
+        .imports
+        .iter()
+        .filter_map(|import| {
+            let records = spec.installed.get(&import.meta.app)?;
+            let packages = packages_of(&bundle.imports, &import.meta);
+            let app = UsedApp::new(&packages, &spec.person)
+                .map_err(|error| {
+                    tracing::error!(app = spec.app, used = import.meta.app, %error, "a used app's package did not load");
+                })
+                .ok()?;
+            let route = crate::route_under(&import.meta, records, workspace, &spec.person);
+            Some(Used {
+                record: ReadRecord::join(route, record.manager_mut()),
+                app,
+                moved: false,
+            })
+        })
+        .collect()
+}
+
+/// The packages `meta`'s app is read through, from `imports`: those it uses, in the order they
+/// load, then its own.
+fn packages_of<'a>(
+    imports: &'a [tilolang_tilo::bundle::Import],
+    meta: &'a tilolang_tilo::runtime::Meta,
+) -> Vec<(&'a [u8], &'a tilolang_tilo::runtime::Meta)> {
+    let mut needed: HashSet<&str> = HashSet::new();
+    let mut pending = vec![meta];
+    while let Some(next) = pending.pop() {
+        for used in &next.uses {
+            if needed.insert(used.as_str())
+                && let Some(import) = imports.iter().find(|import| import.meta.app == *used)
+            {
+                pending.push(&import.meta);
+            }
+        }
+    }
+    imports
+        .iter()
+        .filter(|import| import.meta.app != meta.app && needed.contains(import.meta.app.as_str()))
+        .map(|import| (import.wasm.as_slice(), &import.meta))
+        .chain(std::iter::once((
+            imports
+                .iter()
+                .find(|import| import.meta.app == meta.app)
+                .map_or(&[][..], |import| import.wasm.as_slice()),
+            meta,
+        )))
+        .collect()
+}
+
+/// Where the runtime sends what a view or an action changes of another app's resources: queued
+/// for [`Hosted::send_asks`], and done here; the change comes back as the resource's next reading.
+struct Doors(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
+
+impl tilolang_tilo::runtime::delegate::Invoker for Doors {
+    fn invoke(
+        &self,
+        invocation: &tilolang_tilo::runtime::delegate::Invocation,
+    ) -> tilolang_tilo::runtime::delegate::Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        tilolang_tilo::runtime::delegate::Invoked::Sent
+    }
+}
+
+/// `invocation` as its app's door takes it: the app, the resource, the action and its
+/// arguments. An action is invoked on its subject, which its arguments leave out; an edit of a
+/// field is the resource's own field edit. `None` for an action that names no resource.
+fn door_ask(
+    invocation: &tilolang_tilo::runtime::delegate::Invocation,
+) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
+    use tilolang_tilo::runtime::Value;
+    use tilolang_tilo::runtime::delegate::Invocation;
+    match invocation {
+        Invocation::Action {
+            app,
+            action,
+            subject: Some(subject),
+            from,
+            ..
+        } => {
+            let mut arguments = invocation.door_arguments();
+            if let Some(from) = from {
+                arguments.insert(
+                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
+                    tilo_actions::params::MadeFrom {
+                        resource: from.id_string(),
+                        kind: from.ty.clone(),
+                    }
+                    .to_json(),
+                );
+            }
+            Some((
+                app.clone(),
+                subject.id_string(),
+                action.clone(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
+        Invocation::Action { .. } => None,
+        Invocation::Edit {
+            app,
+            target,
+            field_id,
+            value,
+            ..
+        } => {
+            let action = match value {
+                Value::Bool(_) => tilolang_tilo::action::EDIT_FLAG_ACTION,
+                _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
+            };
+            let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
+            let arguments = serde_json::Map::from_iter([
+                ("field".to_owned(), field_id.clone().into()),
+                ("value".to_owned(), value),
+            ]);
+            Some((
+                app.clone(),
+                target.id_string(),
+                action.to_owned(),
+                tilo_actions::remote::InvokeArgument::Json(arguments),
+            ))
+        }
+    }
+}
+
+/// Say what another app's door answered of a change asked of it, when it refused or failed:
+/// the change never came, and its resource reads as it did.
+fn said_back(app: &str, message: &tilo_actions::remote::RemoteActionMessage) {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+    if let RemoteActionMessage::Receipt(receipt) = message {
+        match &receipt.status {
+            ReceiptStatus::Rejected { error } => {
+                tracing::warn!(
+                    app,
+                    ?error,
+                    "another app's door refused a change asked of it"
+                );
+            }
+            ReceiptStatus::Failed { error } => {
+                tracing::warn!(app, ?error, "a change asked of another app's door failed");
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1803,6 +2354,9 @@ impl Applier {
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
+        // A change made to the app's record at its origin reads in the language the app's window
+        // would read in: the person's, not this host process's.
+        let phrases = window_phrases(phrases, &spec, bundle);
         let activate = tilo_actions::remote::activate_spec(
             phrases.say("app-activate-window", &[]),
             phrases.say("app-activate-window-description", &[]),

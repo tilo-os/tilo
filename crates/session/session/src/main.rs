@@ -157,7 +157,7 @@ fn split_command(args: &[String]) -> (&[String], &[String]) {
 #[cfg(target_os = "linux")]
 fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitCode> {
     use std::process::ExitCode;
-    use tilo_session::mount::firstboot::{self, OneShot};
+    use tilo_session::firstboot::{self, OneShot};
     match firstboot::one_shot(ours) {
         Ok(Some(OneShot::SetupOnly)) => Some(match firstboot::run_setup(host_desktop) {
             Ok(()) => ExitCode::SUCCESS,
@@ -610,6 +610,18 @@ fn start(
     // file is written beside them.
     tilo_startup_metrics::start_writer();
     tilo_startup_metrics::mark("services-start");
+    // A session in a workspace's VM takes the device identity its host handed it before it
+    // reads anything of itself: the workspace, the record whose window it opens and the key it acts
+    // with are the relay's placement record, the first line of its standard input
+    // (`docs/hosted-browser.md`, "What the session in the VM is handed").
+    let hosted_browser = match tilo_session::hosted_browser::handed() {
+        Ok(hosted) => hosted,
+        Err(said) => {
+            eprintln!("tilo-session: {said}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let serves_an_environment = hosted_browser.is_some();
     // Who sits here, read now and kept current by workers: nothing the loop asks of the identity
     // directory waits on the disk.
     tilo_session::identity::install();
@@ -660,7 +672,7 @@ fn start(
     tell_the_person(backend, desktop.as_deref());
     // The apps this session opens start from its own displays and the person's variables, once the
     // compositor has bound its socket.
-    let launch = std::rc::Rc::new(tilo_session::mount::apps::Apps::new(
+    let launch = std::rc::Rc::new(tilo_session::apps::Apps::new(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
@@ -671,7 +683,12 @@ fn start(
     let mut options = Options {
         services,
         wake,
-        setup: tilo_session::startup::before_desk(identity, host_desktop),
+        // A session in a workspace's VM is not a first use of a computer: its identity is the
+        // one the relay handed it, so nothing is left to set up and nothing stands over the window
+        // it was started for.
+        setup: (!serves_an_environment)
+            .then(|| tilo_session::startup::before_desk(identity, host_desktop))
+            .flatten(),
         captures: Some(captures),
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
@@ -685,6 +702,7 @@ fn start(
         admit_repl,
         test_control,
         admin_control,
+        hosted_browser,
         ..device_options(machine, config)
     };
     // A session in another desktop's window serves no agent door of its own, unless the person
@@ -718,9 +736,10 @@ fn start(
         // A Rust app's sample resources and views, so a shell draws them live: a development shot
         // of a Rust view on the canvas builds with `dev-rust-views` .
         #[cfg(feature = "dev-rust-views")]
-        options
-            .services
-            .push(Box::new(tilo_session::dev_rust_views::RustApps::new()));
+        match tilo_session::dev_rust_views::RustApps::new() {
+            Ok(apps) => options.services.push(Box::new(apps)),
+            Err(error) => tracing::warn!(%error, "the sample Rust apps did not open"),
+        }
     }
     // A signal ends the loop rather than the process, so the session drops what it holds as it does
     // when it ends on its own.
@@ -791,8 +810,9 @@ fn start_session(
     headless: HeadlessPanel,
     connector: &str,
     outputs: &[NamedOutput],
-) -> Result<tilo_session::Session, tilo_compositor::Error> {
+) -> Result<tilo_session::Session, tilo_session::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+
     use tilo_session::Session;
     match backend {
         Backend::Headless => {
@@ -835,7 +855,7 @@ fn run(
     mut session: tilo_session::Session,
     ours: &[String],
     command: &[String],
-    launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
+    launch: Option<&std::rc::Rc<tilo_session::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
     host_desktop: bool,
@@ -852,6 +872,10 @@ fn run(
     };
     tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
+    // The workspace in front, for a command started here that no launcher tells one: a program run
+    // from a terminal, or `tilo-app dev`. Published beside the display, for as long as the session
+    // runs, when this session is the one the login's programs reach.
+    session.publish_workspace(&socket);
     // A session added to this machine's own login serves the installed folder importer: whether
     // identity setup is over, on the socket named for this session's display, and the review the
     // person left to be opened after it.
@@ -939,14 +963,14 @@ fn drives(
     backend: Backend,
     desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
     wake: &tilo_service::LoopWake,
-) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
+) -> Option<std::rc::Rc<tilo_session::drives::Drives>> {
     if backend != Backend::Drm {
         return None;
     }
     let desktop = desktop?;
     let connection = desktop.system_bus()?.clone();
-    Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
-        tilo_session::mount::drives::udisks(connection, wake.handle()),
+    Some(std::rc::Rc::new(tilo_session::drives::Drives::new(
+        tilo_session::drives::udisks(connection, wake.handle()),
         desktop.notifications().clone(),
     )))
 }
@@ -958,7 +982,7 @@ fn drives(
 #[cfg(target_os = "linux")]
 fn watch_the_loop(backend: Backend, session: &mut tilo_session::Session) {
     if backend == Backend::Drm
-        && let Err(error) = tilo_session::notices::guard_main_loop(session.compositor())
+        && let Err(error) = session.guard_main_loop()
     {
         tracing::warn!(%error, "the main loop is not watched");
     }
@@ -1009,12 +1033,11 @@ fn device_options(
     let owned = machine.is_owned();
     // This device's apps, as search and the surfaces that name an app read them, and the index
     // apps publish what they hold into.
-    let lists = tilo_session::Lists::of_device();
     let content = tilo_desktop_search::content_index::session();
     Options {
         config,
-        search: search_options(&lists, std::sync::Arc::clone(&content)),
-        lists,
+        search: search_options(std::sync::Arc::clone(&content)),
+        lists: tilo_session::Lists::of_device(),
         content,
         // The apps this session starts reach its services over the socket the launcher hands them;
         // a session inside another desktop's window serves them on a socket of its own, leaving
@@ -1064,7 +1087,7 @@ fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
         Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
     }
     match tilo_session::quick_settings::surface() {
-        Ok(panel) => surfaces.push(panel.person(tilo_session::unlock::login_user())),
+        Ok(panel) => surfaces.push(panel),
         Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
     }
     surfaces
@@ -1081,11 +1104,7 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
             return Vec::new();
         }
     };
-    vec![
-        tilo_session::surfaces::Surface::new("lock", program)
-            .person(tilo_session::unlock::login_user())
-            .lock(),
-    ]
+    vec![tilo_session::surfaces::Surface::new("lock", program).lock()]
 }
 
 /// `program` started with `rest` on `environment` 's displays and, when a flag named the session
@@ -1201,7 +1220,6 @@ fn audio_helper() -> Option<std::path::PathBuf> {
 /// records the workspaces hold, and the search sources they switched off.
 #[cfg(target_os = "linux")]
 fn search_options(
-    lists: &tilo_session::Lists,
     content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> tilo_session::SearchOptions {
     use std::sync::Arc;
@@ -1234,19 +1252,16 @@ fn search_options(
         Err(error) => eprintln!("tilo-session: installed app surfaces: {error}"),
     }
     tilo_session::SearchOptions {
-        apps: Some(std::sync::Arc::new(lists.clone())),
         indexes: Some(std::sync::Arc::new(
-            tilo_session::mount::indexes::SessionIndexes::new(content, files),
+            tilo_session::platform::indexes::SessionIndexes::new(content, files),
         )),
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The settings pages are this desktop's own: the session offers them to search itself.
-        settings: None,
         // The records the workspaces on this device hold, read now and followed as the apps of
         // those workspaces name more.
-        records: Some(tilo_session::Records::of_device()),
+        records: Some(tilo_session::Records::of(cli::data_home())),
     }
 }
 

@@ -24,6 +24,7 @@ use super::{
     poll_bump_counters, with_mount, with_mount_quietly,
 };
 use crate::first_frame;
+use crate::semantics_status::{TreeWait, tree_wait};
 
 mod timer {
     use js_sys::Function;
@@ -36,6 +37,56 @@ mod timer {
         #[wasm_bindgen(js_name = requestAnimationFrame)]
         pub(super) fn request_animation_frame(handler: &JsValue) -> JsValue;
     }
+}
+
+/// When the page must draw for an agent's finished notice. A frame posts it, and one falls due
+/// with nothing on the page changing: a notice due now asks for that frame, one due later is the
+/// wake returned.
+fn agent_notices_wake(m: &mut Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    let due_ms = m
+        .desktop
+        .as_ref()
+        .and_then(super::Desktop::agent_notices_due_ms)?;
+    let now_ms = crate::shell::now_ms();
+    if due_ms <= now_ms {
+        m.pending = true;
+        m.window.request_redraw();
+        return None;
+    }
+    now.checked_add(ui::time::Duration::from_millis(
+        due_ms.saturating_sub(now_ms),
+    ))
+}
+
+/// Ask for mount `m`'s next frame when it is due, and answer when the loop
+/// must wake for one that is due later. A frame already owed reads the
+/// schedule when it draws, and the loop turns again after it: walking every
+/// widget for the schedule here, after each key, press and wheel before that
+/// frame, would only delay it.
+fn next_frame(m: &Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    if m.pending {
+        m.window.request_redraw();
+        return None;
+    }
+    let output = m.frame.frame_schedule();
+    let desktop_woken = m
+        .desktop
+        .as_ref()
+        .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
+    if desktop_woken
+        || m.viewport.needs_present()
+        || output.queued_work
+        || output.needs_animation_frame
+        || pixels_waiting()
+    {
+        m.window.request_redraw();
+    }
+    let at = output.next_wake_deadline?;
+    if at <= now {
+        m.window.request_redraw();
+        return None;
+    }
+    Some(at)
 }
 
 /// Hand a timeout to the page's timer.
@@ -55,6 +106,51 @@ pub(crate) async fn sleep_ms(ms: u32) {
 /// mount, each window event is that window's input to its mount, and an idle
 /// loop works out when the next frame is due.
 pub(super) struct Runner;
+
+/// How often the page looks at an overflow readback still out. The native
+/// render worker polls it every few milliseconds on a thread of its own; the
+/// page polls on the one thread that also takes input and draws, and a slow
+/// GPU leaves the readback out for most of every frame, so polling at the
+/// worker's pace woke the loop some 250 times a second while a view
+/// scrolled, each pass costing a browser timer. A frame's wait to learn of an
+/// overflow is no later than the frame it repaints in.
+const PAGE_BUMP_POLL: ui::time::Duration = ui::time::Duration::from_millis(16);
+
+thread_local! {
+    /// The browser's wheel events carry no touch phase: each mount's swipe
+    /// in progress, begun and ended here so a scroll view's give springs
+    /// back and a glide or a hand-off sees the swipe end as on a native
+    /// trackpad ([`ui::widget::PhaselessWheel`]).
+    static WHEEL_GESTURES: RefCell<std::collections::BTreeMap<u64, ui::widget::PhaselessWheel>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Mount `id`'s wheel `event` begins or continues its swipe.
+fn observe_wheel(id: u64, event: &mut WindowEvent) {
+    let now = ui::time::now();
+    WHEEL_GESTURES.with_borrow_mut(|gestures| gestures.entry(id).or_default().observe(event, now));
+}
+
+/// End mount `id`'s swipe once paused at `now`, as the frame's input: the
+/// frame hears it as a native trackpad's lift. Returns when the swipe
+/// still running ends unless the fingers move again.
+fn end_paused_wheel(m: &mut Mount, id: u64, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    let (ended, due) = WHEEL_GESTURES.with_borrow_mut(|gestures| {
+        let gesture = gestures.get_mut(&id)?;
+        let ended = gesture.end_if_due(now);
+        let due = gesture.deadline();
+        if due.is_none() {
+            gestures.remove(&id);
+        }
+        Some((ended, due))
+    })?;
+    if let Some(end) = ended {
+        crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&end));
+        m.pending = true;
+        m.window.request_redraw();
+    }
+    due
+}
 
 impl Runner {
     fn replay_deferred(&mut self, event_loop: &ActiveEventLoop) {
@@ -122,9 +218,12 @@ impl ApplicationHandler<u64> for Runner {
         let result = with_mount_quietly(id, |m| {
             m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
-                m.error = Some(failure);
-                m.publish(id);
+                m.frame_failed(id, failure);
             } else {
+                // What asked for this frame waits for the desk's next pass: the pump that takes it
+                // runs in the frame asked for here, so a redraw that found nothing else to do would
+                // leave it waiting for the next unrelated wake.
+                m.pending = true;
                 m.window.request_redraw();
             }
             Ok(())
@@ -174,8 +273,7 @@ impl ApplicationHandler<u64> for Runner {
                 WindowEvent::RedrawRequested => {
                     m.redraws = m.redraws.wrapping_add(1);
                     if let Err(e) = m.draw() {
-                        m.error = Some(e);
-                        m.publish(id);
+                        m.frame_failed(id, e);
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -204,10 +302,13 @@ impl ApplicationHandler<u64> for Runner {
                             (touch.location.x, touch.location.y) =
                                 m.viewport.map_pointer(touch.location.x, touch.location.y);
                         }
+                        WindowEvent::MouseWheel { .. } => observe_wheel(m.id, &mut event),
                         _ => {}
                     }
+                    m.semantics.borrow_mut().note_input(&event, ui::time::now());
                     let start = m.metric_start();
                     let passes = m.frame.relayout_frames();
+                    m.note_key(&event);
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
                     m.publish_committed(&event);
@@ -229,6 +330,15 @@ impl ApplicationHandler<u64> for Runner {
                         event,
                         WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
                     ) {
+                        // The desk took the input, and what it asked of the host for it — a card
+                        // chosen on the empty desk, a menu's row, a command — is carried out on its
+                        // next pass. That pass runs in the frame asked for here and only here: a
+                        // frame the desk's widgets asked for runs theirs, and one a press itself
+                        // asked for may find none, leaving the choice waiting for whatever frame
+                        // the page came to next.
+                        if let Some(desktop) = &m.desktop {
+                            desktop.shared.wake();
+                        }
                         m.present_after_input();
                     } else {
                         m.pending = true;
@@ -258,7 +368,9 @@ impl ApplicationHandler<u64> for Runner {
         let mut deadline: Option<ui::time::Instant> = None;
         let mut wake =
             |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
-        if let Some(at) = poll_bump_counters().and_then(|again| now.checked_add(again)) {
+        if let Some(at) =
+            poll_bump_counters().and_then(|again| now.checked_add(again.max(PAGE_BUMP_POLL)))
+        {
             wake(at);
         }
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
@@ -297,44 +409,25 @@ impl ApplicationHandler<u64> for Runner {
                 } else {
                     m.semantics.borrow().due()
                 };
-                if let Some(due) = semantics_due {
-                    let drawable = !m.viewport.suspended() && m.presents();
-                    if due <= now && m.frame.replayed_draws() && drawable {
-                        // The last frame replayed windows instead of drawing
-                        // them; the next one draws every window and delivers
-                        // the tree, which then needs no second draw.
-                        m.pending = true;
-                        m.window.request_redraw();
-                    } else if due <= now {
-                        m.publish(id);
-                    } else {
-                        wake(due);
-                    }
+                match tree_wait(semantics_due, now) {
+                    Some(TreeWait::Publish) => m.publish(id),
+                    Some(TreeWait::Wake(at)) => wake(at),
+                    None => {}
+                }
+                // A swipe paused long enough has ended: the frame hears it
+                // as a native trackpad's lift.
+                if let Some(due) = end_paused_wheel(m, id, now) {
+                    wake(due);
                 }
                 if m.hidden || m.error.is_some() || !m.presents() || m.viewport.suspended() {
                     return Ok(());
                 }
                 m.pending |= m.gpu.as_ref().is_some_and(Gpu::shows_lost_frame);
-                let output = m.frame.frame_schedule();
-                let desktop_woken = m
-                    .desktop
-                    .as_ref()
-                    .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
-                if m.pending
-                    || desktop_woken
-                    || m.viewport.needs_present()
-                    || output.queued_work
-                    || output.needs_animation_frame
-                    || pixels_waiting()
-                {
-                    m.window.request_redraw();
+                if let Some(at) = agent_notices_wake(m, now) {
+                    wake(at);
                 }
-                if let Some(at) = output.next_wake_deadline {
-                    if at <= now {
-                        m.window.request_redraw();
-                    } else {
-                        wake(at);
-                    }
+                if let Some(at) = next_frame(m, now) {
+                    wake(at);
                 }
                 Ok(())
             });
@@ -423,8 +516,7 @@ pub(super) async fn watch_first_frame(id: u64) {
                     first_frame::Drive::Wait => {}
                     first_frame::Drive::Draw => {
                         if let Err(e) = m.draw() {
-                            m.error = Some(e);
-                            m.publish(id);
+                            m.frame_failed(id, e);
                             return Ok(false);
                         }
                     }

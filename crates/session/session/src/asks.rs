@@ -7,8 +7,9 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM,
-    SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
+    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
+    WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
@@ -18,16 +19,21 @@ use ui::shortcut_table::{FixedAction, ShortcutAction};
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
-    Magnify, SessionAction, SessionCommand, Shared, identity, mount, people, workspace_settings,
+    Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
     workspaces,
 };
 
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
 const CARET_GAP: f64 = 6.0;
 
+/// The tag the ask about the device `digest` names is taken back under.
+fn pairing_tag(digest: [u8; 32]) -> String {
+    format!("pairing:{}", hex::encode(digest))
+}
+
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self, look: &mut tilo_surface_host::Look<'_>) {
+    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::door::Look<'_>) {
         // A press on one of the person's devices is one of the session's own verbs: the queue it
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
@@ -36,9 +42,7 @@ impl Shared {
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
-                people::PeopleAsk::Agent { client, ask } => {
-                    self.invoke_app_action(LaunchpadAppAction::ask_agent(&client, ask));
-                }
+                people::PeopleAsk::Agent { who, client, ask } => self.agent_ask(&who, &client, ask),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {
@@ -57,6 +61,24 @@ impl Shared {
                 people::PeopleAsk::Settings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
+                // How an agent or a computer of theirs connects: Console's Connect place, which
+                // the app opens (or comes forward with) in the workspace in front.
+                people::PeopleAsk::ConnectAgent => {
+                    self.invoke_app_action(LaunchpadAppAction::connect_agent());
+                }
+                // The person's own card offers what the ask on their avatar asks: choosing it there
+                // answers that ask, which goes as it does when they answer it on the avatar.
+                people::PeopleAsk::HostAction(id) => {
+                    if self
+                        .handle
+                        .personal_ask()
+                        .is_some_and(|ask| ask.action.id == id)
+                    {
+                        self.handle.answer_personal_ask();
+                    } else {
+                        self.host_action(&id);
+                    }
+                }
             }
         }
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
@@ -71,7 +93,9 @@ impl Shared {
                 // one, or a press away from the panel: the desk's own verbs,
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
-                DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                DesktopAsk::LeftWorkspace(name) => {
+                    workspaces::left_workspace(&*self.telling(), &name);
+                }
                 // The desk was asked to delete a workspace, and the person is the one who answers:
                 // the question stands in its own dialog, wherever deleting was asked from.
                 DesktopAsk::DeleteWorkspace { slot, name } => {
@@ -82,6 +106,14 @@ impl Shared {
                 DesktopAsk::DeletedWorkspace { workspace, name } => {
                     self.deleted_workspace(workspace, &name);
                 }
+                // The desk named a branch of a workspace: the session makes it, off the loop,
+                // and puts it on the desk once what it holds is there.
+                DesktopAsk::BranchWorkspace {
+                    source,
+                    slot,
+                    workspace,
+                    name,
+                } => self.branch_workspace(source, slot, workspace, name),
                 // A window that stopped answering offers to keep waiting for its app or to quit it:
                 // the same two choices the desk's own cards make, carried out where the compositor
                 // is.
@@ -102,6 +134,14 @@ impl Shared {
                 // whatever this session offers it on answers, and without one the person hears
                 // that it did not happen.
                 DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
+                // An agent's card, opened by the agent's own face in the overview: the same ask
+                // its face makes anywhere else, which brings the card forward beside the work.
+                DesktopAsk::OpenAgent(client) => {
+                    self.invoke_app_action(LaunchpadAppAction::ask_agent(
+                        &client,
+                        tilo_desktop::profile_card::AgentAsk::Card,
+                    ));
+                }
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
@@ -118,35 +158,25 @@ impl Shared {
         self.follow_search_choices(look);
     }
 
-    /// Carry out the rows the person chose in search, and follow a row that asked the session for
-    /// something of its own: that is another round of asks.
-    fn follow_search_choices(&self, look: &mut tilo_surface_host::Look<'_>) {
-        let choices = self.handle.take_search_choices();
-        if choices.is_empty() {
-            return;
-        }
-        let workspace = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| held.id().to_string())
-                .unwrap_or_default()
+    /// Carry out the rows the person chose in search. A row that asks the session for something of
+    /// its own leaves it on the desk's asks, which the pass answers in its next round.
+    fn follow_search_choices(&self, look: &mut tilo_session_core::door::Look<'_>) {
+        let refused = self.search.perform_choices(&self.handle, &mut |own| {
+            self.doors
+                .invoke(&own.address, &own.arguments, look)
+                .map(drop)
         });
-        for choice in choices {
-            let carried = self.search.perform(&workspace, choice.clone(), &mut |own| {
-                self.doors
-                    .invoke(&own.address, &own.arguments, look)
-                    .map(drop)
-            });
-            if let Err(error) = carried {
-                // The row the person chose did not happen: search opens again where it stood,
-                // saying why on that row. A row whose search is gone has nothing to answer on, and
-                // says it as a notice.
-                let why = why_in_words(&error);
-                if !self.handle.answer_search(&choice, why) {
-                    self.answer_failed(&t("action-failed-that-row"), &error);
-                }
+        for (choice, error) in refused {
+            // The row the person chose did not happen: search opens again where it stood, saying
+            // why on that row. A row whose search is gone has nothing to answer on, and says it as
+            // a notice.
+            if !self
+                .handle
+                .answer_search(&choice, crate::search::why_in_words(&error))
+            {
+                self.answer_failed(&t("action-failed-that-row"), &error);
             }
         }
-        self.follow_asks(look);
     }
 
     /// What the bar and the desk ask of the chrome's, carried out where only the session can: quick
@@ -219,7 +249,7 @@ impl Shared {
     /// their own desktop and everyone they work with say it from now on, and this workspace's
     /// presence says it here at once. Says so when the record could not keep it.
     fn name_self(&self, name: &str) {
-        use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
+        use crate::platform::notice::Notice;
 
         let name = name.trim();
         if name.is_empty() {
@@ -235,10 +265,12 @@ impl Shared {
             }
             Err(error) => {
                 tracing::warn!(%error, "could not keep the person's name");
-                self.notices.post(
-                    Notification::new(crate::i18n::t("profile-name-not-saved"), error)
-                        .with_severity(NotificationSeverity::Error),
-                );
+                self.telling().show(&Notice::new(
+                    String::new(),
+                    2,
+                    crate::i18n::t("profile-name-not-saved"),
+                    error,
+                ));
             }
         }
     }
@@ -251,7 +283,10 @@ impl Shared {
         };
         let mut own = sync.own();
         let status = status.trim();
-        own.status = (!status.is_empty()).then(|| status.to_owned());
+        own.status = (!status.is_empty()).then(|| tilo_live::presence::Status {
+            text: status.to_owned(),
+            automatic: false,
+        });
         sync.set_own(own);
     }
 
@@ -281,7 +316,7 @@ impl Shared {
                 .invoke(
                     &own.address,
                     &own.arguments,
-                    &mut tilo_surface_host::Look::none(),
+                    &mut tilo_session_core::door::Look::none(),
                 )
                 .map(drop)
         });
@@ -298,10 +333,107 @@ impl Shared {
         let revoked = self.doors.invoke(
             &ActionAddress::new(agent_door::RESOURCE, agent_door::REVOKE),
             &arguments,
-            &mut tilo_surface_host::Look::none(),
+            &mut tilo_session_core::door::Look::none(),
         );
         if let Err(error) = revoked {
             self.answer_failed(&t("action-failed-that-agent"), &error);
+        }
+    }
+
+    /// Carry out what a person's card asked of the agent it shows: an agent this device seats at
+    /// its door is acted on here, where the connection, its workspace and its run are known; one
+    /// it does not seat is the person's hosted door's, whose own card in Console knows it.
+    fn agent_ask(&self, who: &str, client: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+        #[cfg(target_os = "linux")]
+        if let Some(agent) = self.seated_agent(who) {
+            self.seated_agent_ask(&agent, ask);
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = who;
+        self.invoke_app_action(LaunchpadAppAction::ask_agent(client, ask));
+    }
+
+    /// What a person's card asked of the agent `agent` this device seats at its door.
+    #[cfg(target_os = "linux")]
+    fn seated_agent_ask(&self, agent: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+        use tilo_desktop::profile_card::AgentAsk;
+        let working = self.seats.working(agent);
+        match ask {
+            // Its card of its own is the one the person is looking at: nothing to open.
+            AgentAsk::Card => {}
+            AgentAsk::Stop => {
+                self.seats.stop(agent);
+            }
+            AgentAsk::UndoRun => self.undo_seated_run(agent, working.as_ref()),
+            AgentAsk::TakeOver => {
+                // The person picks up where it was: its connections end here, and the app it was
+                // working in comes forward, as the history's own opening does.
+                self.seats.stop(agent);
+                self.open_what_it_worked_in(working.as_ref());
+            }
+            AgentAsk::Revoke => {
+                // What let it in here is taken back, and it works here no more: the next client of
+                // that program is asked about, as the first was.
+                if let Some(door) = self.agent_door.borrow_mut().as_mut() {
+                    door.revoke(agent);
+                }
+                self.seats.stop(agent);
+            }
+        }
+    }
+
+    /// The agent this device seats that the presence member `who` speaks for, by its key.
+    #[cfg(target_os = "linux")]
+    fn seated_agent(&self, who: &str) -> Option<String> {
+        let sync = self.sync.as_ref()?;
+        self.seats.spoken_as(*sync.publisher().as_bytes(), who)
+    }
+
+    /// Take back what the agent `agent` did here: its run in the workspace that holds it, undone in
+    /// each record it changed, as the history's own Undo run does.
+    #[cfg(target_os = "linux")]
+    fn undo_seated_run(&self, agent: &str, working: Option<&crate::agent_door::Working>) {
+        let Some(working) = working else {
+            return;
+        };
+        let Some(run) = working.run.as_deref() else {
+            // Its changes were the workspace's own, as any app's: there is no run of it to undo.
+            tracing::info!(%agent, "an agent's card asked to undo a run it did not work in");
+            return;
+        };
+        if let Err(error) = self
+            .activity
+            .undo_run(&working.workspace, run, working.changed.clone())
+        {
+            self.answer_failed(&t("action-failed-that-agent"), &error);
+        }
+    }
+
+    /// Open what the agent `agent` was working in, in its workspace, as the history opens a
+    /// resource: the person continues the work themselves.
+    #[cfg(target_os = "linux")]
+    fn open_what_it_worked_in(&self, working: Option<&crate::agent_door::Working>) {
+        let Some(working) = working else {
+            return;
+        };
+        let Some(app) = working
+            .changed
+            .last()
+            .map(|(app, _)| app.clone())
+            .or_else(|| working.app.clone())
+        else {
+            return;
+        };
+        let target = ui::HistoryResourceTarget {
+            app_id: Some(app.clone()),
+            app_label: Some(crate::app_names::app_name(&app)),
+            id: String::new(),
+            kind: String::new(),
+            label: String::new(),
+        };
+        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&working.workspace) {
+            self.open_from_history(&workspace, &target);
         }
     }
 
@@ -309,41 +441,30 @@ impl Shared {
     /// card or link it came from is gone: the person hears it as a notice,
     /// naming what they asked for and why it did not happen.
     pub(crate) fn answer_failed(&self, asked: &str, why: &impl std::fmt::Display) {
-        let notice = crate::notices::Notice {
-            app: t("action-failed-app"),
-            urgency: 1,
-            title: t_args("action-failed-title", &[("what", asked.into())]),
-            body: t_args("action-failed-body", &[("reason", why.to_string().into())]),
-            actions: Vec::new(),
-            expires_after: None,
-            machine_wide: true,
-            sound: None,
-        };
-        self.notifications.borrow().tell(notice);
+        let notice = crate::platform::notice::Notice::new(
+            t("action-failed-app"),
+            1,
+            t_args("action-failed-title", &[("what", asked.into())]),
+            t_args("action-failed-body", &[("reason", why.to_string().into())]),
+        );
+        self.notifications.borrow().tell(&notice);
     }
 
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
     /// a press on one goes there and closes the walk, and a press away from
     /// the panel leaves the person where they were.
     fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
-        use tilo_desktop::window_switcher::SwitcherAsk;
         // The walk is the session desk's, as the keys reach it: the panel's presses ask for the
         // same verbs.
-        use tilo_surface_host::shell_part::DESK_RESOURCE as SESSION_DESK;
-        let select = |at: usize| {
-            let at = i64::try_from(at).unwrap_or(i64::MAX);
-            Invocation::new(SESSION_DESK, "select-switcher").with("at", at)
-        };
-        let mut invocations = self.invocations.borrow_mut();
-        match ask {
-            SwitcherAsk::Hover(at) => invocations.push(select(at)),
-            SwitcherAsk::Choose(at) => {
-                invocations.push(select(at));
-                invocations.push(Invocation::new(SESSION_DESK, "commit-switcher"));
-            }
-            SwitcherAsk::Dismiss => invocations
-                .push(Invocation::new(SESSION_DESK, "close-surface").with("surface", "switcher")),
-        }
+        let walking = self
+            .desk_overlays
+            .is_up()
+            .then(|| self.desk_overlays.scope());
+        self.invocations.borrow_mut().extend(
+            crate::keys::SwitcherKey::of_panel(ask)
+                .into_iter()
+                .filter_map(|key| key.asks(walking)),
+        );
     }
 
     /// Hand a click on the tray icon at `key` to the application that owns it, as the click reached
@@ -386,11 +507,12 @@ impl Shared {
         }
         match id {
             NEW_WORKSPACE => self.new_workspace(),
+            BRANCH_WORKSPACE => self.branch_shown_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
-            JOIN_WORKSPACE => workspaces::open_directory(
+            JOIN_WORKSPACE => crate::directory::open(
                 self.directory.as_ref(),
-                &self.handle,
                 &self.directory_store,
+                &crate::platform::directory::DeskDirectory(self),
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             // Deleting is the desk's, which asks the person first: the desk's own action is the
@@ -420,13 +542,15 @@ impl Shared {
     /// writes what went wrong. A computer told nowhere to send reports says so where the person
     /// asked, rather than closing on nothing.
     fn report_problem(&self) {
-        use tilo_desktop_surface::notifications::Notification;
+        use crate::platform::notice::Notice;
 
         if self.feedback.is_some() {
             self.report_from.set(true);
             return;
         }
-        self.notices.post(Notification::new(
+        self.telling().show(&Notice::new(
+            String::new(),
+            1,
             t("session-feedback-nowhere"),
             t("session-feedback-nowhere-body"),
         ));
@@ -437,9 +561,9 @@ impl Shared {
     /// ([`crate::certification::host_action`]); an ask that went — answered elsewhere, or expired —
     /// is taken back from them.
     pub(crate) fn follow_device_asks(&self) {
-        use tilo_desktop_surface::notifications::{
-            Addressed, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
-        };
+        use tilo_desktop_surface::notifications::NotificationIconKind;
+
+        use crate::platform::notice::Notice;
 
         let Some(fabric) = self.fabric.as_ref() else {
             return;
@@ -451,9 +575,7 @@ impl Shared {
             ))
         };
         for digest in gone {
-            for approve in [true, false] {
-                self.notices.withdraw_host_action(&answer(digest, approve));
-            }
+            self.telling().withdraw(&pairing_tag(digest));
         }
         for asking in fresh {
             let found = if asking.via.is_empty() {
@@ -475,27 +597,31 @@ impl Shared {
                     ("code", asking.code.clone().into()),
                 ],
             );
-            let mut notice =
-                Notification::new(tilo_desktop_surface::i18n::t("pairing-asks-title"), body);
-            notice.actions = vec![
-                (
-                    answer(asking.digest, true),
-                    tilo_desktop_surface::i18n::t_args(
-                        "pairing-approve",
-                        &[("code", asking.code.clone().into())],
+            self.telling().show(
+                &Notice::new(
+                    tilo_desktop_surface::i18n::t("host-action-source-devices"),
+                    1,
+                    tilo_desktop_surface::i18n::t("pairing-asks-title"),
+                    body,
+                )
+                .choosing(vec![
+                    (
+                        answer(asking.digest, true),
+                        tilo_desktop_surface::i18n::t_args(
+                            "pairing-approve",
+                            &[("code", asking.code.clone().into())],
+                        ),
                     ),
-                ),
-                (
-                    answer(asking.digest, false),
-                    tilo_desktop_surface::i18n::t("pairing-decline"),
-                ),
-            ];
-            notice.app_name = Some(tilo_desktop_surface::i18n::t("host-action-source-devices"));
-            notice.icon_kind = NotificationIconKind::Permission;
-            notice.severity = NotificationSeverity::Info;
-            notice.addressed = Some(Addressed::Ask);
-            notice.dismiss_after = PERSISTENT_DISMISS;
-            self.notices.post(notice);
+                    (
+                        answer(asking.digest, false),
+                        tilo_desktop_surface::i18n::t("pairing-decline"),
+                    ),
+                ])
+                .about(NotificationIconKind::Permission)
+                // It stays until the person answers it: waiting decides nothing.
+                .staying(Some(std::time::Duration::ZERO))
+                .tagged(pairing_tag(asking.digest)),
+            );
         }
     }
 
@@ -545,14 +671,14 @@ impl Shared {
     /// loop: workspace settings on a route's tab, and an app the person asked to uninstall.
     pub(crate) fn follow_tools(
         &self,
-        tools: &mount::tools::Handle,
-        media: Vec<mount::drives::Medium>,
+        tools: &crate::tools::Handle,
+        media: Vec<crate::drives::Medium>,
     ) {
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
             let answered = match &ask {
-                mount::tools::Ask::WorkspaceSettings {
+                crate::tools::Ask::WorkspaceSettings {
                     workspace, route, ..
                 } => workspace_settings::open_route(
                     self.workspace_settings.as_ref(),
@@ -560,7 +686,7 @@ impl Shared {
                     workspace,
                     *route,
                 ),
-                mount::tools::Ask::Uninstall { app, .. } => {
+                crate::tools::Ask::Uninstall { app, .. } => {
                     if self.ask_uninstall(app) {
                         Ok(())
                     } else {
@@ -574,22 +700,39 @@ impl Shared {
 
     /// What workspace settings feeds its panes from.
     pub(crate) fn workspace_settings_feed(&self) -> workspace_settings::Feeding<'_> {
-        workspace_settings::Feeding::new(
-            &self.handle,
-            &self.person,
-            &self.search,
-            &self.ws_settings_fed,
-            &self.workspace_tabs,
-            self.file_picker.as_ref(),
-            self.personal.as_ref(),
-            self.engine.as_deref(),
-        )
+        workspace_settings::Feeding {
+            handle: &self.handle,
+            person: &self.person,
+            search: &self.search,
+            fed: &self.ws_settings_fed,
+            tabs: &self.workspace_tabs,
+            picker: self.file_picker.as_ref(),
+            personal: self.personal.as_ref(),
+            engine: self.engine.as_ref(),
+            landings: &self.landings,
+        }
     }
 
     /// Make a new workspace through the desk's own published action, so the rules and the naming
     /// are the desk's.
     fn new_workspace(&self) {
         self.ask_and_report("new-workspace", &serde_json::Map::new());
+    }
+
+    /// Branch the workspace the person is in through the desk's own published action, so the rules
+    /// and the naming are the desk's.
+    fn branch_shown_workspace(&self) {
+        let Some(shown) = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+        else {
+            return;
+        };
+        let args = serde_json::Map::from_iter([(
+            "source".to_owned(),
+            serde_json::Value::from(shown.0.to_string()),
+        )]);
+        self.ask_and_report("branch-workspace", &args);
     }
 
     /// Leave the workspace the person is in through the desk's own published action, which takes it
@@ -607,7 +750,7 @@ impl Shared {
     ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
         self.doors
-            .invoke(&address, args, &mut tilo_surface_host::Look::none())
+            .invoke(&address, args, &mut tilo_session_core::door::Look::none())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -627,7 +770,17 @@ impl Shared {
 
     /// Open the panel where the person types, for the clipboard's copies: beside the caret that
     /// asked for it, and under the tray when no field holds one.
+    /// A key moves the field's caret before its app commits it, so the panel waits for that
+    /// commit: placed now, it would stand at the caret from before the app's last redraw.
     fn show_quick_settings_beside_caret(&self) {
+        if !self.quick_settings {
+            return;
+        }
+        self.pending_paste.set(true);
+    }
+
+    /// Put the clipboard panel up beside the caret the desk has now, on its paste page.
+    pub(crate) fn open_clipboard_beside_caret(&self) {
         if !self.quick_settings {
             return;
         }
@@ -635,7 +788,10 @@ impl Shared {
             .overlays
             .caret()
             .map(|at| Anchor::Beside { at, gap: CARET_GAP });
-        self.overlays.open(Slot::QuickSettings, anchor);
+        // The surface the field stands in (the desk's search) stays up under it, and has the
+        // keyboard back for the paste.
+        self.overlays.open_over(Slot::QuickSettings, anchor);
+        self.panel_asks.borrow_mut().push("paste");
     }
 
     /// Close the quick settings when they are up, open them otherwise.
@@ -664,13 +820,12 @@ impl Shared {
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();
-                self.panel_asks.borrow_mut().push("paste");
             }
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(DESK_RESOURCE, "search"));
             }
             ShortcutAction::TabMenu => {
-                invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
+                invocations.push(Invocation::new(crate::shell::state::WINDOW_MENU, "open"));
             }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             ShortcutAction::PowerMenu => self
@@ -799,16 +954,5 @@ impl Shared {
                 tracing::debug!(?action, "a fixed shortcut of the desk's found no window");
             }
         }
-    }
-}
-
-/// Why a row the person chose did not happen, in words they read: the session's own missing app
-/// host says what it means, rather than naming its code on the row.
-fn why_in_words(error: &tilo_actions::DoorError) -> String {
-    match error {
-        tilo_actions::DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
-            tilo_desktop_surface::i18n::t("answer-why-cannot-start")
-        }
-        other => other.to_string(),
     }
 }

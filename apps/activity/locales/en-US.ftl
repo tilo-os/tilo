@@ -13,7 +13,6 @@ activity-see-history = See history
 activity-history-pending = History is waiting for current edits to finish
 activity-summary-on-device = On-device summary
 activity-resume-heading = Where you left off
-activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
 activity-brief-open-explorer = Open this work session in History
 activity-brief-no-changes = No content differences in this work session
@@ -39,7 +38,6 @@ activity-show-more = Show earlier changes
 activity-group-unnamed = Work group
 activity-group-select = Select
 activity-day-unknown = Undated
-activity-entry-on-behalf = { $agent } for { $person }
 activity-entry-not-on = not on { $device }: { $reason }
 activity-select-through = Select through here
 
@@ -83,3 +81,8 @@ activity-was = Was { $before }
 # The fields a run changed, with what each holds now and what it held before.
 activity-changed-fields = What changed, before and after
 activity-removed = Nothing now
+
+## Actions
+
+activity-effects-remove-source = Remove source
+activity-filter = Workspace activity

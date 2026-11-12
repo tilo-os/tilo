@@ -329,12 +329,22 @@ fn two_replicas_converge() {
 fn the_terminal_session_lives_in_one_panel_of_the_project() {
     let mut project = Replica::<Project>::new();
     let target = terminal::target::SessionTarget::default_environment().encode();
-    let record = crate::actions::terminal(Terminal::RECORD_TARGET.with(target).build(0).unwrap());
+    let record = crate::actions::terminal(
+        Terminal::RECORD_TARGET
+            .with((target, None::<String>))
+            .build(0)
+            .unwrap(),
+    );
     act(&mut project, &record).unwrap();
     let pane = "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59";
     act(
         &mut project,
-        &crate::actions::terminal(Terminal::CLAIM_PANE.with(pane.to_owned()).build(0).unwrap()),
+        &crate::actions::terminal(
+            Terminal::CLAIM_PANE
+                .with((pane.to_owned(), None::<String>))
+                .build(0)
+                .unwrap(),
+        ),
     )
     .unwrap();
     let session = project.state().unwrap().terminal_panel.unwrap();
@@ -345,7 +355,7 @@ fn the_terminal_session_lives_in_one_panel_of_the_project() {
             &mut project,
             &crate::actions::terminal(
                 Terminal::CLAIM_PANE
-                    .with("not a pane".to_owned())
+                    .with(("not a pane".to_owned(), None::<String>))
                     .build(0)
                     .unwrap()
             ),
@@ -368,7 +378,12 @@ fn the_terminal_records_its_runs_and_queues_asked_commands() {
     let pane = "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59";
     act(
         &mut project,
-        &crate::actions::terminal(Terminal::CLAIM_PANE.with(pane.to_owned()).build(0).unwrap()),
+        &crate::actions::terminal(
+            Terminal::CLAIM_PANE
+                .with((pane.to_owned(), None::<String>))
+                .build(0)
+                .unwrap(),
+        ),
     )
     .unwrap();
     let finished = terminal::resource::Finished {

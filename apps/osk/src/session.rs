@@ -13,11 +13,12 @@
 //! compositor, a test) finds no such resource and goes on showing itself by
 //! the input method's focus, as it always has.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde::Deserialize;
 use ui::WakeHandle;
 use ui::collaboration::SessionResource;
+use ui::serde_json::{Map, Value};
 
 /// The resource the session publishes the keyboard's state on.
 const KEYBOARD: &str = "keyboard";
@@ -34,16 +35,29 @@ struct Published {
     visible: bool,
 }
 
-/// The session's last word on the keyboard, as the view reads it.
-#[derive(Clone, Default)]
-pub(crate) struct Said(Arc<Mutex<Option<bool>>>);
+/// The action the keyboard asks the session to carry out when the person dismisses it.
+const SET_VISIBLE: &str = "set-visible";
+
+/// What the session's watcher hears: a reading to look at, or an action the keyboard asks for.
+enum Event {
+    Reading,
+    Ask(&'static str, Map<String, Value>),
+}
+
+/// The session's last word on the keyboard, as the view reads it, and how the view asks the
+/// session for what only it can do.
+#[derive(Clone)]
+pub(crate) struct Said {
+    visible: Arc<Mutex<Option<bool>>>,
+    asks: mpsc::Sender<Event>,
+}
 
 impl Said {
     /// Whether the session says the keyboard belongs on screen, as it last
     /// said; `None` before it said anything.
     pub fn visible(&self) -> Option<bool> {
         *self
-            .0
+            .visible
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -51,9 +65,16 @@ impl Said {
     /// Say what the session published.
     fn say(&self, visible: bool) {
         *self
-            .0
+            .visible
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(visible);
+    }
+
+    /// Tell the session whether the keyboard belongs on screen: its word decides, and a keyboard
+    /// hidden here alone would be back with the next reading.
+    pub(crate) fn set_visible(&self, visible: bool) {
+        let arguments = Map::from_iter([("visible".to_owned(), Value::from(visible))]);
+        let _ = self.asks.send(Event::Ask(SET_VISIBLE, arguments));
     }
 }
 
@@ -62,11 +83,15 @@ impl Said {
 /// person opened for themselves shows by its input method's focus alone.
 pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
     std::env::var_os(SURFACE_LAYER_ENV)?;
-    let said = Said::default();
+    let (asks, heard) = mpsc::channel();
+    let said = Said {
+        visible: Arc::default(),
+        asks,
+    };
     let writing = said.clone();
     let spawned = std::thread::Builder::new()
         .name("osk-session".into())
-        .spawn(move || watch(&writing, &wake));
+        .spawn(move || watch(&writing, &wake, &heard));
     match spawned {
         Ok(_) => Some(said),
         Err(error) => {
@@ -78,7 +103,7 @@ pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
 
 /// Open the keyboard's resource and read each reading it publishes into
 /// `said`, waking the app to draw the change.
-fn watch(said: &Said, wake: &WakeHandle) {
+fn watch(said: &Said, wake: &WakeHandle, heard: &mpsc::Receiver<Event>) {
     let opened = match SessionResource::open(KEYBOARD) {
         Ok(opened) => opened,
         Err(error) => {
@@ -89,11 +114,12 @@ fn watch(said: &Said, wake: &WakeHandle) {
         }
     };
     // Readings arrive on the session's worker, so each one is handed over
-    // here rather than read on the frame thread.
-    let (changed, wait) = std::sync::mpsc::channel();
+    // here rather than read on the frame thread; the view's asks come the
+    // same way, so both are woken for on this one wait.
+    let waking = said.asks.clone();
     let mut scope = ui::WakeScope::new();
     if let Err(error) = scope.bind(move |_| {
-        let _ = changed.send(());
+        let _ = waking.send(Event::Reading);
     }) {
         tracing::warn!(%error, "osk: the session's readings are not heard");
         return;
@@ -114,8 +140,16 @@ fn watch(said: &Said, wake: &WakeHandle) {
             said.say(visible);
             wake.wake();
         }
-        if wait.recv().is_err() {
-            return;
+        match heard.recv() {
+            Ok(Event::Reading) => {}
+            // The session carries the ask out on its own pass, so the wait continues before its
+            // reading of what it did arrives.
+            Ok(Event::Ask(action, arguments)) => {
+                if let Err(error) = opened.invoke(action, &arguments) {
+                    tracing::warn!(%error, %action, "osk: the session refused the keyboard's ask");
+                }
+            }
+            Err(_) => return,
         }
     }
 }

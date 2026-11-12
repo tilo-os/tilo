@@ -49,9 +49,11 @@ pub mod schema_ops;
 pub mod sentence;
 pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
-    AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
-    agent_display_label, agent_principal_name, author_coloured, author_for_identity,
-    local_identity_author, participant_display_label, set_workspace_agents, short_id, stable_hue,
+    AuthorDirectory, HistoryAgent, ParticipantNames, RosterAgent, UNKNOWN_AUTHOR_NAME,
+    actor_handle, actor_name, agent_display_label, agent_principal_name, app_name, app_words,
+    author_coloured, author_for_identity, local_identity_author, name_words,
+    participant_display_label, participant_name, set_installed_apps, set_workspace_agents,
+    short_id, software_name, stable_hue,
 };
 /// Undo, redo, restore and checkpoints written into the document, below
 /// the toolkit.

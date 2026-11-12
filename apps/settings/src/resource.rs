@@ -22,7 +22,27 @@ use ui::tilo_resource::Effect as _;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Settings {}
 
-#[resource(kind = "settings.root", label = "Settings", search = Settings::panes)]
+impl Settings {
+    /// What the record holds: nothing — the person's and the device's preferences are the
+    /// session's settings sections, records of their own.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "settings.root",
+    search = Settings::panes,
+    read_content = Settings::read_document
+)]
 impl Settings {}
 
 impl Settings {
@@ -43,6 +63,7 @@ impl Settings {
 /// The effect a system tool's intent opens Settings with: VPN's list, a
 /// profile's page or its import. Network's pane when the VPN effects are not
 /// in this build.
+#[cfg(feature = "tilo-os")]
 pub fn tool_effect(intent: &os_actions::ToolIntent) -> Result<SettingsEffect, String> {
     let os_actions::ToolIntent::Vpn { route, profile } = intent else {
         return Err("Settings opens only the VPN tool".into());
@@ -156,10 +177,13 @@ impl ResourceApp for SettingsShell {
         let parsed = match input.argument() {
             Some(argument) => parse_settings_uri(argument),
             // Opened as a system tool (VPN): where the tool's intent says.
+            #[cfg(feature = "tilo-os")]
             None => match os_actions::tool_intent_from_env() {
                 Some(intent) => tool_effect(&intent),
                 None => return Vec::new(),
             },
+            #[cfg(not(feature = "tilo-os"))]
+            None => return Vec::new(),
         };
         match parsed {
             Ok(effect) => vec![Invoke::effect(&effect)],
@@ -204,6 +228,7 @@ impl ResourceApp for SettingsShell {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
     use crate::panes::agent_models::AgentModelsEffect;

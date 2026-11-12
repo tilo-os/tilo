@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use ui::framework::Refused;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
@@ -19,6 +20,7 @@ use ui::widget::{
 };
 
 use crate::apply::AppearanceChoice;
+use crate::locales::CATALOG;
 use crate::preview::{Show, ThemePreview};
 use crate::studio::{Rung, Studio, Theme};
 
@@ -429,7 +431,7 @@ fn sidebar(ui: &Ui) -> Element {
         }
     };
     let mut list = NavList::new(Vec::new())
-        .with_accessible_name(crate::APP_TITLE)
+        .with_accessible_name(crate::locales::CATALOG.t("themes-app-title"))
         .follow(source)
         .on_view(NAV_ID, select);
     // "New theme" opens a draft of a preset, and Delete removes the row's
@@ -766,9 +768,12 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
                 return String::new();
             };
             if findings.is_empty() {
-                String::from("Every pairing meets its contrast floor.")
+                CATALOG.t("themes-contrast-every-pairing-meets")
             } else {
-                format!("Too little contrast: {}", findings.join("; "))
+                CATALOG.t_args(
+                    "themes-contrast-low",
+                    &[("findings", ArgValue::Text(findings.join("; ")))],
+                )
             }
         })
         .with_id("contrast-findings")

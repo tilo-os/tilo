@@ -19,7 +19,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use tilo_resource::JsonSchema;
 
 use tilo_doc::model::Region;
@@ -475,6 +475,9 @@ pub enum RichTextAction {
     /// value written over a field (a tilolang assignment, an agent's rewrite)
     /// merges with a concurrent edit this way, never as a replacement.
     SyncClips { blocks: Vec<ClipBlock> },
+    // Decoded again on every replica, the images the bytes embed named by
+    // address and kept nowhere: what documents recorded before
+    // `ReplaceImported`, and a body written inside another action.
     /// Replace the body with `bytes` decoded as `format`. A decode failure
     /// refuses the action so the open document stays as it was. The
     /// document remembers the bytes' content address as the file it was
@@ -539,6 +542,17 @@ pub enum RichTextAction {
         #[serde(default)]
         markdown: bool,
     },
+    // Read once where it is invoked (`stage_import`): every replica writes
+    // `document` as it is, never reading the file again. Its images are
+    // named by address; `content` maps each to the (sealed) reference the
+    // content store keeps it under. `file_digest` is the file's address.
+    /// Replace the body with an imported file.
+    ReplaceImported {
+        document: Vec<u8>,
+        #[serde(default)]
+        content: BTreeMap<String, String>,
+        file_digest: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -570,7 +584,8 @@ impl RichTextAction {
             | Self::ReplaceBody { .. }
             | Self::ReplaceClips { .. }
             | Self::SyncClips { .. }
-            | Self::ReplaceFormatted { .. } => ActionDomain::Text,
+            | Self::ReplaceFormatted { .. }
+            | Self::ReplaceImported { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
             | Self::SetBlockAttr { .. }
@@ -1015,6 +1030,19 @@ impl<'a> ActionValidator<'a> {
                 blocks.len() <= 10_000 && blocks.iter().all(Self::valid_clip)
             }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
+            RichTextAction::ReplaceImported {
+                document,
+                content,
+                file_digest,
+            } => {
+                document.len() <= MAX_IMPORT_BYTES
+                    && tilo_content::valid_hash(file_digest)
+                    && content.len() <= MAX_IMPORTED_CONTENT
+                    && content.iter().all(|(address, reference)| {
+                        tilo_content::valid_hash(address)
+                            && tilo_content::valid_reference(reference)
+                    })
+            }
             _ => false,
         }
     }
@@ -1157,7 +1185,7 @@ impl<'a> ActionValidator<'a> {
             } => {
                 self.block_len(RegionKind::Body, block)
                     .is_some_and(|len| *at <= len)
-                    && tilo_content::valid_hash(content)
+                    && tilo_content::valid_reference(content)
                     && usize::try_from(*len).is_ok_and(|len| len <= MAX_ACTION_BLOB_BYTES)
                     && width.is_none_or(|value| (1..=100_000).contains(&value))
                     && height.is_none_or(|value| (1..=100_000).contains(&value))
@@ -1422,6 +1450,10 @@ fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
     dm.set_kind_in(region, block, kind);
 }
 
+fn remove_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str) {
+    dm.remove_attr_in(region, block, key);
+}
+
 // ---------------------------------------------------------------------------
 // Per-variant `apply` bodies. Split out of `Action::apply` below (one match
 // arm each) so that single trait method stays short; kept as free functions
@@ -1552,6 +1584,36 @@ fn apply_set_mark(
     }
 }
 
+/// Write the kind `kind` onto each of `blocks`, with `level` and `ordered` when they are given,
+/// and without the ones that kind does not carry: a line that stops being a heading forgets its
+/// level, and a list item that becomes prose its order and depth.
+fn set_kind_and_attrs(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    kind: &str,
+    level: Option<i64>,
+    ordered: Option<bool>,
+) {
+    set_kind_region(dm, region, block, kind);
+    let carries_level = matches!(kind, "heading" | "list_item");
+    let carries_ordered = kind == "list_item";
+    if carries_level {
+        if let Some(l) = level {
+            set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
+        }
+    } else {
+        remove_attr_region(dm, region, block, "level");
+    }
+    if carries_ordered {
+        if let Some(o) = ordered {
+            set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
+        }
+    } else {
+        remove_attr_region(dm, region, block, "ordered");
+    }
+}
+
 fn apply_set_paragraph_style(
     dm: &mut DocMut,
     region: Region,
@@ -1563,13 +1625,7 @@ fn apply_set_paragraph_style(
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        set_kind_region(dm, region, block, kind);
-        if let Some(l) = level {
-            set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
-        }
-        if let Some(o) = ordered {
-            set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
-        }
+        set_kind_and_attrs(dm, region, block, kind, level, ordered);
     }
 }
 
@@ -1586,13 +1642,7 @@ fn apply_named_style(
     sorted.sort();
     for block in &sorted {
         if let Some(k) = kind {
-            set_kind_region(dm, region, block, k);
-            if let Some(l) = level {
-                set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
-            }
-            if let Some(o) = ordered {
-                set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
-            }
+            set_kind_and_attrs(dm, region, block, k, level, ordered);
         }
         set_attr_region(dm, region, block, "style", &AttrVal::Str(style.to_string()));
     }
@@ -2087,6 +2137,34 @@ fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) 
     dm.set_meta_str(FILE_DIGEST, &tilo_content::hash_bytes(bytes));
 }
 
+/// The most images an imported file may embed.
+const MAX_IMPORTED_CONTENT: usize = 4096;
+
+fn apply_replace_imported(
+    dm: &mut DocMut,
+    document: &[u8],
+    content: &BTreeMap<String, String>,
+    file_digest: &str,
+) {
+    // Validated where it was staged; a document that does not load leaves
+    // the body as it was.
+    let Ok(imported) = AutoCommit::load(document) else {
+        return;
+    };
+    let Ok(containers) = tilo_doc::model::open(&imported, &automerge::ROOT) else {
+        return;
+    };
+    let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
+    for id in &existing {
+        dm.tombstone_block_in(Region::Body, id);
+    }
+    // A write automerge refuses leaves what was written before it, as a
+    // codec failing midway did.
+    let _ = dm.graft(&imported, &containers, content);
+    keep_a_paragraph(dm);
+    dm.set_meta_str(FILE_DIGEST, file_digest);
+}
+
 /// The document meta key holding the content address of the file the
 /// document was last read from or written to.
 pub const FILE_DIGEST: &str = "file_digest";
@@ -2095,8 +2173,9 @@ pub const FILE_DIGEST: &str = "file_digest";
 /// file whose content address is [`FILE_DIGEST`] took it: the work a file
 /// does not hold yet.
 ///
-/// Every action that changes the body sets it, and the two that put a file's
-/// content in the document — [`RichTextAction::ReplaceFormatted`] and
+/// Every action that changes the body sets it, and those that put a file's
+/// content in the document — [`RichTextAction::ReplaceImported`],
+/// [`RichTextAction::ReplaceFormatted`] and
 /// [`RichTextAction::NoteFileWritten`] — clear it. So an undone edit reads
 /// as unsaved too: the document did change since the file was written, and
 /// over-reporting that is the safe direction for anyone closing a window.
@@ -2119,28 +2198,59 @@ fn import_formatted(
     }
 }
 
-/// Stage a [`RichTextAction::ReplaceFormatted`] of `bytes` read as `format`:
-/// decode them once into a scratch document, so bytes the codec rejects
-/// never become an action, and return the images they embed, which the
-/// document only names and the caller keeps in its content store before
-/// submitting the action.
+/// A file read as a format where its import is invoked, before it is an
+/// action: the document it reads as, and the images it embeds, which the
+/// document names by address and the invoking side keeps in its content
+/// store ([`Self::action`]).
+pub struct StagedImport {
+    document: Vec<u8>,
+    file_digest: String,
+    inputs: tilo_content::ContentInputs,
+}
+
+impl StagedImport {
+    /// The images the file embeds, by address.
+    #[must_use]
+    pub fn inputs(&self) -> &tilo_content::ContentInputs {
+        &self.inputs
+    }
+
+    /// The [`RichTextAction::ReplaceImported`] that writes the file's
+    /// content, its images named by the references `content` answers for
+    /// their addresses (what [`tilo_content::ContentStore::put_inputs`]
+    /// answers).
+    #[must_use]
+    pub fn action(self, content: BTreeMap<String, String>) -> RichTextAction {
+        RichTextAction::ReplaceImported {
+            document: self.document,
+            content,
+            file_digest: self.file_digest,
+        }
+    }
+}
+
+/// Read `bytes` as `format` once, where the import is invoked, so bytes the
+/// codec rejects never become an action, and every replica writes what this
+/// read rather than reading the file again ([`StagedImport::action`]).
 ///
 /// # Errors
 ///
 /// Returns why the bytes do not import as `format`.
-pub fn stage_import(
-    format: ImportFormat,
-    bytes: &[u8],
-) -> Result<(RichTextAction, tilo_content::ContentInputs), String> {
-    if bytes.len() > MAX_IMPORT_BYTES {
-        return Err(format!(
+pub fn stage_import(format: ImportFormat, bytes: &[u8]) -> Result<StagedImport, String> {
+    let too_large = || {
+        format!(
             "the file is larger than {} MiB",
             MAX_IMPORT_BYTES / (1024 * 1024)
-        ));
+        )
+    };
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err(too_large());
     }
     let mut scratch = AutoCommit::new();
     let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
-    let mut ids = tilo_doc::IdGen::new("staged-import".into());
+    // Ids of the scratch document's own actor: the blocks it writes are
+    // new wherever the action applies.
+    let mut ids = tilo_doc::IdGen::new(scratch.get_actor().to_hex_string());
     let mut inputs = tilo_content::ContentInputs::new();
     import_formatted(
         &mut DocMut {
@@ -2153,13 +2263,20 @@ pub fn stage_import(
         &mut inputs,
     )
     .map_err(|error| error.to_string())?;
-    Ok((
-        RichTextAction::ReplaceFormatted {
-            format,
-            bytes: bytes.to_vec(),
-        },
+    if inputs.len() > MAX_IMPORTED_CONTENT {
+        return Err(format!(
+            "the file embeds more than {MAX_IMPORTED_CONTENT} images"
+        ));
+    }
+    let document = scratch.save();
+    if document.len() > MAX_IMPORT_BYTES {
+        return Err(too_large());
+    }
+    Ok(StagedImport {
+        document,
+        file_digest: tilo_content::hash_bytes(bytes),
         inputs,
-    ))
+    })
 }
 
 /// What `bytes` read as `format` hold, read from a scratch document without
@@ -2493,6 +2610,11 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }
+        RichTextAction::ReplaceImported {
+            document,
+            content,
+            file_digest,
+        } => apply_replace_imported(dm, document, content, file_digest),
         _ => {}
     }
 }
@@ -2805,7 +2927,9 @@ impl RichTextAction {
         // actions that take a file's content, work it does).
         let file_took_it = matches!(
             self,
-            RichTextAction::NoteFileWritten { .. } | RichTextAction::ReplaceFormatted { .. }
+            RichTextAction::NoteFileWritten { .. }
+                | RichTextAction::ReplaceFormatted { .. }
+                | RichTextAction::ReplaceImported { .. }
         );
         dm.set_meta_flag(UNSAVED, !file_took_it);
         Ok(())

@@ -41,6 +41,7 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
         Mark::Code => ("fontFamily", MarkVal::Str("mono".to_owned())),
         Mark::Link(page) => ("link", MarkVal::Str(format!("{PAGE_LINK_PREFIX}{page}"))),
         Mark::Transclusion(page) => ("transclusion", MarkVal::Str(page.to_string())),
+        Mark::Embed(reference) => ("transclusion", MarkVal::Str(reference.clone())),
         Mark::ExternalLink(target) => ("link", MarkVal::Str(target.clone())),
         Mark::ResourceLink(href) => ("link", MarkVal::Str(href.clone())),
         Mark::Mention(id) => ("mention", MarkVal::Str(id.clone())),

@@ -24,7 +24,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
-use tilo_relay::{Envelope, HomePeerRegistration, Relay, RelayClient, RelayConfig};
+use tilo_relay::{Envelope, HomePeerRegistration, RelayClient, RelayConfig};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, sign_device_cert,
 };
@@ -165,7 +165,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let home = SigningKey::generate(&mut UnwrapErr(SysRng));
     let state = tempfile::tempdir().unwrap();
     let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::host());
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             ..RelayConfig::default()

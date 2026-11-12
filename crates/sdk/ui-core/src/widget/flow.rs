@@ -8,6 +8,7 @@ use crate::presence::PathSegment;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
+use crate::widget::DrawChild;
 use crate::widget::Widget;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -599,7 +600,7 @@ impl Flow {
                         Some(index),
                         child_transform,
                     );
-                    child.draw(local, child_transform, text_renderer, theme, presence);
+                    child.draw_child(local, child_transform, text_renderer, theme, presence);
                     crate::scene_parts::end_widget(local, begun);
                 }
                 ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());

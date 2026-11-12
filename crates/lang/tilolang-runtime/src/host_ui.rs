@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::abi::Imp;
-use crate::core::{Args, Core, HResult, ret_f64, ret_i64, ret_void, trap};
+use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
 use crate::space::Space;
@@ -25,6 +25,14 @@ pub const OPEN_ACTION: &str = "$open";
 
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
+
+/// The action of `file.choose(a)`: ask the person for a file, and run `a` with it as the
+/// argument it still needs. Its arguments are `a` and the media types it may be.
+pub const CHOOSE_ACTION: &str = "$choose";
+
+/// The action of `file.save(a, name: n)`: run `a`, and put what it made — text, or a file —
+/// where the person says, under the name `n`. Its arguments are `a` and the name.
+pub const SAVE_ACTION: &str = "$save";
 
 /// The prefix of the view state slot that names the view a window shows a resource through,
 /// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
@@ -243,6 +251,58 @@ impl Core {
         self.ret_h(Value::Action(ActionRef {
             action: THEN_ACTION.to_owned(),
             args: vec![first, next],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `file.choose(a, accept: [...])`: ask the person for a file and run `a` with it as the
+    /// argument it still needs. The chooser is the device's ([`crate::blob::BlobHost`]), and
+    /// what it answers is what the action is invoked with: its invocation records the file's
+    /// address, so history, replay and undo carry it.
+    fn act_choose(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let action = self.val(a.h(0)?)?;
+        if !matches!(action, Value::Action(_)) {
+            return trap(format!(
+                "`file.choose` takes the action it runs, not {}",
+                action.kind_name()
+            ));
+        }
+        let accept: Vec<Value> = match self.val(a.h(1)?)? {
+            Value::List(items) => items
+                .iter()
+                .filter_map(|item| item.as_text().map(Value::text))
+                .collect(),
+            other => {
+                return trap(format!(
+                    "`accept` takes the media types, not {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: CHOOSE_ACTION.to_owned(),
+            args: vec![action, Value::List(accept)],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `file.save(a, name: n)`: run `a` and put what it made where the person says.
+    fn act_save(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let action = self.val(a.h(0)?)?;
+        if !matches!(action, Value::Action(_)) {
+            return trap(format!(
+                "`file.save` takes the action it runs, not {}",
+                action.kind_name()
+            ));
+        }
+        let name = self.text(a.h(1)?)?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: SAVE_ACTION.to_owned(),
+            args: vec![action, Value::Text(name)],
             author,
             from: None,
         }))
@@ -482,12 +542,15 @@ impl Core {
                 ret_void()
             }
             Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
+            Imp::RowOpen => ret_i32(i32::from(self.with_view(|vs| Ok(vs.open))?)),
             Imp::StateGet => self.state_get(a),
             Imp::StateAt => self.state_at(a),
             Imp::ArgAt => self.arg_at(a),
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
+            Imp::ActChoose => self.act_choose(a),
+            Imp::ActSave => self.act_save(a),
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),

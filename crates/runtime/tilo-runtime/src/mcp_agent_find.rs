@@ -13,7 +13,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// A host with no search of its own (a standalone runtime, which speaks
     /// for no desk) is told so: answering by its apps' own directories would
     /// be the second ranking `find` stopped having.
-    pub(super) async fn agent_find(&self, args: FindArgs) -> Result<Reply, String> {
+    pub(super) async fn agent_find(
+        &self,
+        args: FindArgs,
+        structured: bool,
+    ) -> Result<Reply, String> {
         if args.query.trim().is_empty() {
             return Err("query needs a word to look for".into());
         }
@@ -52,6 +56,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (_, running) = self.providers().await?;
         let forms = self.program_forms().await.unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
+        let mut hits: Vec<Value> = Vec::new();
         for hit in &found {
             if wanted
                 .as_ref()
@@ -63,6 +68,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 continue;
             };
             if !lines.contains(&line) {
+                // One hit per resource, by the path it reads at: the search
+                // ranks a resource and each action on it apart, and a caller
+                // acts on the resource.
+                if let Some((path, kind)) = self.locate(hit.app.as_deref(), hit, &running).await
+                    && !hits.iter().any(|hit: &Value| hit["path"] == path)
+                {
+                    hits.push(json!({
+                        "path": path,
+                        "kind": forms.kind(&kind).unwrap_or(&kind),
+                        "label": hit.label.trim(),
+                        "action": hit.open,
+                    }));
+                }
                 lines.push(line);
             }
         }
@@ -87,7 +105,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 args.query.trim()
             );
         }
-        Ok(Reply::ok(text))
+        let mut reply = Reply::ok(text);
+        if structured {
+            reply.structured = Some(json!({
+                "query": args.query.trim(),
+                "hits": hits.into_iter().take(limit).collect::<Vec<Value>>(),
+            }));
+        }
+        Ok(reply)
     }
 
     /// The app ids `name` means, among the apps this workspace runs and
@@ -541,4 +566,50 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         None
     }
+}
+
+/// The ids of the apps `name` names among those `running` and `installed`:
+/// its whole id or the name `tilo_ls` lists it by, any case. An error naming
+/// the apps there are when it names none, so a search narrowed to an app
+/// that is not there does not answer that nothing matches. `unread` is why
+/// the installed apps could not be read, when they could not: an app that
+/// is not running may then be installed, and the error says why the agent
+/// cannot know rather than that there is no such app.
+fn searched_apps(
+    name: &str,
+    running: &[String],
+    installed: &[InstalledApp],
+    unread: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let known = running
+        .iter()
+        .chain(installed.iter().map(|app| &app.app_id));
+    let mut meant: Vec<String> = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for app_id in known {
+        all.push(app_id.clone());
+        let short = app_names(std::slice::from_ref(app_id)).join("");
+        if (app_id.eq_ignore_ascii_case(name) || short.eq_ignore_ascii_case(name))
+            && !meant.contains(app_id)
+        {
+            meant.push(app_id.clone());
+        }
+    }
+    if meant.is_empty() {
+        meant.extend(listed_as(installed, name).map(|app| app.app_id.clone()));
+    }
+    if !meant.is_empty() {
+        return Ok(meant);
+    }
+    if let Some(reason) = unread {
+        return Err(format!(
+            "no running app is named {name}, and the installed apps could not be read: {reason}"
+        ));
+    }
+    let listed = app_names(&all);
+    Err(if listed.is_empty() {
+        format!("no app {name}: no app is running or installed")
+    } else {
+        format!("no app {name}; the apps: {}", list_names(&listed))
+    })
 }

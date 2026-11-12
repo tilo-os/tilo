@@ -25,6 +25,11 @@
 //! `/dev/null` or `/dev/ptmx`) or of a home folder are frequent, and each one
 //! would otherwise wake the watch's thread for nothing.
 //!
+//! A reader that reads a file its writer stands behind ([`super::held`])
+//! asks for [`Watcher::released`] as well: the file is vouched for only while
+//! its writer holds it open, so the close of that descriptor is a change of
+//! what the name is worth, though the name and its bytes stay.
+//!
 //! A tree watch ([`Watcher::tree`]) watches every directory below the root
 //! as well, a subdirectory created or moved in from then on as soon as it is
 //! reported, without following links; [`Watcher::skip`] leaves chosen
@@ -91,6 +96,9 @@ enum Reported {
     Changes,
     /// Creation, removal and renames only.
     Entries,
+    /// [`Self::Changes`], and a writer closing an entry it held open for
+    /// writing ([`Watcher::released`]).
+    Released,
 }
 
 type Skip = Box<dyn Fn(&Path) -> bool + Send>;
@@ -130,6 +138,15 @@ impl Watcher {
     /// Report only entries created, removed or renamed, not writes to them.
     pub fn presence(mut self) -> Self {
         self.reported = Reported::Entries;
+        self
+    }
+
+    /// Report a writer letting go of an entry, besides changes to it: the
+    /// entry's writable descriptor closed, which is when a file it stood
+    /// behind ([`super::held`]) is no longer vouched for, though the name and
+    /// its bytes stay.
+    pub fn released(mut self) -> Self {
+        self.reported = Reported::Released;
         self
     }
 
@@ -275,6 +292,11 @@ mod inotify_watch {
     /// file opened for writing and closed unchanged (a lock file, a store
     /// opened read-write to be read) changed nothing.
     const CHANGES: WatchMask = ENTRIES.union(WatchMask::MODIFY).union(WatchMask::ATTRIB);
+
+    /// [`CHANGES`], and a writer closing a file it had opened for writing:
+    /// what a file its writer stands behind ([`super::super::held`]) is worth
+    /// ends with that close, though the name and its bytes stay.
+    const RELEASES: WatchMask = CHANGES.union(WatchMask::CLOSE_WRITE);
 
     /// One directory, or a tree, watched by a thread of its own, which waits until the
     /// process's one inotify instance ([`hub`]) hands it a change of its directories.
@@ -609,8 +631,11 @@ mod inotify_watch {
             };
             let Some(name) = &event.name else {
                 // The watched directory itself (or a watched file): its attributes,
-                // or a write to the file.
-                if event.mask.intersects(EventMask::ATTRIB | EventMask::MODIFY) {
+                // a write or a writer's close of the file.
+                if event
+                    .mask
+                    .intersects(EventMask::ATTRIB | EventMask::MODIFY | EventMask::CLOSE_WRITE)
+                {
                     batch.push(event_now(parent.clone(), false));
                 }
                 return Step::Next;
@@ -672,6 +697,7 @@ mod inotify_watch {
             let mask = match reported {
                 Reported::Changes => CHANGES,
                 Reported::Entries => ENTRIES,
+                Reported::Released => RELEASES,
             };
             // The directory itself moving away takes its entries from the path watched.
             let descriptor = hub
@@ -763,7 +789,7 @@ mod inotify_watch {
 mod notify_watch {
     use super::{Depth, Event, Reported, Watcher, event_now, is_temporary};
     use crate::watch::ChangeKind;
-    use notify::event::ModifyKind;
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
     use notify::{EventKind, RecursiveMode, Watcher as _};
     use std::path::Path;
 
@@ -810,6 +836,13 @@ mod notify_watch {
                 return;
             }
             let created = match event.kind {
+                // A writer closing a file it held open for writing: what a file it stood
+                // behind is worth ends there, though the name and its bytes stay.
+                EventKind::Access(AccessKind::Close(AccessMode::Write))
+                    if reported == Reported::Released =>
+                {
+                    false
+                }
                 EventKind::Access(_) => return,
                 // A move in or out of the tree is a change of the watched
                 // entries even where only entries are reported.
@@ -1281,6 +1314,40 @@ mod tests {
         }
         std::thread::sleep(QUIET);
         assert_eq!(count.load(Ordering::SeqCst), 0, "a read wakes nothing");
+    }
+
+    /// A file published with [`super::super::held::publish`] is vouched for only while its
+    /// writer holds it, and the hold ends with the close of the descriptor it published
+    /// through, leaving the name and its bytes as they were: a watch that reads such a file
+    /// asks for releases, and one that reads changes hears nothing of them. Only Linux
+    /// reports the close of a file opened for writing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_writer_letting_go_is_reported_to_a_watch_that_asks_for_releases() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let file = dir.path().join("value");
+        std::fs::write(&file, b"one").expect("write");
+        let (releases, on_release) = counted();
+        let _releases = Watcher::entries(dir.path())
+            .released()
+            .on_change(move |entry| entry == file.as_path(), on_release)
+            .expect("releases watch");
+        let (changes, on_change) = counted();
+        let _changes = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+        // Opened for writing, as the writer of a held file holds it, and closed unchanged.
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(dir.path().join("value"))
+                .expect("open"),
+        );
+        assert!(reaches(&releases, 1), "the writer letting go is reported");
+        std::thread::sleep(QUIET);
+        assert_eq!(
+            changes.load(Ordering::SeqCst),
+            0,
+            "a close writes nothing, so a changes watch hears nothing"
+        );
     }
 
     #[cfg(target_os = "linux")]

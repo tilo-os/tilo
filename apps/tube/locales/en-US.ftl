@@ -213,3 +213,60 @@ tube-record = Watched a video
 tube-import = Brought in videos watched on another device
 tube-forget = Removed a video from the watch history
 tube-clear = Cleared the watch history
+
+## Facts, property labels and section titles
+tube-search-heading = Search: { $query }
+
+tube-queue-shared = Shared watch queue
+tube-video = Video
+tube-creator = Creator
+tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Sponsor
+tube-category-self-promo = Self-promo
+tube-category-interaction = Interaction reminder
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Preview
+tube-category-music-offtopic = Non-music section
+tube-category-filler = Filler
+tube-category-sponsor-blurb = Paid promotion, paid referrals and direct advertisements.
+tube-category-self-promo-blurb = Unpaid self-promotion, merch and donations.
+tube-category-interaction-blurb = Asking people to like and subscribe, without other content.
+tube-category-intro-blurb = An interval without actual content: a pause, an animation or an intro.
+tube-category-outro-blurb = Credits or the end of the video: endcards and outros.
+tube-category-preview-blurb = A quick recap of earlier episodes or a preview of what comes next.
+tube-category-music-offtopic-blurb = The parts of a music video without music, for listening to the music.
+tube-category-filler-blurb = Tangential scenes that only make the video longer.
+tube-skip-auto = Auto-skip
+tube-skip-show = Show
+tube-skip-off = Off
+tube-type-video = Video
+tube-type-playlist = Playlist
+tube-type-creator = Creator
+
+## Actions
+
+tube-effect-show-screen = Show a screen
+tube-effect-toggle-sidebar = Show or hide navigation
+tube-effect-filter-search = Filter search results
+tube-effect-open-video = Open video
+tube-effect-open-creator = Open creator
+tube-effect-open-playlist = Open playlist
+tube-effect-search = Search videos
+tube-effect-toggle-playback = Play or pause
+tube-effect-seek = Seek
+tube-effect-skip-segment = Skip segment
+tube-effect-share = Copy share link
+tube-effect-download = Download video
+tube-effect-mark-watched = Mark watched
+tube-effect-forget-watched = Remove from history
+tube-effect-clear-history = Clear watch history
+tube-effect-pair-device = Pair with an invitation
+tube-effect-sync-devices = Sync devices
+tube-effect-approve-device = Approve device
+tube-effect-revoke-device = Revoke device access
+tube-effect-set-preference = Set a playback preference
+tube-effect-set-preferred-quality = Set preferred quality
+tube-effect-set-segment-handling = Set segment handling

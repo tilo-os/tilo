@@ -92,9 +92,9 @@ impl Device {
         (request, bytes)
     }
 
-    fn take(&mut self, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
+    fn take(&mut self) -> Vec<MlsGovernanceFrame> {
         let frames = self.peer.outbox().to_vec();
-        self.peer.published(vault).expect("published");
+        self.peer.published();
         frames
     }
 
@@ -149,10 +149,7 @@ fn admit(
     request: MlsAccessRequestV1,
     vault: &VaultKey,
 ) {
-    members[0]
-        .peer
-        .learn_request(request, vault)
-        .expect("learn");
+    members[0].peer.learn_request(request).expect("learn");
     let allowed = {
         let mut names = allowed(&members.iter().collect::<Vec<_>>());
         names.insert(joiner.public());
@@ -162,7 +159,7 @@ fn admit(
         .peer
         .reconcile_now(&allowed, vault)
         .expect("admit");
-    let frames = members[0].take(vault);
+    let frames = members[0].take();
     for frame in &frames {
         if frame.added().contains(&joiner.public()) {
             joiner.receive(frame, &allowed, vault);
@@ -269,10 +266,7 @@ fn main() {
                 let (request, request_bytes) = joiner.ask(&vault);
                 totals.add(request_bytes, 1);
                 let members = &mut group.members;
-                members[0]
-                    .peer
-                    .learn_request(request, &vault)
-                    .expect("learn");
+                members[0].peer.learn_request(request).expect("learn");
                 let allowed = {
                     let mut names = allowed(&members.iter().collect::<Vec<_>>());
                     names.insert(joiner.public());
@@ -282,7 +276,7 @@ fn main() {
                     .peer
                     .reconcile_now(&allowed, &vault)
                     .expect("admit");
-                let frames = members[0].take(&vault);
+                let frames = members[0].take();
                 for frame in &frames {
                     totals.add(frame_bytes(frame), 1);
                     if frame.added().contains(&joiner.public()) {
@@ -325,7 +319,7 @@ fn main() {
                     .peer
                     .reconcile_now(&allowed, &vault)
                     .expect("remove");
-                let frames = members[0].take(&vault);
+                let frames = members[0].take();
                 for frame in &frames {
                     totals.add(frame_bytes(frame), 1);
                     for (index, survivor) in members.iter_mut().enumerate() {
@@ -357,10 +351,16 @@ fn main() {
             for _ in 0..n {
                 let channel = ChannelId::new();
                 let key = SigningKey::from_bytes(&[0x41; 32]);
-                let peer = ChannelPeer::waiting(Some(&dir), channel, Box::new(key.clone()), &vault)
-                    .expect("waiting");
+                let states = std::sync::Arc::new(channel_crypto::Files::new(dir.clone()));
+                let peer = ChannelPeer::waiting(
+                    Some(states.clone()),
+                    channel,
+                    Box::new(key.clone()),
+                    &vault,
+                )
+                .expect("waiting");
                 assert_eq!(peer.access(), Access::Waiting);
-                let opened = ChannelPeer::open(&dir, channel, Box::new(key), &vault)
+                let opened = ChannelPeer::open(Some(states), channel, Box::new(key), &vault)
                     .expect("open")
                     .expect("a state file");
                 assert_eq!(opened.access(), Access::Waiting);
@@ -384,10 +384,7 @@ fn main() {
             let (request, request_bytes) = joiner.ask(&vault);
             totals.add(request_bytes, 1);
             let members = &mut scope.members;
-            members[0]
-                .peer
-                .learn_request(request, &vault)
-                .expect("learn");
+            members[0].peer.learn_request(request).expect("learn");
             let allowed = {
                 let mut names = allowed(&members.iter().collect::<Vec<_>>());
                 names.insert(joiner.public());
@@ -397,7 +394,7 @@ fn main() {
                 .peer
                 .reconcile_now(&allowed, &vault)
                 .expect("admit");
-            let frames = members[0].take(&vault);
+            let frames = members[0].take();
             for frame in &frames {
                 totals.add(frame_bytes(frame), 1);
                 if frame.added().contains(&joiner.public()) {
@@ -437,7 +434,7 @@ fn main() {
                 .peer
                 .reconcile_now(&allowed, &vault)
                 .expect("remove");
-            let frames = members[0].take(&vault);
+            let frames = members[0].take();
             for frame in &frames {
                 totals.add(frame_bytes(frame), 1);
                 for (index, survivor) in members.iter_mut().enumerate() {

@@ -31,6 +31,8 @@ pub const OPERATION: &str = "settings.effect";
 pub struct EffectFamily {
     /// Every effect the area declares.
     pub declarations: fn() -> Vec<EffectDecl>,
+    /// Those declarations as rows, for the surface that publishes them.
+    pub rows: fn() -> Vec<tilo_resource::effect::EffectRow>,
     /// Read the area's effect `id` back from its arguments.
     pub decode: DecodeEffect,
     /// Answer one of the area's effects.
@@ -134,6 +136,7 @@ macro_rules! effect_family {
         impl $crate::effects::AreaVocabulary for $ty {
             const FAMILY: &'static $crate::effects::EffectFamily = &$crate::effects::EffectFamily {
                 declarations: <$ty as ui::tilo_resource::Effect>::declarations,
+                rows: <$ty as ui::tilo_resource::Effect>::rows,
                 decode: |id, arguments| {
                     <$ty as ui::tilo_resource::Effect>::decode(id, arguments)
                         .map(|effect| Box::new(effect) as Box<dyn $crate::effects::AreaEffect>)
@@ -187,6 +190,14 @@ impl Effect for SettingsEffect {
             }
             declarations
         })
+    }
+
+    fn rows() -> Vec<ui::tilo_resource::effect::EffectRow> {
+        crate::area::registry()
+            .families
+            .iter()
+            .flat_map(|family| (family.rows)())
+            .collect()
     }
 
     fn id(&self) -> &'static str {
@@ -659,14 +670,14 @@ pub const SETTING_ANCHOR: &str = "settings.setting:";
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
     /// Open a pane of Settings.
-    #[effect(view, label = "Open settings pane")]
+    #[effect(view)]
     OpenPane {
         #[param("The pane: its id, such as `appearance` or `network`")]
         pane: String,
     },
     /// Open the pane a setting is on, scrolled to it, with the keyboard on
     /// its control.
-    #[effect(view, label = "Show a setting")]
+    #[effect(view)]
     ShowSetting {
         #[param("The setting: its id, such as `keyboard.layout` or `appearance.style`")]
         setting: String,
@@ -794,6 +805,10 @@ mod tests {
 
         fn declarations() -> Vec<EffectDecl> {
             SettingsEffect::declarations()
+        }
+
+        fn rows() -> Vec<ui::tilo_resource::effect::EffectRow> {
+            SettingsEffect::rows()
         }
 
         fn id(&self) -> &'static str {

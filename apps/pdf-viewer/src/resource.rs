@@ -25,7 +25,7 @@ use crate::markup::{
 };
 use crate::model::{
     AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W,
-    PdfAnchor, PtRect, Reply, SignatureInk,
+    PdfAnchor, PtRect, Reply, SignatureInk, annotation_label,
 };
 
 /// The most text one comment or reply holds.
@@ -156,10 +156,26 @@ fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelEr
     }
 }
 
+impl PdfMarkup {
+    /// What the record holds, as the app's own types: the PDF it marks up,
+    /// the pages and the values its form holds.
+    ///
+    /// A caller with no window open — an agent filling an application, a
+    /// script reading a form's values — reads the record through the door
+    /// with this, as it reads any app's record. One page reads on its own,
+    /// by the read its page occurrence offers.
+    pub fn read_document(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        if item.is_some() {
+            return Err("a PDF reads whole; read one of its pages by its own read".into());
+        }
+        Ok(<Self as tilo_resource::Model>::to_json(self))
+    }
+}
+
 #[resource(
     kind = "pdf.document",
-    label = "PDF",
     search = PdfMarkup::entries,
+    read_content = PdfMarkup::read_document,
     version = 4,
     migrate = upgrade_markup
 )]
@@ -238,7 +254,11 @@ impl PdfMarkup {
         }
         let hash = crate::markup::unhex(&hash.to_ascii_lowercase())
             .ok_or("a source is named by its 64-digit content hash")?;
-        self.source = Bytes::Blob { hash, len };
+        self.source = Bytes::Blob {
+            hash,
+            len,
+            sealed: None,
+        };
         self.source_name = name;
         Ok(())
     }
@@ -580,7 +600,7 @@ impl PdfMarkup {
     /// Reply.
     ///
     /// Adds an answer to the thread, signed by whoever writes it.
-    #[action(item = comments, field = "comments", writes = comments)]
+    #[action(item = comments, field = "comments", writes = comments, label = "pdf-comment-reply")]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
@@ -614,7 +634,7 @@ impl PdfMarkup {
     /// Delete comment.
     ///
     /// A comment pinning a sticky note takes the note with it.
-    #[action(item = comments, writes = comments)]
+    #[action(item = comments, writes = comments, label = "pdf-comment-delete")]
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         let thread = self
             .comments
@@ -639,7 +659,7 @@ impl PdfMarkup {
     /// Sign.
     ///
     /// Places a signature on a page.
-    #[action]
+    #[action(label = "pdf-tool-sign")]
     pub fn add_signature(
         &mut self,
         cx: &mut ActionCx,
@@ -700,7 +720,7 @@ impl PdfMarkup {
     }
 
     /// Delete signature.
-    #[action(item = signatures, writes = comments)]
+    #[action(item = signatures, writes = comments, label = "pdf-signature-delete")]
     pub fn delete_signature(&mut self, signature: &Id) -> Result<(), Refusal> {
         self.signatures
             .take(signature)
@@ -732,10 +752,13 @@ impl PdfMarkup {
             .into_iter()
             .map(|annotation| {
                 SearchEntry::new(
-                    format!("{} annotation", annotation.kind.type_key()),
-                    format!(
-                        "Page {} annotated by {}",
-                        annotation.page, annotation.author
+                    annotation_label(&annotation.kind),
+                    crate::t_args(
+                        "pdf-search-annotation",
+                        &[
+                            ("kind", annotation_label(&annotation.kind).into()),
+                            ("page", annotation.page.to_string().into()),
+                        ],
                     ),
                 )
                 .anchored(anchor("annotations", &annotation.id))
@@ -748,15 +771,30 @@ impl PdfMarkup {
                 .collect::<Vec<_>>()
                 .join("\n");
             entries.push(
-                SearchEntry::new(format!("Comment: {}", comment.author), text)
-                    .anchored(anchor("comments", &thread.id)),
+                SearchEntry::new(
+                    crate::t_args(
+                        "pdf-search-comment",
+                        &[("author", comment.author.clone().into())],
+                    ),
+                    text,
+                )
+                .anchored(anchor("comments", &thread.id)),
             );
         }
         for signature in self.list_signatures() {
             entries.push(
                 SearchEntry::new(
-                    format!("Signature by {}", signature.signer),
-                    format!("Page {} signed on {}", signature.page, signature.date),
+                    crate::t_args(
+                        "pdf-a11y-signature-by",
+                        &[("signer", signature.signer.clone().into())],
+                    ),
+                    crate::t_args(
+                        "pdf-search-signed",
+                        &[
+                            ("page", signature.page.to_string().into()),
+                            ("date", crate::dates::shown(&signature.date).into()),
+                        ],
+                    ),
                 )
                 .anchored(anchor("signatures", &signature.id)),
             );
@@ -844,9 +882,12 @@ impl ResourceApp for PdfViewerShell {
         if !state.source_name.is_empty() {
             state.source_name.clone()
         } else if state.pages.is_empty() {
-            "PDF Viewer".into()
+            crate::t("pdf-title")
         } else {
-            format!("{} pages", state.pages.len())
+            crate::t_args(
+                "pdf-search-pages",
+                &[("count", state.pages.len().to_string().into())],
+            )
         }
     }
 
@@ -895,6 +936,34 @@ impl ResourceApp for PdfViewerShell {
 /// The role of a document's markup record beside the document's own.
 const MARKUP_ROLE: &str = "annotations";
 
+/// The most papers the empty state offers: the ones changed last, so the paper
+/// someone just filled in is on top rather than buried in a long list.
+const MOST_OFFERED: usize = 4;
+
+/// A document the workspace holds, as the reader's empty state offers it:
+/// what the index calls it, how long it is, and the identity that opens it.
+fn workspace_document(
+    document: &ui::framework::WindowDocument<PdfMarkup>,
+) -> crate::app::WorkspaceDocument {
+    let name = if !document.state.source_name.is_empty() {
+        document.state.source_name.clone()
+    } else if let Some(name) = &document.name {
+        name.clone()
+    } else {
+        crate::t("pdf-empty-the-document")
+    };
+    let pages = document.state.pages.len();
+    crate::app::WorkspaceDocument {
+        target: document.uri(),
+        name,
+        caption: if pages == 0 {
+            crate::t("pdf-search-no-pages")
+        } else {
+            crate::t_args("pdf-search-pages", &[("count", pages.to_string().into())])
+        },
+    }
+}
+
 /// The reader window `app` as a view of the markup: it follows the record
 /// and the participant's permission to edit it, answers the reader's
 /// effects, and publishes the open document's rows and what it says.
@@ -902,6 +971,18 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     app.attach_framework(cx.dispatcher());
     app.attach_people(cx.people());
     app.attach_open_here(cx.opener());
+    // A window opened on no document offers the workspace's: a paper an agent
+    // filled in is one click away, never a file chooser away. A window that
+    // shows one lists nothing, so the records are not read for it.
+    if cx.launch_arguments().is_empty() {
+        app.attach_workspace_documents(
+            cx.window_documents()
+                .iter()
+                .take(MOST_OFFERED)
+                .map(workspace_document)
+                .collect(),
+        );
+    }
     // A capture shows the scenario's signature, never the person's.
     if cx.mode().is_live()
         && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()

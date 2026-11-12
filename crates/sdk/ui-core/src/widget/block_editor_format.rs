@@ -1,5 +1,5 @@
 //! Formatting a toolbar applies: marks over the selection, across every
-//! paragraph it spans, and lists over the selected paragraphs.
+//! paragraph it spans, and lists and headings over the selected paragraphs.
 
 use super::{BlockEditor, BlockKind, DocumentPosition, EditScope};
 use crate::widget::marks::{Mark, MarkSpan};
@@ -138,6 +138,54 @@ impl BlockEditor {
         } else {
             BlockKind::Bullet { indent: 0 }
         };
+        let mut changed = false;
+        for index in targets {
+            changed |= self.try_convert_to(index, kind.clone());
+        }
+        if changed {
+            self.edit_scope.widen(EditScope::Blocks(range));
+            self.dirty = true;
+        }
+        changed
+    }
+
+    /// Make heading levels the editor offers.
+    pub const HEADING_LEVELS: std::ops::RangeInclusive<u8> = 1..=3;
+
+    /// Make the selected paragraphs, or the focused one, a heading of
+    /// `level`, or body text when it is `None`: what the format menu's rows
+    /// and their shortcuts do. The text, its marks and its caret stay as
+    /// they are; a code or table block keeps its kind. Unlike the Markdown
+    /// prefix typed at the start of a line, this sets a heading on writing
+    /// that is already there. `false` when nothing changed.
+    pub fn set_heading(&mut self, level: Option<u8>) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let Some(range) = self.selected_block_range() else {
+            return false;
+        };
+        let kind = match level {
+            Some(level) => BlockKind::Heading(
+                level.clamp(*Self::HEADING_LEVELS.start(), *Self::HEADING_LEVELS.end()),
+            ),
+            None => BlockKind::Paragraph,
+        };
+        let targets: Vec<usize> = range
+            .clone()
+            .filter(|index| {
+                self.blocks.get(*index).is_some_and(|block| {
+                    block.kind.is_editable()
+                        && !matches!(
+                            block.kind,
+                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                        )
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
         let mut changed = false;
         for index in targets {
             changed |= self.try_convert_to(index, kind.clone());

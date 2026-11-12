@@ -19,6 +19,13 @@ ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 /// files in them. The session's notices and search's rows are first read when
 /// a notice arrives or a query runs, long after startup, so they load here,
 /// where the loop is not yet running.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page loads the catalogue with its own host next"
+    )
+)]
 pub(crate) fn ensure() {
     CATALOG.ensure();
     tilo_desktop_search::i18n::ensure();
@@ -30,17 +37,18 @@ pub(crate) fn ensure() {
 /// itself draws in. A seeded package that ships German leaves the session's own words (the
 /// toolkit's, the desktop's) English on a German device; a session that has its own German reads
 /// them German still.
+#[cfg(target_os = "linux")]
 pub(crate) struct SeededWords;
 
 /// Let the session read `catalogues` beside its own words: shared, so a package's language never
 /// becomes the one the session draws in.
+#[cfg(target_os = "linux")]
 fn share(catalogues: &[(String, String)]) {
     ensure();
-    for (locale, text) in catalogues {
-        ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
-    }
+    tilo_ui_host::i18n::add_shared_catalogues(catalogues);
 }
 
+#[cfg(target_os = "linux")]
 impl tilolang_tilo::runtime::Words for SeededWords {
     fn add(&self, catalogues: &[(String, String)]) {
         share(catalogues);
@@ -52,12 +60,7 @@ impl tilolang_tilo::runtime::Words for SeededWords {
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         ensure();
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
-            .collect();
-        let said = ui::i18n::I18nManager::format(key, &args);
-        if said == key { source.to_owned() } else { said }
+        tilo_ui_host::i18n::word(key, args, source)
     }
 
     fn revision(&self) -> u64 {
@@ -66,6 +69,53 @@ impl tilolang_tilo::runtime::Words for SeededWords {
 
     fn language(&self) -> String {
         ui::i18n::I18nManager::window_locale()
+    }
+}
+
+/// The language the session's surfaces are drawn in, followed from the person's settings.
+#[cfg(target_os = "linux")]
+pub(crate) struct Language {
+    /// The settings version the language was last followed at, so the document is read again only
+    /// when it changed.
+    seen: std::cell::Cell<Option<settings_store::SettingsStamp>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Language {
+    pub(crate) fn new() -> Self {
+        Self {
+            seen: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Follow the person's language when their settings changed since the last pass. Returns
+    /// whether the words on screen are now resolved in another language: the caller lays out what
+    /// it keeps between frames.
+    pub(crate) fn follow(&self) -> bool {
+        let stamp = settings_store::stamp();
+        if !settings_store::document_changed(self.seen.get().is_some(), self.seen.get(), stamp) {
+            return false;
+        }
+        self.seen.set(stamp);
+        let before = ui::I18nManager::revision();
+        ui::i18n::follow_configured_language();
+        ui::I18nManager::revision() != before
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::Session {
+    /// Speak the person's language in the session's own surfaces: the manager's selection follows
+    /// their settings (see [`Language`]), and what the chrome keeps between frames is laid out
+    /// again, so its words are resolved in the language now selected. Every tilolang host running
+    /// the person's apps is told too, so the windows it draws relabel where they stand.
+    pub(crate) fn follow_language(&self) {
+        if self.language.follow() {
+            self.shared.chrome.borrow_mut().relayout();
+            if let Some(apps) = self.shared.launch.clone() {
+                apps.locale_changed();
+            }
+        }
     }
 }
 

@@ -11,8 +11,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -32,11 +30,7 @@ use tilo_sheets::invite::InviteApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
 
-use common::{HEIGHT, WIDTH};
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
+use crate::common::{HEIGHT, WIDTH};
 
 /// The workspace this computer holds and the person invites into.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -67,7 +61,7 @@ fn this_computer(
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&[0x62; 32]);
+    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let cert = certified(&person, &device, "The laptop");
@@ -80,13 +74,7 @@ fn this_computer(
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
 /// device, and this one joins only what it is handed.
 fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::new(),
-        workspace_revocations: HashMap::new(),
-        identity_paths: None,
-    }
+    HostIdentity::kept(cert.clone(), key.clone())
 }
 
 /// This computer's copy of the workspace `workspace` under `state` , held as `cert` 's device in a
@@ -111,7 +99,6 @@ fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, 
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 SystemTime::now(),
             )
             .expect("the host admits the workspace's people");
@@ -376,7 +363,7 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
     let mut place = None;
-    common::until(&mut session, "the bar offers Invite", |session| {
+    crate::common::until(&mut session, "the bar offers Invite", |session| {
         place = bar_control(session);
         place.is_some()
     });
@@ -419,7 +406,7 @@ fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> Stri
     app.settle();
     settle(session);
     let mut link = String::new();
-    common::until(session, "the sheet shows the link it made", |session| {
+    crate::common::until(session, "the sheet shows the link it made", |session| {
         link = session
             .invite_sheet()
             .and_then(|seat| {
@@ -444,6 +431,11 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let community = home.config().join("community.toml");
     std::fs::write(&community, "site = \"\"\n").expect("a config naming no site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    // Nor does it relay through anyone: the link names the addresses of this computer's own
+    // network, which her device dials directly, rather than a public relay a test cannot count on.
+    settings_store::relay::RELAY
+        .set(settings_store::relay::Relays::None)
+        .expect("the relay setting is kept");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let Hosted {
         _kept,
@@ -481,6 +473,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     );
     // Every part the sheet offers makes a link of its own, and every link's code is that invitation
     // the same way.
+    let mut shown = made.code;
     for part in 0..seat.invite().roles.len() {
         app.harness()
             .perform_named(
@@ -493,11 +486,18 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .perform_named("invite-create", &A11yAction::Activate)
             .expect("the create button is pressed");
         app.settle();
-        settle(&mut session);
+        // The link is signed off the loop and shows once it landed.
+        crate::common::until(&mut session, "the sheet shows the part's link", |session| {
+            session
+                .invite_sheet()
+                .and_then(|seat| seat.invite().created)
+                .is_some_and(|made| made.code != shown)
+        });
         let made = session
             .invite_sheet()
             .and_then(|seat| seat.invite().created)
             .expect("a link for the part");
+        shown.clone_from(&made.code);
         assert_eq!(
             scanned_back(&made),
             Ok(made.code.clone()),
@@ -507,7 +507,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
 
     // Her own device, of her own person, joins with what was handed to her.
     let her_root = SigningKey::from_bytes(&[0x81; 32]);
-    let her_key = SigningKey::from_bytes(&[0x82; 32]);
+    let her_key = SigningKey::from_bytes(&tilo_test_env::node_key());
     let her = certified(&her_root, &her_key, "Her laptop");
     let hers = joins_with(&link, workspace, &her, &her_key)
         .expect("the link admits her device into the workspace");

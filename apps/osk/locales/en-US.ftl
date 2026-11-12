@@ -65,3 +65,18 @@ osk-context-stale = The field changed. Choose the action again.
 
 osk-learn = Learned from typing
 osk-forget = Forgot what the keyboard learned
+
+## Actions
+
+osk-keyboard-set-layout = Set keyboard layout
+osk-keyboard-set-size = Set keyboard size
+osk-keyboard-set-suggestions = Set suggestions
+osk-keyboard-set-autocorrect = Set autocorrect
+osk-keyboard-set-typing-language = Set typing language
+osk-keyboard-set-personalization = Set personalization
+osk-keyboard-set-emoji-recents = Set recent emoji
+osk-keyboard-clear-personal = Clear learned suggestions
+osk-learned = What the keyboard learned
+osk-learned-learn = Learn words
+osk-learned-forget = Forget learned words
+osk-keyboard = On-screen keyboard

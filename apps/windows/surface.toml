@@ -5,6 +5,22 @@ kind = "windows.manager"
 label = "Windows manager"
 version = 1
 fields = [
-  { path = "routes", type = "Map<Route>" },
+  { path = "routes", type = { map = { named = "Route" } } },
+]
+
+[[resources.verbs]]
+id = "open-file"
+kind = "read"
+params = [
+  { name = "app", type = "text", required = true },
+  { name = "path", type = { option = "any" }, required = false },
+]
+
+[[resources.types]]
+name = "Route"
+cases = [
+  { name = "wine" },
+  { name = "proton" },
+  { name = "vm" },
 ]
 

@@ -229,7 +229,7 @@ fn keystroke(
     workspace: &mut Workspace,
     thread: &mut Thread,
 ) -> Result<Record, String> {
-    let (input, mut text) = text_input(&workspace.host, thread.view.tree())
+    let (input, mut text) = text_input(&workspace.host, thread.view.tree(), None)
         .or_else(|| composer_input(&thread.view, thread.view.tree()))
         .ok_or("the item's window has no text input")?;
     let mut changes = Changes::default();

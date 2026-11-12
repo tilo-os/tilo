@@ -69,7 +69,14 @@
 //! often `row`: offered only bound, never on the resource with an id for
 //! the caller to type.
 //!
-//! Variant options: `label = "…"` (else the first doc line), `view` (changes
+//! An effect's label is a key of the catalogue beside its crate
+//! (`locales/en-US.ftl`): `<operation>-<id>` with the operation's separators
+//! as dashes (`notes-effect-export` for `export` of `notes.effect`), or the
+//! key `label = "…"` names where the crate already says the same thing. Its
+//! doc comment is for developers and describes it to agents; it is never the
+//! label.
+//!
+//! Variant options: `label = "key"`, `view` (changes
 //! only what is shown; answers at once), `row` (offered only bound to the
 //! items it acts on), `job` (runs in the background and reports progress,
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
@@ -187,6 +194,11 @@ pub trait Effect: Sized + 'static {
 
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
+
+    /// The vocabulary's declarations where they are kept, for a surface that
+    /// publishes an app without running it: every area's, for a vocabulary
+    /// that gathers several.
+    fn rows() -> Vec<EffectRow>;
 
     /// The declaration of the effect `id`, built alone: what binding one
     /// effect to an item reads, so offering it on many items costs one
@@ -440,7 +452,7 @@ fn kept_specs<E: Effect>(
         static KEPT: std::cell::RefCell<Kept> =
             std::cell::RefCell::new((0, std::collections::HashMap::new()));
     }
-    let epoch = crate::resource::type_epoch();
+    let epoch = crate::resource::words_epoch();
     let found = KEPT.with(|kept| {
         let kept = kept.borrow();
         if kept.0 == epoch {
@@ -574,13 +586,15 @@ fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<Actio
 /// one per variant; [`EffectDecl::of_rows`] and [`EffectDecl::of_row`] read
 /// them, the same code for every vocabulary.
 #[doc(hidden)]
+#[derive(Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent property a declaration states, as the derive's options do"
 )]
 pub struct EffectRow {
     pub id: &'static str,
-    pub label: &'static str,
+    /// What a person reads it by: a key of its crate's catalogue.
+    pub label: crate::label::Word,
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
@@ -590,6 +604,9 @@ pub struct EffectRow {
     pub params: fn() -> Vec<ActionParam>,
     /// The surface types of the parameters whose types describe one, by name.
     pub param_types: fn() -> Vec<(&'static str, crate::surface::FieldTypeOf)>,
+    /// The value it answers with, when the code declares one
+    /// (`returns = Type`): its JSON Schema and its type.
+    pub result: Option<EffectResult>,
     pub kind: OperationKind,
     pub row: bool,
     pub answers: Answers,
@@ -659,6 +676,17 @@ pub fn no_param_types() -> Vec<(&'static str, crate::surface::FieldTypeOf)> {
     Vec::new()
 }
 
+/// The value an effect answers with, as its code declares it
+/// (`#[effect(returns = Type)]`): its JSON Schema, and its type with the
+/// records and enums it names.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectResult {
+    /// Its schema, from [`JsonSchema`](crate::JsonSchema).
+    pub schema: fn() -> serde_json::Value,
+    /// Its surface type, declaring the records and enums it names.
+    pub ty: Option<crate::surface::FieldTypeOf>,
+}
+
 /// The declaration of one effect: what callers see of it.
 #[derive(Clone, Debug)]
 #[allow(
@@ -667,7 +695,9 @@ pub fn no_param_types() -> Vec<(&'static str, crate::surface::FieldTypeOf)> {
 )]
 pub struct EffectDecl {
     pub id: &'static str,
-    pub label: &'static str,
+    /// What a person reads it by, read in their language when it is
+    /// published.
+    pub label: crate::label::Word,
     /// The other words people use for it (`keywords = "…"`), comma
     /// separated: search finds it by them as by its label.
     pub keywords: &'static [&'static str],
@@ -680,6 +710,9 @@ pub struct EffectDecl {
     /// parameter's wire type ([`ParamType::Object`](tilo_actions::ParamType))
     /// says nothing of, which a package of another language names.
     pub param_types: Vec<(&'static str, crate::surface::FieldTypeOf)>,
+    /// The value it answers with, when the code declares one
+    /// (`returns = Type`); see [`EffectResult`].
+    pub result: Option<EffectResult>,
     /// `View` for an effect that only changes what its caller sees, else
     /// `Effect`.
     pub kind: OperationKind,
@@ -799,7 +832,7 @@ impl EffectDecl {
         rows.iter().find(|row| row.id == id).map(Self::of_row)
     }
 
-    fn of_row(row: &EffectRow) -> Self {
+    pub fn of_row(row: &EffectRow) -> Self {
         Self {
             id: row.id,
             label: row.label,
@@ -808,6 +841,7 @@ impl EffectDecl {
             description: row.description,
             params: (row.params)(),
             param_types: (row.param_types)(),
+            result: row.result,
             kind: row.kind,
             row: row.row,
             answers: row.answers,
@@ -827,6 +861,23 @@ impl EffectDecl {
             offload: row.offload,
             tags: row.tags,
             outside_with: row.outside_with,
+        }
+    }
+
+    /// What an invocation of this effect answers with: the value its type
+    /// describes, the content it made, or a job's result.
+    fn result_contract(&self) -> ResultSpec {
+        match self.answers {
+            Answers::Later { returns: false, .. } => ResultSpec::Job,
+            Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
+                schema: self
+                    .result
+                    .map_or_else(|| serde_json::json!({}), |result| (result.schema)()),
+            },
+            Answers::Content => ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            },
+            Answers::Nothing => ResultSpec::None,
         }
     }
 
@@ -852,10 +903,11 @@ impl EffectDecl {
         build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
+        let label = self.label.read();
         let mut spec = ActionSpec::typed_operation_on(
             self.id,
-            self.label,
-            self.label,
+            label.clone(),
+            label,
             if view {
                 OperationKind::View
             } else {
@@ -892,16 +944,7 @@ impl EffectDecl {
                 Answers::Later { cancellable, .. } => ExecutionMode::Background { cancellable },
                 Answers::Nothing | Answers::Value | Answers::Content => ExecutionMode::Immediate,
             },
-            result: match self.answers {
-                Answers::Later { returns: false, .. } => ResultSpec::Job,
-                Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
-                    schema: serde_json::json!({}),
-                },
-                Answers::Content => ResultSpec::Resource {
-                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
-                },
-                Answers::Nothing => ResultSpec::None,
-            },
+            result: self.result_contract(),
             retry: if view || self.idempotent {
                 RetryPolicy::Idempotent
             } else {
@@ -982,6 +1025,10 @@ impl Effect for NoEffect {
     const OPERATION: &'static str = "tilo.no-effect";
 
     fn declarations() -> Vec<EffectDecl> {
+        Vec::new()
+    }
+
+    fn rows() -> Vec<EffectRow> {
         Vec::new()
     }
 

@@ -14,6 +14,7 @@
 pub mod abi;
 pub mod amstore;
 pub mod authority;
+pub mod blob;
 pub mod catalogue;
 mod colls;
 mod core;
@@ -74,6 +75,7 @@ mod written;
 
 pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
+pub use blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 pub use catalogue::{Signature, SignatureKind, catalogue};
 pub use core::{Delivery, ModelHost, NameHost, OutsideSink, ShownHost};
 pub use cost::{Costs, Reads, Unit, UnitCost, UnitKind, assert_costs};

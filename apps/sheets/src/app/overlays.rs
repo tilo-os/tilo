@@ -435,10 +435,10 @@ impl SheetsApp {
     ) -> (SettingsSheet, Vec<SettingsBlock>) {
         let width = modal_dialog::body_width(self.rect, modal_dialog::MODAL_MAX_WIDTH, theme);
         let (mut blocks, height) = Self::settings_blocks(tr, theme, width);
-        let actions = [ModalAction::primary("Done")];
-        let spec = ModalSpec::new("Document settings")
-            .actions(&actions)
-            .body_height(height);
+        let done = crate::resource::CATALOG.t("sheets-done");
+        let title = crate::resource::CATALOG.t("sheets-document-settings");
+        let actions = [ModalAction::primary(&done)];
+        let spec = ModalSpec::new(&title).actions(&actions).body_height(height);
         let modal = modal_dialog::layout(self.rect, &spec, tr, theme);
         let origin = modal.body.origin().to_vec2();
         let mut options = Vec::new();
@@ -482,9 +482,11 @@ impl SheetsApp {
         let (sheet, blocks) = self.layout_settings_sheet(tr, theme);
         let mouse = self.last_mouse;
         let hovered = move |rect: Rect| rect.contains(mouse);
-        let actions = [ModalAction::primary("Done")
+        let done = crate::resource::CATALOG.t("sheets-done");
+        let title = crate::resource::CATALOG.t("sheets-document-settings");
+        let actions = [ModalAction::primary(&done)
             .hovered(sheet.modal.actions.first().is_some_and(|r| hovered(*r)))];
-        let spec = ModalSpec::new("Document settings")
+        let spec = ModalSpec::new(&title)
             .actions(&actions)
             .close_hovered(sheet.modal.close.is_some_and(hovered));
         modal_dialog::paint_backdrop(scene, transform, tr, theme, &sheet.modal, &spec);

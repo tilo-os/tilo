@@ -144,9 +144,6 @@ D2 = 1
 [apps.totp]
 D2 = 1
 
-[apps.tube]
-D2 = 1
-
 [apps.video-editor]
 D2 = 3
 
@@ -170,7 +167,6 @@ R1 = 24
 [sdk.tilo-app-state]
 R1 = 9
 W1 = 1
-W2 = 3
 W3 = 7
 
 [sdk.tilo-host]
@@ -178,6 +174,6 @@ R1 = 17
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 201
+R1 = 200
 W1 = 11
 W3 = 52

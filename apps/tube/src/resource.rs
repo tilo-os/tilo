@@ -72,14 +72,6 @@ impl ResourceApp for TubeShell {
     const ICON: Option<&'static str> = Some("tube");
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
-    /// The session's document host runs the library's model (`tube-model`, built as the
-    /// `tube.library` module), so the app's process opens no record of its own: it joins no
-    /// workspace of its own, and reads the readings the session publishes and submits its
-    /// actions over its one connection (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4).
-    const ATTACHES_RUNTIME: bool = false;
-    const HOSTED_BY_SESSION: bool = true;
-
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
@@ -241,14 +233,12 @@ mod tests {
         click(&mut app, "switch_autoplay");
         app.settle();
         assert_eq!(preferences.get().autoplay, !autoplay);
-        let category = app
-            .harness()
-            .a11y_node_named(Category::Sponsor.label())
-            .unwrap();
+        let sponsor = crate::i18n::t(Category::Sponsor.message());
+        let category = app.harness().a11y_node_named(&sponsor).unwrap();
         app.harness()
             .perform_a11y_action(
                 category,
-                &ui::a11y::Action::SetValue(SkipMode::Show.label().into()),
+                &ui::a11y::Action::SetValue(crate::i18n::t(SkipMode::Show.message())),
             )
             .unwrap();
         app.settle();

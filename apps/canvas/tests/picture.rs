@@ -405,6 +405,55 @@ fn opening_a_picture_makes_a_new_artwork_of_it() {
     assert!(app.state().mark("old").is_some(), "undo brings it back");
 }
 
+/// A picture chosen from the host takes its place on the artwork in the
+/// frame the answer arrives in: the frame that takes it up places it, rather
+/// than a frame after the one that drew.
+#[test]
+fn a_chosen_picture_is_placed_in_the_frame_its_answer_arrives_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Halves.png");
+    let png =
+        image::RgbaImage::from_fn(64, 48, |x, _| image::Rgba(if x < 32 { RED } else { BLUE }));
+    let mut bytes = Vec::new();
+    png.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .unwrap();
+    std::fs::write(&path, bytes).unwrap();
+
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().present_in_window_bar();
+    app.call(
+        "draw",
+        json!({"marks": [{"id": "old", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 9, "height": 9}}]}),
+    )
+    .unwrap();
+    let (services, recorder) = ui::host::HostServices::recording();
+    ui::host::scoped(&services, || {
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        // The bar's own add-a-picture control asks the host, and the host
+        // reads the chosen file off the frame.
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "canvas.add-picture".into(),
+            });
+        work.run_pending();
+        app.harness().relayout();
+        let art = app.state();
+        assert_eq!(art.marks.len(), 2, "the picture is on the artwork");
+        assert!(
+            matches!(
+                art.marks.last().map(|mark| &mark.shape),
+                Some(Shape::Image { .. })
+            ),
+            "the chosen picture is a picture mark"
+        );
+    });
+}
+
 #[test]
 fn the_artwork_is_cut_to_a_region_or_to_what_a_mark_shows() {
     let mut app = TestApp::<App>::new().unwrap();

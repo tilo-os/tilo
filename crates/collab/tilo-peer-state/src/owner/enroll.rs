@@ -15,7 +15,7 @@ use tilo_identity_host::custody::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
-    let (certificate, _) = identity.current_native_material(topic)?;
+    let (certificate, _) = identity.current_material(topic)?;
     if &certificate != expected {
         return Err("native enrollment custody changed during exchange".into());
     }
@@ -59,7 +59,7 @@ pub async fn prepare_and_complete(
     if invitation.len() > 384 * 1024 {
         return Err("native invitation exceeds bound".into());
     }
-    let (device, entries) = identity.current_native_material(identity_topic)?;
+    let (device, entries) = identity.current_material(identity_topic)?;
     let mut revocations = RevocationList::new();
     for entry in entries {
         revocations.insert(entry).map_err(|e| e.to_string())?;
@@ -86,7 +86,7 @@ pub async fn prepare_and_complete(
         }
         // Reuse the recorded proof even when its original challenge has expired.
         // The issuing host alone resolves durable Complete idempotency/current membership.
-        let id = owner.prepare_enrollment_into(&intent, local, SystemTime::now())?;
+        let id = owner.prepare_enrollment_into(&intent, local, tilo_clock::wall())?;
         if &id != pending.id() {
             return Err("native retry changed pending generation".into());
         }
@@ -96,7 +96,7 @@ pub async fn prepare_and_complete(
             &invitation,
             Some(device.user_public_key),
             &revocations,
-            now_ns(SystemTime::now())?,
+            now_ns(tilo_clock::wall())?,
         )?;
         if join::encode_invitation_text(join.signed_invitation()) != invitation {
             return Err("noncanonical native invitation text".into());
@@ -155,7 +155,11 @@ pub async fn prepare_and_complete(
             _ => return Err("pinned native host answered no enrollment challenge".into()),
         };
         current(&identity, identity_topic, &device)?;
-        let prepared = SystemTime::now();
+        // The device's own clock. Checking the host's challenge here with a
+        // reading from a second clock refused a certificate the host had just
+        // admitted, and hid the host's answer for it from the classifications
+        // above, which is what leaves a retained proof unresolved.
+        let prepared = tilo_clock::wall();
         let expected = join::JoinChallenge::new(
             &join,
             &device,
@@ -168,7 +172,7 @@ pub async fn prepare_and_complete(
             return Err("native host challenge changed original identity or scope".into());
         }
         let complete = JoinCompleteRequest {
-            proof: join::sign_join_proof(challenge, &identity.device_signing_key)?,
+            proof: join::sign_join_proof(challenge, identity.signer.as_ref())?,
         };
         let intent = VerifiedNativeEnrollmentIntent::from_proof(
             join,
@@ -342,7 +346,7 @@ async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
-    let proof = join::sign_membership_proof(challenge, &identity.device_signing_key)?;
+    let proof = join::sign_membership_proof(challenge, identity.signer.as_ref())?;
     match client
         .request(
             host.clone(),
@@ -372,7 +376,7 @@ pub async fn admit_as_member(
 ) -> Result<(), String> {
     let (host, _) =
         IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-    let (device, _) = identity.current_native_material(workspace_id)?;
+    let (device, _) = identity.current_material(workspace_id)?;
     let bootstrap = prove_membership(
         &client,
         &host.endpoint_addr,
@@ -403,7 +407,7 @@ pub async fn renew_membership(
             view.device().clone(),
         ))
     })?;
-    let (renewed, _) = identity.current_native_material(topic)?;
+    let (renewed, _) = identity.current_material(topic)?;
     if !crate::owner::renewal::renews(&renewed, &held) {
         return Ok(false);
     }
@@ -418,7 +422,7 @@ pub async fn renew_membership(
     )
     .await?;
     current(&identity, topic, &renewed)?;
-    owner.renew_membership(workspace, &renewed, &bootstrap, SystemTime::now())?;
+    owner.renew_membership(workspace, &renewed, &bootstrap, tilo_clock::wall())?;
     Ok(true)
 }
 

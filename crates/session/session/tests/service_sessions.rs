@@ -15,8 +15,6 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,12 +29,8 @@ use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
-
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
 
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
@@ -246,7 +240,6 @@ fn hold_workspace(state: &Path, keys: &Keys) {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 std::time::SystemTime::now(),
             )
             .expect("the host admits the workspace's people");
@@ -318,10 +311,7 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
         person: "Ada".to_owned(),
         launches,
         state: Some(fixture.state.clone()),
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::default())),
-            ..SearchOptions::default()
-        },
+        lists: Lists::default(),
         ..Options::default()
     });
     session.handle().replace_tree(desk(&fixture.keys));
@@ -355,7 +345,7 @@ fn connect(socket: &Path, app: &str) -> CollabClient {
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    common::wait_for(session, "the app to finish its calls", |session| {
+    crate::common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))

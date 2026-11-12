@@ -9,8 +9,6 @@
 //! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
 //! so the inode stays stable across renames.
 
-#[cfg(all(feature = "filesystem", target_os = "linux"))]
-pub(crate) mod external_projection;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -18,13 +16,20 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
-    FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId, MAX_FILE_NAME_BYTES,
+    FileMutationTransactionManifest, FileNameV1, FileNodeKind, FileRecordId, MAX_FILE_NAME_BYTES,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 use tilo_automerge::ApplyIncoming;
 use tilo_automerge::read::{map_at, str_at};
 use uuid::Uuid;
+
+/// A document node's field naming, by content id, the bytes last written to its file
+/// ([`Namespace::document_written`]).
+const VERBATIM: &str = "verbatim";
+/// The content id of the document's projection when [`VERBATIM`] was written: the file is those
+/// bytes while the projection still is this.
+const VERBATIM_READS: &str = "verbatim_reads";
 
 pub const ROOT_INO: u64 = 1;
 /// Sentinel parent for the tree root (not materialized as a node).
@@ -127,21 +132,6 @@ pub enum TransactionProjectionError {
 pub enum NodeKind {
     File,
     Dir,
-}
-
-/// Which plane is authoritative for file bytes on this mount. Signed mode is
-/// selected only from trusted local configuration when record services are
-/// available; it is never negotiated through the unsigned namespace itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentAuthority {
-    LegacyNamespace,
-    SignedRecords,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct VerifiedRecordProjection {
-    revision: ContentRevisionV1,
-    thumbnail: Option<Hash>,
 }
 
 impl NodeKind {
@@ -408,8 +398,6 @@ pub struct Namespace {
     next_ino: u64,
     author: String,
     next_id: u64,
-    content_authority: ContentAuthority,
-    verified_records: HashMap<FileRecordId, VerifiedRecordProjection>,
     /// Stable-record catalogue used by the mount's paged record projection.
     /// It is updated with structural mutations rather than being reconstructed
     /// by every xattr manifest/page request.
@@ -440,14 +428,10 @@ pub struct Namespace {
     /// so one per changed file is quadratic in a changeset.
     #[cfg(test)]
     record_index_rebuilds: u64,
-    /// Changes whenever the verified (signed) content projection changes:
-    /// that state lives beside the document, so its heads alone miss it.
-    /// Drawn from a process-wide counter so no two instances share a value.
-    verified_generation: u64,
     /// Changes whenever changes another replica made are merged into the
     /// document. Concurrent edits, and so content conflicts, can only arrive
     /// that way: this replica's own changes are causally ordered. Drawn from
-    /// the same process-wide counter as `verified_generation`.
+    /// a process-wide counter so no two instances share a value.
     merge_generation: u64,
     /// Calls of [`crate::conflict::detect`] on this namespace.
     #[cfg(test)]
@@ -458,28 +442,21 @@ pub struct Namespace {
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Node objects looked up in the document; see [`Self::node_lookup_count`].
     node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Nodes whose verified projection changed beside the document since
-    /// [`Self::kernel_changes_since`] last took them; `None` while nothing
-    /// collects them ([`Self::collect_projected_changes`]).
-    projected_changes: Option<BTreeSet<String>>,
 }
 
-/// Source of `Namespace::verified_generation` values.
-static NEXT_VERIFIED_GENERATION: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+/// Source of `Namespace::merge_generation` values.
+static NEXT_MERGE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn next_verified_generation() -> u64 {
-    NEXT_VERIFIED_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+fn next_merge_generation() -> u64 {
+    NEXT_MERGE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Cheap fingerprint of everything a [`Namespace`] projects: the document
-/// heads plus the generation of the verified content projection beside it.
-/// Equal tokens mean no node, path, hash or content revision changed, so a
-/// background reconciler can skip a pass without walking the namespace.
+/// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean
+/// no node, path, hash or content revision changed, so a background reconciler
+/// can skip a pass without walking the namespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
-    verified_generation: u64,
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -575,8 +552,6 @@ impl Namespace {
             next_ino: ROOT_INO + 1,
             author,
             next_id,
-            content_authority: ContentAuthority::LegacyNamespace,
-            verified_records: HashMap::new(),
             record_index: BTreeMap::new(),
             record_index_order: Vec::new(),
             record_index_revision: String::new(),
@@ -588,8 +563,7 @@ impl Namespace {
             cycle_scan_pending: true,
             #[cfg(test)]
             record_index_rebuilds: 0,
-            verified_generation: next_verified_generation(),
-            merge_generation: next_verified_generation(),
+            merge_generation: next_merge_generation(),
             #[cfg(test)]
             conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -597,7 +571,6 @@ impl Namespace {
             #[cfg(test)]
             node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            projected_changes: None,
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -652,104 +625,8 @@ impl Namespace {
         Ok(ns)
     }
 
-    /// Complete visible register operation IDs for a record and its ancestor
-    /// bindings. IDs retain same-value/ABA changes and losing concurrent values.
-    pub(crate) fn checked_record_frontier(
-        &self,
-        ino: u64,
-    ) -> Option<Vec<(String, String, Vec<String>)>> {
-        let mut id = self.ino_to_id.get(&ino)?.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        let mut frontier = Vec::new();
-        while id != ROOT_ID {
-            if !seen.insert(id.clone()) {
-                return None;
-            }
-            let node = self.node(&id)?;
-            let mut keys = self.doc.keys(&node).collect::<Vec<_>>();
-            keys.sort();
-            for key in keys {
-                let mut operations = self
-                    .doc
-                    .get_all(&node, &key)
-                    .ok()?
-                    .into_iter()
-                    .map(|(_, operation)| operation.to_string())
-                    .collect::<Vec<_>>();
-                operations.sort();
-                frontier.push((id.clone(), key, operations));
-            }
-            id = str_at(&self.doc, &node, "parent")?;
-        }
-        Some(frontier)
-    }
-
     pub fn author(&self) -> &str {
         &self.author
-    }
-
-    #[must_use]
-    pub fn content_authority(&self) -> ContentAuthority {
-        self.content_authority
-    }
-
-    /// Cut this local projection over to authenticated record state. Raw
-    /// Automerge content fields continue to merge for structural compatibility
-    /// but immediately cease to authorize reads or blob access.
-    pub fn enable_signed_content_authority(&mut self) {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            return;
-        }
-        self.content_authority = ContentAuthority::SignedRecords;
-        self.verified_records.clear();
-        self.verified_generation = next_verified_generation();
-    }
-
-    /// Install a content tuple that has already passed record-repository
-    /// signature, certification, grant, version, and sequence validation.
-    pub fn install_verified_content_revision(&mut self, revision: ContentRevisionV1) -> bool {
-        if revision.validate().is_err() || self.content_authority != ContentAuthority::SignedRecords
-        {
-            return false;
-        }
-        if self
-            .unique_live_node_for_record(revision.record_id)
-            .is_none()
-        {
-            return false;
-        }
-        let thumbnail = self
-            .verified_records
-            .get(&revision.record_id)
-            .and_then(|projection| projection.thumbnail);
-        self.verified_records.insert(
-            revision.record_id,
-            VerifiedRecordProjection {
-                revision,
-                thumbnail,
-            },
-        );
-        self.verified_generation = next_verified_generation();
-        self.note_projected_change(revision.record_id);
-        true
-    }
-
-    /// Update fetch-free preview metadata only after accepting its signed
-    /// `SetMetadata` envelope and converged repository snapshot.
-    pub fn install_verified_thumbnail(
-        &mut self,
-        record_id: FileRecordId,
-        thumbnail: Option<Hash>,
-    ) -> bool {
-        if self.content_authority != ContentAuthority::SignedRecords {
-            return false;
-        }
-        let Some(projection) = self.verified_records.get_mut(&record_id) else {
-            return false;
-        };
-        projection.thumbnail = thumbnail;
-        self.note_projected_change(record_id);
-        true
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -782,6 +659,7 @@ impl Namespace {
         self.note_change();
         self.doc.save_incremental()
     }
+
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();
         self.doc.arm_patches();
@@ -792,33 +670,6 @@ impl Namespace {
         self.note_merge(&before);
         self.index_after_apply();
         Ok(())
-    }
-    /// Isolate a durable restore candidate from subsequent changes by the live
-    /// namespace actor. This is projection identity, never certified authorship.
-    pub(crate) fn begin_restore_projection(
-        &mut self,
-        workspace: uuid::Uuid,
-        record: FileRecordId,
-        intent: uuid::Uuid,
-    ) -> automerge::ActorId {
-        let original = self.doc.get_actor().clone();
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.namespace.restore-projection.v1\0");
-        hasher.update(workspace.as_bytes());
-        hasher.update(record.0.as_bytes());
-        hasher.update(intent.as_bytes());
-        hasher.update(original.to_bytes());
-        self.doc.set_actor(automerge::ActorId::from(
-            hasher.finalize().as_bytes().as_slice(),
-        ));
-        original
-    }
-
-    pub(crate) fn end_restore_projection(&mut self, original: automerge::ActorId) {
-        // save_incremental closes the candidate's pending transaction before
-        // returning to the live actor; retries retain these exact saved bytes.
-        let _ = self.doc.save_incremental();
-        self.doc.set_actor(original);
     }
 
     pub fn prime_baseline(&mut self) {
@@ -916,10 +767,8 @@ impl Namespace {
         self.id_to_ino.clear();
         self.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
         self.next_ino = ROOT_INO + 1;
-        self.verified_records.clear();
         self.record_ids_complete = false;
-        self.verified_generation = next_verified_generation();
-        self.merge_generation = next_verified_generation();
+        self.merge_generation = next_merge_generation();
         self.cycle_scan_pending = true;
         self.placed_since_resolve.clear();
         self.ensure_record_ids();
@@ -938,7 +787,7 @@ impl Namespace {
     /// brought changes.
     fn note_merge(&mut self, before: &[automerge::ChangeHash]) {
         if self.doc.get_heads() != before {
-            self.merge_generation = next_verified_generation();
+            self.merge_generation = next_merge_generation();
         }
     }
 
@@ -955,13 +804,6 @@ impl Namespace {
     pub(crate) fn note_conflict_scan(&self) {
         self.conflict_scans
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Calls of [`crate::conflict::detect`] on this namespace.
-    #[cfg(test)]
-    pub(crate) fn conflict_scans(&self) -> u64 {
-        self.conflict_scans
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
@@ -1573,17 +1415,13 @@ impl Namespace {
         Some(NodeMeta {
             record_id,
             kind: NodeKind::from_str(&str_at(&self.doc, obj, "kind").unwrap_or_default()),
-            hash: match (self.content_authority, revision) {
-                (_, Some(revision)) => revision.content_hash.map(|hash| Hash::from(hash.0)),
-                (ContentAuthority::SignedRecords, None) => None,
-                (ContentAuthority::LegacyNamespace, None) => {
-                    str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h))
-                }
+            hash: match revision {
+                Some(revision) => revision.content_hash.map(|hash| Hash::from(hash.0)),
+                None => str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h)),
             },
-            size: match (self.content_authority, revision) {
-                (_, Some(revision)) => revision.byte_len,
-                (ContentAuthority::SignedRecords, None) => 0,
-                (ContentAuthority::LegacyNamespace, None) => read_u64(&self.doc, obj, "size"),
+            size: match revision {
+                Some(revision) => revision.byte_len,
+                None => read_u64(&self.doc, obj, "size"),
             },
             mtime: read_u64(&self.doc, obj, "mtime"),
         })
@@ -2001,112 +1839,30 @@ impl Namespace {
     /// the returned delta contains both the victim tombstone and source move.
     pub fn apply_replacement_transaction(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         // Automerge transactions make the document edits atomic, but the
         // verified-record projection is maintained alongside the document.
         // Apply to a complete clone so a late projection failure cannot leave
         // either authority half-mutated in the live namespace.
         let mut candidate = self.clone();
-        let delta = candidate.apply_replacement_transaction_in_place(transaction)?;
+        let delta = candidate.apply_replacement_transaction_in_place(manifest)?;
         if delta.is_some() {
             *self = candidate;
         }
         Ok(delta)
     }
 
-    fn apply_atomic_save_in_place(
+    /// Apply one multi-record mutation to a complete namespace clone,
+    /// publishing the clone only after every precondition and both record
+    /// projections succeed.
+    pub fn apply_manifest(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let fs_protocol::FileMutationOperation::AtomicSave {
-            parent_record,
-            document_name,
-            temporary_name,
-            document_record,
-            temporary_record,
-            prior_document_version,
-        } = &transaction.manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let document = transaction
-            .manifest
-            .participants
-            .iter()
-            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveDocument)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let temporary = transaction
-            .manifest
-            .participants
-            .iter()
-            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let document_id = self
-            .unique_node_id_for_record(*document_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
-        let temporary_id = self
-            .unique_node_id_for_record(*temporary_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
-        let revision = document
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let document_ino = self.ino_for_id(&document_id);
-        if self.reaches_root(&document_id)
-            && !self.reaches_root(&temporary_id)
-            && self.content_revision_for(document_ino) == Some(revision)
-        {
-            return Ok(None);
-        }
-        for (id, name, expected) in [
-            (&document_id, document_name, *prior_document_version),
-            (&temporary_id, temporary_name, temporary.expected_version),
-        ] {
-            if !self.reaches_root(id)
-                || self.kind_of(id) != NodeKind::File
-                || self
-                    .parent_of(id)
-                    .and_then(|parent| self.record_id_for_id(&parent))
-                    != Some(*parent_record)
-                || self.name_of(id).as_ref() != Some(name)
-                || self
-                    .content_revision_for_id(id)
-                    .is_none_or(|revision| revision.version_id != expected)
-            {
-                return Err(TransactionProjectionError::PreconditionFailed);
-            }
-        }
-        self.apply_signed_binding(&document.proposed_binding)
-            .map_err(|_| TransactionProjectionError::PreconditionFailed)?;
-        if !self.set_content_revision_preserving_preview(
-            document_ino,
-            &revision,
-            transaction.manifest.timestamp_ms,
-        ) {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        self.apply_signed_binding(&temporary.proposed_binding)
-            .map_err(|_| TransactionProjectionError::PreconditionFailed)?;
-        Ok(Some(self.save_incremental()))
-    }
-
-    /// Apply either supported signed multi-record mutation to a complete
-    /// namespace clone, publishing the clone only after every precondition and
-    /// both record projections succeed.
-    pub fn apply_mutation_transaction(
-        &mut self,
-        transaction: &FileMutationTransaction,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        match transaction.manifest.operation {
+        match manifest.operation {
             fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
-                transaction
-                    .verify()
-                    .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-                let participant = transaction
-                    .manifest
+                let participant = manifest
                     .participants
                     .first()
                     .ok_or(TransactionProjectionError::InvalidTransaction)?;
@@ -2123,25 +1879,20 @@ impl Namespace {
                 if current != Some(prior_revision) {
                     return Err(TransactionProjectionError::PreconditionFailed);
                 }
-                if !self.set_content_revision(ino, &revision, transaction.manifest.timestamp_ms) {
+                if !self.set_content_revision(ino, &revision, manifest.timestamp_ms) {
                     return Err(TransactionProjectionError::ContentProjectionFailed);
                 }
                 Ok(Some(self.save_incremental()))
             }
             fs_protocol::FileMutationOperation::AtomicSave { .. } => {
-                let mut candidate = self.clone();
-                let delta = candidate.apply_atomic_save_in_place(transaction)?;
-                if delta.is_some() {
-                    *self = candidate;
-                }
-                Ok(delta)
+                Err(TransactionProjectionError::InvalidTransaction)
             }
             fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
-                self.apply_replacement_transaction(transaction)
+                self.apply_replacement_transaction(manifest)
             }
             fs_protocol::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
-                let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
+                let delta = candidate.apply_keep_both_transaction_in_place(manifest)?;
                 if delta.is_some() {
                     *self = candidate;
                 }
@@ -2149,7 +1900,7 @@ impl Namespace {
             }
             fs_protocol::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
-                let delta = candidate.apply_merge_transaction_in_place(transaction)?;
+                let delta = candidate.apply_merge_transaction_in_place(manifest)?;
                 if delta.is_some() {
                     *self = candidate;
                 }
@@ -2158,83 +1909,20 @@ impl Namespace {
         }
     }
 
-    /// Install a durably staged merge delta and its signed content revision.
-    pub fn apply_staged_merge_delta(
-        &mut self,
-        transaction: &FileMutationTransaction,
-        delta: &[u8],
-    ) -> Result<(), TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let fs_protocol::FileMutationOperation::MergeContentConflict {
-            source_record,
-            parent_record,
-            source_name,
-            ..
-        } = &transaction.manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let source = transaction
-            .manifest
-            .participants
-            .first()
-            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let mut candidate = self.clone();
-        let source_id = candidate
-            .unique_node_id_for_record(*source_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
-        let source_ino = candidate.ino_for_id(&source_id);
-        let parent_id = candidate
-            .unique_node_id_for_record(*parent_record)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        if candidate.parent_of(&source_id) != Some(parent_id)
-            || candidate.name_of(&source_id).as_deref() != Some(source_name.as_bytes())
-            || !matches!(candidate.content_revision_for(source_ino), Some(revision)
-                if revision.version_id == source.expected_version
-                    || Some(revision) == source.proposed_content_revision)
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        if !delta.is_empty() {
-            candidate
-                .apply_incremental(delta)
-                .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        }
-        let revision = source
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        if !candidate.set_content_revision_preserving_preview(
-            source_ino,
-            &revision,
-            transaction.manifest.timestamp_ms,
-        ) {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        *self = candidate;
-        Ok(())
-    }
-
     fn apply_merge_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
         let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
             ..
-        } = &transaction.manifest.operation
+        } = &manifest.operation
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source = transaction
-            .manifest
+        let source = manifest
             .participants
             .first()
             .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
@@ -2259,11 +1947,7 @@ impl Namespace {
         let revision = source
             .proposed_content_revision
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        if !self.set_content_revision_preserving_preview(
-            ino,
-            &revision,
-            transaction.manifest.timestamp_ms,
-        ) {
+        if !self.set_content_revision_preserving_preview(ino, &revision, manifest.timestamp_ms) {
             return Err(TransactionProjectionError::ContentProjectionFailed);
         }
         Ok(Some(self.save_incremental()))
@@ -2276,12 +1960,9 @@ impl Namespace {
     /// apply the journaled bytes that peers will receive.
     pub fn apply_staged_keep_both_delta(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
         let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
@@ -2289,18 +1970,16 @@ impl Namespace {
             source_name,
             sibling_name,
             ..
-        } = &transaction.manifest.operation
+        } = &manifest.operation
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source = transaction
-            .manifest
+        let source = manifest
             .participants
             .iter()
             .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling = transaction
-            .manifest
+        let sibling = manifest
             .participants
             .iter()
             .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
@@ -2343,11 +2022,11 @@ impl Namespace {
         if !candidate.set_content_revision_preserving_preview(
             source_ino,
             &source_revision,
-            transaction.manifest.timestamp_ms,
+            manifest.timestamp_ms,
         ) || !candidate.set_content_revision_preserving_preview(
             sibling_ino,
             &sibling_revision,
-            transaction.manifest.timestamp_ms,
+            manifest.timestamp_ms,
         ) {
             return Err(TransactionProjectionError::ContentProjectionFailed);
         }
@@ -2357,11 +2036,8 @@ impl Namespace {
 
     fn apply_keep_both_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
         let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
@@ -2369,18 +2045,16 @@ impl Namespace {
             source_name,
             sibling_name,
             ..
-        } = &transaction.manifest.operation
+        } = &manifest.operation
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source = transaction
-            .manifest
+        let source = manifest
             .participants
             .iter()
             .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling = transaction
-            .manifest
+        let sibling = manifest
             .participants
             .iter()
             .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
@@ -2431,7 +2105,7 @@ impl Namespace {
                 *sibling_record,
                 sibling_hash.as_ref(),
                 sibling_revision.byte_len,
-                transaction.manifest.timestamp_ms,
+                manifest.timestamp_ms,
             )
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let source_revision = source
@@ -2440,11 +2114,11 @@ impl Namespace {
         if !self.set_content_revision_preserving_preview(
             source_ino,
             &source_revision,
-            transaction.manifest.timestamp_ms,
+            manifest.timestamp_ms,
         ) || !self.set_content_revision_preserving_preview(
             sibling_ino,
             &sibling_revision,
-            transaction.manifest.timestamp_ms,
+            manifest.timestamp_ms,
         ) {
             return Err(TransactionProjectionError::ContentProjectionFailed);
         }
@@ -2457,11 +2131,8 @@ impl Namespace {
     )]
     fn apply_replacement_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransaction,
+        manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        transaction
-            .verify()
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
         let fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
@@ -2469,18 +2140,16 @@ impl Namespace {
             destination_name,
             source_record,
             replaced_record,
-        } = &transaction.manifest.operation
+        } = &manifest.operation
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source_participant = transaction
-            .manifest
+        let source_participant = manifest
             .participants
             .iter()
             .find(|value| value.role == FileMutationParticipantRole::Source)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let replaced_participant = transaction
-            .manifest
+        let replaced_participant = manifest
             .participants
             .iter()
             .find(|value| value.role == FileMutationParticipantRole::Replaced)
@@ -2557,7 +2226,7 @@ impl Namespace {
             source_name,
             destination_parent_ino,
             destination_name,
-            transaction.manifest.timestamp_ms,
+            manifest.timestamp_ms,
         ) {
             return Err(TransactionProjectionError::PreconditionFailed);
         }
@@ -2565,7 +2234,7 @@ impl Namespace {
             && !self.set_content_revision_preserving_preview(
                 source_ino,
                 revision,
-                transaction.manifest.timestamp_ms,
+                manifest.timestamp_ms,
             )
         {
             return Err(TransactionProjectionError::ContentProjectionFailed);
@@ -2583,13 +2252,6 @@ impl Namespace {
     }
 
     pub(crate) fn content_revision_for_id(&self, id: &str) -> Option<ContentRevisionV1> {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            let record_id = self.record_id_for_id(id)?;
-            return self
-                .verified_records
-                .get(&record_id)
-                .map(|projection| projection.revision);
-        }
         self.raw_content_revision_for_id(id)
     }
 
@@ -2600,12 +2262,6 @@ impl Namespace {
         obj: &ObjId,
         record_id: FileRecordId,
     ) -> Option<ContentRevisionV1> {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            return self
-                .verified_records
-                .get(&record_id)
-                .map(|projection| projection.revision);
-        }
         let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
             Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
             _ => return None,
@@ -2628,10 +2284,6 @@ impl Namespace {
     pub fn ino_for_record_id(&self, record_id: FileRecordId) -> Option<u64> {
         if self.record_id_for(ROOT_INO) == Some(record_id) {
             return Some(ROOT_INO);
-        }
-        if self.content_authority == ContentAuthority::SignedRecords {
-            let only = self.unique_live_node_for_record(record_id)?;
-            return self.id_to_ino.get(&only).copied();
         }
         self.tree
             .nodes_of(record_id)
@@ -2845,7 +2497,22 @@ impl Namespace {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, id, &meta))
+    }
+
+    /// The attributes the mount presents for node `id` at `ino`: its kind, size and time, and the
+    /// mode the record was given (`chmod`, a checkout's executable scripts), which replicates with
+    /// it; a record nobody gave one keeps the default.
+    fn node_attr(&self, ino: u64, id: &str, meta: &NodeMeta) -> FileAttr {
+        let mut attr = Self::attr_for(ino, meta.kind, meta.size, meta.mtime);
+        if let Some(posix) = self
+            .record_id_for_id(id)
+            .and_then(|record| self.posix_attrs(record))
+            .filter(|posix| !posix.symlink)
+        {
+            attr.perm = u16::try_from(posix.mode & 0o7777).unwrap_or(attr.perm);
+        }
+        attr
     }
 
     /// Attribute lookup for a kernel file handle whose directory entry has
@@ -2857,7 +2524,7 @@ impl Namespace {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, id, &meta))
     }
 
     /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
@@ -2871,10 +2538,7 @@ impl Namespace {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some((
-            Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
-            meta.hash,
-        ))
+        Some((self.node_attr(ino, id, &meta), meta.hash))
     }
 
     /// Everything one FUSE request asks about `ino`, read in one pass so the
@@ -2904,7 +2568,7 @@ impl Namespace {
         let obj = self.node(id)?;
         let meta = self.node_meta_at(id, &obj)?;
         Some(InodeView {
-            attr: Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            attr: self.node_attr(ino, id, &meta),
             hash: meta.hash,
             live,
             path: if live && query.path {
@@ -2912,8 +2576,7 @@ impl Namespace {
             } else {
                 None
             },
-            document: self.content_authority == ContentAuthority::LegacyNamespace
-                && str_at(&self.doc, &obj, "codec").is_some(),
+            document: str_at(&self.doc, &obj, "codec").is_some(),
         })
     }
 
@@ -2936,7 +2599,7 @@ impl Namespace {
         let child = self.child_named(&parent_id, name)?;
         let meta = self.node_meta(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, &child, &meta))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, FileNameV1)>> {
@@ -3102,9 +2765,8 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    /// [`Self::create_projected_file`] whose content is the verified
-    /// `revision`: the node is written with the revision's fields once, not
-    /// created and then updated.
+    /// [`Self::create_projected_file`] whose content is `revision`: the node
+    /// is written with the revision's fields, not created and then updated.
     pub fn create_projected_file_at_revision(
         &mut self,
         parent_ino: u64,
@@ -3112,53 +2774,17 @@ impl Namespace {
         revision: &ContentRevisionV1,
         mtime: u64,
     ) -> Option<u64> {
-        if self.content_authority != ContentAuthority::SignedRecords {
-            let hash = revision.content_hash.map(|hash| Hash::from(hash.0));
-            let ino = self.create_projected_file(
-                parent_ino,
-                name,
-                revision.record_id,
-                hash.as_ref(),
-                revision.byte_len,
-                mtime,
-            )?;
-            return self
-                .set_content_revision(ino, revision, mtime)
-                .then_some(ino);
-        }
-        let name = name.as_ref();
-        let encoded = revision_to_bytes(revision)?;
-        if revision.record_id.0.is_nil()
-            || name.is_empty()
-            || name == b"."
-            || name == b".."
-            || name.contains(&b'/')
-            || self.ino_for_record_id(revision.record_id).is_some()
-            || self.lookup_kind(parent_ino, name).is_some()
-        {
-            return None;
-        }
-        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let hash = revision.content_hash.map(|hash| Hash::from(hash.0));
-        let id = self.create_node_as(
-            &parent_id,
+        let ino = self.create_projected_file(
+            parent_ino,
             name,
-            NodeKind::File,
+            revision.record_id,
             hash.as_ref(),
             revision.byte_len,
             mtime,
-            revision.record_id,
         )?;
-        let obj = self.node(&id)?;
-        self.doc
-            .put(&obj, CONTENT_REVISION_KEY, ScalarValue::Bytes(encoded))
-            .ok()?;
-        let ino = self.ino_for_id(&id);
-        if !self.install_verified_content_revision(*revision) {
-            let _ = self.remove(ino);
-            return None;
-        }
-        Some(ino)
+        self.set_content_revision(ino, revision, mtime)
+            .then_some(ino)
     }
 
     pub fn create_dir(
@@ -3226,16 +2852,60 @@ impl Namespace {
     }
 
     /// Project a document into its file format, embedding the binary content (images, binary
-    /// package parts) it references from `content`.
+    /// package parts) it references from `content`. A codec normalizes (Markdown joins a
+    /// paragraph's lines): what the file reads is [`Self::document_written`] while the document
+    /// still projects as it did when they were written.
     pub fn export_document(
         &self,
         ino: u64,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
-        let codec = str_at(&self.doc, &self.node(&id)?, "codec")?;
+        self.project_document(&id, content)
+    }
+
+    /// The bytes last written to document `ino`'s file, by the content id the file's version keeps
+    /// them under, and the content id ([`tilo_content::hash_bytes`]) of the document's projection
+    /// then: the file is those bytes while the projection still is that.
+    pub fn document_written(&self, ino: u64) -> Option<(Hash, String)> {
+        let node = self.node(self.ino_to_id.get(&ino)?)?;
+        let written = str_at(&self.doc, &node, VERBATIM)?.parse::<Hash>().ok()?;
+        Some((written, str_at(&self.doc, &node, VERBATIM_READS)?))
+    }
+
+    /// Record that `written` (a content id the file's version keeps) is what was last written to
+    /// document `ino`, whose projection is now `projected`; bytes that are the projection already
+    /// need no record.
+    pub fn set_document_written(
+        &mut self,
+        ino: u64,
+        written: &Hash,
+        bytes: &[u8],
+        projected: &[u8],
+    ) {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
+            return;
+        };
+        if bytes == projected {
+            if let Some(node) = self.node(&id) {
+                let _ = self.doc.delete(&node, VERBATIM);
+                let _ = self.doc.delete(&node, VERBATIM_READS);
+            }
+            return;
+        }
+        self.set_field(&id, VERBATIM, written.to_string());
+        self.set_field(&id, VERBATIM_READS, tilo_content::hash_bytes(projected));
+    }
+
+    /// The document `id` projected into its file format.
+    fn project_document(
+        &self,
+        id: &str,
+        content: &dyn tilo_content::ContentSource,
+    ) -> Option<Vec<u8>> {
+        let codec = str_at(&self.doc, &self.node(id)?, "codec")?;
         let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
-        let root = self.document_root(&id)?;
+        let root = self.document_root(id)?;
         let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         provider
             .export(
@@ -3323,13 +2993,11 @@ impl Namespace {
     }
 
     /// O(heads): a token that changes whenever anything this namespace
-    /// projects changes — document edits (local or remote) and verified
-    /// content installs alike. Background reconcilers compare it instead of
-    /// walking every node to discover that nothing happened.
+    /// projects changes. Background reconcilers compare it instead of walking
+    /// every node to discover that nothing happened.
     pub fn change_token(&mut self) -> NamespaceChangeToken {
         NamespaceChangeToken {
             heads: self.doc.get_heads(),
-            verified_generation: self.verified_generation,
         }
     }
 
@@ -3425,9 +3093,6 @@ impl Namespace {
     }
 
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            return false;
-        }
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
         };
@@ -3507,19 +3172,13 @@ impl Namespace {
         // projected their own heads while apart) are not carried: writing
         // the winner resolves them, as a namespace conflict copy would
         // otherwise surface the loser.
-        if self.content_authority == ContentAuthority::SignedRecords
-            && self.raw_content_revision_for_id(&id) == Some(*revision)
+        if self.raw_content_revision_for_id(&id) == Some(*revision)
             && !self.has_concurrent_content(&id)
             && self
                 .node(&id)
                 .is_some_and(|obj| read_u64(&self.doc, &obj, "mtime") == mtime)
         {
-            return self.install_verified_content_revision(*revision);
-        }
-        if self.content_authority == ContentAuthority::SignedRecords
-            && !self.install_verified_content_revision(*revision)
-        {
-            return false;
+            return true;
         }
         let Some(encoded) = revision_to_bytes(revision) else {
             return false;
@@ -3547,9 +3206,6 @@ impl Namespace {
     /// pointer rides the namespace replica and a peer can preview before
     /// fetching the full content.
     pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            return false;
-        }
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
         };
@@ -3561,13 +3217,6 @@ impl Namespace {
     }
 
     pub fn thumb_hash(&self, ino: u64) -> Option<Hash> {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            let record_id = self.record_id_for(ino)?;
-            return self
-                .verified_records
-                .get(&record_id)
-                .and_then(|projection| projection.thumbnail);
-        }
         let id = self.ino_to_id.get(&ino)?;
         str_at(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
     }
@@ -3579,30 +3228,14 @@ impl Namespace {
     /// as in [`Self::thumbnail_for_id`].
     pub(crate) fn live_blob_owners(&self) -> Vec<LiveBlobOwner> {
         let live = self.live_node_ids();
-        let signed = self.content_authority == ContentAuthority::SignedRecords;
-        let mut placements: HashMap<FileRecordId, usize> = HashMap::new();
-        if signed {
-            for id in &live {
-                if let Some(record) = self.record_id_for_id(id) {
-                    let count = placements.entry(record).or_insert(0);
-                    *count = count.saturating_add(1);
-                }
-            }
-        }
         live.iter()
             .filter_map(|id| {
                 let record_id = self.record_id_for_id(id);
                 let manifest = self.node_hash(id);
-                let thumbnail = if signed {
-                    record_id
-                        .filter(|record| placements.get(record) == Some(&1))
-                        .and_then(|record| self.verified_records.get(&record))
-                        .and_then(|projection| projection.thumbnail)
-                } else {
-                    self.node(id)
-                        .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
-                        .and_then(|value| hash_from_hex(&value))
-                };
+                let thumbnail = self
+                    .node(id)
+                    .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
+                    .and_then(|value| hash_from_hex(&value));
                 if manifest.is_none() && thumbnail.is_none() {
                     return None;
                 }
@@ -3617,16 +3250,6 @@ impl Namespace {
     }
 
     fn thumbnail_for_id(&self, id: &str) -> Option<Hash> {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            let record_id = self.record_id_for_id(id)?;
-            if self.unique_live_node_for_record(record_id).as_deref() != Some(id) {
-                return None;
-            }
-            return self
-                .verified_records
-                .get(&record_id)
-                .and_then(|projection| projection.thumbnail);
-        }
         self.node(id)
             .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
             .and_then(|value| hash_from_hex(&value))
@@ -3949,15 +3572,8 @@ impl Namespace {
     }
 
     /// Concurrent atomic revision values for a node. Cross-record or malformed
-    /// scalars are omitted; callers must still verify each referenced signed
-    /// version against the record repository before accepting its bytes.
+    /// scalars are omitted.
     pub fn content_revision_conflicts(&self, id: &str) -> Vec<(String, ContentRevisionV1)> {
-        if self.content_authority == ContentAuthority::SignedRecords {
-            return self
-                .content_revision_for_id(id)
-                .map(|revision| vec![("verified-record".to_string(), revision)])
-                .unwrap_or_default();
-        }
         let Some(obj) = self.node(id) else {
             return Vec::new();
         };

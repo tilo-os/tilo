@@ -451,7 +451,7 @@ impl Store {
         let copied = self.copy.watch(ui::try_clipboard_copy(text));
         if copied {
             self.error = None;
-            self.notice = Some(ui::i18n::I18nManager::format(done, &[]));
+            self.notice = Some(crate::locales::CATALOG.t_args(done, &[]));
         }
         self.shown.response = true;
         if copied {

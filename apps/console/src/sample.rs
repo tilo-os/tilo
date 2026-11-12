@@ -44,7 +44,9 @@ fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
         rgb,
         identity: identity.to_owned(),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some("Ada".to_owned()),
+        ..wire::Author::default()
     }
 }
 
@@ -81,6 +83,7 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     );
     wire::RunAction {
         range: wire::Range::one(&id(n)),
+        changes: 1,
         at_ms: minutes_ago_ms(minutes_ago),
         summary: summary.to_owned(),
         app_id: target.app_id.unwrap_or_default(),
@@ -335,6 +338,8 @@ fn the_door() -> door::Door {
                     name: CLAUDE_RUN.to_owned(),
                     started_ms: minutes_ago_ms(14),
                 }],
+                browser_pages: true,
+                ..door::Grant::default()
             },
             door::Grant {
                 id: "grant:codex".to_owned(),
@@ -346,6 +351,8 @@ fn the_door() -> door::Door {
                 granted_ms: minutes_ago_ms(3 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(80)),
                 runs: Vec::new(),
+                browser_pages: false,
+                ..door::Grant::default()
             },
         ],
         workspaces: vec![

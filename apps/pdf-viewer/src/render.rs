@@ -433,9 +433,13 @@ fn draw_signature(
         &name,
     );
     let date = TextStyle::content(7.5 * scale as f32);
+    let stamp = crate::t_args(
+        "pdf-drawn-signed",
+        &[("date", crate::dates::shown(&s.date).into())],
+    );
     tr.draw_style(
         scene,
-        &format!("Signed {}", s.date),
+        &stamp,
         ink_faint(),
         base * Affine::translate((r.x0 + inset, name_y + f64::from(name.line_height_px()))),
         width,
@@ -461,8 +465,9 @@ pub fn draw_signature_ink(
     }
     match ink {
         SignatureInk::Typed => {
+            let unnamed = crate::t("pdf-signature-unnamed");
             let name = if signer.trim().is_empty() {
-                "Signature"
+                unnamed.as_str()
             } else {
                 signer.trim()
             };

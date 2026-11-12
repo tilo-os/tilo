@@ -106,13 +106,17 @@ struct Step {
     /// Where each of them takes a step back: the app's id and its resource the history verbs
     /// are published on, as the task's host named them.
     history: Vec<History>,
-    /// The program's first line, as `history task` names the step.
+    /// The program's first line, as `history task` names the step; a run's name, for the
+    /// steps a client groups by naming a run (`_meta` run).
     program: String,
     changed: u64,
     undone: bool,
     /// Its undo was refused or failed: it stays in effect, and `undo` passes over it to the
     /// step before, so one step that cannot be taken back never holds the others.
     kept: bool,
+    /// The undo step of the run that made it, for the steps a client groups: every call
+    /// naming the same run joins this one.
+    gesture: Option<tilo_actions::ActionId>,
 }
 
 /// Where one app a step changed takes it back: by the app's id and its resource, never by a
@@ -121,9 +125,30 @@ struct Step {
 struct History {
     app: String,
     resource: String,
-    /// The resource is one the session itself publishes (the arrangement), taken back at the
-    /// session's own provider.
+    /// The resource is one the session itself publishes (the arrangement, the records it keeps
+    /// for a package), taken back at the session's own provider.
     published: bool,
+}
+
+impl History {
+    /// Where a call through `app`'s provider takes its step back: the app's own history, or — a
+    /// record the session keeps, published at the session's own provider — the history its
+    /// record offers there on `history` (the nearest resource holding what changed that offers
+    /// `undo`), where no app's process is asked.
+    fn of_call(app: &str, history: Option<String>) -> Self {
+        match history {
+            Some(resource) if app == crate::session_door::SESSION_PROVIDER => Self {
+                app: app.to_owned(),
+                resource,
+                published: true,
+            },
+            _ => Self {
+                app: app.to_owned(),
+                resource: format!("tl:{app}"),
+                published: false,
+            },
+        }
+    }
 }
 
 /// What a program's answer says each app it changed takes a step back on.
@@ -161,6 +186,67 @@ pub(crate) struct Programs {
 }
 
 impl Programs {
+    /// Note a change a call of the run `gesture` (named `label`, `""` when the run has no title)
+    /// made through the app `app`, whose record's history is on `history` when the call found
+    /// one: the calls of one run are one step of the task's, taken back in each app they
+    /// changed, as one program is.
+    pub(super) fn note_run(
+        &mut self,
+        gesture: tilo_actions::ActionId,
+        label: &str,
+        app: &str,
+        history: Option<String>,
+    ) {
+        let changed = 1;
+        let at = History::of_call(app, history);
+        if let Some(step) = self
+            .steps
+            .iter_mut()
+            .rev()
+            .find(|step| step.gesture == Some(gesture))
+        {
+            step.changed = step.changed.saturating_add(changed);
+            if !step.history.contains(&at) {
+                step.history.push(at);
+            }
+            if !step.apps.iter().any(|known| known == app) {
+                step.apps.push(app.to_owned());
+            }
+            return;
+        }
+        self.steps.push(Step {
+            number: self.steps.len().saturating_add(1),
+            apps: vec![app.to_owned()],
+            history: vec![at],
+            program: if label.is_empty() {
+                "run".to_owned()
+            } else {
+                format!("run \"{label}\"")
+            },
+            changed,
+            undone: false,
+            kept: false,
+            gesture: Some(gesture),
+        });
+    }
+
+    /// The steps of this session's `history task`, typed.
+    fn steps_json(&self) -> Vec<Value> {
+        self.steps
+            .iter()
+            .map(|step| {
+                json!({
+                    "number": step.number,
+                    "apps": step.apps,
+                    "changed": step.changed,
+                    "program": step.program,
+                    "undone": step.undone,
+                    "kept": step.kept,
+                })
+            })
+            .collect()
+    }
+
     /// The reference of `literal`'s resource (type `ty`), given it the first time it is shown.
     fn name(&mut self, ty: &str, literal: &str) -> String {
         if let Some(known) = self.by_literal.get(literal) {
@@ -772,10 +858,55 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The `tilo` tool.
-    pub(super) async fn agent_tilo(&self, args: TiloArgs) -> Result<Reply, String> {
-        Box::pin(self.tilo_step(args))
-            .await
-            .map(|(reply, _, _)| reply)
+    pub(super) async fn agent_tilo(
+        &self,
+        args: TiloArgs,
+        structured: bool,
+    ) -> Result<Reply, String> {
+        let (mut reply, answer, _) = Box::pin(self.tilo_step(args)).await?;
+        if structured {
+            reply.structured = Some(self.program_answer(answer.as_ref(), &reply));
+        }
+        Ok(reply)
+    }
+
+    /// A program's answer, typed: what it printed, what it changed, and the
+    /// steps of this session's `history task`.
+    fn program_answer(&self, answer: Option<&Value>, reply: &Reply) -> Value {
+        let steps = self.programs.lock_recover().steps_json();
+        let Some(answer) = answer else {
+            // `undo`, `undo task` and `history task` answer text: the steps
+            // they report are the typed answer.
+            return json!({
+                "status": if reply.failed {"failed"} else {"ok"},
+                "output": reply.text.lines().collect::<Vec<&str>>(),
+                "steps": steps,
+            });
+        };
+        let status = match answer.get("state").and_then(Value::as_str) {
+            Some("done") => "ok",
+            Some("preview") => "preview",
+            _ => "failed",
+        };
+        let mut typed = json!({
+            "status": status,
+            "output": answer
+                .get("output")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            "changed": answer.get("changed").cloned().unwrap_or_else(|| json!(0)),
+            "apps": answer.get("apps").cloned().unwrap_or_else(|| json!([])),
+            "steps": steps,
+        });
+        if let Some(fields) = typed.as_object_mut() {
+            for key in ["detail", "error"] {
+                if let Some(value) = answer.get(key).filter(|value| !value.is_null()) {
+                    fields.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+        typed
     }
 
     /// One `tilo` call: its reply, the host's answer when a program ran, and the program as it
@@ -1066,13 +1197,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The provider of the app `app` (an id) a task's invocation goes to, starting the app in
     /// the workspace when none of it runs yet: the task invokes the app's own door, and the
-    /// workspace opens it.
+    /// workspace starts it without a window.
     async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
         let found = Addressed {
-            provider: self.opened_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            provider: self.started_provider(app, Some(PROGRAM_WAIT_MS)).await?,
             app_id: Some(app.to_owned()),
         };
         known.insert(app.to_owned(), found.clone());
@@ -1236,7 +1367,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
             }
-            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
+            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })) => {
                 json!({"asks": format!("{action}: asks the person first")})
             }
             Ok(Err(
@@ -1325,6 +1456,7 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
                         changed,
                         undone: false,
                         kept: false,
+                        gesture: None,
                     });
                 }
                 false
@@ -1545,6 +1677,52 @@ mod tests {
         Pending,
     };
     use tilo_actions::{InvocationId, InvocationUpdate};
+
+    /// A program's answer typed: what it printed, what it changed, and the
+    /// steps of the task's history beside it.
+    #[test]
+    fn a_program_answers_typed_with_its_output_and_the_task_steps() {
+        let host = Native::new();
+        let server = McpServer::new(host, "workspace".to_owned(), "owner".to_owned());
+        server.programs.lock_recover().steps.push(Step {
+            number: 1,
+            apps: vec!["so.tilo.notes".to_owned()],
+            history: Vec::new(),
+            program: "notes.pin(n1)".to_owned(),
+            changed: 1,
+            undone: false,
+            kept: false,
+            gesture: None,
+        });
+        let answer = json!({
+            "state": "done",
+            "output": ["n1 \"Q3 plan\""],
+            "changed": 2,
+            "apps": ["so.tilo.notes"],
+        });
+        let typed = server.program_answer(Some(&answer), &Reply::ok(String::new()));
+        assert_eq!(typed["status"], "ok");
+        assert_eq!(typed["output"], json!(["n1 \"Q3 plan\""]));
+        assert_eq!(typed["changed"], 2);
+        assert_eq!(typed["apps"], json!(["so.tilo.notes"]));
+        assert_eq!(typed["steps"][0]["program"], "notes.pin(n1)");
+        // A preview says so; a failed program carries its detail.
+        let preview = server.program_answer(
+            Some(&json!({"state":"preview","output":[],"complete":true})),
+            &Reply::ok(String::new()),
+        );
+        assert_eq!(preview["status"], "preview");
+        let refused = server.program_answer(
+            Some(&json!({"state":"rejected","detail":["line 1: no such field"]})),
+            &Reply::failed("error".to_owned()),
+        );
+        assert_eq!(refused["status"], "failed");
+        assert_eq!(refused["detail"], json!(["line 1: no such field"]));
+        // The tools that answer text carry their lines as the typed output.
+        let listed = server.program_answer(None, &Reply::ok("ok\nstep 1: 1 change".to_owned()));
+        assert_eq!(listed["status"], "ok");
+        assert_eq!(listed["output"], json!(["ok", "step 1: 1 change"]));
+    }
 
     #[test]
     fn references_name_what_answers_showed_and_nothing_else() {
@@ -1869,11 +2047,12 @@ mod tests {
             changed: 2,
             undone: false,
             kept: false,
+            gesture: None,
         });
         let reply = run(server.undo_steps(false)).expect("the step is taken back");
         assert!(!reply.failed, "{}", reply.text);
-        // Neither app ran: the workspace started each, and its undo went to the instance it
-        // started, on the record the app keeps its steps in.
+        // Neither app ran: the workspace started each without a window, and its undo went to
+        // the instance it started, on the record the app keeps its steps in.
         assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
         assert_eq!(
             host.invoked(),
@@ -1884,7 +2063,7 @@ mod tests {
                         "{}so.tilo.chat",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (
@@ -1899,7 +2078,7 @@ mod tests {
                         "{}so.tilo.tasks",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (

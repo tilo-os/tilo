@@ -328,15 +328,14 @@ pub fn resource_scope(issuer: &str, resource: &str) -> Option<Option<String>> {
 /// workspace pin is `pinned`.
 #[must_use]
 pub fn scope_reaches(scope: &Scope, pinned: Option<&str>) -> bool {
+    // Any grant at the door's root: a workspace grant's session is pinned all
+    // the same, so a client configured with the root URL keeps working. An
+    // account grant reaches each of the person's workspaces at its own URL,
+    // as a backend works in each customer's; the relay still admits it only
+    // where the workspace is the person's.
     match (scope, pinned) {
-        // Any grant at the door's root. A workspace grant's session is pinned
-        // all the same, so a client configured with the root URL keeps
-        // working.
-        (_, None) => true,
         (Scope::Workspace(workspace), Some(pinned)) => workspace == pinned,
-        // An account grant never reaches a pinned URL: what the person agreed
-        // to there was one workspace.
-        (Scope::Account, Some(_)) => false,
+        (Scope::Account | Scope::Workspace(_), _) => true,
     }
 }
 

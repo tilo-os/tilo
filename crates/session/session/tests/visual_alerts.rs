@@ -13,15 +13,13 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_compositor::{A11y, OutputConfig, Screenshot};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-use tilo_session::mount::drives::Medium;
+use tilo_session::drives::Medium;
 use tilo_session::{Options, Session, SessionConfig};
 
 const DISPLAY: &str = "HEADLESS-1";

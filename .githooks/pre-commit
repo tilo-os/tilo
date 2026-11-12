@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Compilation runs in CI to keep the pre-commit hook fast.
+# Compilation runs in CI to keep the pre-commit hook fast; the component catalogue is the one
+# generated file that exists only as a compiled answer, so its step compiles the toolkit, and
+# only for a commit that stages a widget source.
 set -euo pipefail
 # The policy scripts need Python 3.11 or newer (tomllib). On macOS the python3 first on PATH is
 # often the system's 3.9, which fails every commit; put a newer interpreter's directory first.
@@ -72,8 +74,17 @@ note() { printf '  %s\n' "$*" >&2; }
 # hook is the fast answer, not the only one.
 python3 "$root/tools/policy/check_app_text_contract.py" --staged
 python3 "$root/tools/policy/check_session_copy_contract.py"
+# A catalogue is judged against its siblings, not by its own text: half a
+# translation or a key defined twice reads as drift or breaks the file only
+# beside the others, and the registry `tilo-app` generates beside the source
+# catalog is stale the moment a message is added or dropped. It reads every
+# catalogue in well under a second.
+python3 "$root/tools/policy/check_catalogue_coverage.py"
+python3 "$root/tools/policy/check_app_copy_resolution.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
 python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
+python3 "$root/tools/policy/check_clock_contract.py" --staged
+python3 "$root/tools/policy/check_loop_never_blocks.py" || fail=1
 python3 "$root/tools/policy/check_formats.py" --staged || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" --staged || fail=1
 python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1
@@ -84,6 +95,12 @@ python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
+# Every test-shaped file and every Rust file that reads outside its package is
+# accounted for in tools/ci/suites.toml, so changing what it reads runs it.
+# `--staged` reads only the commit's Rust files and the ones the manifest names
+# (the whole tree when the manifest itself changes); the suites policy step
+# reads them all.
+python3 "$root/tools/ci/suites.py" check --staged || fail=1
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`
@@ -108,6 +125,128 @@ if grep -qE '(^|/)(Cargo\.toml|lib\.rs|main\.rs)$|^docs/codemap\.md$' <<< "$lock
     fail=1
   fi
 fi
+
+# The SDK's types are generated from the apps' surfaces and manifests
+# (`tilo sdk gen`), so a change to either leaves them stale: they are what an
+# agent or a script reads an app's actions from, and nothing else in a commit
+# notices. Regenerating them is not a judgement call, so do it here with this
+# tree's own generator and stage what it wrote; a tree that has not built one
+# is told the one command that writes them, rather than left stale.
+if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; then
+  # Like the tilolang formatter below: the freshest generator this tree has
+  # built into target/, under any profile, answering `--help` so a binary for
+  # another platform is skipped rather than run.
+  sdk_gen=""
+  sdk_found=()
+  while IFS= read -r -d '' c; do sdk_found+=("$c"); done < <(
+    find "$root/target" -maxdepth 4 -type f -name tilo -perm -u+x -print0 2>/dev/null)
+  if [ "${#sdk_found[@]}" -gt 0 ]; then
+    while IFS= read -r c; do
+      [ -n "$c" ] && [ -x "$c" ] || continue
+      case "$("$c" --help 2>&1)" in
+        *"sdk"*) sdk_gen=$c; break ;;
+      esac
+    done < <(ls -td -- "${sdk_found[@]}" 2>/dev/null || true)
+  fi
+  sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types"
+  if [ -n "$sdk_gen" ]; then
+    # Which generated files the person is editing by hand: those are left
+    # alone, since staging them would stage their edits too.
+    sdk_dirty=$(git diff --name-only -- $sdk_paths)
+    for lang in python ts; do
+      case "$lang" in
+        python) out=sdk/python/src/tilo/types ;;
+        ts) out=sdk/typescript/src/types ;;
+      esac
+      (cd "$root" && "$sdk_gen" sdk gen --lang "$lang" --out "$out") >/dev/null || {
+        note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
+        fail=1
+      }
+    done
+    sdk_wrote=0
+    sdk_left=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if grep -qxF "$f" <<< "$sdk_dirty"; then
+        sdk_left="$sdk_left$f"$'\n'
+      else
+        GIT_INDEX_FILE="$full_index" git add -- "$f"
+        sdk_wrote=$((sdk_wrote + 1))
+      fi
+    done < <(GIT_INDEX_FILE="$full_index" git diff --name-only -- $sdk_paths)
+    if [ "$sdk_wrote" -gt 0 ]; then
+      note "sdk: wrote the types of the apps whose surface changed and staged them"
+    fi
+    if [ -n "$sdk_left" ]; then
+      note "sdk: these have unstaged edits, stage the whole file and commit again:"
+      printf '%s' "$sdk_left" | sed 's/^/  /' >&2
+      fail=1
+    fi
+  else
+    note "sdk: an app's surface changed and this tree has no generator built; run 't fix sdk-types' and stage sdk/"
+    fail=1
+  fi
+fi
+
+# The component catalogue (`crates/dev/ui-graph/components.json`) is the toolkit's described
+# widgets as data: each widget's doc text and props, generated from the widget itself. The
+# crates below the toolkit read it at build time (tilo-view builds a builder per component from
+# it, tilolang its `ui` package), so it is committed, and a widget whose description changed
+# leaves it stale. Regenerating it is not a judgement call: do it here with this tree's own
+# generator and stage what it wrote. The toolkit's test holds the same invariant, so a tree
+# that cannot build now leaves the file as it is rather than holding up the commit.
+widget_sources=$(grep -vE '(_tests\.rs|/tests\.rs|/tests/)' <<< "$lock_staged_names" \
+  | grep -E '^crates/sdk/ui-core/src/.*\.rs$' || true)
+if [ -n "$widget_sources" ]; then
+  catalogue=crates/dev/ui-graph/components.json
+  # The generator reads the tree, so a widget source with unstaged edits would be generated
+  # into this commit: it is left alone, as rustfmt leaves such a file alone.
+  if ! git diff --quiet -- crates/sdk/ui-core/src; then
+    note "component catalogue: crates/sdk/ui-core/src has unstaged edits; stage the whole tree \
+and commit again, or regenerate it with 'cargo run -p tilo-ui --example component-catalogue > $catalogue'"
+  else
+    # The sources and catalogue already generated in an earlier commit need no second build: a
+    # fixup, or a rebase replaying a commit, is the same tree and the same answer.
+    sources_id=$(GIT_INDEX_FILE="$full_index" git ls-files -s -- crates/sdk/ui-core/src \
+      | git hash-object --stdin)
+    catalogue_id=$(git rev-parse -q --verify ":$catalogue" || true)
+    verified_at="$(git rev-parse --path-format=absolute --git-dir)/component-catalogue-verified"
+    if [ "$(cat "$verified_at" 2>/dev/null)" != "$sources_id $catalogue_id" ]; then
+      # No binary is built for this: the generator is the toolkit itself, so the one command
+      # that writes the catalogue compiles it first.
+      cat_run=()
+      if command -v cargo >/dev/null 2>&1; then
+        cat_run=(cargo run --locked -q -p tilo-ui --example component-catalogue)
+      fi
+      cat_generated=""
+      if [ "${#cat_run[@]}" -gt 0 ]; then
+        cat_generated=$("${cat_run[@]}" 2>/dev/null || true)
+      fi
+      if [ -n "$cat_generated" ]; then
+        if [ "$cat_generated" != "$(cat "$root/$catalogue")" ]; then
+          if git diff --quiet -- "$catalogue"; then
+            printf '%s\n' "$cat_generated" > "$root/$catalogue"
+            GIT_INDEX_FILE="$full_index" git add -- "$catalogue"
+            catalogue_id=$(git rev-parse -q --verify ":$catalogue" || true)
+            note "$catalogue: regenerated from the staged widget sources and staged"
+          else
+            note "$catalogue is stale and has unstaged edits: stage the whole file and commit again"
+            fail=1
+          fi
+        fi
+        # Only a catalogue that is now the generated one is remembered: the next commit of the
+        # same sources builds nothing, a commit that left it stale is checked again.
+        if [ "$cat_generated" = "$(cat "$root/$catalogue")" ]; then
+          printf '%s %s\n' "$sources_id" "$catalogue_id" > "$verified_at"
+        fi
+      else
+        note "component catalogue: no generator could be run; \
+crates/sdk/ui-core/src/widget changes may need 'cargo run -p tilo-ui --example component-catalogue > $catalogue'"
+      fi
+    fi
+  fi
+fi
+
 
 # A vendored crate under vendor/ is upstream's code, carried as it ships: the
 # added-code policy (ignore reasons, allow placement, dbg!) and rustfmt skip it.
@@ -165,8 +304,8 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
     --diff-filter=ACM -- '*.tl' \
   | while IFS= read -r f; do
       case "$f" in
-        crates/lang/tilolang/std/*.tl) printf '%s\n' crates/lang/tilolang/std ;;
-        apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
+        (crates/lang/tilolang/std/*.tl) printf '%s\n' crates/lang/tilolang/std ;;
+        (apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
       esac
     done | sort -u)
 if [ -n "$tl_packages" ]; then
@@ -313,6 +452,21 @@ if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|wri
   fail=1
 fi
 
+# A reference cargo re-resolved onto another version the package also allows is
+# not a judgement call: the lock's canonical form points at the newest version it
+# holds that the package allows, so write that and stage it, as rustfmt and the
+# code map are. A lock with unstaged edits is left alone, like those files. This
+# runs first, so the admission below judges what a person would commit.
+if grep -qx 'Cargo.lock' <<< "$staged_names" && git diff --quiet -- Cargo.lock; then
+  normalized=$(python3 "$root/tools/ci/check_lock_update.py" --root "$root" --write 2>&1) || {
+    printf '%s\n' "$normalized" | sed 's/^/  /' >&2
+    fail=1
+  }
+  if [ -n "$normalized" ]; then
+    GIT_INDEX_FILE="$full_index" git add -- Cargo.lock
+    printf '%s\n' "$normalized" | sed 's/^/  Cargo.lock: /' >&2
+  fi
+fi
 # Require a manifest change alongside Cargo.lock changes; see AGENTS.md. The
 # lock-only changes admitted are a declared single-crate update,
 #   TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit
@@ -323,8 +477,9 @@ if grep -qx 'Cargo.lock' <<< "$staged_names" \
    && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
-# A vendored crate's own lock file is a build artifact, not ours.
-if grep -qE '^vendor/[^/]+/Cargo\.lock$' <<< "$staged_names"; then
+# A vendored crate's own lock file is a build artifact, not ours; untracking
+# one is the fix, so only an added or changed one fails.
+if git diff --cached --name-only --diff-filter=d | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then
   note "a vendored crate's Cargo.lock is staged; it is a build artifact"
   fail=1
 fi

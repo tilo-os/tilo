@@ -50,6 +50,7 @@ use crate::model::Language;
 use crate::row_viewport::RowViewportIndex;
 use lsp_types::CompletionItemKind;
 use std::sync::Arc;
+use ui::widget::DrawChild;
 
 #[path = "editor_scroll.rs"]
 mod scroll;
@@ -2737,7 +2738,8 @@ impl EditorView {
         }
         let inset = f64::from(theme.tokens.spacing.s2);
         let size = ControlSize::Small;
-        let face = ButtonFace::new(Rect::ZERO, "Line start")
+        let label = crate::resource::CATALOG.t("code-editor-line-start");
+        let face = ButtonFace::new(Rect::ZERO, &label)
             .icon(Icon::ArrowLeft)
             .control_size(size);
         let width = face.intrinsic_width(text_renderer, theme);
@@ -2748,7 +2750,7 @@ impl EditorView {
             (code_x0 + inset + width).min(self.rect.x1 - inset),
             self.rect.y1 - inset,
         );
-        let face = ButtonFace::new(rect, "Line start")
+        let face = ButtonFace::new(rect, &label)
             .icon(Icon::ArrowLeft)
             .control_size(size)
             .hovered(rect.contains(self.last_cursor));
@@ -2852,7 +2854,7 @@ impl Widget for EditorView {
             // the portal picker.
             self.empty.apply_layout_external(self.rect);
             self.empty
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.forget_shown();
             return;
         }
@@ -2993,7 +2995,7 @@ impl Widget for EditorView {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Document)
-            .with_name("Code editor")
+            .with_name(crate::resource::CATALOG.t("code-editor-a11y-document"))
             .with_state(
                 ui::a11y::AccessState::new()
                     .focusable(true)
@@ -3220,7 +3222,7 @@ mod tests {
         for column in [0, 200_000] {
             view.scroll_x = f64::from(column) * view.cell_w;
             let mut scene = Scene::new();
-            view.draw(
+            view.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
@@ -3241,7 +3243,7 @@ mod tests {
             "composition uses scalar columns without copying the full row"
         );
         let mut scene = Scene::new();
-        view.draw(
+        view.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,

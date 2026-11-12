@@ -162,7 +162,7 @@ pub struct CopyRecipient {
 impl CopyRecipient {
     fn check(&self, peer: &ExecutingPeer) -> io::Result<()> {
         check_executing_image(&self.shell, &self.shell_image)?;
-        let current = protected_program("/usr/bin/shell")?.metadata()?;
+        let current = protected_program("/usr/bin/tilo-session")?.metadata()?;
         let held = self.shell_image.metadata()?;
         let helper = protected_helper()?;
         let metadata = helper.metadata()?;
@@ -354,7 +354,7 @@ impl RootConsumerChannel {
                 "Copy recipient endorsement differs from certified Shell",
             ));
         }
-        let shell_image = protected_program("/usr/bin/shell")?;
+        let shell_image = protected_program("/usr/bin/tilo-session")?;
         check_executing_image(&self.peer, &shell_image)?;
         let (expected, child_pidfd) = {
             let mut io = Handoff::new(&mut self.stream, cancellation, Duration::from_secs(10))?;

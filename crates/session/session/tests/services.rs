@@ -14,9 +14,7 @@
               outlives every call made into it"
 )]
 
-mod common;
-
-use common::audio::Card;
+use crate::common::audio::Card;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
@@ -28,16 +26,16 @@ use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-use tilo_device_fabric::speaker_group::{
+use tilo_service::lines::{self, Remote};
+use tilo_session::platform::fabric::UnlockFabricState;
+use tilo_session::platform::fabric::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
-use tilo_device_fabric::unlock::UnlockFabricState;
-use tilo_device_fabric::{
+use tilo_session::platform::fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
-use tilo_service::lines::{self, Remote};
+use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError};
 use tilo_session::{Options, Service, Session};
 use ui::host_operation::ResourceOperationStart;
 
@@ -134,7 +132,7 @@ fn arguments(value: Value) -> Map<String, Value> {
 /// Wait until `resource` reads as `done` says, taking in what the services report as the session's
 /// loop does.
 fn until(session: &mut Session, resource: &str, done: impl Fn(&Value) -> bool) -> Value {
-    common::wait_for(
+    crate::common::wait_for(
         session,
         format!("{resource} to read as expected"),
         |session| {
@@ -316,7 +314,7 @@ impl Fabric {
             .collect()
     }
 
-    fn link(&self) -> tilo_device_fabric::link::SharedLink {
+    fn link(&self) -> tilo_session::platform::fabric::SharedLink {
         Arc::new(self.clone())
     }
 
@@ -347,14 +345,6 @@ impl FabricLink for Fabric {
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
         Some((self.local.clone(), "This laptop".into()))
-    }
-
-    fn send_personal_fabric_action(
-        &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        Err("no transport in a test".into())
     }
 
     fn try_send_personal_fabric_action(
@@ -406,7 +396,7 @@ impl Wait {
 /// Step the session's passes until Settings hears of the change they see: a pass is what tells it
 /// to read the groups again.
 fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
-    common::wait_for(
+    crate::common::wait_for(
         session,
         "the session's passes to tell Settings",
         |session| {

@@ -22,6 +22,7 @@ use super::{
     AlbumEditorHit, COLLECTION_PAGE_SIZE, LibraryDestination, LibraryItem, PeopleIntent,
     PeopleSelection, Photos, PlaceItem, PlacesHit, capture_day, card_action_controls, wheel_pixels,
 };
+use ui::widget::DrawChild;
 
 /// The window's toolkit traits answered from the shared state: what each
 /// asks of the empty state, the window's own child, it is handed.
@@ -62,7 +63,9 @@ impl Photos {
     }
 
     pub(super) fn needs_animation_frame(&self) -> bool {
-        let now = ui::time::now();
+        // Asked while a frame lays out: its motions read at the frame's
+        // instant, never at the clock ([`ui::motion::frame_now`]).
+        let now = ui::motion::frame_now();
         self.chrome.inspector.is_animating()
             || (!self.places_motion_reduced
                 && (self
@@ -297,9 +300,9 @@ impl Photos {
             self.timeline_projection_filter = projection_filter;
             self.library_total = self.timeline_projection.len();
         }
-        // Markers are rebuilt from exact pixel day offsets during draw, once
-        // the real viewport and responsive geometry are known.
-        self.timeline_index_markers.clear();
+        // Markers stand from the last draw until the next: they are built from
+        // exact pixel day offsets, so only a draw knows them. A sync clears
+        // nothing, or the index would read as gone until the window paints.
         let visible_ids: HashSet<_> = self
             .timeline_projection
             .visible_photos(self.timeline_scroll_y, self.timeline_viewport_height)
@@ -629,14 +632,19 @@ impl Photos {
             } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
                 if self.people_selection.is_some() && !self.people_merge_mode {
-                    self.people_name_input
-                        .draw(scene, transform, text_renderer, theme, presence);
+                    self.people_name_input.draw_child(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                    );
                 }
                 for control in &mut self.people_controls {
                     if !control.is_card() {
                         control
                             .button
-                            .draw(scene, transform, text_renderer, theme, presence);
+                            .draw_child(scene, transform, text_renderer, theme, presence);
                     }
                 }
             } else if self.library_destination == LibraryDestination::Places {
@@ -647,7 +655,7 @@ impl Photos {
                 self.draw_library(empty, scene, transform, text_renderer, theme);
             }
         } else if let Some(v) = self.viewer.as_mut() {
-            v.draw(scene, transform, text_renderer, theme, presence);
+            v.draw_child(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
             Self::draw_empty_state(empty, scene, transform, text_renderer, theme);

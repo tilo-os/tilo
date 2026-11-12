@@ -173,7 +173,7 @@ impl BrowserWidget {
         let mut root = ResourceSpec::new(
             crate::personal_bookmarks::SCOPE,
             "browser.personal-bookmarks",
-            "Personal bookmarks",
+            crate::CATALOG.t("browser-resource-personal-bookmarks"),
         )
         .with_action(
             crate::effects::BrowserEffect::ImportPersonalBookmarks {
@@ -297,7 +297,7 @@ pub(crate) fn request_resource(
         ResourceSpec::new(
             id,
             "browser.personal-bookmark-navigation",
-            "Bookmark navigation",
+            crate::CATALOG.t("browser-resource-bookmark-navigation"),
         )
         .with_action(resource.bound()),
     )

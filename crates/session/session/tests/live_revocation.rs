@@ -12,8 +12,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -41,11 +39,11 @@ fn access_list(acl: &Path) -> Option<collab_types::FsAuthority> {
 
 #[test]
 fn the_session_writes_its_file_access_list_for_the_files_daemon() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let _env = session_env(root.path());
     let acl = acl_path(root.path());
-    let mut session = common::seeded_session(root.path());
-    common::until(&mut session, "the file access list", |_| acl.is_file());
+    let mut session = crate::common::seeded_session(root.path());
+    crate::common::until(&mut session, "the file access list", |_| acl.is_file());
     let written = access_list(&acl).expect("the list is readable");
     assert!(
         !written.workspace_members.is_empty(),
@@ -54,7 +52,7 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
     // A desk change that grants nothing new does not rewrite the list: the daemon signs every list
     // it reads into a new revision.
     let before = std::fs::read(&acl).unwrap();
-    common::show_preset(&mut session, "Frames");
+    crate::common::show_preset(&mut session, "Frames");
     for _ in 0..5 {
         session.step(Duration::from_millis(1)).unwrap();
     }
@@ -110,7 +108,7 @@ fn written_after_role(
     role: tilo_action_policy::Role,
     arrived: impl Fn(&collab_types::FsAuthority) -> bool,
 ) -> collab_types::FsAuthority {
-    let owner = common::PERSON.to_owned();
+    let owner = crate::common::PERSON.to_owned();
     change_workspace(session, |workspace| {
         tilo_desktop::workspace_settings::set_member_role(
             workspace,
@@ -120,7 +118,7 @@ fn written_after_role(
         )
         .expect("the person changes the member's role");
     });
-    common::until(session, "the list after the role", |_| {
+    crate::common::until(session, "the list after the role", |_| {
         access_list(acl).is_some_and(|list| arrived(&list))
     });
     access_list(acl).expect("the list the daemon reads")
@@ -128,11 +126,11 @@ fn written_after_role(
 
 #[test]
 fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let _env = session_env(root.path());
     let acl = acl_path(root.path());
-    let mut session = common::seeded_session(root.path());
-    common::until(&mut session, "the file access list", |_| acl.is_file());
+    let mut session = crate::common::seeded_session(root.path());
+    crate::common::until(&mut session, "the file access list", |_| acl.is_file());
     assert!(
         !member_may(
             &access_list(&acl).unwrap(),
@@ -173,12 +171,12 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
 
     // Removed from the workspace, their device reaches nothing at its next open, and the relay
     // membership drops them in the same revision.
-    let owner = common::PERSON.to_owned();
+    let owner = crate::common::PERSON.to_owned();
     change_workspace(&session, |workspace| {
         tilo_desktop::workspace_settings::remove_member(workspace, &owner, &MEMBER.to_owned())
             .expect("the person removes the member");
     });
-    common::until(&mut session, "the list after the removal", |_| {
+    crate::common::until(&mut session, "the list after the removal", |_| {
         access_list(&acl).is_some_and(|list| {
             !member_may(&list, NOTE, collab_types::caps::Access::Read)
                 && !member_may(&list, NOTE, collab_types::caps::Access::Write)

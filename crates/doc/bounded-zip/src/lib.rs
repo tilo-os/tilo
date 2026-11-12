@@ -1,6 +1,7 @@
-//! Hardening for reading **untrusted** ZIP packages (`.odt`/`.docx`/`.xlsx`/`.ods`,
-//! `.odp`/`.pptx`, `.epub`, browser extensions): the archive and every part in it
-//! are attacker-controlled.
+//! The ZIP archives Tilo reads and writes, under bounds: reading **untrusted** packages
+//! (`.odt`/`.docx`/`.xlsx`/`.ods`, `.odp`/`.pptx`, `.epub`, browser extensions), where the
+//! archive and every part in it are attacker-controlled, and writing the archives an app makes
+//! of what it holds ([`write_zip`]), which are read back under the same bounds.
 //!
 //! * **ZIP bombs** — a few KB that decompress to gigabytes; every part is read into
 //!   memory, so an unbounded read is an OOM primitive. Every read here caps the
@@ -22,7 +23,7 @@
 pub mod epub;
 
 use std::borrow::Cow;
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, Read, Seek, Write};
 use std::path::Path;
 
 use zip::ZipArchive;
@@ -107,6 +108,16 @@ pub enum ZipError {
     /// An entry's name would place it outside the extraction directory.
     #[error("zip entry {name} names a path outside the extraction directory")]
     UnsafeName { name: String },
+    /// Two entries are called the same, so one of them would be lost.
+    #[error("zip entry {name} is in the archive twice")]
+    DuplicateName { name: String },
+    /// Writing an entry failed.
+    #[error("zip write {name}: {source}")]
+    Write {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl ZipError {
@@ -474,6 +485,82 @@ pub fn read_zip_parts(
     BoundedArchive::from_bytes(bytes, *limits)?.read_all()
 }
 
+/// Writes each of `entries` — its name inside the archive and its bytes — into one archive,
+/// in that order, under `limits`: what an archive is read back under ([`read_zip_parts`]) is
+/// what it is written within, and a name that could place a file outside the folder the
+/// archive is extracted into ([`is_safe_name`]) is refused rather than written.
+///
+/// The parts are stored, not deflated: what an app writes into an archive is the documents and
+/// pictures it already holds, and a reader finds them as they went in.
+///
+/// # Errors
+/// [`ZipError::TooManyEntries`], [`ZipError::PartTooLarge`] or [`ZipError::TotalTooLarge`] for
+/// an archive over `limits`; [`ZipError::UnsafeName`] or [`ZipError::DuplicateName`] for a name
+/// no archive may hold; [`ZipError::Write`] when the bytes could not be written.
+pub fn write_zip(entries: &[(String, Vec<u8>)], limits: &ZipLimits) -> Result<Vec<u8>, ZipError> {
+    if entries.len() > limits.max_parts {
+        return Err(ZipError::TooManyEntries {
+            count: entries.len(),
+            limit: limits.max_parts,
+        });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total: u64 = 0;
+    for (name, bytes) in entries {
+        if !is_safe_name(name) {
+            return Err(ZipError::UnsafeName { name: name.clone() });
+        }
+        if !seen.insert(name.as_str()) {
+            return Err(ZipError::DuplicateName { name: name.clone() });
+        }
+        let declared = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if declared > limits.max_part_bytes {
+            return Err(ZipError::PartTooLarge {
+                name: name.clone(),
+                declared,
+                limit: limits.max_part_bytes,
+            });
+        }
+        total = total.saturating_add(declared);
+        if total > limits.max_total_bytes {
+            return Err(ZipError::TotalTooLarge {
+                limit: limits.max_total_bytes,
+            });
+        }
+    }
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let written = |name: &str, source: zip::result::ZipError| ZipError::Write {
+        name: name.to_owned(),
+        source: source.into(),
+    };
+    for (name, bytes) in entries {
+        writer
+            .start_file(name.as_str(), options)
+            .map_err(|source| written(name, source))?;
+        writer.write_all(bytes).map_err(|source| ZipError::Write {
+            name: name.clone(),
+            source,
+        })?;
+    }
+    let archive = writer.finish().map_err(|source| written("", source))?;
+    Ok(archive.into_inner())
+}
+
+/// Whether `name` is a name a file inside an archive may have: a path of parts that are each a
+/// file or folder name, none of them empty, `.` or `..`, so nothing it names stands outside the
+/// folder the archive is extracted into. A backslash is refused too: some extractors read it as
+/// the separator, and a name one reader takes for one folder and another for two is two files.
+#[must_use]
+pub fn is_safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['\\', '\0'])
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 /// Whether `name` is a package part we hold to the no-DTD rule (parseable XML).
 /// Binary parts (images, the ODF `mimetype` literal) are exempt — a `<!DOCTYPE`
 /// byte sequence inside a JPEG isn't a threat, and such parts are never parsed as XML.
@@ -789,5 +876,96 @@ mod tests {
             ));
             assert!(!dir.join("../escape.txt").exists());
         }
+    }
+
+    #[test]
+    fn what_is_written_is_what_reads_back() {
+        let entries = vec![
+            ("Meeting.md".to_owned(), b"# Meeting\n".to_vec()),
+            (
+                "notes/images/fox.png".to_owned(),
+                vec![0x89, 0x50, 0x4e, 0x47],
+            ),
+            ("notes/Monday.md".to_owned(), b"# Monday\n".to_vec()),
+        ];
+        let bytes = write_zip(&entries, &ZipLimits::default()).unwrap();
+        let read = read_zip_parts(&bytes, &ZipLimits::default()).unwrap();
+        assert_eq!(read, entries, "the files read back as they went in");
+        assert_eq!(
+            BoundedArchive::from_bytes(&bytes, ZipLimits::default())
+                .unwrap()
+                .file_names()
+                .map(Cow::into_owned)
+                .collect::<Vec<_>>(),
+            ["Meeting.md", "notes/images/fox.png", "notes/Monday.md"]
+        );
+    }
+
+    #[test]
+    fn a_name_that_leads_outside_or_repeats_is_never_written() {
+        for name in [
+            "",
+            "/etc/passwd",
+            "../out.md",
+            "a/../../b.md",
+            "a//b.md",
+            "a/./b.md",
+            "a\\b.md",
+        ] {
+            assert!(
+                !is_safe_name(name),
+                "`{name}` is not a name inside an archive"
+            );
+            assert!(
+                matches!(
+                    write_zip(&[(name.to_owned(), b"x".to_vec())], &ZipLimits::default()),
+                    Err(ZipError::UnsafeName { .. })
+                ),
+                "`{name}` is refused"
+            );
+        }
+        for name in ["Meeting.md", "a/b.md", "images/fox.png", "..hidden.md"] {
+            assert!(is_safe_name(name), "`{name}` is a name inside an archive");
+        }
+        assert!(matches!(
+            write_zip(
+                &[
+                    ("a.md".to_owned(), b"1".to_vec()),
+                    ("a.md".to_owned(), b"2".to_vec()),
+                ],
+                &ZipLimits::default()
+            ),
+            Err(ZipError::DuplicateName { .. })
+        ));
+    }
+
+    #[test]
+    fn what_is_written_stays_within_the_limits_it_reads_back_under() {
+        let limits = ZipLimits {
+            max_parts: 2,
+            max_part_bytes: 4,
+            max_total_bytes: 6,
+        };
+        let entries = |n: usize, len: usize| -> Vec<(String, Vec<u8>)> {
+            (0..n)
+                .map(|i| (format!("p{i}.bin"), vec![b'x'; len]))
+                .collect()
+        };
+        assert!(matches!(
+            write_zip(&entries(3, 1), &limits),
+            Err(ZipError::TooManyEntries { count: 3, limit: 2 })
+        ));
+        let err = write_zip(&entries(1, 5), &limits).unwrap_err();
+        assert!(matches!(err, ZipError::PartTooLarge { declared: 5, .. }));
+        assert!(err.is_limit_breach());
+        let err = write_zip(&entries(2, 4), &limits).unwrap_err();
+        assert!(matches!(err, ZipError::TotalTooLarge { limit: 6 }));
+        // Two of three bytes fit, and read back under the same limits.
+        let bytes = write_zip(&entries(2, 3), &limits).unwrap();
+        assert_eq!(
+            read_zip_parts(&bytes, &limits).unwrap().len(),
+            2,
+            "what is written reads back"
+        );
     }
 }

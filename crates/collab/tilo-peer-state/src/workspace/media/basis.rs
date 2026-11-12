@@ -1,5 +1,6 @@
 //! The security-basis algorithm.
 use super::{MediaPolicyError, read::Error};
+use crate::cached_document::CachedDocument;
 use crate::state::GovernedIdentity;
 use crate::workspace::read::collections::Collections;
 use crate::workspace::read::{self, Capacity, LegacyRead, ReadError, WorkspaceRead};
@@ -9,20 +10,37 @@ use tilo_action_policy::{Grant, Role};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 trait Decode {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
+    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
     fn member(&self, bytes: &[u8]) -> Result<Role, Error>;
 }
 struct Legacy;
 impl Decode for Legacy {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
-        serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
+    fn identity(&self, _key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
+        GovernedIdentity::decode(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
     fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
+    }
+}
+/// The identity rows as their governance state decoded them once, the rest
+/// as [`Legacy`] decodes it.
+struct Decoded<'a>(&'a CachedDocument);
+impl Decode for Decoded<'_> {
+    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
+        match self.0.decoded_identity(key, bytes) {
+            Some(identity) => Ok(identity.clone()),
+            None => Legacy.identity(key, bytes),
+        }
+    }
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
+        Legacy.grant(bytes)
+    }
+    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
+        Legacy.member(bytes)
     }
 }
 fn policy(error: MediaPolicyError) -> Error {
@@ -58,6 +76,23 @@ pub(super) fn legacy(
     .map_err(super::read::legacy_error)
 }
 
+/// [`legacy`] of a governance state whose identity rows are decoded once for
+/// it.
+pub(super) fn decoded(
+    workspace: &CachedDocument,
+    extra: &[RevocationEntry],
+) -> Result<[u8; 32], MediaPolicyError> {
+    project(
+        &LegacyRead(&**workspace),
+        &Decoded(workspace),
+        extra,
+        &mut Work {
+            collections: Collections::unqualified(),
+        },
+    )
+    .map_err(super::read::legacy_error)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one canonical basis projection, in wire order"
@@ -74,8 +109,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         read::strict_map(workspace, &workspace.root(), "grants").map_err(strict_error)?;
     let mut grants = BTreeMap::new();
     workspace
-        .visit_keys(&grant_map, |key| {
-            let bytes = read::strict_bytes(workspace, &grant_map, key).map_err(strict_error)?;
+        .visit_entries(&grant_map, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
             let value = decoder.grant(&bytes)?;
             let encoded = work.encoded(&value)?;
             let key = work.text(key)?;
@@ -88,8 +123,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         read::strict_map(workspace, &workspace.root(), "members").map_err(strict_error)?;
     let mut members = BTreeMap::new();
     workspace
-        .visit_keys(&member_map, |key| {
-            let bytes = read::strict_bytes(workspace, &member_map, key).map_err(strict_error)?;
+        .visit_entries(&member_map, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
             let role = decoder.member(&bytes)?;
             let key = work.text(key)?;
             work.tree_entry::<String, Role>()?;
@@ -100,8 +135,8 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
     let mut roster = BTreeSet::new();
     workspace
-        .visit_keys(&peers, |key| {
-            read::strict_string(workspace, &peers, key).map_err(strict_error)?;
+        .visit_entries(&peers, read::Selection::All, &mut |key, values| {
+            read::strict_string_of(values).map_err(strict_error)?;
             let device = super::canonical_key(key).map_err(policy)?;
             work.tree_entry::<[u8; 32], ()>()?;
             roster.insert(device);
@@ -114,9 +149,9 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     let mut certificates = BTreeMap::new();
     let mut revocations = Vec::new();
     workspace
-        .visit_keys(&identities, |key| {
-            let bytes = read::strict_bytes(workspace, &identities, key).map_err(strict_error)?;
-            let row = &decoder.identity(&bytes)?;
+        .visit_entries(&identities, read::Selection::All, &mut |key, values| {
+            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
+            let row = &decoder.identity(key, &bytes)?;
             let device = super::canonical_key(key).map_err(policy)?;
             if device != row.device_cert.device_public_key {
                 return Err(policy(MediaPolicyError::Binding));
@@ -152,16 +187,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             }
             work.tree_entry::<[u8; 32], [u8; 32]>()?;
             certificates.insert(device, row.device_cert.user_public_key);
-            let cert = DeviceCert {
-                user_public_key: row.device_cert.user_public_key,
-                device_public_key: row.device_cert.device_public_key,
-                device_label: work.text(&row.device_cert.device_label)?,
-                capabilities: row.device_cert.capabilities.clone(),
-                issued_at_ns: row.device_cert.issued_at_ns,
-                expires_at_ns: row.device_cert.expires_at_ns,
-                signature: row.device_cert.signature,
-                issuer: None,
-            };
+            let cert = work.cert(&row.device_cert)?;
             work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
             rows.insert(device, (cert, admissions, delegations));
             Ok(())
@@ -236,6 +262,23 @@ impl Work {
     }
     fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
         self.collections.push(values, value).map_err(capacity)
+    }
+    /// A copy of `value` within the limit, with the certificate that issued
+    /// it, which a minted grant's signature and so its basis rest on.
+    fn cert(&mut self, value: &DeviceCert) -> Result<DeviceCert, Error> {
+        Ok(DeviceCert {
+            user_public_key: value.user_public_key,
+            device_public_key: value.device_public_key,
+            device_label: self.text(&value.device_label)?,
+            capabilities: value.capabilities.clone(),
+            issued_at_ns: value.issued_at_ns,
+            expires_at_ns: value.expires_at_ns,
+            signature: value.signature,
+            issuer: match value.issuer.as_deref() {
+                Some(issuer) => Some(Box::new(self.cert(issuer)?)),
+                None => None,
+            },
+        })
     }
     fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
         let length = crate::postcard_sink::encoded_len(value, usize::MAX)

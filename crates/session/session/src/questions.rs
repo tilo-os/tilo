@@ -751,7 +751,8 @@ fn compose(question: &Question) -> Option<Composed> {
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
-        crate::network::AGENT_QUESTION => agent_question(&question.handle, &who, details)?,
+        crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
+        crate::run_questions::KIND => run_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::turn_questions::KIND => turn_question(&question.handle, details)?,
         _ => return None,
@@ -880,41 +881,53 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     ))
 }
 
-/// An agent's question on a workspace host: what it wants to do, on what,
-/// and the person's answer for this one invocation.
-fn agent_question(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
-    let asked: crate::network::AgentQuestion = serde_json::from_value(details).ok()?;
-    let title = words(
-        "network-agent-question-title",
-        &[("agent", &asked.agent), ("action", &asked.action)],
-    );
-    let mut detail = words(
-        "network-agent-question-detail",
-        &[
-            ("resource", &asked.resource),
-            ("workspace", &asked.workspace),
-        ],
-    );
-    if !asked.risk.is_empty() {
-        detail.push('\n');
-        detail.push_str(&words(
-            "network-agent-question-risk",
-            &[("risk", &risk(&asked.risk))],
-        ));
-    }
-    let mut dialog = review(handle, title, who.to_owned(), detail);
-    dialog.confirm_label = word("network-agent-question-allow");
-    Some((dialog, Plan::Confirm))
+/// An agent's question on a workspace host, on the sheet a page shows it on too.
+fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: tilo_sheets::portal::AgentQuestion = serde_json::from_value(details).ok()?;
+    Some((asked.dialog(handle), Plan::Confirm))
 }
 
-/// What the host says an action risks, in the person's words.
-fn risk(name: &str) -> String {
-    match name {
-        "none" | "low" | "destructive" | "privileged" | "sensitive" => {
-            word(&format!("network-agent-risk-{name}"))
-        }
-        _ => word("network-agent-risk-something"),
-    }
+/// What an agent's run asks before a step its grants leave to the person, or an app before it takes
+/// another app's action: the step, what it would do, and whether to allow it once, allow the agent
+/// or the app every such step, or deny it ([`crate::run_questions`]).
+fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    use crate::run_questions::{ALLOW_AGENT, ALLOW_ONCE, RunQuestion};
+    let asked: RunQuestion = serde_json::from_value(details).ok()?;
+    // An app asking to take another app's action is named as the person knows both apps; a
+    // label that asks for more ("File a note…") is the step itself here, its arguments below it.
+    let (title, detail, always) = match &asked.target {
+        Some(target) => (
+            words(
+                "app-question-title",
+                &[
+                    ("app", &crate::app_names::app_name(&asked.agent)),
+                    ("target", &crate::app_names::app_name(target)),
+                ],
+            ),
+            asked.action.trim_end_matches('…').to_owned(),
+            word("portal-allow-always"),
+        ),
+        None => (
+            words(
+                "run-question-title",
+                &[("agent", &asked.agent), ("action", &asked.action)],
+            ),
+            words("run-question-detail", &[("resource", &asked.resource)]),
+            words("run-question-allow-agent", &[("agent", &asked.agent)]),
+        ),
+    };
+    let mut dialog = review(handle, title, String::new(), detail);
+    dialog.facts.clone_from(&asked.fields);
+    dialog.caution = (!matches!(asked.risk.as_str(), "" | "none" | "low")).then(|| {
+        words(
+            "network-agent-question-risk",
+            &[("risk", &tilo_sheets::portal::risk_words(&asked.risk))],
+        )
+    });
+    // Three answers in one row: Deny (Escape too), the standing grant, and once, the default.
+    dialog.confirm_label = word("portal-allow-once");
+    dialog.alternate_label = asked.may_allow_agent.then_some(always);
+    Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_AGENT])))
 }
 
 /// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
@@ -1714,15 +1727,63 @@ mod tests {
         .expect("the session composes this question")
     }
 
+    /// An app asking to take another app's action names both apps, the step and what it would
+    /// run with, and answers on three buttons: deny, always and once; a step confirmed each time
+    /// offers no "always".
+    #[test]
+    fn an_apps_change_of_another_app_names_both_apps() {
+        let asked = |may_allow_agent| {
+            sheet(
+                crate::run_questions::KIND,
+                serde_json::to_value(crate::run_questions::RunQuestion {
+                    agent: "so.tilo.files".into(),
+                    target: Some("so.tilo.notes".into()),
+                    action: "Delete finished tasks…".into(),
+                    resource: "Tasks".into(),
+                    fields: vec![("Title".to_owned(), "Morning: 1 done".to_owned())],
+                    risk: "low".into(),
+                    may_allow_agent,
+                })
+                .unwrap(),
+            )
+        };
+        let shown = asked(true);
+        let files = crate::app_names::app_name("so.tilo.files");
+        let notes = crate::app_names::app_name("so.tilo.notes");
+        assert_eq!(
+            shown.dialog.title,
+            words("app-question-title", &[("app", &files), ("target", &notes)])
+        );
+        assert!(shown.dialog.heading.is_empty(), "the title names the app");
+        assert_eq!(shown.dialog.detail, "Delete finished tasks");
+        assert_eq!(
+            shown.dialog.facts,
+            vec![("Title".to_owned(), "Morning: 1 done".to_owned())]
+        );
+        assert!(
+            matches!(shown.dialog.body, Body::Review),
+            "no list beside the buttons"
+        );
+        assert_eq!(shown.dialog.confirm_label, word("portal-allow-once"));
+        assert_eq!(shown.dialog.cancel_label, word("portal-deny"));
+        assert_eq!(
+            shown.dialog.alternate_label,
+            Some(word("portal-allow-always"))
+        );
+        assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
+        assert_eq!(asked(false).dialog.alternate_label, None);
+    }
+
     fn agent_question() -> Composed {
         sheet(
             crate::network::AGENT_QUESTION,
-            serde_json::to_value(crate::network::AgentQuestion {
+            serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
-                action: "delete three notes".into(),
+                action: "Delete three notes".into(),
                 resource: "the recipes notebook".into(),
                 risk: "destructive".into(),
                 workspace: "Home".into(),
+                ..tilo_sheets::portal::AgentQuestion::default()
             })
             .unwrap(),
         )
@@ -1744,12 +1805,14 @@ mod tests {
     fn a_question_whose_risk_the_host_does_not_name_shows_no_risk() {
         let shown = sheet(
             crate::network::AGENT_QUESTION,
-            serde_json::to_value(crate::network::AgentQuestion {
+            serde_json::to_value(tilo_sheets::portal::AgentQuestion {
                 agent: "notes-agent".into(),
-                action: "read a note".into(),
+                action: "Read a note".into(),
                 resource: "the recipes notebook".into(),
                 risk: String::new(),
+                kind: "read".into(),
                 workspace: "Home".into(),
+                ..tilo_sheets::portal::AgentQuestion::default()
             })
             .unwrap(),
         );

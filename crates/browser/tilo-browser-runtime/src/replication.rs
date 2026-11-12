@@ -10,10 +10,12 @@
 //! - **Records** go out as Automerge deltas on the route `(app, workspace,
 //!   record)`, the native shell's own `AppDocument` wire; a record's first
 //!   publication in a session is a snapshot, which the host retains as the
-//!   route's checkpoint for peers that join later. Inbound mutations merge
-//!   into the open record (`RecordStore::merge_replica`, Automerge
-//!   semantics, local undo untouched) or, when no mount has it open, into
-//!   the record's stored document so opening it later shows them.
+//!   route's checkpoint for peers that join later. What lands in this
+//!   device's replica of the workspace ([`Event::Landed`]) is read from
+//!   the session's engine and merges into the open record
+//!   (`RecordStore::merge_replica`, Automerge semantics, local undo untouched)
+//!   or, when no mount has it open, into the record's stored document so
+//!   opening it later shows them.
 //! - **The desktop** is the desk's own document
 //!   ([`tilo_desktop_model::desktop_doc`]) on the route native peers and the
 //!   workspace host use for it, the one the native desk keeps: every workspace,
@@ -28,7 +30,7 @@
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
 //! [`RecordId::package_primary`], kept at the workspace index.
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -38,18 +40,19 @@ use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::content::ContentWants;
-use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::engine::RecordReading;
+use tilo_session_client::{Events, Link};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordId, RecordStore, RecordSync};
+use ui::record::{RecordId, RecordSync};
 use ui::state::DocumentReplica;
 
-/// The desktop document's route. Changing it splits workspaces by build.
-pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-pub(crate) const DESKTOP_RECORD: &str = "desktop";
+use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+
 /// How often a page asks again what the workspace lets its person do: a role the
 /// workspace grants or withdraws while they are in it reaches their page within
 /// this.
@@ -62,21 +65,30 @@ thread_local! {
     static JOINED: RefCell<HashMap<u32, Rc<RefCell<Joined>>>> = RefCell::new(HashMap::new());
 }
 
-/// What a mount shares with the workspace.
-pub(crate) struct Attachment {
-    pub stores: Rc<RefCell<Vec<RecordStore>>>,
-    pub desktop: Option<(tilo_desktop_surface::DesktopHandle, crate::desktop::Shared)>,
-    /// Set when a peer's change reached one of this mount's records.
-    pub changed: Rc<Cell<bool>>,
-    /// Schedules a frame for the mount.
-    pub notify: Arc<dyn Fn() + Send + Sync>,
-    /// Who the mount's person is: the desktop changes it publishes name
-    /// them, so every page's Activity says whose they were.
-    pub author: String,
-    /// What the mount's apps may offer their person: set to the role the
-    /// workspace answers they hold, so an app does not offer what the workspace
-    /// would refuse.
-    pub permissions: ui::permissions::SharedPermissions,
+/// Hand the start module the page's replication (`crate::replicated`), which
+/// asks it from a table of functions so that the engine this module reads the
+/// workspace through loads with the peer's code, not with the page's first
+/// frame. Called from `peer_sync::register`, when a peer starts.
+pub(crate) fn install() {
+    crate::replicated::install(crate::replicated::Replicated {
+        page_store,
+        attach,
+        detach,
+        publish,
+        follow_answers,
+        ask_content,
+        device_of,
+        committed_record,
+        changes,
+        record_document,
+        content,
+        permit,
+        host_then,
+        workspace_uuid,
+        records,
+        desktop_history_heads,
+        desk_bytes,
+    });
 }
 
 /// How a page sends its desktop to the workspace.
@@ -94,16 +106,25 @@ struct Mounted {
 }
 
 pub(crate) struct Joined {
-    peer: PeerHandle,
+    peer: Link,
     /// The certified device key, hex.
     device: String,
-    events: PeerEvents,
+    events: Events,
     uuid: String,
     workspace: u64,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
+    /// The content its mounts' windows keep, which members are answered from.
+    content_store: tilo_content::ContentStore,
     ready: bool,
+    /// The workspace sends this page a record only once it is opened (a
+    /// public workspace): every record a mount opens is asked for, the
+    /// copy this page kept from before included.
+    when_opened: bool,
+    /// The records not here that this page asked the workspace for, as wire
+    /// `(app, record)` ([`ui::record::RecordStore::wanted_records`]).
+    asked: HashSet<(String, String)>,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
     /// How this page sends its desktop to the workspace.
@@ -113,28 +134,13 @@ pub(crate) struct Joined {
     /// This page's own desktop as it last wrote it into the record: a
     /// frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
-    /// Records the workspace delivered that no mount had open, as wire
-    /// `(app, record)`.
-    stored: BTreeSet<(String, String)>,
-    /// The heads of each such record as the workspace delivered it, until a mount
+    /// The heads of each record the workspace delivered that no mount had open, until a mount
     /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
     /// checkpoint reaches only devices that lack the record, and the changes
     /// a window makes as it opens (taking a seat) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
-    /// Changes the workspace delivered for a record before the changes they
-    /// build on, as the incremental runs they came in, by wire
-    /// `(app, record)`. The workspace replays a record by author, each author's
-    /// checkpoint and then their deltas, so a late joiner can be sent the
-    /// second player's seat before the table it sits at, and the dealer's
-    /// deal before that seat. A saved document keeps only the changes it can
-    /// apply, so these wait here, applied again with whatever arrives next,
-    /// until nothing they build on is missing.
-    waiting: HashMap<(String, String), Vec<Vec<u8>>>,
-    /// Routes a delivered document failed to apply to: this page never
-    /// answers a compaction request for them.
-    unapplied: HashSet<DocumentRoute>,
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -165,16 +171,16 @@ pub(crate) struct Joined {
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
-    /// How many commits of each record route this page published the workspace
-    /// has not answered yet: once none is left, what the record's windows
-    /// said they did is said (`RecordStore::workspace_settled`).
-    in_flight: HashMap<DocumentRoute, usize>,
+    /// Record routes whose commits this page published the workspace answered all of, since
+    /// the last frame: what the record's windows said they did is said
+    /// (`RecordStore::workspace_settled`).
+    settled: Arc<Mutex<Vec<DocumentRoute>>>,
     /// Content the open records' windows lacked and the page asked the
     /// workspace for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
-    /// Records a peer's change reached since the desktop last looked for
-    /// mentions in them ([`take_touched`]), as wire `(app, record)`.
-    touched: BTreeSet<(String, String)>,
+    /// The one stream of record changes this page feeds: what the session's activity and the
+    /// person's mentions follow.
+    changes: tilo_session::platform::records::Changes,
 }
 
 /// The page's storage key of wire record `record` of `app` in `workspace`.
@@ -191,13 +197,17 @@ fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &
 pub(crate) fn open(
     id: u32,
     device: String,
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
         .map_err(|_| "a workspace must be a uuid")?;
+    peer.send(Cmd::KeepContent(
+        workspace_id,
+        Arc::new(kept_content(id, workspace.to_owned())),
+    ))?;
     let joined = Joined {
         peer,
         device,
@@ -206,16 +216,16 @@ pub(crate) fn open(
         workspace: workspace_id,
         store,
         kept,
+        content_store: tilo_content::ContentStore::page_files(),
         ready: false,
+        when_opened: false,
+        asked: HashSet::new(),
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
         desktop_sending: DesktopSending::Snapshot,
         desktop_value: None,
         local_value: None,
-        stored: BTreeSet::new(),
         delivered: HashMap::new(),
-        waiting: HashMap::new(),
-        unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -225,13 +235,33 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
-        in_flight: HashMap::new(),
+        settled: Arc::default(),
         content: ContentWants::default(),
-        touched: BTreeSet::new(),
+        changes: changes(),
     };
     JOINED.with_borrow_mut(|replicas| replicas.insert(id, Rc::new(RefCell::new(joined))));
     pump(id);
     Ok(())
+}
+
+/// What peer `id`'s page answers a member asking for content of `workspace` from: any app surface
+/// it carries or kept (a reader needs the version a record was written with), and the files records
+/// of its open apps reference (the workspace's host asks for those to keep its own copy).
+fn kept_content(
+    id: u32,
+    workspace: String,
+) -> impl Fn(&str, &str, &str) -> Option<Vec<u8>> + 'static {
+    move |app, cluster, hash| {
+        if cluster != workspace {
+            return None;
+        }
+        tilo_session_client::surfaces::read(app, hash).or_else(|| {
+            let joined = replica_of(id)?;
+            let joined = joined.try_borrow().ok()?;
+            let open = joined.open_records().any(|(open, _)| open == app);
+            open.then(|| joined.content_store.read(hash)).flatten()
+        })
+    }
 }
 
 /// How many changes to the workspace peer `id` made: records it sent, and
@@ -245,63 +275,48 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     replica_of(id).map(|joined| joined.borrow().device.clone())
 }
 
-/// `mutations` with every snapshot ahead of the incremental runs, each kind
-/// in the order it came. A snapshot holds its whole history, so a run that
-/// builds on it applies after it; a run applied before the changes it
-/// builds on only waits in memory, and merging a snapshot into a document
-/// copies the document's saved changes, never the ones still waiting.
-fn snapshots_first(mut mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
-    mutations.sort_by_key(|mutation| matches!(mutation, DocumentMutation::Incremental(_)));
-    mutations
-}
-
-/// The heads of the saved document `bytes`, when it holds any change: the
-/// host's empty document for a record a member is creating holds none.
-fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
-    let heads = AutoCommit::load(bytes).ok()?.get_heads();
-    (!heads.is_empty()).then_some(heads)
-}
-
 /// Whether peer `id`'s workspace holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     replica_of(id).is_some_and(|replica| {
         let joined = replica.borrow();
-        joined.stored.contains(&(app.to_owned(), record.to_owned()))
-            || joined.open_records().any(|(a, r)| a == app && r == record)
-            || storage_key(app, &joined.uuid, record)
-                .ok()
-                .and_then(|key| joined.store.read(&key).ok().flatten())
-                .is_some_and(|stored| heads_of(&stored.bytes).is_some())
+        joined.open_records().any(|(a, r)| a == app && r == record)
+            || joined.peer.engine().holds_record(&joined.uuid, app, record)
     })
 }
 
-/// The workspace's records peer `id` holds, open in a mount or delivered, as
+/// The workspace's records peer `id` holds, open in a mount or in its replica, as
 /// wire `(app, record)`, sorted.
 pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let Some(joined) = replica_of(id) else {
         return Vec::new();
     };
     let joined = joined.borrow();
-    let mut records = joined.stored.clone();
+    let mut records: BTreeSet<(String, String)> = joined
+        .peer
+        .engine()
+        .records(&joined.uuid)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     records.extend(joined.open_records());
     records.into_iter().collect()
 }
 
-/// The records a peer's change reached since this was last taken, as wire
-/// `(app, record)`, and whether the workspace had replayed what it held by then:
-/// before that, what arrives is what the workspace already held.
-pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
-    let Some(joined) = replica_of(id) else {
-        return (false, Vec::new());
-    };
-    let mut joined = joined.borrow_mut();
-    let touched = std::mem::take(&mut joined.touched);
-    (joined.ready, touched.into_iter().collect())
+thread_local! {
+    /// The one stream of record changes this page feeds.
+    static CHANGES: tilo_session::platform::records::Changes =
+        tilo_session::platform::records::Changes::default();
+}
+
+/// The one stream of record changes this page feeds, as the session's activity and the person's
+/// mentions read it: every record this page's replication takes in or sends is noted there.
+pub(crate) fn changes() -> tilo_session::platform::records::Changes {
+    CHANGES.with(Clone::clone)
 }
 
 /// Wire record `record` of `app` as peer `id` holds it now: the open
-/// record a mount has, else the document the page keeps for it.
+/// record a mount has, else the workspace's replica of it.
 pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
@@ -320,9 +335,12 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             }
         }
     }
-    let key = storage_key(app, &joined.uuid, record).ok()?;
-    let stored = joined.store.read(&key).ok().flatten()?;
-    AutoCommit::load(&stored.bytes).ok()
+    let bytes = joined
+        .peer
+        .engine()
+        .record(&joined.uuid, app, record)
+        .ok()??;
+    AutoCommit::load(&bytes).ok()
 }
 
 /// The name of the workspace in front on peer `id`'s workspace desktop, once the
@@ -334,15 +352,6 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
         .desktop_value
         .as_ref()
         .and_then(tilo_desktop_surface::history_log::workspace_name)
-}
-
-/// The workspace's desktop document with every peer's changes, for Activity.
-/// `None` until the workspace delivered or published one.
-pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
-    let joined = replica_of(id)?;
-    let joined = joined.borrow();
-    let doc = joined.desktop.document();
-    (!doc.base_heads().is_empty()).then(|| doc.clone())
 }
 
 /// The workspace's desk document, for the profile's copy of it: what the person's
@@ -374,6 +383,11 @@ pub(crate) fn page_store(id: u32) -> Option<Rc<MemoryStore>> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     (joined.kept == Kept::InPage).then(|| Rc::clone(&joined.store))
+}
+
+/// The content store every mount of peer `id`'s workspace lends its windows.
+pub(crate) fn content(id: u32) -> Option<tilo_content::ContentStore> {
+    replica_of(id).map(|joined| joined.borrow().content_store.clone())
 }
 
 /// Where a peer keeps the workspace's documents.
@@ -420,12 +434,32 @@ pub(crate) fn committed_record(
 /// The peer replicates no workspace, or its session is gone.
 pub(crate) fn host_then(
     id: u32,
-    request: impl FnOnce(&str) -> tilo_relay_protocol::workspaces::WorkspacesRequest,
-    done: tilo_browser_peer::RoomsCompletion,
+    request: crate::replicated::Ask,
+    done: crate::replicated::Answer,
 ) -> Result<(), String> {
-    let joined = replica_of(id).ok_or("this page joined no workspace")?;
+    let Some(joined) = replica_of(id) else {
+        return Err(crate::replicated::NONE.to_owned());
+    };
     let joined = joined.borrow();
-    joined.peer.rooms_then(request(&joined.uuid), done)
+    Ok(ask_then(&joined.peer, request(&joined.uuid), done)?)
+}
+
+/// Ask `peer`'s host `request` of its workspace administration, and hand `answered` the answer
+/// once it comes.
+fn ask_then(
+    peer: &Link,
+    request: tilo_relay_protocol::workspaces::WorkspacesRequest,
+    answered: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
+) -> Result<(), tilo_session::sync::Closed> {
+    let receipt = peer.ask_workspaces(request)?;
+    wasm_bindgen_futures::spawn_local(async move {
+        answered(
+            receipt
+                .await
+                .unwrap_or_else(|_| Err("the session ended before the host answered".to_owned())),
+        );
+    });
+    Ok(())
 }
 
 /// The workspace told peer `id`'s person whether they may change things at
@@ -579,45 +613,41 @@ impl Joined {
                 workspace: self.uuid.clone(),
                 node: node.to_string(),
             };
-            if let Err(error) = self.peer.rooms_then(
-                request,
-                Box::new(move |answer| {
-                    let may = match &answer {
-                        Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
-                        Ok(other) => {
-                            warn(&format!(
-                                "the workspace did not say what this page may do: {other:?}"
-                            ));
-                            false
-                        }
-                        Err(_) => {
-                            due.store(
-                                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                                Ordering::Relaxed,
-                            );
-                            return;
-                        }
-                    };
-                    let answered = {
-                        let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
-                        if let Some(slot) = answers.get_mut(index) {
-                            *slot = Some(may);
-                        }
-                        *answers
-                    };
-                    let [Some(writes), Some(moderating), Some(governs)] = answered else {
-                        return;
-                    };
-                    let role =
-                        tilo_action_policy::roles::role_answered([writes, moderating, governs]);
-                    let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                    if standing.set(Some(role)) || moved {
-                        for wake in &wake {
-                            wake();
-                        }
+            if let Err(error) = ask_then(&self.peer, request, move |answer| {
+                let may = match &answer {
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                    Ok(other) => {
+                        warn(&format!(
+                            "the workspace did not say what this page may do: {other:?}"
+                        ));
+                        false
                     }
-                }),
-            ) {
+                    Err(_) => {
+                        due.store(
+                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                            Ordering::Relaxed,
+                        );
+                        return;
+                    }
+                };
+                let answered = {
+                    let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(slot) = answers.get_mut(index) {
+                        *slot = Some(may);
+                    }
+                    *answers
+                };
+                let [Some(writes), Some(moderating), Some(governs)] = answered else {
+                    return;
+                };
+                let role = tilo_action_policy::roles::role_answered([writes, moderating, governs]);
+                let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
+                if standing.set(Some(role)) || moved {
+                    for wake in &wake {
+                        wake();
+                    }
+                }
+            }) {
                 warn(&format!(
                     "could not ask the workspace what this page may do: {error}"
                 ));
@@ -649,32 +679,29 @@ impl Joined {
             workspace: self.uuid.clone(),
             node: node.to_string(),
         };
-        if let Err(error) = self.peer.rooms_then(
-            request,
-            Box::new(move |answer| {
-                let may = match &answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
-                    Ok(other) => {
-                        warn(&format!(
-                            "the workspace did not say whether this page may invite: {other:?}"
-                        ));
-                        return;
-                    }
-                    Err(_) => {
-                        due.store(
-                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                            Ordering::Relaxed,
-                        );
-                        return;
-                    }
-                };
-                if invitable.swap(may, Ordering::Relaxed) != may {
-                    for wake in &wake {
-                        wake();
-                    }
+        if let Err(error) = ask_then(&self.peer, request, move |answer| {
+            let may = match &answer {
+                Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                Ok(other) => {
+                    warn(&format!(
+                        "the workspace did not say whether this page may invite: {other:?}"
+                    ));
+                    return;
                 }
-            }),
-        ) {
+                Err(_) => {
+                    due.store(
+                        crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                        Ordering::Relaxed,
+                    );
+                    return;
+                }
+            };
+            if invitable.swap(may, Ordering::Relaxed) != may {
+                for wake in &wake {
+                    wake();
+                }
+            }
+        }) {
             warn(&format!(
                 "could not ask the workspace whether this page may invite: {error}"
             ));
@@ -714,28 +741,48 @@ impl Joined {
                 workspace: self.uuid.clone(),
                 node: node.clone(),
             };
-            if let Err(error) = self.peer.rooms_then(
-                request,
-                Box::new(move |answer| {
-                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
-                        answer
-                    {
-                        answers
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push((asked, may));
-                        for wake in &wake {
-                            wake();
-                        }
+            if let Err(error) = ask_then(&self.peer, request, move |answer| {
+                if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) = answer {
+                    answers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push((asked, may));
+                    for wake in &wake {
+                        wake();
                     }
-                }),
-            ) {
+                }
+            }) {
                 warn(&format!(
                     "could not ask the workspace what this page may change: {error}"
                 ));
                 return;
             }
         }
+    }
+
+    /// Once the workspace answered every write said so far, `route`'s windows say what they did.
+    /// `false` when the session is gone.
+    fn settle_when_durable(&self, route: DocumentRoute) -> bool {
+        let settled = Arc::clone(&self.settled);
+        let notify: Vec<_> = self
+            .mounts
+            .values()
+            .map(|mounted| Arc::clone(&mounted.attachment.notify))
+            .collect();
+        let Ok(durable) = self.peer.barrier() else {
+            return false;
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = durable.await;
+            settled
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(route);
+            for notify in notify {
+                notify();
+            }
+        });
+        true
     }
 
     /// Give every mount's apps the role the workspace last answered, once per
@@ -857,26 +904,23 @@ impl Joined {
 
     /// Apply inbound events; returns the mounts to wake.
     ///
-    /// A late join or a reconnect delivers a route's retained checkpoint and
-    /// its whole tail at once. Each merge into an open record copies the
-    /// document, so the mutations of one route are coalesced first (see
-    /// [`tilo_peer_state::document_frame::coalesce`]) and merged once per run instead of once per change.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per peer event: the receiver is a table, read top to bottom"
-    )]
+    /// A late join or a reconnect lands a record's whole history at once: each record that
+    /// landed is read from the replica and merged once per frame, however many writes it took.
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
-        let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
-        let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
+        let mut landed: BTreeSet<DocumentRoute> = BTreeSet::new();
         let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
-        let mut answered: Vec<DocumentRoute> = Vec::new();
         let mut opened: Vec<DocumentRoute> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
-                PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
+                Event::HostReady {
+                    ws: workspace_id,
+                    records_when_opened,
+                    ..
+                } if workspace_id == self.workspace => {
                     self.ready = true;
+                    self.when_opened = records_when_opened;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
                     // A frame asks what this person may do here, and only now
                     // may it ask: every mount draws once more, so a page that
@@ -884,58 +928,28 @@ impl Joined {
                     // app full tab, untouched) does not stay read-only.
                     woken.extend(self.mounts.keys().copied());
                 }
-                PeerEvent::CompactionRequested { route, request }
-                    if route.cluster_id == self.uuid =>
-                {
-                    compactions.push((route, request));
+                Event::Landed { route, .. } if route.cluster_id == self.uuid => {
+                    landed.insert(route);
                 }
-                PeerEvent::Document(document) if document.route.cluster_id == self.uuid => {
-                    let Some(mutation) = document.mutation() else {
-                        self.unapplied.insert(document.route.clone());
-                        warn(&format!(
-                            "{}/{}: not a complete document mutation",
-                            document.route.app_id, document.route.record
-                        ));
-                        continue;
-                    };
-                    match batches
-                        .iter_mut()
-                        .find(|(route, _)| *route == document.route)
-                    {
-                        Some((_, mutations)) => mutations.push(mutation),
-                        None => batches.push((document.route.clone(), vec![mutation])),
-                    }
-                }
-                PeerEvent::DocumentRejected(reason) => {
-                    warn(&format!("dropped a document: {reason}"));
-                }
-                PeerEvent::RecordContent {
-                    workspace_id,
+                Event::RecordContent {
+                    ws: workspace_id,
                     frame,
                     ..
                 } if workspace_id == self.workspace => {
                     content_arrived |= self.content_piece(&frame);
                 }
-                PeerEvent::ContentWanted {
-                    workspace_id,
-                    from,
-                    request,
-                } if workspace_id == self.workspace => self.content_wanted(from, &request),
-                PeerEvent::CommitRefused {
+                Event::Refused {
                     route,
                     changes,
                     reason,
                 } if route.cluster_id == self.uuid => {
-                    answered.push(route.clone());
                     refusals.push((route, changes, reason));
                 }
-                PeerEvent::Committed { route, .. } if route.cluster_id == self.uuid => {
-                    answered.push(route);
-                }
-                PeerEvent::RecordOpened {
-                    workspace_id,
-                    route,
+                Event::RecordOpened {
+                    ws: workspace_id,
+                    route: Some(route),
                     frames: 0,
+                    ..
                 } if workspace_id == self.workspace => opened.push(route),
                 _ => {}
             }
@@ -946,22 +960,53 @@ impl Joined {
         for (route, changes, reason) in refusals {
             self.withdraw(&route, &changes, &reason, &mut woken);
         }
-        for route in answered {
-            self.answered(&route, &mut woken);
+        let settled =
+            std::mem::take(&mut *self.settled.lock().unwrap_or_else(PoisonError::into_inner));
+        for route in settled {
+            self.settle(&route, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
-        batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
-        for (route, mutations) in batches {
-            if let Err(error) = self.apply(
-                &route,
-                tilo_peer_state::document_frame::coalesce(mutations),
-                &mut woken,
-            ) {
-                self.unapplied.insert(route.clone());
+        let mut landed: Vec<DocumentRoute> = landed.into_iter().collect();
+        landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
+        for route in landed {
+            // A record kept for whoever opens it is read as what changed since the store took
+            // it last: a record that lands a write at a time (a sealed chat's history, written
+            // by many) would otherwise be read, loaded and saved whole once per write.
+            let kept = self.kept_heads(&route);
+            let read = self.peer.engine().record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                kept.as_deref(),
+            );
+            let applied = match read {
+                Ok(RecordReading::Captured { bytes, heads, .. }) => {
+                    self.apply(&route, (bytes, &heads), &mut woken)
+                }
+                Ok(RecordReading::Changes { bytes, heads, .. }) => {
+                    self.apply_kept_changes(&route, bytes, &heads, &mut woken)
+                }
+                // Still arriving (its keys, or the checkpoint it builds on): it lands again.
+                Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = applied {
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
             }
         }
-        self.after_merging(compactions, opened, &mut woken);
+        for route in opened {
+            self.workspace_answered(&route, &mut woken);
+        }
+        self.wakes(woken, content_arrived)
+    }
+
+    /// What wakes the mounts in `woken`, each marked changed, and every
+    /// mount besides when content arrived.
+    fn wakes(
+        &self,
+        woken: HashSet<u64>,
+        content_arrived: bool,
+    ) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut notify: Vec<Arc<dyn Fn() + Send + Sync>> = woken
             .into_iter()
             .filter_map(|mount| self.mounts.get(&mount))
@@ -1004,37 +1049,14 @@ impl Joined {
                     ) else {
                         continue;
                     };
-                    if self.peer.want_content(self.workspace, request).is_err() {
+                    if self
+                        .peer
+                        .send(Cmd::WantContent(self.workspace, request))
+                        .is_err()
+                    {
                         lane.retry_want(hash);
                     }
                 }
-            }
-        }
-    }
-
-    /// Answer device `from`'s request for content of this workspace, from
-    /// what the page keeps: an app surface this page carries or kept, and a
-    /// file a record of an app it has open references, which the workspace's
-    /// host asks for to keep its own copy. A surface is public app metadata and
-    /// is answered for any app, open or not: a member reading a record this
-    /// page never opened still needs the version it was written with.
-    fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
-        let device = self.peer.status().device;
-        let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
-        let pieces =
-            tilo_browser_peer::content::answer(&device, &from, request, |app, workspace, hash| {
-                if workspace != self.uuid {
-                    return None;
-                }
-                tilo_browser_peer::surfaces::read(app, hash).or_else(|| {
-                    apps.contains(app)
-                        .then(|| crate::page_content::page_content().read(hash))
-                        .flatten()
-                })
-            });
-        for piece in pieces {
-            if self.peer.send_content(self.workspace, from, piece).is_err() {
-                return;
             }
         }
     }
@@ -1043,7 +1065,10 @@ impl Joined {
     /// a record's window asked for, now on the record's lane.
     fn content_piece(&mut self, frame: &[u8]) -> bool {
         let device = self.peer.status().device;
-        let Some(arrived) = self.content.piece(&device, frame) else {
+        let Some(arrived) = self
+            .content
+            .piece(&device, frame, tilo_clock::unix_now_ms())
+        else {
             return false;
         };
         let (app, record) = arrived.tag;
@@ -1116,74 +1141,46 @@ impl Joined {
         }
     }
 
-    /// What waits for the documents delivered before it to be merged: the
-    /// host's compaction requests, and the on-demand records it retains
-    /// nothing of ([`PeerEvent::RecordOpened`] with no frames). A record it
-    /// sent frames of arrives as they are applied, which keys a sealed
-    /// record waits for can delay past this.
-    fn after_merging(
-        &mut self,
-        compactions: Vec<(DocumentRoute, [u8; 16])>,
-        opened: Vec<DocumentRoute>,
-        woken: &mut HashSet<u64>,
-    ) {
-        self.compact(compactions);
-        for route in opened {
-            if route.cluster_id == self.uuid {
-                self.workspace_answered(&route, woken);
-            }
-        }
-    }
-
-    /// The host retains nothing of `route`, an on-demand record this page
-    /// opened: each store holding it tells what reads it
-    /// ([`ui::record::RecordStore::note_workspace_answered`]).
+    /// The host retains nothing of `route`, a record this page opened or
+    /// asked for: each store holding or wanting it tells what reads it
+    /// ([`ui::record::RecordStore::note_workspace_answered`]), and a window
+    /// that waited for it is built again, now on a new record.
     fn workspace_answered(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
+        if route.cluster_id != self.uuid {
+            return;
+        }
         for (&id, mounted) in &self.mounts {
+            let mut answered = false;
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
-                }) {
-                    store.note_workspace_answered(checkout.id);
-                    woken.insert(id);
+                let record = store
+                    .open_records()
+                    .into_iter()
+                    .map(|checkout| checkout.id)
+                    .chain(store.wanted_records())
+                    .find(|record| {
+                        tilo_desktop_surface::host::records::wire_record(record) == route.record
+                    });
+                if let Some(record) = record {
+                    store.note_workspace_answered(record);
+                    answered = true;
                 }
+            }
+            if answered {
+                if let Some((handle, shared)) = &mounted.attachment.desktop {
+                    shared.retry_waiting(handle);
+                }
+                woken.insert(id);
             }
         }
     }
 
-    /// Answer the host's compaction `requests` with this page's snapshot of
-    /// each route, where it can vouch for one.
-    fn compact(&mut self, requests: Vec<(DocumentRoute, [u8; 16])>) {
-        for (route, request) in requests {
-            match self.snapshot_of(&route) {
-                Ok(Some(snapshot)) => {
-                    let _ = self.peer.compact(request, snapshot);
-                }
-                Ok(None) => {}
-                Err(error) => warn(&format!(
-                    "{}/{}: no snapshot to compact: {error}",
-                    route.app_id, route.record
-                )),
-            }
-        }
-    }
-
-    /// The workspace answered one commit of `route` this page published. Once it
-    /// answered all of them, what the record's windows said they did is
-    /// theirs to say: a refused change was withdrawn first, with what was
+    /// The workspace answered every commit of `route` this page published: what the record's
+    /// windows said they did is theirs to say, a refused change withdrawn first, with what was
     /// said of it.
-    fn answered(&mut self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
-        let Some(left) = self.in_flight.get_mut(route) else {
-            return;
-        };
-        *left = left.saturating_sub(1);
-        if *left > 0 {
-            return;
-        }
-        self.in_flight.remove(route);
+    fn settle(&self, route: &DocumentRoute, woken: &mut HashSet<u64>) {
         for (&id, mounted) in &self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.package_and_home().0 != route.app_id {
@@ -1199,74 +1196,22 @@ impl Joined {
         }
     }
 
-    /// The route's document as this page holds it, for a host compaction
-    /// request: an open record's replica, the desktop, or a record's stored
-    /// document. `None` when the page cannot vouch for every change it was
-    /// delivered for the route.
-    fn snapshot_of(&mut self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
-        if self.unapplied.contains(route) {
-            return Ok(None);
-        }
-        if route.app_id == DESKTOP_APP {
-            return Ok(Some(self.desktop.document_mut().save()));
-        }
-        for mounted in self.mounts.values() {
-            for store in mounted.attachment.stores.borrow().iter() {
-                if store.package_and_home().0 != route.app_id {
-                    continue;
-                }
-                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
-                }) {
-                    return store
-                        .replication_snapshot(&checkout.id)
-                        .map(|(bytes, _)| Some(bytes))
-                        .map_err(|error| error.to_string());
-                }
-            }
-        }
-        let Ok(key) = storage_key(&route.app_id, &self.uuid, &route.record) else {
-            return Ok(None);
-        };
-        Ok(self
-            .store
-            .read(&key)
-            .map_err(|error| error.to_string())?
-            .map(|stored| stored.bytes)
-            .filter(|bytes| !bytes.is_empty()))
-    }
-
+    /// Merge `bytes`, the replica's whole document of `route`, standing at `heads`, into the
+    /// open record, the desktop, or the record's stored document for whoever opens it.
     fn apply(
         &mut self,
         route: &DocumentRoute,
-        mutations: Vec<DocumentMutation>,
+        (bytes, heads): (Vec<u8>, &[[u8; 32]]),
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
-            for mutation in mutations {
-                self.apply_desktop(mutation, woken)?;
-            }
-            return Ok(());
+            return self.apply_desktop(&bytes, woken);
         }
         let app = route.app_id.clone();
         let record = route.record.clone();
-        let key = (app.clone(), record.clone());
-        self.touched.insert(key.clone());
-        // What waited for the changes it builds on goes with what arrived:
-        // after it, so a snapshot that may hold those changes comes first.
-        let mutations = snapshots_first(
-            mutations
-                .into_iter()
-                .chain(
-                    self.waiting
-                        .get(&key)
-                        .into_iter()
-                        .flatten()
-                        .cloned()
-                        .map(DocumentMutation::Incremental),
-                )
-                .collect(),
-        );
+        // What reaches the record is news only once the workspace has replayed what it already
+        // held: before that it is what the device had.
+        self.changes.note(&self.uuid, &app, &record, !self.ready);
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1282,28 +1227,92 @@ impl Joined {
                     .records
                     .entry((app.clone(), record.clone()))
                     .or_default();
-                for mutation in &mutations {
-                    let changed = replica.merge(store, &checkout, mutation.clone())?;
-                    if changed {
-                        woken.insert(id);
-                    }
+                if replica.merge(store, &checkout, DocumentMutation::Snapshot(bytes.clone()))? {
+                    woken.insert(id);
                 }
                 merged = true;
             }
         }
         if merged {
-            // An open record keeps what still waits in its own document,
-            // which applies it once the changes it builds on arrive.
-            self.waiting.remove(&key);
             return Ok(());
         }
         // The host takes up a record a member created with an empty
         // document of its own before the member's content arrives: no
         // record yet, which a page opening it would refuse.
-        let Some(heads) = self.store_unopened(&app, &record, mutations)? else {
+        let Some(heads) = self.store_unopened(&app, &record, bytes, heads)? else {
             return Ok(());
         };
-        self.delivered.insert((app.clone(), record.clone()), heads);
+        self.kept_for_opening(&app, record, heads, woken);
+        Ok(())
+    }
+
+    /// The heads the store holds `route` at for whoever opens it, when no mount has it open
+    /// and the store took it from the replica: what a read of it need only bring the changes
+    /// since. `None` for the desktop, an open record, or one the store does not hold.
+    fn kept_heads(&self, route: &DocumentRoute) -> Option<Vec<[u8; 32]>> {
+        if route.app_id == DESKTOP_APP || self.is_open(&route.app_id, &route.record) {
+            return None;
+        }
+        let heads = self
+            .delivered
+            .get(&(route.app_id.clone(), route.record.clone()))?;
+        let mut heads: Vec<[u8; 32]> = heads.iter().map(|head| head.0).collect();
+        heads.sort_unstable();
+        Some(heads)
+    }
+
+    /// Whether a mount has `record` of `app` open.
+    fn is_open(&self, app: &str, record: &str) -> bool {
+        self.mounts.values().any(|mounted| {
+            mounted.attachment.stores.borrow().iter().any(|store| {
+                store.package_and_home().0 == app
+                    && store.open_records().into_iter().any(|checkout| {
+                        tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                    })
+            })
+        })
+    }
+
+    /// Keep `changes`, what changed of `route` since the heads the store held it at
+    /// ([`Self::kept_heads`]), after what the store holds: the record then stands at `heads`
+    /// for whoever opens it, and nothing of it is loaded to get there.
+    fn apply_kept_changes(
+        &mut self,
+        route: &DocumentRoute,
+        changes: Vec<u8>,
+        heads: &[[u8; 32]],
+        woken: &mut HashSet<u64>,
+    ) -> Result<(), String> {
+        let (app, record) = (route.app_id.clone(), route.record.clone());
+        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        let key = storage_key(&app, &self.uuid, &record)?;
+        let writer = self
+            .store
+            .read(&key)
+            .map_err(|error| error.to_string())?
+            .and_then(|stored| stored.writer);
+        self.store
+            .write(&key, WriteOp::Append(changes), writer.as_deref())
+            .map_err(|error| error.to_string())?;
+        let heads = heads
+            .iter()
+            .copied()
+            .map(ui::automerge::ChangeHash)
+            .collect();
+        self.kept_for_opening(&app, record, heads, woken);
+        Ok(())
+    }
+
+    /// The store holds `record` of `app` at `heads` for whoever opens it: the mounts look
+    /// again.
+    fn kept_for_opening(
+        &mut self,
+        app: &str,
+        record: String,
+        heads: Vec<ui::automerge::ChangeHash>,
+        woken: &mut HashSet<u64>,
+    ) {
+        self.delivered.insert((app.to_owned(), record), heads);
         // A window of the app that follows what its store keeps (a chain's
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
@@ -1313,26 +1322,27 @@ impl Joined {
                 }
             }
         }
-        self.stored.insert((app, record));
+        // Every mount looks again: a desktop builds the windows that waited
+        // for it, and a page showing one app builds the app whose record it
+        // waited for.
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 shared.retry_waiting(handle);
-                woken.insert(id);
             }
+            woken.insert(id);
         }
-        Ok(())
     }
 
-    /// Merge into the record's stored document for whoever opens it next,
-    /// and answer its heads once it holds any change. A snapshot into an empty
-    /// store is kept as it came: opening the record loads and checks it once,
-    /// instead of loading, merging and saving it here first. A document with
-    /// no change in it is no record yet and is not kept.
+    /// Merge the replica's document `bytes`, which stands at `heads`, into the record's stored
+    /// document for whoever opens it next, and answer its heads once it holds any change. Into
+    /// an empty store it is kept as it came, unloaded: opening the record loads and checks it
+    /// once. A document with no change in it is no record yet and is not kept.
     fn store_unopened(
-        &mut self,
+        &self,
         app: &str,
         record: &str,
-        mutations: Vec<DocumentMutation>,
+        bytes: Vec<u8>,
+        heads: &[[u8; 32]],
     ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
@@ -1340,82 +1350,37 @@ impl Joined {
         let stored = stored
             .map(|stored| stored.bytes)
             .filter(|bytes| !bytes.is_empty());
-        let mut mutations = mutations.into_iter().peekable();
-        let fresh =
-            stored.is_none() && matches!(mutations.peek(), Some(DocumentMutation::Snapshot(_)));
-        let bytes = match (stored, mutations.peek()) {
-            (None, Some(DocumentMutation::Snapshot(_))) => {
-                let Some(DocumentMutation::Snapshot(snapshot)) = mutations.next() else {
-                    return Ok(None);
-                };
-                if mutations.peek().is_none() {
-                    let Some(heads) = heads_of(&snapshot) else {
-                        return Ok(None);
-                    };
-                    return self
-                        .store
-                        .write(&key, WriteOp::Replace(snapshot), writer.as_deref())
-                        .map(|_| Some(heads))
-                        .map_err(|error| error.to_string());
-                }
-                snapshot
+        let Some(stored) = stored else {
+            if heads.is_empty() {
+                return Ok(None);
             }
-            (stored, _) => stored.unwrap_or_default(),
+            let heads = heads
+                .iter()
+                .copied()
+                .map(ui::automerge::ChangeHash)
+                .collect();
+            return self
+                .store
+                .write(&key, WriteOp::Replace(bytes), writer.as_deref())
+                .map(|_| Some(heads))
+                .map_err(|error| error.to_string());
         };
-        let mut doc = if bytes.is_empty() {
-            AutoCommit::new()
-        } else {
-            AutoCommit::load(&bytes).map_err(|error| error.to_string())?
-        };
+        let mut doc = AutoCommit::load(&stored).map_err(|error| error.to_string())?;
+        let incoming = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
         let before = doc.get_heads();
-        let mut runs = Vec::new();
-        for mutation in mutations {
-            match mutation {
-                DocumentMutation::Snapshot(bytes) => {
-                    let mut incoming =
-                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                    // Merge the side with fewer unshared changes into the
-                    // other, as `RecordStore::merge_replica` does.
-                    let shared: Vec<_> = incoming
-                        .get_heads()
-                        .into_iter()
-                        .filter(|head| doc.get_change_by_hash(head).is_some())
-                        .collect();
-                    if !doc.get_missing_deps(&[]).is_empty() {
-                        // What waits in the stored document for the changes
-                        // it builds on stays only if the snapshot comes to
-                        // it, not it to the snapshot.
-                        doc.load_incoming(&incoming.save_after(&[]))
-                            .map_err(|error| error.to_string())?;
-                    } else if shared.len() < incoming.get_heads().len() {
-                        incoming
-                            .load_incoming(&doc.save_after(&shared))
-                            .map_err(|error| error.to_string())?;
-                        doc = incoming;
-                    }
-                }
-                DocumentMutation::Incremental(bytes) => {
-                    doc.load_incoming(&bytes)
-                        .map_err(|error| error.to_string())?;
-                    runs.push(bytes);
-                }
-            }
-        }
-        // Changes whose dependencies have not arrived wait for the next
-        // delivery, or for the mount that opens the record: a document that
-        // holds nothing else is not stored, and a document merged into a
-        // snapshot brings only the changes it applied.
-        let waiting = (app.to_owned(), record.to_owned());
-        if doc.get_missing_deps(&[]).is_empty() {
-            self.waiting.remove(&waiting);
-        } else {
-            self.waiting.insert(waiting, runs);
-        }
+        let shared: Vec<_> = before
+            .iter()
+            .copied()
+            .filter(|head| incoming.get_change_by_hash(head).is_some())
+            .collect();
+        let mut incoming = incoming;
+        doc.load_incoming(&incoming.save_after(&shared))
+            .map_err(|error| error.to_string())?;
         let heads = doc.get_heads();
         if heads.is_empty() {
             return Ok(None);
         }
-        if heads == before && !fresh {
+        if heads == before {
             return Ok(Some(heads));
         }
         self.store
@@ -1424,16 +1389,16 @@ impl Joined {
             .map_err(|error| error.to_string())
     }
 
-    fn apply_desktop(
-        &mut self,
-        mutation: DocumentMutation,
-        woken: &mut HashSet<u64>,
-    ) -> Result<(), String> {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => self.desktop.merge_snapshot(&bytes),
-            DocumentMutation::Incremental(bytes) => self.desktop.load_incremental(&bytes).map(drop),
-        }
-        .map_err(|error| error.to_string())?;
+    fn apply_desktop(&mut self, bytes: &[u8], woken: &mut HashSet<u64>) -> Result<(), String> {
+        self.desktop
+            .merge_snapshot(bytes)
+            .map_err(|error| error.to_string())?;
+        // The workspace holds its desktop: what this page sends of it from now on is
+        // what this page changed, never the whole document. A whole document carries
+        // every member's changes, and the workspace decides each change it does not
+        // hold yet as this page's person's own: a window someone else opened would
+        // read as one this person attributed to them.
+        self.desktop_sending = DesktopSending::Changes;
         let Some(value) = desktop_value(self.desktop.document()) else {
             return Ok(());
         };
@@ -1480,7 +1445,9 @@ impl Joined {
                     // A record a join does not replay is asked for when a
                     // mount first opens it.
                     if !mounted.records.contains_key(&key)
-                        && neighbour_wire::record_sync(&key.1) != neighbour_wire::RecordSync::Eager
+                        && (self.when_opened
+                            || neighbour_wire::record_sync(&key.1)
+                                != neighbour_wire::RecordSync::Eager)
                     {
                         opening.push(DocumentRoute {
                             app_id: app.clone(),
@@ -1503,6 +1470,10 @@ impl Joined {
                     };
                     match replica.take_outbound(store, &checkout.id) {
                         Ok(Some(next)) => {
+                            // A window here wrote the record: the session's activity and the
+                            // person's mentions read it as any other change of it.
+                            self.changes
+                                .note(&self.uuid, &route.app_id, &route.record, false);
                             outgoing.push((route, next.mutation, (id, key, next.heads)));
                         }
                         Ok(None) => {}
@@ -1511,8 +1482,19 @@ impl Joined {
                 }
             }
         }
+        opening.extend(self.wanted_routes());
         for route in opening {
-            if self.peer.open_record(self.workspace, route).is_err() {
+            if !self
+                .asked
+                .insert((route.app_id.clone(), route.record.clone()))
+            {
+                continue;
+            }
+            if self
+                .peer
+                .send(Cmd::OpenRecordAt(self.workspace, route))
+                .is_err()
+            {
                 return;
             }
         }
@@ -1522,13 +1504,12 @@ impl Joined {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            // The workspace answers each frame the publication is split into.
-            let commits = mutation.encode_frames().map_or(1, |frames| frames.len());
-            if self.peer.publish(route.clone(), &mutation).is_err() {
+            if self.peer.write(route.clone(), &mutation).is_err() {
                 return;
             }
-            let left = self.in_flight.entry(route).or_default();
-            *left = left.saturating_add(commits);
+            if !self.settle_when_durable(route) {
+                return;
+            }
             if authored {
                 self.authored = self.authored.saturating_add(1);
             }
@@ -1542,6 +1523,44 @@ impl Joined {
             }
         }
         self.send_desktop();
+    }
+
+    /// The records windows opened that are not here and that this page has
+    /// not asked the workspace for yet: it sends each, or says it has none
+    /// of it, and only then is it new.
+    fn wanted_routes(&self) -> Vec<DocumentRoute> {
+        let mut wanted = Vec::new();
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                let (app, home) = store.package_and_home();
+                if home != self.uuid {
+                    continue;
+                }
+                for record in store.wanted_records() {
+                    // A workspace that replays every chain's head answered
+                    // for each with its replay: what this page holds of a
+                    // chain is all of its head there is.
+                    if record.is_chain_head() && !self.when_opened {
+                        if self.ready {
+                            store.note_workspace_answered(record);
+                        }
+                        continue;
+                    }
+                    let key = (
+                        app.clone(),
+                        tilo_desktop_surface::host::records::wire_record(&record).to_owned(),
+                    );
+                    if !self.asked.contains(&key) {
+                        wanted.push(DocumentRoute {
+                            app_id: key.0,
+                            cluster_id: self.uuid.clone(),
+                            record: key.1,
+                        });
+                    }
+                }
+            }
+        }
+        wanted
     }
 
     /// The workspace's members as the peer last heard its governance list them:
@@ -1631,7 +1650,7 @@ impl Joined {
             (DocumentMutation::Snapshot(doc.save()), doc.get_heads())
         };
         let route = self.route(DESKTOP_APP, DESKTOP_RECORD);
-        if self.peer.publish(route, &mutation.0).is_ok() {
+        if self.peer.write(route, &mutation.0).is_ok() {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_sending = DesktopSending::Changes;
             self.desktop_value = desktop_value(self.desktop.document());

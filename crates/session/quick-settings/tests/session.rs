@@ -26,7 +26,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::{DoorError, ResourceSpec};
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_service::Started;
-use tilo_session::surfaces::{Anchor, Keyboard, Layer, Surface};
+use tilo_session::surfaces::{Anchor, Surface};
 use tilo_session::{ActionPlane, Machine, Options, Service, Session};
 
 const WIDTH: i32 = 800;
@@ -47,36 +47,9 @@ const OPENING: Duration = Duration::from_secs(90);
 /// next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The panel, as the desk starts it: below the bar's right end, at the
-/// footprint it gives a popover.
+/// The panel, as the session starts it.
 fn panel() -> Surface {
-    Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
-        .layer(Layer::Top)
-        .namespace("tilo-quick-settings")
-        .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((
-            tilo_quick_settings::resource::PANEL_WIDTH,
-            tilo_quick_settings::resource::PANEL_HEIGHT,
-        ))
-        .keyboard(Keyboard::OnDemand)
-}
-
-/// The panel as the desk places it on an `output`: `BAR` pixels down from the
-/// output's top edge for the bar, and the popover margin off its right edge,
-/// at the footprint it gives a popover — the output's height does not size it.
-fn panel_on_a_laptop(_output: (i32, i32)) -> Surface {
-    const BAR: i32 = 32;
-    const MARGIN: i32 = 8;
-    Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
-        .layer(Layer::Top)
-        .namespace("tilo-quick-settings")
-        .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((
-            tilo_quick_settings::resource::PANEL_WIDTH,
-            tilo_quick_settings::resource::PANEL_HEIGHT,
-        ))
-        .margin((BAR, MARGIN, MARGIN, 0))
-        .keyboard(Keyboard::OnDemand)
+    tilo_session::quick_settings::surface_of(env!("CARGO_BIN_EXE_tilo-quick-settings"))
 }
 
 #[test]
@@ -85,7 +58,9 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
     // The desk as it stands before the panel appears: what the panel leaves
     // alone has to stay exactly this, pixel for pixel.
     let desk = drawn_desk(&mut session);
-    session.start_surface(&panel()).expect("the panel starts");
+    // Started by itself, with no slot that places it, it stands where its anchor holds it.
+    let anchored = panel().anchor(Anchor::TOP | Anchor::RIGHT);
+    session.start_surface(&anchored).expect("the panel starts");
 
     assert!(
         session.surfaces().running("quick-settings"),
@@ -151,6 +126,44 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     session.stop_surface("quick-settings");
 }
 
+/// A session that dims nothing publishes no brightness: the panel offers
+/// none, rather than a slider standing at a level nothing measured.
+#[test]
+fn the_panel_offers_no_brightness_the_session_did_not_publish() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    // The panel has followed the session's readings once its network tile
+    // is one the network makes: its displays came with them.
+    until_ready(session, "toggle-wifi");
+    if let Some(brightness) = offered(session, "set-brightness") {
+        assert!(
+            !brightness.contract.availability.is_available(),
+            "the panel offers brightness this machine has not read: {:?}",
+            brightness.contract.availability
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
+/// A sound card with no output publishes nothing to set: the panel offers no
+/// volume, rather than one standing at a level no output holds.
+#[test]
+fn the_panel_offers_no_volume_the_sound_card_did_not_publish() {
+    let mut laptop = session_of_silent_device(&[panel()]);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    if let Some(volume) = offered(session, "set-volume") {
+        assert!(
+            !volume.contract.availability.is_available(),
+            "the panel offers volume this sound card has not read: {:?}",
+            volume.contract.availability
+        );
+    }
+    session.stop_surface("quick-settings");
+}
+
 /// Escape is the panel's own while a page of it is open: the panel goes back
 /// a page and answers that it did, and only its main page has nowhere left to
 /// go, which is where the session closes it.
@@ -208,7 +221,7 @@ fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
 #[test]
 fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
     const OUTPUT: (i32, i32) = (1280, 800);
-    let mut laptop = session_of_device_at(&[panel_on_a_laptop(OUTPUT)], Machine::Owned, OUTPUT);
+    let mut laptop = session_of_device_at(&[panel()], Machine::Owned, OUTPUT);
     let session = &mut laptop.session;
     let desk = at_rest(session);
     open_the_panel(session);
@@ -442,7 +455,7 @@ fn the_lock_tile_locks_the_screens() {
             options.verifier = Arc::new(Sesame);
             options
                 .surfaces
-                .push(Surface::new("lock", &lock_screen).person("ada").lock());
+                .push(Surface::new("lock", &lock_screen).lock());
         },
     );
     let session = &mut laptop.session;
@@ -525,9 +538,7 @@ fn the_panel_draws_at_scale_2() {
     // The laptop's own panel: 2944x1840 physical, 1472x920 logical at 2x.
     const PIXELS: (i32, i32) = (2944, 1840);
     const SCALE: f64 = 2.0;
-    let logical = (PIXELS.0 / 2, PIXELS.1 / 2);
-    let surface = panel_on_an_output(logical);
-    let mut laptop = session_of_device_at_scale(&[surface], Machine::Owned, PIXELS, SCALE);
+    let mut laptop = session_of_device_at_scale(&[panel()], Machine::Owned, PIXELS, SCALE);
     let session = &mut laptop.session;
     let desk = at_rest(session);
     open_the_panel(session);
@@ -1023,15 +1034,12 @@ fn session_of_device_prepared_with(
     scale: f64,
     prepare: impl FnOnce(&mut Options, &std::path::Path),
 ) -> Laptop {
-    let radios = Arc::new(Radios::default());
-    {
-        let mut readings = radios.readings.lock().expect("the radios");
-        readings.network.wifi.available = true;
-        readings.bluetooth.available = true;
-    }
-    let mut connectivity = Connectivity::new(radios, None).expect("a connectivity service");
-    connectivity.settle();
-    let card: Arc<dyn Graph> = Arc::new(Card {
+    session_of_device_with_card(surfaces, machine, output, scale, speakers(), prepare)
+}
+
+/// A sound card with one pair of speakers, in use.
+fn speakers() -> Arc<dyn Graph> {
+    Arc::new(Card {
         graph: Mutex::new(AudioGraph {
             sinks: vec![AudioDevice {
                 id: 40,
@@ -1046,7 +1054,39 @@ fn session_of_device_prepared_with(
             }],
             ..AudioGraph::default()
         }),
-    });
+    })
+}
+
+/// A session on a device whose sound card has no output at all.
+fn session_of_silent_device(surfaces: &[Surface]) -> Laptop {
+    session_of_device_with_card(
+        surfaces,
+        Machine::Owned,
+        (WIDTH, HEIGHT),
+        1.0,
+        Arc::new(Card {
+            graph: Mutex::new(AudioGraph::default()),
+        }),
+        |_options, _root| {},
+    )
+}
+
+fn session_of_device_with_card(
+    surfaces: &[Surface],
+    machine: Machine,
+    output: (i32, i32),
+    scale: f64,
+    card: Arc<dyn Graph>,
+    prepare: impl FnOnce(&mut Options, &std::path::Path),
+) -> Laptop {
+    let radios = Arc::new(Radios::default());
+    {
+        let mut readings = radios.readings.lock().expect("the radios");
+        readings.network.wifi.available = true;
+        readings.bluetooth.available = true;
+    }
+    let mut connectivity = Connectivity::new(radios, None).expect("a connectivity service");
+    connectivity.settle();
     let mut sound = SoundService::new(card, None).expect("a sound service");
     sound.settle();
     let pack = Pack::default();
@@ -1081,24 +1121,6 @@ fn session_of_device_prepared_with(
 
 /// A session with a device's services on an output of `output` physical
 /// pixels at `scale`, as the person's 2x laptop panel is.
-/// The panel placed as the session places it on an `output` of `logical`
-/// pixels: under the bar, against the trailing edge, keeping off the
-/// bottom edge.
-fn panel_on_an_output(_logical: (i32, i32)) -> Surface {
-    const BAR: i32 = 32;
-    const MARGIN: i32 = 8;
-    Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
-        .layer(Layer::Top)
-        .namespace("tilo-quick-settings")
-        .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((
-            tilo_quick_settings::resource::PANEL_WIDTH,
-            tilo_quick_settings::resource::PANEL_HEIGHT,
-        ))
-        .margin((BAR, MARGIN, MARGIN, 0))
-        .keyboard(Keyboard::OnDemand)
-}
-
 fn session_of_device_at_scale(
     surfaces: &[Surface],
     machine: Machine,

@@ -151,8 +151,10 @@ pub trait ListModel {
     /// Ask again for row `index` after it failed.
     fn retry(&mut self, _index: usize) {}
 
-    /// Opportunity to enqueue work for the visible window plus overscan.
-    fn request_range(&mut self, _range: Range<usize>) {}
+    /// Opportunity to enqueue work for the visible window plus overscan, and for the row `open`
+    /// — the row standing open into its item where it stands, when one does: a host that builds
+    /// rows as they are shown builds that row's document and no other's.
+    fn request_range(&mut self, _range: Range<usize>, _open: Option<&Self::Key>) {}
 
     /// Drain a model-owned invalidation wakeup. Return true after logical
     /// order, count, key, or row-state changes. Use
@@ -201,6 +203,17 @@ pub trait ListModel {
     /// or a model that groups nothing.
     fn group_at(&self, _index: usize) -> Option<RowGroup> {
         None
+    }
+
+    /// Whether the row `index` is one the person is done with: its item checked off, or removed
+    /// and not yet seen go — though its row may still stand in the list until they leave the
+    /// place. A heading counts what is left to do, so it does not count this row
+    /// ([`heading_count`]). `false` for a row that is still to do, which is every row of a model
+    /// that says nothing.
+    ///
+    /// [`heading_count`]: super::section::heading_count
+    fn done(&self, _index: usize) -> bool {
+        false
     }
 
     /// What the row stands as in a tree ([`VirtualList::with_tree`]): the row it is under, and
@@ -282,8 +295,8 @@ type ReorderValidator<M> =
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
 pub use super::row_selection::{
-    PaintedRowLifts, RowBuild, RowContentBox, RowLift, RowSelection, RowSelectionSink,
-    row_content_box,
+    PaintedRowChevrons, PaintedRowLifts, RowBuild, RowChevron, RowContentBox, RowLift,
+    RowSelection, RowSelectionSink, row_content_box,
 };
 
 struct MountedRow<K> {
@@ -372,7 +385,7 @@ pub trait RowActionRects {
 
 /// Where a list's rows stand between its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowStance {
+pub(super) enum RowStance {
     /// One lift's bleed in, so their lift fills the list.
     Bleed,
     /// Edge to edge: rows that bring their own insets ([`VirtualList::flush`]).
@@ -454,6 +467,10 @@ pub struct VirtualList<M: ListModel> {
     /// ([`ListModelChange::Reset`]): its keys are read anew, and until they arrive the row is
     /// not one that left ([`Self::close_open_leaving`]).
     rereading_open: Option<M::Key>,
+    /// The item a host holds open whose row cannot say yet whether it opens where it stands:
+    /// the rows are being read, or its row has not arrived. It opens as its row arrives
+    /// ([`Self::hold_open`]).
+    held_open: Option<String>,
     /// Rows whose measured height is on its way to another, at the height they show now: a row
     /// that grew into its item, or whose content changed, moves the rows after it as it
     /// arrives, and the list clips it to the height it shows.
@@ -501,6 +518,11 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Where the rows' content starts in from the list's edge: its bleed, or a disclosure gutter.
     lead: f64,
+    /// The column the list keeps for its tree's chevrons, in front of the rows' content and
+    /// inside its own box: one disclosure step where the list is a column's body and its rows
+    /// have something to fold, nothing otherwise (settled by `settle_lead` with the rows'
+    /// column).
+    chevron_column: f64,
     /// The gutter a disclosure chevron hangs in, one step of nesting.
     disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
@@ -508,6 +530,9 @@ pub struct VirtualList<M: ListModel> {
     /// The selection lifts the last painted frame drew for its rows, and what those rows show
     /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
     painted_lifts: Vec<crate::widget::RowLift>,
+    /// The chevrons the last painted frame drew for the rows of its tree, and the line of the row
+    /// each folds ([`crate::widget::RowChevron`]): an audit holds a chevron to its row's line.
+    painted_chevrons: Vec<crate::widget::virtual_list::RowChevron>,
     /// Whether a row with an item opens into it where it stands, or the item opens in front of
     /// the list ([`Self::in_place`]).
     in_place: bool,
@@ -518,6 +543,11 @@ pub struct VirtualList<M: ListModel> {
     stance: RowStance,
     /// The space above the first row and below the last ([`Self::with_edges`]).
     edges: Option<Box<dyn ListEdges>>,
+    /// The room the list keeps over its first band when it is a column's whole body
+    /// ([`Self::in_column`]): the column's content gutter, so its first heading or row stands on
+    /// the column's content edge, where a page's first block stands. Nothing for a list anywhere
+    /// else, which brings its own spacing.
+    content_gutter: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
     /// The list takes its parent's height, and its viewport follows it.
@@ -531,6 +561,9 @@ pub struct VirtualList<M: ListModel> {
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
+    /// The row standing open into its item when the model was last asked for its rows: the row
+    /// whose document the host builds, and no other's.
+    requested_open: Option<M::Key>,
     request_dirty: bool,
     structure_dirty: bool,
     /// The list's own box changed height, as a list that fits its rows measures taller
@@ -600,6 +633,13 @@ pub struct VirtualList<M: ListModel> {
     groups: Groups,
     /// The title over the list's tail group ([`RowGroup::Tail`]).
     tail_title: Option<String>,
+    /// The title of the view the list stands under, as its header reads it, and how many things
+    /// it counts beside it ([`Self::in_view`]).
+    view_title: Option<String>,
+    view_count: Option<usize>,
+    /// Whether the rows say the view's title already names their one group: `None` until read,
+    /// and read again whenever the rows are grouped anew ([`Self::heads_nothing`]).
+    heads_nothing: std::cell::Cell<Option<bool>>,
     /// What each row is grouped by, by key: the model is asked once for a row while its props
     /// stand as they were.
     row_groups: HashMap<M::Key, Option<groups::Group>>,
@@ -610,6 +650,13 @@ pub struct VirtualList<M: ListModel> {
     tree_rows: HashMap<M::Key, TreeRow<M::Key>>,
     /// The rows standing under a folded row: they take no room and are never built.
     tree_hidden: HashSet<M::Key>,
+    /// Whether the tree's first level holds a row with subtasks, as the rows in view said it:
+    /// a first level that folds nothing keeps no column for a chevron, and its rows line up
+    /// with the words over them. `None` while no first-level row has been read.
+    first_level_branch: Option<bool>,
+    /// The rows the tree's column was last settled over, by key: while any of them still
+    /// stands in the list, a column the rows keep is not given back ([`Self::shape_tree`]).
+    column_rows: HashSet<M::Key>,
     /// A row renamed in place: the field over its label, its title reported as it commits
     /// ([`Self::on_rename`]).
     rename: Option<Box<RenameField<M::Key>>>,
@@ -697,6 +744,7 @@ impl<M: ListModel> VirtualList<M> {
             on_closed: None,
             open: None,
             rereading_open: None,
+            held_open: None,
             growth: Vec::new(),
             growing: HashSet::new(),
             menus: RowMenus::None,
@@ -724,15 +772,18 @@ impl<M: ListModel> VirtualList<M> {
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             lead: f64::from(crate::tokens::Spacing::BASE.s2),
+            chevron_column: 0.0,
             disclosure: f64::from(
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
+            painted_chevrons: Vec::new(),
             in_place: true,
             row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
             edges: None,
+            content_gutter: 0.0,
             rows_beside_bar: false,
             fill_height: false,
             fit_rows: false,
@@ -741,6 +792,7 @@ impl<M: ListModel> VirtualList<M> {
             last_tick: None,
             last_anchor: None,
             requested_range: None,
+            requested_open: None,
             request_dirty: true,
             structure_dirty: true,
             box_dirty: false,
@@ -766,10 +818,15 @@ impl<M: ListModel> VirtualList<M> {
             names_item: std::cell::RefCell::new(None),
             groups: Groups::default(),
             tail_title: None,
+            view_title: None,
+            view_count: None,
+            heads_nothing: std::cell::Cell::new(None),
             row_groups: HashMap::new(),
             tree: None,
             tree_rows: HashMap::new(),
             tree_hidden: HashSet::new(),
+            first_level_branch: None,
+            column_rows: HashSet::new(),
             rename: None,
             on_rename: None,
             rename_on_double_click: false,
@@ -874,9 +931,11 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The list is a column's whole body, edge to edge in it: its rows' text starts on the
     /// column's content edge ([`crate::chrome::column_gutter`]), where the column's header
-    /// starts its title, and their lift bleeds [`crate::chrome::row_bleed`] past it, as HIG's
-    /// one content edge has every list in a column do. The scroll bar stays on the column's
-    /// edge. Rows lift themselves, as a [`ListRow`](crate::widget::ListRow) does.
+    /// starts its title, and so does its first band — the heading over the first run, or the
+    /// first row where the list leaves that heading out — one content gutter below its top, where
+    /// a page's first block stands. Their lift bleeds [`crate::chrome::row_bleed`] past that
+    /// edge, as HIG's one content edge has every list in a column do. The scroll bar stays on
+    /// the column's edge. Rows lift themselves, as a [`ListRow`](crate::widget::ListRow) does.
     #[must_use]
     pub const fn in_column(mut self) -> Self {
         self.stance = RowStance::Column;
@@ -884,7 +943,9 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Leave the space `edges` asks for above the first row and below the
-    /// last. It scrolls with the rows, as a page's spacing does.
+    /// last, instead of the column's content gutter a list in a column keeps
+    /// over its first band. It scrolls with the rows, as a page's spacing
+    /// does.
     #[must_use]
     pub fn with_edges(mut self, edges: impl ListEdges + 'static) -> Self {
         self.edges = Some(Box::new(edges));
@@ -896,7 +957,7 @@ impl<M: ListModel> VirtualList<M> {
     fn update_edges(&mut self) -> bool {
         let width = (self.rect.width() - self.lead - self.trailing_inset()).max(0.0);
         let Some(edges) = self.edges.as_mut() else {
-            return false;
+            return self.viewport.set_edges(self.content_gutter, 0.0);
         };
         let (lead, trail) = edges.edges(width);
         self.viewport.set_edges(lead, trail)
@@ -1281,6 +1342,38 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
+    /// The rows near the box, each by its key's hash with its top in the list
+    /// and its height, as [`ListShown::places`] holds them.
+    fn places_near(&self) -> Vec<(u64, f64, f64)> {
+        self.mounted
+            .get(self.mounted_near())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| {
+                let top = self.viewport.item_top(row.index)?;
+                let height = self.viewport.item_height(row.index)?;
+                Some((Self::key_hash(&row.key), top, height))
+            })
+            .collect()
+    }
+
+    /// The headings the list draws, each with the number it shows over its rows
+    /// and whether its group is folded, as [`ListShown::headings`] holds
+    /// them.
+    fn headings_drawn(&self) -> Vec<(String, Option<usize>, bool)> {
+        self.groups
+            .bands
+            .iter()
+            .map(|band| {
+                (
+                    band.heading.clone(),
+                    self.shown_heading_count(band),
+                    band.closed,
+                )
+            })
+            .collect()
+    }
+
     /// How far the first row the last presented frame showed has moved on
     /// screen since, while it is still that row.
     fn moved_since_presented(&self) -> Option<f64> {
@@ -1366,6 +1459,13 @@ impl<M: ListModel> VirtualList<M> {
         let index = self
             .viewport
             .hit_test(cursor.y - self.rect.y0 - self.end_slack())?;
+        // The room a band takes over its row is the list's and the heading's: the row stands
+        // below it, and a press up there is no press on the row, as one on the room the list
+        // keeps over its first row is none either.
+        let row = self.row_box(index)?;
+        if cursor.y < row.y0 || cursor.y >= row.y1 {
+            return None;
+        }
         matches!(self.model.row_state(index), Arrival::Ready(()))
             .then(|| self.model.key_at(index).map(|key| (index, key)))
             .flatten()
@@ -1720,6 +1820,12 @@ where
     }
 }
 
+impl<M: ListModel> crate::widget::virtual_list::PaintedRowChevrons for VirtualList<M> {
+    fn painted_row_chevrons(&self) -> Vec<crate::widget::virtual_list::RowChevron> {
+        self.painted_chevrons.clone()
+    }
+}
+
 impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
     fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
         self.painted_lifts.clone()
@@ -1727,11 +1833,18 @@ impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> Widget for VirtualList<M> {
+    /// The rows it shows now, in a native scroller as tall as all of them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("ul");
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
-        dyn crate::widget::PaintedRowLifts
+        dyn crate::widget::PaintedRowLifts,
+        dyn crate::widget::virtual_list::PaintedRowChevrons
     );
 
     fn set_interaction_environment(
@@ -1785,6 +1898,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let received_changes = !model_changes.is_empty();
         if received_changes {
             self.notify_model_changes(&model_changes);
+        }
+        if legacy_wakeup || received_changes {
+            self.open_held();
         }
         let mut changed = legacy_wakeup || received_changes;
         changed |= self.take_retry();
@@ -1844,15 +1960,25 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             RowStance::Column => crate::chrome::column_gutter(theme),
         };
         self.lift = crate::chrome::row_bleed(theme);
-        self.disclosure = crate::chrome::disclosure_gutter(theme);
-        self.row_line = f64::from(theme.tokens.metrics.row_single);
-        // A chevron hangs left of the column so the column never moves: one left edge.
-        let gutter = if self.tree.is_some() || self.model.discloses() {
-            self.disclosure
-        } else {
-            0.0
+        // A list that is a column's whole body starts its first band on the column's content
+        // edge, where the column's header starts its title and every page's first block stands.
+        self.content_gutter = match self.stance {
+            RowStance::Column => crate::chrome::column_gutter(theme),
+            RowStance::Bleed | RowStance::Flush => 0.0,
         };
-        self.lead = self.bleed.max(gutter);
+        let disclosure = crate::chrome::disclosure_gutter(theme);
+        if (disclosure - self.disclosure).abs() > 0.5 {
+            // A row that is a view of the app's own is built with the step its tree indents by,
+            // so the rows built under the theme before are built again where the new step puts
+            // them.
+            let mounted: Vec<M::Key> = self.mounted.iter().map(|row| row.key.clone()).collect();
+            self.invalidate_rows(mounted);
+        }
+        self.disclosure = disclosure;
+        self.row_line = f64::from(theme.tokens.metrics.row_single);
+        // A chevron hangs left of the column so the column never moves: one left edge, and the
+        // one place it is worked out ([`Self::settle_lead`]).
+        self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
         self.pill_width = f64::from(
@@ -1941,12 +2067,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.keep_end();
             self.visible_window_changed();
         }
-        // Rows stand where the layout was built, moved by the scroll since.
+        // Rows stand where the layout was built, moved by the scroll since: on the display's
+        // device pixels, as the scroll itself moves them (a wheel's delta is whole device
+        // pixels), so a list that follows its end — whose slack is the rest of a viewport — and
+        // one whose rows were measured on another display's grid still draws crisp rows.
         let slack = self.end_slack();
-        let child_origin = Point::new(
-            self.rect.x0,
-            self.rect.y0 + slack + self.layout_offset - self.viewport.offset(),
+        let content = crate::widget::layout::snap_to_device_pixels(
+            slack + self.layout_offset - self.viewport.offset(),
         );
+        let child_origin = Point::new(self.rect.x0, self.rect.y0 + content);
         // Placed again from an unchanged layout (a scroll, a glide), only
         // the rows near the list's box are placed, and those that were
         // near it before, as they leave; the others measure as they did.
@@ -2423,6 +2552,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         child_index < self.mounted.len()
     }
 
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        // A row whose widget holds controls of its own is that row's node, and what it holds
+        // stands under it: a person who opens an item reaches the fields that edit it, and a
+        // row's box is a control of its own rather than words the row states.
+        let row = self.mounted.get(child_index)?;
+        self.handing_controls(row)
+            .then(|| vec![row.index.saturating_add(self.headings_before(child_index))])
+    }
+
     /// Focus the row an assistive technology moves to, and select it, as the keyboard does.
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [child] = path else {
@@ -2522,7 +2660,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         self.overlay_bar
             .as_ref()
             .is_some_and(crate::widget::OverlayScrollbar::needs_animation_frame)
@@ -2532,6 +2670,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .momentum
                 .give_needs_frame(crate::motion::frame_now())
             || self.reveal_in_progress(crate::motion::frame_now())
+            // A row growing into its document, or shutting it away, moves only as frames are
+            // laid out: the next one continues where this one stood.
+            || self.growth.iter().any(|(_, growth)| growth.is_moving(now))
             || self.row_motion.is_moving(now)
             || self.arrivals.is_moving(now)
             || self.reorder.is_active()
@@ -2692,6 +2833,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .mounted
                 .iter()
                 .any(|row| row.widget.layout_needs_measure())
+    }
+
+    /// Whether the list's first row names a group, and the room the list keeps over the first
+    /// band it draws — the heading over that row, or the row itself where the list leaves the
+    /// heading out: what holds a list that heads its rows to starting them on the column's
+    /// content gutter rather than against the box over it.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
+            heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
+            lead: crate::num::f32_of_f64(self.viewport.edges().0),
+        }))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

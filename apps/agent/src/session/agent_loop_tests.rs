@@ -8,7 +8,18 @@ use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
 use ui::collaboration::CollabRequest;
-use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
+use ui::collaboration::{
+    ActionCatalogue, BrokerActionSurface, CatalogueChange, ExportedAction, ExportedInput,
+};
+
+/// The catalogue a follower holds once it was sent `surfaces`.
+pub(super) fn catalogue_of(surfaces: &[BrokerActionSurface]) -> ActionCatalogue {
+    let mut catalogue = ActionCatalogue::default();
+    catalogue
+        .apply(&CatalogueChange::snapshot(surfaces))
+        .expect("a snapshot applies to any catalogue");
+    catalogue
+}
 use uuid::Uuid;
 
 #[test]
@@ -371,53 +382,9 @@ const CHAT_RECORD_PEER: u64 = 29;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
 const BROWSER_PEER: u64 = 11;
-const SEARCH_PEER: u64 = 12;
 /// The Browser tab the fixture's Browser publishes its page actions on.
 const BROWSER_TAB: &str = "browser.tab:1";
 const DOC: &str = "word-processor.document";
-
-/// The first run waits for a companion until it has published actions:
-/// a surface of the companion's app holding none (still starting) does
-/// not count, and other apps' surfaces never stand in for it.
-#[test]
-fn a_companion_counts_once_it_has_published_actions() {
-    let companions = vec!["so.tilo.web-search".to_owned()];
-    let surface = |app: &str, actions: Vec<ExportedAction>| BrokerActionSurface {
-        peer_id: PEER,
-        provider: None,
-        app_id: app.into(),
-        cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
-        live: true,
-        actions,
-    };
-    let search = || {
-        descriptor(
-            "search",
-            "Search the web",
-            tilo_actions::OperationKind::Effect,
-            vec![],
-            Availability::Available,
-            vec![],
-        )
-    };
-    assert_eq!(missing_companions(&companions, &[]), companions);
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.notes", vec![search()])]),
-        companions
-    );
-    assert_eq!(
-        missing_companions(&companions, &[surface("so.tilo.web-search", vec![])]),
-        companions
-    );
-    assert!(
-        missing_companions(
-            &companions,
-            &[surface("so.tilo.web-search", vec![search()])]
-        )
-        .is_empty()
-    );
-}
 
 fn descriptor(
     action: &str,
@@ -453,6 +420,10 @@ fn descriptor(
 /// The document as the fake application holds it, plus the invoker's
 /// own view (its selection).
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent fact about the world a run meets, not a state machine"
+)]
 struct World {
     blocks: Vec<(String, String)>,
     selection: Option<String>,
@@ -493,6 +464,9 @@ struct World {
     /// A republished catalogue reaches the agent this many link polls
     /// after the step's result instead of with it.
     republish_after_polls: usize,
+    /// Chat publishes the conversation's message only this many link polls after the run started:
+    /// the agent's first catalogue holds none of it.
+    chat_late: Option<usize>,
     /// A child of the run is accepted at once and settles in its
     /// application this long after it started: a re-ask answers its
     /// terminal update from then on.
@@ -533,9 +507,8 @@ struct World {
     /// read whole by `read-letter` (a host-owned read, which no view
     /// settles after); zero publishes none.
     letters: usize,
-    /// A Browser and the web search beside it are published, and a capture
-    /// of the page answers with this content address; `None` publishes
-    /// neither.
+    /// A Browser is published, and a capture of the page answers with this
+    /// content address; `None` publishes neither.
     browser: Option<String>,
     /// The workspace also runs tilolang Board and Views, whose hosts take programs,
     /// and the conversation's reply lists the run's steps.
@@ -547,6 +520,9 @@ struct World {
     /// A conversation whose message this is: its reply is where the run
     /// records its turn, so `None` records nothing.
     chat: Option<String>,
+    /// Chat is closed: the workspace keeps the offers it last published, none of them
+    /// a message it publishes now.
+    chat_closed: bool,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -726,59 +702,54 @@ impl World {
                     tab("capture-page", "Capture the page", vec![]),
                 ],
             });
-            surfaces.push(BrokerActionSurface {
-                peer_id: SEARCH_PEER,
-                provider: None,
-                app_id: "so.tilo.web-search".into(),
-                cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
-                live: true,
-                actions: vec![ExportedAction {
-                    resource: "web.search:default".into(),
-                    resource_kind: "web.search".into(),
-                    resource_label: "Web search".into(),
-                    ..descriptor(
-                        "fetch",
-                        "Fetch a page's text",
-                        tilo_actions::OperationKind::Effect,
-                        vec![ActionParam::required("url", ParamType::Text, "The address")],
-                        Availability::Available,
-                        vec![],
-                    )
-                }],
-            });
         }
         if self.tilolang {
             surfaces.extend(programs::surfaces());
         }
+        // A conversation keeps every message it holds: one whose `record-work`
+        // the catalogue already offers, beside the one this run answers. Only
+        // the latter may be republished late, so the run's wait for it can be
+        // told from a workspace whose Chat publishes nothing at all.
+        // A closed Chat keeps the offers it last published, as the broker retains them
+        // until the app runs again.
+        let live = !self.chat_closed;
+        let conversation = |record: &'static str, message: &str| BrokerActionSurface {
+            peer_id: CHAT_RECORD_PEER,
+            provider: (!live).then(|| {
+                format!(
+                    "launchable-actions:{}:so.tilo.chat:{record}",
+                    Uuid::from_u128(1)
+                )
+            }),
+            app_id: "so.tilo.chat".into(),
+            cluster_id: Uuid::from_u128(1).to_string(),
+            record_id: record.into(),
+            live,
+            actions: vec![ExportedAction {
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                resource: format!("chat.messages/messages/{message}"),
+                resource_kind: "chat.messages".into(),
+                resource_label: "The conversation".into(),
+                ..descriptor(
+                    "record-work",
+                    "Record work",
+                    tilo_actions::OperationKind::Document,
+                    vec![
+                        ActionParam::required("message", ParamType::Text, "The message"),
+                        ActionParam::required("work", ParamType::Object, "How the work goes"),
+                        ActionParam::optional("say", ParamType::Text, "The reply's words"),
+                    ],
+                    Availability::Available,
+                    vec![],
+                )
+            }],
+        };
         if let Some(message) = &self.chat {
-            surfaces.push(BrokerActionSurface {
-                peer_id: CHAT_RECORD_PEER,
-                provider: None,
-                app_id: "so.tilo.chat".into(),
-                cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: "chat-1".into(),
-                live: true,
-                actions: vec![ExportedAction {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    resource: format!("chat.messages/messages/{message}"),
-                    resource_kind: "chat.messages".into(),
-                    resource_label: "The conversation".into(),
-                    ..descriptor(
-                        "record-work",
-                        "Record work",
-                        tilo_actions::OperationKind::Document,
-                        vec![
-                            ActionParam::required("message", ParamType::Text, "The message"),
-                            ActionParam::required("work", ParamType::Object, "How the work goes"),
-                            ActionParam::optional("say", ParamType::Text, "The reply's words"),
-                        ],
-                        Availability::Available,
-                        vec![],
-                    )
-                }],
-            });
+            surfaces.push(conversation("chat-1", message));
+            if self.chat_late.is_some() {
+                surfaces.push(conversation("chat-2", "earlier"));
+            }
         }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
@@ -1034,6 +1005,11 @@ struct Broker {
     holding: Vec<HeldReask>,
     /// A catalogue still on its way, and the polls until it arrives.
     late: Option<(usize, CollabEvent)>,
+    /// Wakes the agent's link when this host has more to deliver, so the
+    /// agent's waits sleep between deliveries instead of polling for them.
+    wake: crate::wire::TestWake,
+    /// When a wake is already on its way, so one due time is rung once.
+    wake_at: Option<ui::time::Instant>,
 }
 
 /// A native re-ask the fake host holds until its child moves on.
@@ -1126,11 +1102,15 @@ impl ui::collaboration::PeerTransport for Broker {
         self.events
             .extend(due.into_iter().map(|(_, _, event)| event));
         self.answer_held_reasks(now);
+        self.wake_when_due(now);
         if let Some((polls, event)) = self.late.take() {
             if polls == 0 {
                 self.events.push(event);
             } else {
                 self.late = Some((polls - 1, event));
+                // Another poll still has something to deliver: say so now,
+                // so the link reads it at once rather than on a timer.
+                self.wake.ring();
             }
         }
         std::mem::take(&mut self.events)
@@ -1192,7 +1172,7 @@ impl ui::collaboration::PeerTransport for Broker {
                 // loop must take it up after a view step.
                 if republish {
                     let catalogue = CollabEvent::ActionCatalogue {
-                        surfaces: self.world.borrow().surfaces(),
+                        change: CatalogueChange::snapshot(&self.world.borrow().surfaces()),
                     };
                     match self.world.borrow().republish_after_polls {
                         0 => self.events.push(catalogue),
@@ -1270,6 +1250,35 @@ impl Broker {
             Some((due, terminal)) if *due <= ui::time::now() => terminal.clone(),
             _ => tilo_actions::InvocationUpdate::Accepted { invocation },
         }
+    }
+
+    /// Ring the link when the first answer this host holds becomes due, as a
+    /// real host's answer arrives on its own. An answer already due needs no
+    /// wake: the next poll reads it.
+    fn wake_when_due(&mut self, now: ui::time::Instant) {
+        let due = self
+            .held
+            .iter()
+            .map(|(at, _, _)| *at)
+            .chain(self.holding.iter().map(|held| held.until))
+            // A child of the run moving on is news of its own.
+            .chain(self.world.borrow().settling.values().map(|(due, _)| *due))
+            .filter(|at| *at > now)
+            .min();
+        let Some(due) = due else {
+            self.wake_at = None;
+            return;
+        };
+        if self.wake_at == Some(due) {
+            return;
+        }
+        self.wake_at = Some(due);
+        let wake = self.wake.clone();
+        let wait = due.saturating_duration_since(now);
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            wake.ring();
+        });
     }
 
     /// Answer a native task's re-ask of a started child (by its stable
@@ -1490,6 +1499,56 @@ fn paced_fixture(
     execution_fixture(title, world, turns, pace, None)
 }
 
+/// The catalogue that publishes Chat's message late, when `world` publishes it so.
+fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
+    let polls = world.chat_late?;
+    let change = CatalogueChange::snapshot(&world.surfaces());
+    Some((polls, CollabEvent::ActionCatalogue { change }))
+}
+
+/// The surfaces the agent reads at its first turn. When Chat republishes this
+/// run's message late, every other message it holds is published already: what
+/// is missing is the reply this run records on.
+fn first_catalogue(world: &World) -> Vec<BrokerActionSurface> {
+    let mut surfaces = world.surfaces();
+    let answered = world
+        .chat
+        .as_ref()
+        .filter(|_| world.chat_late.is_some())
+        .map(|message| format!("chat.messages/messages/{message}"));
+    surfaces.retain(|surface| {
+        answered.as_ref().is_none_or(|resource| {
+            !surface
+                .actions
+                .iter()
+                .any(|action| &action.resource == resource)
+        })
+    });
+    surfaces
+}
+
+/// The link to the fake host, which wakes it when it has news to deliver as a
+/// real host does, instead of being polled for it.
+fn host_link(
+    world: &Rc<RefCell<World>>,
+    sent: &Rc<RefCell<Vec<CollabRequest>>>,
+) -> crate::wire::Link {
+    let (wake, rx) = crate::wire::test_wake();
+    crate::wire::test_link(
+        Broker {
+            world: world.clone(),
+            sent: sent.clone(),
+            events: Vec::new(),
+            held: Vec::new(),
+            late: late_chat(&world.borrow()),
+            holding: Vec::new(),
+            wake,
+            wake_at: None,
+        },
+        rx,
+    )
+}
+
 fn execution_fixture(
     title: &str,
     world: World,
@@ -1522,14 +1581,7 @@ fn execution_fixture(
         pace,
         emitted,
     });
-    let link = crate::wire::test_link(Broker {
-        world: world.clone(),
-        sent: sent.clone(),
-        events: Vec::new(),
-        held: Vec::new(),
-        late: None,
-        holding: Vec::new(),
-    });
+    let link = host_link(&world, &sent);
     let mut run = runtime_collab::TaskRunEnvelope {
         paused: None,
         model: None,
@@ -1547,7 +1599,7 @@ fn execution_fixture(
         spend: None,
     };
     bind_context(&mut run);
-    let surfaces = world.borrow().surfaces();
+    let surfaces = first_catalogue(&world.borrow());
     let session = Session {
         cfg: Config {
             agent_id: "agent-1".into(),
@@ -1564,7 +1616,6 @@ fn execution_fixture(
                 ui::permissions::KindSet::READ_UNDOABLE,
             ),
             content: ui::content::ContentStore::memory(),
-            companions: Vec::new(),
             provider: None,
             identity: None,
         },
@@ -1577,9 +1628,8 @@ fn execution_fixture(
         managed: false,
         task_deadline: None,
         native_task: None,
-        broker_surfaces: surfaces,
+        broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
-        awaiting_companions: Vec::new(),
         record: None,
         broker_revision: 0,
         catalogue_cache: None,
@@ -1587,6 +1637,7 @@ fn execution_fixture(
         outstanding: crate::session::outstanding::Outstanding::default(),
         failure_detail: None,
         spending: None,
+        web: None,
     };
     Fixture {
         session,
@@ -1628,6 +1679,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 
 #[path = "agent_loop/tests/anthropic_dialect.rs"]
 mod anthropic_dialect;
+#[path = "agent_loop/tests/catalogue_waits.rs"]
+mod catalogue_waits;
 #[path = "agent_loop/tests/follow_up.rs"]
 mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
@@ -1644,6 +1697,10 @@ mod programs;
 mod spending;
 #[path = "agent_loop/tests/text_answers.rs"]
 mod text_answers;
+#[path = "agent_loop/tests/turn_records.rs"]
+mod turn_records;
+#[path = "agent_loop/tests/web.rs"]
+mod web;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
@@ -1834,11 +1891,53 @@ fn a_run_with_no_model_says_so_and_never_blames_permissions() {
     let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
         panic!("a run with nothing to do fails: {:?}", terminal(&sent));
     };
-    assert!(message.contains("No model is set up"), "{message}");
+    assert!(
+        message.contains("no model is set up"),
+        "the reply says the one thing that fixes it: {message}"
+    );
     assert!(message.contains("Agent models"), "{message}");
+    assert_eq!(
+        message.matches("model").count(),
+        2,
+        "the missing model is said once, not twice: {message}"
+    );
     assert!(
         !message.to_lowercase().contains("permission"),
         "a missing model never reads as a permission: {message}"
+    );
+}
+
+/// The same run on a German desktop: the person reads the missing model, and
+/// where to choose one, in German, and the Settings page is named as it is
+/// named there.
+#[test]
+fn a_german_desktop_reads_the_missing_model_in_german() {
+    let _german = crate::i18n::chosen("de-DE");
+    let mut f = fixture("zzz", World::default(), Vec::new());
+    f.session.chooser = Chooser::new(false, Duration::from_secs(5));
+    f.session.run_task(&f.run).unwrap();
+    let sent = f.sent.borrow();
+    let notes = notes(&sent);
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("kein Modell") && note.contains("Agentenmodelle")),
+        "the run announces the missing model in German: {notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|note| note.contains("No model")),
+        "no note stays English on a German desktop: {notes:?}"
+    );
+    let runtime_collab::TaskRunUpdate::Failed { message } = terminal(&sent) else {
+        panic!("a run with nothing to do fails: {:?}", terminal(&sent));
+    };
+    assert!(
+        message.contains("Es ist kein Modell eingerichtet"),
+        "the reply says the one thing that fixes it, in German: {message}"
+    );
+    assert!(
+        message.contains("Einstellungen") && message.contains("Agentenmodelle"),
+        "the way to fix it names the German Settings page: {message}"
     );
 }
 
@@ -1854,138 +1953,6 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String,
             _ => None,
         })
         .collect()
-}
-
-/// The turn a run answers is recorded in its conversation: the reply is
-/// told it was taken at once, of every step, and — once, at the end — what
-/// the run said.
-#[test]
-fn a_run_records_its_turn_in_the_conversation() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![turn(
-            &[
-                invoke("append-paragraph", &serde_json::json!({"text": "Rain"})),
-                finish("Wrote it.", true),
-            ],
-            24,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let first = records.first().expect("the reply was told the run started");
-    assert_eq!(first["message"], "asked", "on the reply to the message");
-    assert_eq!(first["work"]["state"], "taken");
-    assert_eq!(first["work"]["route"], "model");
-    assert!(
-        first["work"]["why"]
-            .as_str()
-            .is_some_and(|why| !why.is_empty())
-    );
-    let last = records.last().unwrap();
-    assert_eq!(last["work"]["state"], "provider_complete");
-    assert_eq!(last["say"], "Wrote it.", "the reply's words, once");
-    let steps = last["work"]["trace"].as_array().unwrap();
-    assert_eq!(steps.len(), 1, "one step: {steps:?}");
-    assert_eq!(steps[0]["label"], "Append paragraph");
-    assert_eq!(steps[0]["resource"], "word-processor.document");
-    assert_eq!(steps[0]["outcome"], "applied");
-}
-
-/// A model or transport error ends the turn with what went wrong, and the conversation is told
-/// so: the reply's work ends `refused` carrying the reason, which is the row the page draws
-/// with a Retry. Nothing is silent.
-///
-/// The model is scripted (`Scripted`, the test transport): the run's first turn fails in
-/// transport, exactly as a provider that drops the stream does.
-#[test]
-fn a_run_whose_model_fails_records_the_failure_on_its_reply() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![vec![TurnEvent::Finished(Err(
-            "provider stream reset".into()
-        ))]],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let last = records.last().expect("the failed turn was recorded");
-    assert_eq!(
-        last["work"]["state"], "refused",
-        "the reply's work says the turn ended without an answer: {last:?}"
-    );
-    assert!(
-        last["say"].as_str().is_some_and(|say| !say.is_empty()),
-        "the reply says what happened, in the run's words: {last:?}"
-    );
-    assert!(
-        last["say"]
-            .as_str()
-            .is_some_and(|say| !say.contains("provider stream reset")),
-        "the reply never carries the transport's own error: {last:?}"
-    );
-    // The transport's error is the run's record, kept beside the reply's
-    // words for whoever debugs the failure, never the reply itself.
-    assert!(
-        last["work"]["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("provider stream reset")),
-        "the transport's error is the record: {last:?}"
-    );
-    assert!(
-        matches!(
-            terminal(&sent),
-            runtime_collab::TaskRunUpdate::Failed { .. }
-        ),
-        "the run tells the host it failed"
-    );
-}
-
-/// A run the person stops ends its turn: the reply says it was stopped, in
-/// the run's words, and the run tells the host it was cancelled.
-#[test]
-fn a_run_the_person_stops_ends_its_turn() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            cancel_after_steps: Some(1),
-            cancel_delay: Duration::from_millis(100),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke(
-                    "append-paragraph",
-                    &serde_json::json!({"text": "One"}),
-                )],
-                16,
-            ),
-            turn(&[finish("Done", true)], 16),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let last = records.last().expect("the turn was recorded");
-    assert_eq!(last["work"]["state"], "provider_cancelled");
-    assert!(
-        last["say"].as_str().is_some_and(|say| !say.is_empty()),
-        "the reply says why it stopped: {last:?}"
-    );
-    assert!(matches!(
-        terminal(&sent),
-        runtime_collab::TaskRunUpdate::Cancelled { .. }
-    ));
 }
 
 /// The terminal task report.
@@ -2083,6 +2050,8 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
                 "describe_operation",
                 "invoke",
                 "read_result",
+                "search_web",
+                "read_page",
                 "tilo",
                 "plan"
             ],
@@ -2642,11 +2611,11 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     assert!(f.world.borrow().steps.is_empty());
     assert!(f.session.turn.is_none());
     assert!(f.session.task_deadline.is_none());
-    // The person reads that the task ran out of time; the deadline's own
-    // wording is the run's record.
     assert!(
         matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
-        if message.contains("ran out of time") && !message.contains("explicit task time budget"))
+        if message == crate::i18n::t("agent-fail-time")),
+        "the person reads that the task ran out of time: {:?}",
+        terminal(&f.sent.borrow())
     );
 }
 

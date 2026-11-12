@@ -77,3 +77,70 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
         assert_eq!(read::page_block_snapshots(&replica, copy), copied_blocks);
     }
 }
+
+/// An agent writing in a note a window here shows, the way a person
+/// following it sees it: the window is open on the empty notebook, the agent
+/// makes the note and appends its paragraphs one change at a time, and the
+/// window follows into the note between them. Each paragraph the agent was
+/// told it wrote reads in both replicas, in order.
+#[test]
+fn an_agents_paragraphs_land_in_a_note_a_following_window_shows() {
+    use tilo_document::RichTextAction;
+    let mut app = crate::framework_support::notes();
+    let mut agent = app.peer_document();
+    let page = notes::PageId::new_v4();
+    crate::component_support::apply_to(
+        &mut agent,
+        &notes::actions::create_page_action(page, None, "Launch notes"),
+    )
+    .unwrap();
+    agent.commit();
+    let lines = [
+        "Launch notes, from Claude Code.",
+        "Each line lands in the workspace as I write it.",
+        "Following me puts this window in front of you.",
+        "A second invocation, a moment later.",
+    ];
+    for (index, line) in lines.iter().enumerate() {
+        crate::component_support::edit_page_body(
+            &mut agent,
+            page,
+            &RichTextAction::AppendParagraph {
+                text: (*line).to_owned(),
+            },
+        )
+        .unwrap();
+        agent.commit();
+        app.merge_peer(&mut agent).unwrap();
+        if index == 1 {
+            // Following brings the note forward in the window.
+            crate::framework_support::open(&mut app, page);
+        }
+    }
+    app.merge_peer(&mut agent).unwrap();
+    let texts = |doc: &automerge::AutoCommit| -> Vec<String> {
+        read::page_block_snapshots(doc, page)
+            .into_iter()
+            .map(|(_, text)| text)
+            .filter(|text| !text.is_empty())
+            .collect()
+    };
+    // The window wrote nothing back over them: every change the record
+    // holds past its genesis is the agent's.
+    let genesis = Some(tilo_actions::FrameworkChange::Genesis.change_message());
+    let agent_actor = agent.get_actor().clone();
+    assert!(
+        agent
+            .get_changes(&[])
+            .iter()
+            .all(|change| change.actor_id() == &agent_actor
+                || change.message() == genesis.as_deref()),
+        "following the agent made the window write"
+    );
+    assert_eq!(texts(&agent), lines, "the agent's replica");
+    assert_eq!(
+        app.read_document(|doc| texts(doc)),
+        lines,
+        "the window's replica"
+    );
+}

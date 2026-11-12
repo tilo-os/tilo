@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-fs"
 version = "0.1.0"
 edition = "2024"
@@ -78,76 +80,19 @@ name = "fs"
 path = "src/main.rs"
 required-features = ["filesystem"]
 
+# The content plane's integration tests: one binary, its files included as
+# modules by `tests/it.rs` (a file per binary linked the whole crate once
+# each), gated on the filesystem half they all drive.
 [[test]]
-name = "workspace_startup"
-path = "tests/workspace_startup.rs"
+name = "it"
+path = "tests/it.rs"
 required-features = ["filesystem"]
 
-[[test]]
-name = "collab_release_matrix"
-path = "tests/collab_release_matrix.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "corruption_matrix"
-path = "tests/corruption_matrix.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "held_memory"
-path = "tests/held_memory.rs"
-required-features = ["filesystem"]
-
+# A binary carries one global allocator, and this test's counts the daemon's
+# peak heap across its threads.
 [[test]]
 name = "document_media_footprint"
 path = "tests/document_media_footprint.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "integration_test"
-path = "tests/integration_test.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "performance_gate"
-path = "tests/performance_gate.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "performance_timing"
-path = "tests/performance_timing.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "native_tier1"
-path = "tests/native_tier1.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "iroh_idle"
-path = "tests/iroh_idle.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "native_sync_bench"
-path = "tests/native_sync_bench.rs"
-required-features = ["filesystem"]
-
-# The document media a session started from a build under test serves its apps
-# (`fs serve-media`): the connector's put and the window's read through it.
-[[test]]
-name = "session_media"
-path = "tests/session_media.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "gdrive-rystic-volume"
-path = "tests/gdrive_rystic_volume.rs"
-required-features = ["rystic-tests"]
-
-[[test]]
-name = "cloud_mount"
-path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
@@ -232,6 +177,15 @@ cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", opti
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
+# The tree's writer joins the session's record route as the Files app does, on
+# whatever host holds the tree: the daemon that mounts it, or a runtime that
+# mirrors it into a folder.
+runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
+# The bytes a device signs to join a workspace, as every app's identity does.
+tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
+# The tree's changes seal under the record's content keys, as an app's do.
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
@@ -239,6 +193,8 @@ image = { workspace = true, features = ["png"] }
 tilo-test-env = { path = "../../dev/test-env" }
 # A loopback relay for the idle endpoint test (tests/iroh_idle.rs).
 iroh-relay = { version = "1.0.3", features = ["server"] }
+# Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
+test-relay = { path = "../../dev/test-relay" }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
@@ -250,16 +206,9 @@ workspace = true
 fuser = { workspace = true, optional = true }
 
 # The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
-# pre-content placeholders. Linux-only kernel interfaces.
+# pre-content placeholders. Linux-only kernel interfaces, which the daemon
+# that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]
-# Certified external source/history admission lives only in the Linux daemon.
-# Portable content consumers do not pull native proof or RPC dependencies.
-runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
-# The bytes a device signs to join a workspace, as every app's identity does.
-tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
-# The tree's changes seal under the record's content keys, as an app's do.
-channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
 tokio-util = { workspace = true, features = ["compat"], optional = true }
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 

@@ -40,11 +40,26 @@ pub struct Contacts {
     pub removed: Set<ContactId>,
 }
 
+impl Contacts {
+    /// What the record holds: the contacts, and the ones removed so they stay removed.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "contacts.book",
-    label = "Contacts",
     children = Contacts::places,
-    search = Contacts::search
+    search = Contacts::search,
+    read_content = Contacts::read_document
 )]
 impl Contacts {
     /// New contact.

@@ -32,21 +32,10 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
-mod support;
-
-mod common;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -60,25 +49,26 @@ use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     ReplicaActor, Seed, SupervisorHost,
 };
-use tilo_browser_peer::{PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
+use tilo_relay_client::certify;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
     RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_core::remote::Heard;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
 };
 
-use common::catalogue;
-use support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
+use crate::common::catalogue;
+use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
 
 /// Plans the task `gated` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
@@ -145,6 +135,8 @@ async fn start_host(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
+            door: None,
+            link: None,
         })
         .await
         .unwrap();
@@ -195,7 +187,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
 
 /// One remote action from the browser to the host's agent supervisor.
 async fn call(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: Option<&mut AgentParticipant>,
     address: ActionAddress,
@@ -220,7 +212,7 @@ async fn call(
     .unwrap();
     let events = browser.events();
     browser
-        .send_remote_action(workspace(), host_device, frame)
+        .send(Cmd::RemoteAction(workspace(), host_device, frame))
         .unwrap();
     let mut agent = agent;
     wait_for("the host's receipt", || {
@@ -228,7 +220,7 @@ async fn call(
             agent.pump();
         }
         let receipt = events.drain().into_iter().find_map(|event| match event {
-            PeerEvent::RemoteAction { from, frame, .. } if from == host_device => {
+            Event::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
                 match RemoteActionFrame::decode(&frame).unwrap().message {
                     RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
                         Some(receipt)
@@ -236,7 +228,7 @@ async fn call(
                     _ => None,
                 }
             }
-            PeerEvent::RemoteActionUndeliverable { reason, .. } => {
+            Event::Remote(Heard::Undeliverable { reason, .. }) => {
                 panic!("undeliverable: {reason}")
             }
             _ => None,
@@ -254,7 +246,7 @@ fn completed(receipt: &InvocationReceipt) -> serde_json::Value {
 }
 
 async fn status(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: &mut AgentParticipant,
 ) -> AgentsStatus {
@@ -273,7 +265,7 @@ async fn status(
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
     agent: &mut AgentParticipant,
-    events: &tilo_browser_peer::PeerEvents,
+    (browser, events): (&Link, &tilo_session_client::Events),
     route: &DocumentRoute,
     page: &mut Replica,
     author: [u8; 32],
@@ -291,19 +283,37 @@ async fn receive_until(
             agent.peer().status().channels,
         );
         agent.pump();
+        let own = browser.engine().identity().device_cert.device_public_key;
+        let mut landed = false;
         for event in events.drain() {
-            if let PeerEvent::Document(document) = event
-                && document.route == *route
+            if let Event::Landed {
+                route: changed,
+                author: wrote,
+            } = event
+                && changed == *route
             {
-                assert_eq!(document.author, author, "only the agent edits here");
-                page.apply(&document.mutation().unwrap()).unwrap();
+                // The browser's own write lands in its replica too.
+                assert!(
+                    wrote.is_none_or(|wrote| wrote == author || wrote == own),
+                    "only the agent edits here"
+                );
+                landed = true;
             }
+        }
+        if landed
+            && let Ok(Some(bytes)) =
+                browser
+                    .engine()
+                    .record(&route.cluster_id, &route.app_id, &route.record)
+        {
+            page.apply(&collab_types::DocumentMutation::Snapshot(bytes))
+                .unwrap();
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-fn body(app: &impl common::Body) -> String {
+fn body(app: &impl crate::common::Body) -> String {
     app.body()
 }
 
@@ -313,7 +323,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
 
     // The supervisor hands each spawned agent to this thread, which drives
     // its participant (in a host, its own thread does).
@@ -331,7 +341,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -394,7 +404,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
     // Scratchpad keeps the workspace's one record: its package primary,
     // which travels as the route without a record id.
     let route = DocumentRoute {
@@ -403,7 +413,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         record: page.wire_record().to_owned(),
     };
     browser
-        .publish(route.clone(), &page.take_mutation().unwrap())
+        .write(route.clone(), &page.take_mutation().unwrap().unwrap())
         .unwrap();
     let receipt = browser.barrier().unwrap();
     wait_for("the page's record to be durable", || async {
@@ -414,7 +424,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
 
     // 3. The browser spawns the agent through the host, with a task that
     // edits the page's record through Scratchpad's own field edit.
-    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
+    let (note, arguments) = crate::common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
@@ -443,6 +453,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             host: host.iroh(),
             host_cert: host_cert.clone(),
             workspace: WORKSPACE.into(),
+            workspace_name: None,
             content: tilo_content::ContentStore::memory(),
         },
         identity,
@@ -459,7 +470,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // order, authored by the agent's device.
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -489,7 +500,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 5. The host keeps the agent to its delegated workspaces.
     agent
         .peer()
-        .join(tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap())
+        .send(Cmd::Join(
+            tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap(),
+        ))
         .unwrap();
     wait_for(
         "the host to refuse a workspace outside the delegation",
@@ -519,7 +532,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         )
         .await,
     );
-    let (note, arguments) = common::scratchpad_body("Second draft");
+    let (note, arguments) = crate::common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
         "record": route.record,
@@ -546,10 +559,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(held.agents[0].status, AgentStatus::Paused);
     assert_eq!(held.agents[0].tasks[1].state, TaskState::Queued);
     assert!(
-        !browser_events
-            .drain()
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Document(document) if document.route == route)),
+        !browser_events.drain().iter().any(
+            |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
+        ),
         "a paused agent edits nothing"
     );
     completed(
@@ -564,7 +576,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -587,7 +599,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // between them (a loop on a 20 ms interval took one step per pump).
     let steps: Vec<serde_json::Value> = (1..=10)
         .map(|n| {
-            let (note, arguments) = common::scratchpad_body(&format!("Step {n} of ten"));
+            let (note, arguments) = crate::common::scratchpad_body(&format!("Step {n} of ten"));
             serde_json::json!({
                 "app": SCRATCHPAD,
                 "record": route.record,
@@ -623,7 +635,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -634,7 +646,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 9. A plan that takes a while (a model call) is made beside the loop:
     // the loop goes on pumping meanwhile, and the plan's first step runs as
     // soon as it is ready.
-    let (note, arguments) = common::scratchpad_body("Planned beside the loop");
+    let (note, arguments) = crate::common::scratchpad_body("Planned beside the loop");
     let planned_steps = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
@@ -685,7 +697,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -699,7 +711,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // task's late plan is dropped. Each step goes through the agent's
     // action door while the loop pumps.
     let gated_edit = |text: &str| {
-        let (note, arguments) = common::scratchpad_body(text);
+        let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
             "record": route.record,
@@ -719,7 +731,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let no_edit = |what: &str| {
         assert!(
             !browser_events.drain().iter().any(
-                |event| matches!(event, PeerEvent::Document(document) if document.route == route)
+                |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
             ),
             "{what}"
         );
@@ -790,7 +802,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             );
             receive_until(
                 &mut agent,
-                &browser_events,
+                (&browser, &browser_events),
                 &route,
                 &mut page,
                 agent_cert.device_public_key,
@@ -833,7 +845,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, sealed) = common::member_documents(
+    let (readable, sealed) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),

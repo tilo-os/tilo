@@ -27,9 +27,9 @@ fn private_dir() -> tempfile::TempDir {
     root
 }
 
-/// A headless session started as `dist/dev/shell-run.sh` starts its first pass, with settings it
-/// cannot read, run until it serves its test-control socket and ended on SIGTERM. What it wrote to
-/// its stderr, line by line.
+/// A headless session started as `dist/dev/nested-session.sh` starts its first pass, with
+/// settings it cannot read, run until it serves its test-control socket and ended on SIGTERM.
+/// What it wrote to its stderr, line by line.
 fn session_log(rust_log: &str) -> Vec<String> {
     let runtime = private_dir();
     let home = tempfile::tempdir().expect("a home for the session");

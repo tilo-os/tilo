@@ -35,6 +35,8 @@ pub const LEAVE_WORKSPACE: &str = "leave-workspace";
 pub const DELETE_WORKSPACE: &str = "delete-workspace";
 /// The host action that makes a new workspace.
 pub const NEW_WORKSPACE: &str = "new-workspace";
+/// The host action that branches the workspace the person is in.
+pub const BRANCH_WORKSPACE: &str = "branch-workspace";
 /// The host action that opens the workspace's settings.
 pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
 /// The host action that locks the screen.
@@ -83,6 +85,15 @@ pub trait DesktopRules {
         Err(crate::i18n::t("desktop-cannot-delete-workspace"))
     }
 
+    /// Whether the person may branch the workspace `workspace` : they read everything it holds,
+    /// and may make a workspace of their own.
+    ///
+    /// # Errors
+    /// The refusal, in words for the person.
+    fn may_branch_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+        self.may_create_workspace()
+    }
+
     /// The person made `strip` : it is theirs from now on.
     fn made_strip(&self, _strip: StripId) {}
 
@@ -113,6 +124,14 @@ pub enum DesktopAsk {
         workspace: WorkspaceId,
         name: String,
     },
+    /// The person branched the workspace `source` into `workspace` , called `name` , made in the
+    /// slot `slot` : the host makes it, with what `source` holds, and puts it on the desk.
+    BranchWorkspace {
+        source: WorkspaceSlot,
+        slot: WorkspaceSlot,
+        workspace: WorkspaceId,
+        name: String,
+    },
     /// The person asked to report a problem.
     ReportProblem,
     /// A desktop shortcut the layers have no part in (search, quick settings, locking, the
@@ -133,6 +152,9 @@ pub enum DesktopAsk {
     /// The person took back the agent door's grant `id` in the overview of their Tilo
     /// (`tilo_actions::remote::agent_door::REVOKE`).
     RevokeAgentGrant(String),
+    /// The person pressed the agent of `client` in the overview of their Tilo: the host opens its
+    /// card beside the work, the same card its face opens anywhere else.
+    OpenAgent(String),
     /// The person asked for their account in Settings, where billing is too.
     AccountSettings,
 }

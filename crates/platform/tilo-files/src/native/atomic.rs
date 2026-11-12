@@ -107,8 +107,8 @@ pub use directory::StorageDirectory;
 pub use identity::{FileIdentity, VolumeIdentity};
 #[cfg(any(unix, windows))]
 pub use publication::{
-    Privacy, PublicationError, PublicationState, PublishMode, publication_state, publish_if_absent,
-    replace,
+    Privacy, PublicationError, PublicationState, PublishMode, append, publication_state,
+    publish_if_absent, replace,
 };
 
 use std::fs::{self, File};

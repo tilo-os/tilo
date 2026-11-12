@@ -168,20 +168,31 @@ d-zjw3anaz = Search trouble
 d-nnvco6w3 = Feed state
     .doc = How the subscriptions feed stands: `loading`, `done`, `failed` or empty.
 
-d-hycswkws = Feed trouble
-    .doc = Why the feed could not be fetched; empty while it went through.
+d-r3ksw6bn = Trouble
+    .doc = Why the client is not in step now: YouTube cannot be reached, or what it said could not be saved; empty while it is.
+
+d-qv7t2mza = Online
+    .doc = Whether YouTube answered the last time it was asked.
+
+d-thwdswkk-filter-online = Online
 
 d-tmam46un = Subscribe
     .doc = Subscribes to the channel, or unsubscribes: the button says which it will do.
 
 d-hcgvcroq = Subscribe
     .doc = Subscribes to the channel, or takes the subscription back.
+    .w-unsubscribe = Unsubscribe
+    .w-subscribe = Subscribe
 
 d-weyz2uyl = Like
     .doc = Likes the video, or takes the like back.
+    .w-unlike = Unlike
+    .w-like = Like
 
 d-yw4tuoq4 = Watch later
     .doc = Keeps the video to watch later, or takes it off the list.
+    .w-remove-from-watch-later = Remove from Watch later
+    .w-watch-later = Watch later
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.
@@ -200,9 +211,11 @@ d-wzt3qvyb = Delete history
 
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
+    .w-type-something-to-search-for = Type something to search for
 
 d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
+    .w-no-search-is-showing = No search is showing
 
 d-hpjdxg6k = Refresh
     .doc = Asks the service for the newest videos of each subscribed channel: what the subscriptions feed shows.
@@ -215,6 +228,9 @@ d-khblapap = Trending
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
+
+d-qgtk64v3 = Item clock
+    .w-live = Live
 
 d-5ozzrcey = Toggle subscription~present
 
@@ -244,7 +260,10 @@ d-mufcicuu = Feed
     .w-nothing-new-yet = Nothing new yet
     .w-ask-youtube-for-the-newest-videos = Ask YouTube for the newest videos of the channels you follow
     .w-refresh = Refresh
-    .w-youtube-could-not-be-reached = YouTube could not be reached
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Can't reach { $name }
+    .w-last-fetched = { $reason }. Last fetched { $fetched }
+    .w-try-again = Try again
 
 d-dfz6u5sa = Video grid
 

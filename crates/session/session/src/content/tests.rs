@@ -23,13 +23,13 @@ use std::time::{Duration, Instant};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::record_content::{ContentSources, ContentState};
-use tilo_action_broker::route::CrdtRoute;
+use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId, workspace_topic_id};
 
 use super::Plane;
-use crate::platform::plane::Cmd;
+use crate::sync::Cmd;
 
 /// The app whose record references the content.
 const APP: &str = "so.tilo.notes";
@@ -54,7 +54,7 @@ fn topic() -> WorkspaceId {
 struct Device {
     plane: Arc<Plane>,
     address: EndpointId,
-    said: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
 }
 
 impl Device {
@@ -63,7 +63,7 @@ impl Device {
         let address = iroh::SecretKey::from_bytes(&[seed; 32]).public();
         let plane = Plane::open(state);
         let (said, spoken) = tokio::sync::mpsc::unbounded_channel();
-        plane.bind(said, address);
+        plane.bind(crate::sync::HostOutbox::of(said), address);
         Self {
             plane,
             address,
@@ -89,11 +89,11 @@ impl Device {
     fn carry(&mut self, other: &Self) {
         while let Ok(outgoing) = self.said.try_recv() {
             match outgoing {
-                Cmd::Publish { ws, msg } => {
+                crate::sync::HostCmd::Plane(Cmd::Publish { ws, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
                     other.plane.heard(ws, WORKSPACE, self.address, &msg);
                 }
-                Cmd::Content(RecordContentDelivery { ws, target, msg }) => {
+                crate::sync::HostCmd::Content(RecordContentDelivery { ws, target, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
                     assert!(
                         matches!(

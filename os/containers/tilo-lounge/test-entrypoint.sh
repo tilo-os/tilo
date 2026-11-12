@@ -118,7 +118,8 @@ lounge \
   TILO_ROOMS_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_ROLES_FILE=/run/tilo-rooms/roles.json \
-  TILO_ROOMS_OWN_WORKSPACES=10 \
+  TILO_ROOMS_PERSON_STORAGE_GB=10 \
+  TILO_ROOMS_IROH_LISTEN=0.0.0.0:7704 \
   TILO_ROOMS_FETCH_PROXY=0 \
   TILO_ROOMS_WEB=127.0.0.1:0 \
   TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
@@ -129,6 +130,7 @@ lounge \
   TILO_ROOMS_MODERATION_MODEL=claude-test \
   TILO_ROOMS_DISCORD_CLIENT_ID=1559266815148953650 \
   TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
+  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
   >"$work/args" || fail "the populated deployment did not start"
 cat > "$work/want" <<'EXPECTED'
 --workspace-name
@@ -165,9 +167,11 @@ pair --discord-client-id 1559266815148953650 || fail "the Discord client id did 
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
 pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
 pair --discord-authorize-url https://discord.com/oauth2/authorize || fail "the Discord consent page did not reach the host"
+pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
 pair --inactive-after-days 7 || fail "the inactivity setting did not reach the host"
 pair --roles-file /run/tilo-rooms/roles.json || fail "the roles file did not reach the host"
-pair --own-workspaces 10 || fail "the own workspaces' size did not reach the host"
+pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
+pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 # Every workspace's arrangement is its shared desktop record: the host has no
 # layout flag, so a deployment that still names one (eu1 does) starts without
@@ -176,6 +180,14 @@ grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout
 grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
+
+# Where Discord's API is reaches the host on its own, without a sign-in set
+# up: the bridge's worker is pointed at it too, so one test server serves both.
+lounge \
+  TILO_ROOMS_DISCORD_API_BASE=http://127.0.0.1:9090 \
+  >"$work/args" || fail "a deployment naming Discord's API does not start"
+pair --discord-api-base http://127.0.0.1:9090 || fail "the Discord API base did not reach the host"
+grep -Fqx -- --discord-client-id "$work/args" && fail "an API base asked for a sign-in"
 
 # eu1's own environment, unchanged but for the image: it takes people by
 # invitation, and names no description. The workspace stays listed, its door
@@ -207,10 +219,37 @@ pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the
 # it does not read does.
 fails_with lounge TILO_ROOMS_ADMISSION=anyone
 grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
-fails_with lounge TILO_ROOMS_OWN_WORKSPACES=lots
-grep -Fq TILO_ROOMS_OWN_WORKSPACES "$work/err" || fail "the refusal does not name the setting"
+fails_with lounge TILO_ROOMS_PERSON_STORAGE_GB=lots
+grep -Fq TILO_ROOMS_PERSON_STORAGE_GB "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
 grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
+
+# A mounted certificate replaces the development one, chain and key in the
+# host's one flag; one without the other, or a path the flag cannot carry,
+# stops the start.
+lounge \
+  TILO_ROOMS_TLS_CERT=/run/tls/tls.crt \
+  TILO_ROOMS_TLS_KEY=/run/tls/tls.key \
+  >"$work/args" || fail "a deployment with a certificate did not start"
+pair --tls files:/run/tls/tls.crt,/run/tls/tls.key || fail "the mounted certificate did not reach the host"
+pair --tls dev && fail "the development certificate stayed beside the mounted one"
+fails_with lounge TILO_ROOMS_TLS_CERT=/run/tls/tls.crt
+grep -Fq TILO_ROOMS_TLS_KEY "$work/err" || fail "the refusal does not name the missing key"
+fails_with lounge TILO_ROOMS_TLS_KEY=/run/tls/tls.key
+grep -Fq TILO_ROOMS_TLS_CERT "$work/err" || fail "the refusal does not name the missing certificate"
+fails_with lounge TILO_ROOMS_TLS_CERT=/run/tls/a,b.crt TILO_ROOMS_TLS_KEY=/run/tls/tls.key
+grep -Fq comma "$work/err" || fail "a path with a comma was not refused"
+
+# Pages reach the host over WebTransport at the address and origin named
+# together; one without the other stops the start.
+lounge \
+  TILO_ROOMS_LINK=0.0.0.0:8443 \
+  TILO_ROOMS_LINK_ORIGIN=https://live.example:443/ \
+  >"$work/args" || fail "a deployment with a WebTransport listener did not start"
+pair --link-listen 0.0.0.0:8443 || fail "the WebTransport address did not reach the host"
+pair --link-origin https://live.example:443 || fail "the WebTransport origin did not reach the host"
+fails_with lounge TILO_ROOMS_LINK=0.0.0.0:8443
+grep -Fq TILO_ROOMS_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
 
 # Without what it cannot invent, it names the setting and starts nothing.
 for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIGIN TILO_ROOMS_WEB_ENTRY; do

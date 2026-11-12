@@ -10,7 +10,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        // In memory: the projection holds only directories on a filesystem
+        // with a proven local permission model, which a test environment's
+        // temporary root need not be (a container's FUSE overlay is not).
+        let root = tilo_test_env::memory_tempdir().unwrap();
         // The fixture stands under a sticky world-writable directory, as a
         // test environment's temporary root does: nobody else can move or
         // replace the home held below it.

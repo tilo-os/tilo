@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The env tool catalog's release: on stable, the tools env-tools.sh
+# The env tool catalog's release: on a release tag, the tools env-tools.sh
 # built, sealed for the publisher without its key, are signed with TAPP_PUBLISHER_IDENTITY by a
 # step that builds nothing, put in one image for both platforms, signed with the release key and
 # published once as registry.tilo.so/tilo/env-tools:<runtime tag>-<catalog fingerprint>, which
@@ -75,7 +75,7 @@ case ${1:-} in
     fi
     grep -qE 'manifest unknown|name unknown|not found' "$scratch/plan-error" \
       || die "could not ask the registry for $repository:$tag: $(tail -n 1 "$scratch/plan-error")"
-    # On stable the env-runtime was released before this step (release-env-runtime), so a runtime
+    # A release's env-runtime is published before this step (release-env-runtime), so a runtime
     # that isn't there is an error, not a reason to build on a preview.
     status=0
     bash os/dev/fetch-env-runtime.sh "$out/runtime" || status=$?

@@ -47,6 +47,7 @@ use crate::view::{
     ResourcesPane, Shared,
 };
 use ui::charts::RollingSeries;
+use ui::widget::DrawChild;
 
 /// A process is only the same action resource for the lifetime identified by
 /// its kernel start-time tick.  In particular, do not use a bare PID here:
@@ -73,11 +74,11 @@ pub enum Tab {
 impl Tab {
     const ALL: [Self; 2] = [Self::Processes, Self::Resources];
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Processes => "Processes",
-            Self::Resources => "Resources",
-        }
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            Self::Processes => "monitor-a11y-processes",
+            Self::Resources => "monitor-tab-resources",
+        })
     }
 }
 
@@ -1666,7 +1667,7 @@ impl Widget for MonitorApp {
         presence: &PresenceCtx,
     ) {
         self.shell
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
@@ -112,6 +113,37 @@ impl From<crate::host::HostError> for RelayError {
 /// The identity a relay runs with: a host's.
 pub use crate::host::HostIdentity as RelayIdentity;
 
+/// `identity` with the root-signed revocations persisted at `state_root`
+/// applied, each verified: what a host reads when it starts, so a device its
+/// root revoked is refused as it connects instead of only after it is in.
+///
+/// # Errors
+///
+/// Returns an error if the log cannot be read, or holds an entry that does
+/// not verify or contradicts one already in `identity`.
+pub fn with_persisted_revocations(
+    identity: RelayIdentity,
+    state_root: &std::path::Path,
+) -> anyhow::Result<RelayIdentity> {
+    let RelayIdentity {
+        user_public_key,
+        device_signing_key,
+        device_cert,
+        mut revocations,
+    } = identity;
+    for entry in crate::store::load_revocations(state_root)? {
+        revocations
+            .insert(entry)
+            .context("verify persisted relay revocation")?;
+    }
+    Ok(RelayIdentity {
+        user_public_key,
+        device_signing_key,
+        device_cert,
+        revocations,
+    })
+}
+
 /// What an embedder plugs into a relay it starts.
 struct Planes {
     /// Answers remote-action frames addressed to this host, see
@@ -160,6 +192,8 @@ pub struct Relay {
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// What this host keeps for each workspace it serves.
+    content: Arc<tilo_content::WorkspaceStores>,
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
@@ -167,13 +201,6 @@ pub struct Relay {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
-    /// The relay the host's pages reach it through, as they are told it: its
-    /// own packet relay, or the one it was configured with. A page has no UDP
-    /// socket, so a relay is the only way it reaches its host, and this is the
-    /// configuration's answer — an endpoint reports a relay only once it has
-    /// connected to it, which a start that restarts on kept state outruns.
-    #[cfg(feature = "web")]
-    pub(crate) pages_reach: Option<iroh::RelayUrl>,
 }
 
 /// The relay state the page's pre-session routes answer with.
@@ -190,6 +217,25 @@ impl Relay {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// This host's channel to the person's approving devices: where a
+    /// question about an action it runs for one of their agents is answered.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn confirmations(&self) -> crate::certification::CertificationProtocol {
+        self.web.certification.clone()
+    }
+
+    /// The stand-in certificate and key this host keeps for `user`, when it
+    /// keeps a live one: what it approves for them with.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn stand_in(
+        &self,
+        user: &[u8; 32],
+    ) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+        crate::web::stand_in_for(self.state_root(), user)
     }
 
     /// Name the device of the session beside this node (the shell that runs
@@ -442,6 +488,13 @@ impl Relay {
             app_serving,
             shell_payloads,
         } = planes;
+        // The host's one content store per workspace: the app-serving plane's
+        // when it brings one (its uploads and app workers keep there), so
+        // everything this host keeps for a workspace is in one place.
+        let content = app_serving
+            .as_ref()
+            .and_then(|plane| plane.content())
+            .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
@@ -494,10 +547,9 @@ impl Relay {
             }
             None => (None, relay_mode),
         };
-        #[cfg(feature = "web")]
-        let pages_reach = relay_mode
-            .as_ref()
-            .and_then(|mode| mode.relay_map().urls::<Vec<_>>().into_iter().next());
+        // A host told to use no relay never reaches one: waiting for it below
+        // would only hold every start back by the whole wait.
+        let relayless = endpoint.is_none() && matches!(relay_mode, Some(iroh::RelayMode::Disabled));
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -523,6 +575,14 @@ impl Relay {
         })
         .transpose()?
         .map(Arc::new);
+        // Where this host is dialled — what each workspace's governance names of
+        // it, and what a link it hands out carries — is the relay, which the
+        // endpoint knows only once it has connected to one. The workspaces opened
+        // below name it straight away, and a host that has none yet names it when
+        // it makes its first, so wait for the relay before serving either.
+        if !relayless {
+            tilo_room_host::workspaces::await_relay(&endpoint).await;
+        }
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
@@ -530,7 +590,7 @@ impl Relay {
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,
-                apps: app_serving,
+                apps: app_serving.clone(),
                 shell_payloads,
             },
             identity.clone(),
@@ -563,6 +623,7 @@ impl Relay {
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: handler.autobind.clone(),
             agents: handler.agents.clone(),
+            environments: handler.environments.clone(),
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
@@ -575,6 +636,9 @@ impl Relay {
             live.clone(),
             Some(workspaces.clone()),
         );
+        if let Some(governed) = &governed {
+            certification.keep_issued_in(governed.clone());
+        }
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]
@@ -607,6 +671,39 @@ impl Relay {
             let mut tasks = lock_background_tasks(&background_tasks);
             tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
         }
+        // Members read what this host keeps for their workspace from its
+        // content, and the files of the workspaces it governs are kept there
+        // so a member that comes up after the one that wrote them left reads
+        // the same bytes from this host alone. What no record of a workspace
+        // names any more is let go of, so replaced files do not pile up.
+        if let Some(governed) = &governed {
+            governed.serve_content(Arc::new(crate::content::StoresContent(Arc::clone(
+                &content,
+            ))));
+            let files = crate::files_content::FilesContent::new(
+                governed.clone(),
+                identity.device_cert.device_public_key,
+                Arc::clone(&content),
+            );
+            push_background_task(&background_tasks, tokio::spawn(files.run()));
+            push_background_task(
+                &background_tasks,
+                tokio::spawn(crate::content::collection::run(
+                    governed.clone(),
+                    Arc::clone(&content),
+                )),
+            );
+            // A workspace its owner deleted takes its content and its app
+            // workers with it.
+            push_background_task(
+                &background_tasks,
+                tokio::spawn(crate::content::forget_deleted(
+                    governed.clone(),
+                    Arc::clone(&content),
+                    app_serving,
+                )),
+            );
+        }
         // The host is a member of every workspace it holds: its own device is on
         // those rosters, so it reads and serves them as any participant does.
         for workspace in workspaces.lock().await.values() {
@@ -628,10 +725,9 @@ impl Relay {
             full_replica: full_replica.clone(),
             web,
             workspaces: governed,
+            content,
             _channels: channels,
             packet_server: packet_relay,
-            #[cfg(feature = "web")]
-            pages_reach,
         })
     }
 
@@ -775,10 +871,42 @@ impl Relay {
             .await?)
     }
 
+    /// Where a plane hands a frame to a device of one of its workspaces after
+    /// answering its caller itself (a page action the person allowed, running
+    /// on the window that refused it): this host's own delivery, stamped as
+    /// every frame it forwards is.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime, where there is nothing to deliver on.
+    #[must_use]
+    pub fn hand(&self) -> crate::app_serving::Hand {
+        crate::app_serving::Hand::new(
+            self.sessions.workspaces.clone(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
     /// The workspaces this relay governs, when it hosts the workspace authority.
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
+    }
+
+    /// The devices this relay certified for its browser environments, and the
+    /// one record each reaches ([`crate::environment`]): what the relay
+    /// confines each environment to when it places it, and what every plane of
+    /// its workspaces asks before it lets one in.
+    #[must_use]
+    pub fn environments(&self) -> crate::environment::EnvironmentRegistry {
+        self.sessions.handler.environments.clone()
+    }
+
+    /// What this host keeps for each workspace it serves: its one content
+    /// store per workspace.
+    #[must_use]
+    pub fn content(&self) -> Arc<tilo_content::WorkspaceStores> {
+        Arc::clone(&self.content)
     }
 
     /// Where this relay keeps its state.
@@ -924,6 +1052,7 @@ async fn bind_endpoint(
         None => Endpoint::builder(presets::N0),
     };
     builder
+        .transport_config(tilo_relay_client::host::transport())
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
@@ -1131,6 +1260,7 @@ struct DiscoveryProtocol {
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
     agents: crate::peer::AgentRegistry,
+    environments: crate::environment::EnvironmentRegistry,
 }
 
 impl DiscoveryProtocol {
@@ -1140,6 +1270,7 @@ impl DiscoveryProtocol {
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
 }
@@ -1709,6 +1840,9 @@ mod tests {
                     home_peer_bundle: bundle_path,
                     device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                     services: crate::mesh::ServiceCapabilities::home_peer(),
+                    // The relay runs its own packet relay on this machine's loopback, as the
+                    // tests' hosts do: nothing here reaches number 0.
+                    packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                     ..RelayConfig::default()
                 },
                 RelayIdentity {
@@ -1726,7 +1860,7 @@ mod tests {
                 host.public_key.as_slice(),
                 "relay transport discovery must not collide with the filesystem node"
             );
-            let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let client_endpoint = test_relay::direct_endpoint().await;
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),

@@ -651,6 +651,10 @@ class PageActions(unittest.TestCase):
         self.assertTrue(documents, every)
         self.assertEqual([e for e in documents if e.get('state') == 'pending'], [], documents)
 
+
+
+
+
     def test_a_frame_is_named_the_way_its_outline_writes_it(self):
         self.h.navigate(self.url + '/framed')
         printed = re.search(r'iframe "Payment form" \[frame=(\d+)\]', self.outline()).group(1)
@@ -683,6 +687,12 @@ class PageActions(unittest.TestCase):
         self.h.navigate(self.url + '/framed')
         inside = self.ok('outline', frame='1')
         pad = self.ref(inside['outline'], 'canvas')
+        # Where the canvas is drawn in the frame's own document, read from the
+        # page: the form above it is the fixture's to change, and the point a
+        # step names is measured from the canvas.
+        corner = self.main_world('(frame => { const box = frame.contentDocument'
+                                 '.getElementById("pad").getBoundingClientRect();'
+                                 ' return [box.left, box.top]; })(document.querySelector("iframe"))')
         # A step naming an element of a frame is placed by the box the frame
         # gives it, moved by where the frame sits in the page, as a click in
         # that frame is: the press reaches the frame's own element, never the
@@ -693,10 +703,12 @@ class PageActions(unittest.TestCase):
         pressed = self.main_world('(frame => frame && frame.contentDocument'
                                   '.getElementById("pressed").textContent)'
                                   '(document.querySelector("iframe"))')
-        # The canvas's own box starts 8 by 29 into the frame's document, which
-        # starts at the frame's own client origin, so a point 5 by 5 into the
-        # canvas is 13 by 34 of the view, as the frame's own element reads it.
-        self.assertEqual(pressed, 'pressed 13,34', 'the press reached the frame\'s own element')
+        # The canvas's own box, as the frame's document reads it, moved by the
+        # point named in the step: the frame's place in the page is what takes
+        # that point to the page, so a place measured wrong lands elsewhere
+        # than the canvas and the page hears no press at all.
+        self.assertEqual(pressed, f'pressed {round(corner[0] + 5)},{round(corner[1] + 5)}',
+                         'the press reached the frame\'s own element')
         wrong = self.page('pointer', button='left', steps=[dict(kind='down', element=pad, frame='2', x=5, y=5)])
         self.assertEqual((wrong['ok'], wrong['code']), (False, 'no_frame'), wrong)
 

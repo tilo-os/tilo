@@ -9,6 +9,7 @@ use crate::pictures::{Pictures, Shown};
 use crate::widget::Widget;
 
 use super::{ImageViewer, PictureSource};
+use crate::widget::DrawChild;
 
 /// A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to the
 /// whole picture. It fills its box; the picture is letterboxed inside it.
@@ -166,7 +167,7 @@ impl Widget for ZoomableImage {
         presence: &crate::presence::PresenceCtx,
     ) {
         if let Some(viewer) = &mut self.viewer {
-            viewer.draw(scene, transform, text, theme, presence);
+            viewer.draw_child(scene, transform, text, theme, presence);
         }
     }
 

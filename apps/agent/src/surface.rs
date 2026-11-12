@@ -294,43 +294,12 @@ impl Offer {
     }
 }
 
-/// Convert the broker's permission-filtered, live catalogue into the same
-/// inert offers the planner already consumes. No application registry or
-/// document reconstruction is involved: arbitrary apps appear here solely
-/// because they published a descriptor to the authenticated broker.
-///
-/// Accepts either the action host's fetched [`tilo_actions::remote::CataloguePage`]
-/// or the broker's pushed [`ui::collaboration::BrokerActionSurface`] directory.
-pub fn broker_offers<C: BrokerCatalogue + ?Sized>(catalogue: &C) -> Vec<Offer> {
-    catalogue.broker_offers()
-}
-
-/// A live, permission-filtered action directory the broker supplies.
-pub trait BrokerCatalogue {
-    /// Every live action it names, as planner offers.
-    fn broker_offers(&self) -> Vec<Offer>;
-}
-
-impl BrokerCatalogue for tilo_actions::remote::CataloguePage {
-    fn broker_offers(&self) -> Vec<Offer> {
-        catalogue_page_offers(self)
-    }
-}
-
-impl BrokerCatalogue for [ui::collaboration::BrokerActionSurface] {
-    fn broker_offers(&self) -> Vec<Offer> {
-        surface_offers(self)
-    }
-}
-
-impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
-    fn broker_offers(&self) -> Vec<Offer> {
-        surface_offers(self)
-    }
-}
-
-/// Offers from the broker's pushed directory, including inert closed-app routes.
-fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+/// Convert the broker's permission-filtered catalogue into the same inert
+/// offers the planner already consumes, including closed apps' inert routes.
+/// No application registry or document reconstruction is involved:
+/// arbitrary apps appear here solely because they published a descriptor to
+/// the authenticated broker.
+pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
     surfaces
         .iter()
         .filter(|surface| surface.live || surface.provider.is_some())
@@ -346,33 +315,6 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                     view: None,
                     ..action.descriptor(tilo_actions::ExecutionLocus::ServerPreferred)
                 },
-            })
-        })
-        .collect()
-}
-
-fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
-    catalogue
-        .rows
-        .iter()
-        .filter_map(|entry| {
-            // A live action names a connection. Closed applications and
-            // workspace actions retain their explicit stable route instead.
-            let peer = entry.provider.parse::<u64>().ok();
-            if peer.is_none()
-                && tilo_actions::remote::provider_workspace(&entry.provider).is_none()
-                && !entry.provider.starts_with("launch:")
-                && tilo_actions::remote::application_provider(&entry.provider).is_none()
-            {
-                return None;
-            }
-            let mut descriptor = entry.action.clone()?;
-            descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
-            Some(Offer {
-                app: entry.app_id.clone(),
-                broker_peer_id: peer,
-                broker_provider: peer.is_none().then(|| entry.provider.clone()),
-                descriptor,
             })
         })
         .collect()
@@ -525,30 +467,40 @@ pub fn quoted_literal(rest: &str) -> Option<String> {
     }
 }
 
-/// How well an offer answers `words`: how many of them the app's own labels
-/// carry. Zero means it does not answer at all.
-fn score(offer: &Offer, words: &[String]) -> usize {
+/// How well an offer answers `words`: how many of them landed on the
+/// operation, and how many named the thing it acts on.
+///
+/// The first is what makes an offer a candidate at all. The second only
+/// tells candidates apart: a request that says where it wants something done
+/// ("what is on my task list?") names the thing — the conversation, the
+/// document, the file — and every operation offered on that thing would
+/// otherwise score the same and be listed as an answer. Words naming where
+/// are not words naming what to do.
+fn score(offer: &Offer, words: &[String]) -> (usize, usize) {
     let action = offer.descriptor.action_label.to_lowercase();
     let resource = offer.descriptor.resource_label.to_lowercase();
     let kind = offer.descriptor.resource_kind.to_lowercase();
-    words
-        .iter()
-        .filter(|w| {
-            // The verb has to land on the operation. Matching only the
-            // thing being acted on says which file, never what to do to it.
-            // A word naming one of its choices (an alignment) lands on it
-            // too.
-            action.contains(w.as_str())
-                || resource.contains(w.as_str())
-                || kind.contains(w.as_str())
-                || offer.descriptor.params.iter().any(|param| {
-                    param
-                        .choices
-                        .iter()
-                        .any(|choice| choice.to_lowercase() == spelled(w))
-                })
-        })
-        .count()
+    let mut acted = 0usize;
+    let mut placed = 0usize;
+    for w in words {
+        // A word naming one of its choices (an alignment) lands on the
+        // operation too.
+        let on_action = action.contains(w.as_str())
+            || kind.contains(w.as_str())
+            || offer.descriptor.params.iter().any(|param| {
+                param
+                    .choices
+                    .iter()
+                    .any(|choice| choice.to_lowercase() == spelled(w))
+            });
+        if on_action {
+            acted += 1;
+        }
+        if resource.contains(w.as_str()) {
+            placed += 1;
+        }
+    }
+    (acted, placed)
 }
 
 /// What the deterministic floor decided, when it could not decide.
@@ -576,19 +528,27 @@ impl NoMatch {
     #[must_use]
     pub fn explanation(&self) -> String {
         match self {
-            Self::Nothing => "No published action carries the words of the request.".to_owned(),
-            Self::Ambiguous(labels) if labels.is_empty() => {
-                "More than one published action answers it.".to_owned()
-            }
+            Self::Nothing => crate::i18n::t("agent-match-nothing"),
+            Self::Ambiguous(labels) if labels.is_empty() => crate::i18n::t("agent-match-several"),
             Self::Ambiguous(labels) => {
-                format!(
-                    "More than one published action answers it: {}.",
-                    labels.join(", ")
-                )
+                let mut alternatives = labels
+                    .iter()
+                    .map(|label| label.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                let mut joined = alternatives.next().unwrap_or_default();
+                for label in alternatives {
+                    joined = crate::i18n::t_args(
+                        "agent-match-or",
+                        &[("a", joined.as_str().into()), ("b", label.as_str().into())],
+                    );
+                }
+                crate::i18n::t_args("agent-match-one-of", &[("actions", joined.into())])
             }
-            Self::NeedsText(label) => {
-                format!("“{label}” needs the text to work with, and the request quotes none.")
-            }
+            Self::NeedsText(label) => crate::i18n::t_args(
+                "agent-match-needs-text",
+                &[("label", label.as_str().into())],
+            ),
         }
     }
 }
@@ -731,7 +691,7 @@ pub fn from_verbs<'a>(
 fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
     let places = place_rows(offers);
     let mut best: Vec<&Offer> = Vec::new();
-    let mut best_score = 0usize;
+    let mut best_score = (0usize, 0usize);
     for offer in offers {
         // A paragraph published as a place answers by what it does, never
         // by what it says: its words name where, not what to do.
@@ -741,7 +701,7 @@ fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
             continue;
         }
         let s = score(offer, words);
-        if s == 0 {
+        if s.0 == 0 {
             continue;
         }
         if s > best_score {
@@ -920,7 +880,7 @@ mod tests {
             }))
             .unwrap()
         };
-        let offers = broker_offers(&vec![make("first"), make("second")]);
+        let offers = broker_offers([make("first"), make("second")].as_slice());
         assert_eq!(offers.len(), 2);
         assert_ne!(offers[0].id(), offers[1].id());
         for (offer, record) in offers.iter().zip(["first", "second"]) {
@@ -942,55 +902,6 @@ mod tests {
         {
             let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
             assert_eq!(decode_address(&encode_address(&a)), Some(a));
-        }
-
-        {
-            let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
-                provider: peer_id.to_string(),
-                app_id: "so.tilo.calculator".into(),
-                parent_resource: String::new(),
-                resource: tilo_actions::remote::CatalogueResource {
-                    id: "calculator.document".into(),
-                    kind: "calculator.document".into(),
-                    label: "Calculator".into(),
-                    presentation: None,
-                },
-                has_children: false,
-                visibility: None,
-                action: Some(ActionDescriptor {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    address: ActionAddress::new("calculator.document", "clear"),
-                    resource_kind: "calculator.document".into(),
-                    resource_label: "Calculator".into(),
-                    action_label: "Clear".into(),
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: None,
-                    locus: tilo_actions::ExecutionLocus::ClientLocal,
-                    kind: tilo_actions::OperationKind::Effect,
-                    contract: tilo_actions::ActionContract::default(),
-                    params: Vec::new(),
-                    input: tilo_actions::InputSpec::None,
-                    view: None,
-                }),
-            };
-            let catalogue = tilo_actions::remote::CataloguePage {
-                revision: "1".into(),
-                rows: vec![entry(41), entry(42)],
-                ..tilo_actions::remote::CataloguePage::default()
-            };
-            let offers = broker_offers(&catalogue);
-            assert_eq!(offers.len(), 2);
-            assert_ne!(offers[0].id(), offers[1].id());
-            assert_eq!(
-                find(&offers, &offers[0].id()).unwrap().broker_peer_id,
-                Some(41)
-            );
-            assert_eq!(
-                find(&offers, &offers[1].id()).unwrap().broker_peer_id,
-                Some(42)
-            );
         }
 
         {
@@ -1212,5 +1123,59 @@ mod tests {
                 view: None,
             },
         }
+    }
+
+    /// Offers published on `resource`, labelled `label`, all carrying the
+    /// resource label `where`: what a workspace makes of operations offered
+    /// on a message, a paragraph or a file.
+    fn offers_on(resource: &str, where_: &str, labels: &[(&str, &str)]) -> Vec<Offer> {
+        labels
+            .iter()
+            .map(|(action, label)| {
+                let mut offer = offer(
+                    "chat",
+                    resource,
+                    action,
+                    label,
+                    tilo_actions::InputSpec::None,
+                );
+                offer.descriptor.resource_label = where_.to_string();
+                offer
+            })
+            .collect()
+    }
+
+    #[test]
+    fn words_naming_where_the_person_is_are_not_answers_to_what_to_do() {
+        // A question written in a conversation whose name carries its words:
+        // the message's label is the question itself, so every operation
+        // offered on it used to score the same and be listed as a candidate.
+        let offers = offers_on(
+            "chat.workspace/channels/task-list/messages/asked",
+            "what is on my task list?",
+            &[
+                ("reveal-message", "Reveal message"),
+                ("copy-link", "Copy link"),
+                ("post-file", "Post a file"),
+                ("stop-sharing", "Stop sharing"),
+            ],
+        );
+        assert!(
+            matches!(
+                from_verbs("what is on my task list?", &offers),
+                Err(NoMatch::Nothing)
+            ),
+            "naming the conversation is not naming an operation"
+        );
+
+        // The same words still tell two operations on different things
+        // apart when they are the only difference between them.
+        let mut notes = offers_on("files.entry:notes", "notes.txt", &[("delete", "Delete")]);
+        let mut plan = offers_on("files.entry:plan", "plan.txt", &[("delete", "Delete")]);
+        let mut offers = Vec::new();
+        offers.append(&mut notes);
+        offers.append(&mut plan);
+        let (chosen, _) = from_verbs("delete plan.txt", &offers).expect("one file is named");
+        assert_eq!(chosen.address().resource, "files.entry:plan");
     }
 }

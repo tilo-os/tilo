@@ -40,18 +40,11 @@ pub(super) struct Window {
 
 impl Window {
     /// The connection of a window of `app` , run by the launch `pid` .
-    pub(super) fn open(
-        launches: &Arc<tilo_session::Launches>,
-        app: &str,
-        workspace: &str,
-        pid: u32,
-    ) -> Self {
-        let stream: UnixStream =
-            tilo_session::mount::app_tabs::ServiceLinks::new(Arc::clone(launches))
-                .window(app, workspace, 7, Some(pid))
-                .shell_ui
-                .expect("the app's shell-ui connection")
-                .into();
+    pub(super) fn open(launches: &Arc<tilo_session::Launches>, app: &str, pid: u32) -> Self {
+        let stream: UnixStream = tilo_session::app_tabs::ServiceLinks::new(Arc::clone(launches))
+            .shell_ui(app, 7, Some(pid))
+            .expect("the app's shell-ui connection")
+            .into();
         let from_session = stream.try_clone().expect("a reading end");
         from_session
             .set_read_timeout(Some(Duration::from_millis(20)))
@@ -156,7 +149,7 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     warmed(workspace, 40.0);
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
 
-    let mut window = Window::open(&launches, app, "private", app_process.id());
+    let mut window = Window::open(&launches, app, app_process.id());
     window.hello();
     let opened = appearance(
         &told(&mut window, &mut session, 200).expect("the window opens to its appearance"),

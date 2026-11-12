@@ -221,6 +221,24 @@ impl RecordId {
         numbered(role.strip_prefix("part.")?).map(|index| (Self(base.to_owned()), index))
     }
 
+    /// The head of the chained record `self`: a name for whichever of its
+    /// parts is the newest, which holds nothing of its own. A device that
+    /// holds no part of the chain opens it to be sent that part and to
+    /// follow the chain's later heads; answered with nothing, the chain has
+    /// no part yet. The wire form is `neighbour_wire::chain_head`'s.
+    #[must_use]
+    pub fn chain_head(&self) -> Self {
+        Self::derived("head", self)
+    }
+
+    /// Whether this is the [`Self::chain_head`] of a chain.
+    #[must_use]
+    pub fn is_chain_head(&self) -> bool {
+        self.0
+            .strip_prefix("derived:head@")
+            .is_some_and(|base| !base.is_empty())
+    }
+
     /// Chunk `number` of the record `self`: the platform keeps a large
     /// record's resources in several documents, each a record of its own, so
     /// that a write reaches only the chunk it changed. Chunk `0` is the
@@ -642,14 +660,15 @@ impl RecordCheckout {
 
 impl RecordId {
     /// Whether a workspace's hosts send this record to a device only once it
-    /// asks for it: a [`Self::part`] of a chain (the head too, which a
-    /// device that joined before it started asks for) or an
+    /// asks for it: a [`Self::part`] of a chain, whose [`Self::chain_head`] a
+    /// device that holds no part asks for to be sent the newest one, or an
     /// [`Self::on_demand`] record. Opening one reads what this device holds
     /// or asks for it, and never waits for it to arrive
     /// (`ui::record::RecordOpenError::Arriving`).
     #[must_use]
     pub fn arrives_on_demand(&self) -> bool {
         self.chain_part().is_some()
+            || self.is_chain_head()
             || self
                 .0
                 .strip_prefix("derived:on-demand@")

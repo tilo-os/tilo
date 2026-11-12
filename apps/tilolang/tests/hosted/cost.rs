@@ -19,8 +19,9 @@ use std::collections::BTreeMap;
 // The table is read against what a person feels as instant, and against what the instance's
 // evaluation and the layout cost within it: a keystroke must not wait for the workspace's size,
 // and neither must a place switch, a check-off, a page or a scroll. The targets do not move
-// with the machine: a step over one is reported with its gap, and the gate on the work a change
-// does is the instruction count the `budgets` test holds.
+// with the machine: a step over one is reported with its gap, and a step past what it is held to
+// (what it costs now, with room for a loaded machine) fails. The gate on the work a change does
+// is also the instruction count the `budgets` test holds.
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
 /// keeps.
@@ -37,6 +38,29 @@ const SEEDED_LARGE: usize = 100_000;
 struct Target {
     step_us: u64,
     eval_layout_us: u64,
+    /// The step's CPU time it is held to, past which the test fails: see [`Held`].
+    held: Held,
+}
+
+/// What a step's CPU time is held to, in an optimized build and in a development one, whose
+/// proofs and unoptimized code cost several times as much: what the step costs now, with room
+/// for a loaded machine. A step past it got slower by a clear margin, which no machine's noise
+/// explains; the target is where the step is brought down to, and this follows it down.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    optimized_us: u64,
+    development_us: u64,
+}
+
+impl Held {
+    /// What this build holds the step to.
+    fn here(self) -> u64 {
+        if cfg!(debug_assertions) {
+            self.development_us
+        } else {
+            self.optimized_us
+        }
+    }
 }
 
 /// One interaction, measured once.
@@ -122,15 +146,13 @@ impl Costs {
 
     /// The reading against the targets every interaction is held to: what it costs, on this
     /// machine, beside what a person would feel as instant, and the gap between them. A reading
-    /// over its target is reported, not failed: the gate on the work a change does is the
-    /// instruction count [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test
-    /// hold, which counts the same work the same on every machine, where this table measures
-    /// the machine it runs on as much as the window.
+    /// over its target is reported; one past what the step is held to ([`Held`]) is returned,
+    /// each with its numbers, for the test to fail on.
     #[allow(
         clippy::print_stderr,
         reason = "why a measurement was not held is part of its report"
     )]
-    fn report(&self, targets: &[(&'static str, Target)]) {
+    fn report(&self, targets: &[(&'static str, Target)]) -> Vec<String> {
         let ms = |us: u64| format!("{:.2}", us as f64 / 1000.0);
         let gap = |measured: u64, target: u64| {
             if measured == 0 {
@@ -139,32 +161,43 @@ impl Costs {
                 format!("{:.1}x target", measured as f64 / target as f64)
             }
         };
-        eprintln!("interaction        cpu p50 vs instant   instance+layout p50 vs instant");
+        eprintln!(
+            "interaction        cpu p50 vs instant   instance+layout p50 vs instant   held to"
+        );
         let mut behind = Vec::new();
+        let mut past = Vec::new();
         for (label, target) in targets {
             if !self.0.contains_key(label) {
-                behind.push(format!("{label}: no interaction measured"));
+                past.push(format!("{label}: no interaction measured"));
                 continue;
             }
             let cpu = self.p50(label, |cost| cost.cpu_us);
             let eval_layout = self.p50(label, Cost::eval_layout_us);
+            let held = target.held.here();
             eprintln!(
-                "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})",
+                "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})   {:>8} ms",
                 ms(cpu),
                 gap(cpu, target.step_us),
                 ms(eval_layout),
                 gap(eval_layout, target.eval_layout_us),
+                ms(held),
             );
             if cpu > target.step_us || eval_layout > target.eval_layout_us {
                 behind.push(label.to_string());
             }
+            if cpu > held {
+                past.push(format!(
+                    "{label}: {} ms of CPU, held to {} ms (instant is {} ms)",
+                    ms(cpu),
+                    ms(held),
+                    ms(target.step_us)
+                ));
+            }
         }
         if !behind.is_empty() {
-            eprintln!(
-                "not instant yet: {} - reported, not failed: the gate counts instructions",
-                behind.join(", ")
-            );
+            eprintln!("not instant yet: {}", behind.join(", "));
         }
+        past
     }
 }
 
@@ -323,6 +356,35 @@ fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
     rest
 }
 
+/// The window's open taken to rest as a window takes it: the host's turns, and a frame only when
+/// a turn changed what it shows or its tree owes one ([`frame_if_asked`]), until the workspace's
+/// index is whole and nothing is left to do. A frame drawn on every turn regardless is work no
+/// window at rest does.
+fn opened_at_rest(session: &mut Session) {
+    let deadline = std::time::Instant::now() + WAKE_WAIT;
+    let mut quiet = 0_u32;
+    let mut rounds = 0_u32;
+    while quiet < 3 {
+        let changed = session.host.turn();
+        let framed = frame_if_asked(session, changed);
+        let waiting = (!session.index_whole() || session.search_index_pending())
+            && std::time::Instant::now() < deadline;
+        if changed || framed || waiting {
+            quiet = 0;
+        } else {
+            quiet = quiet.saturating_add(1);
+        }
+        if !changed && waiting {
+            session.woken.wait(WAKE_WAIT);
+        }
+        rounds = rounds.saturating_add(1);
+        assert!(
+            rounds < 10_000,
+            "the window never came to rest after opening"
+        );
+    }
+}
+
 /// One interaction, measured from `input` reaching the window to the windows' work at rest with
 /// what it did on screen.
 fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
@@ -365,21 +427,26 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 /// 16 ms for a step a person waits on, 8 ms for a frame of scrolling under the pointer, and
 /// 300 ms to open ten thousand tasks — the one step that reads the whole workspace, once. They
 /// are the targets, not what this workspace costs: a step over one is reported with its gap (see
-/// [`Costs::report`]), and the work of bringing it down is the publication's.
+/// [`Costs::report`]), and one past what it is held to ([`Held`]) fails.
 ///
 /// The same targets, counted rather than timed, are how a change is gated: a modern core of
 /// 3.5 GHz at an IPC of 2.5 retires 8.75 million instructions a millisecond, so 8 ms is 70
 /// million instructions, 16 ms 140 million and 300 ms 2.6 billion, and a callgrind run counts
-/// the same work the same on every machine. This test reports the times;
-/// [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold the counts (a change
-/// publishes the rows it touched, whatever the workspace holds). Opening a workspace reads the
-/// workspace's index rather than the workspace: [`opening_a_window_reads_the_workspaces_index`].
+/// the same work the same on every machine. This test reports the times and fails a step past
+/// what it is held to; [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold
+/// the counts (a change publishes the rows it touched, whatever the workspace holds). Opening a
+/// workspace reads the workspace's index rather than the workspace:
+/// [`opening_a_window_reads_the_workspaces_index`].
 const TARGETS: &[(&str, Target)] = &[
     (
         "open",
         Target {
             step_us: 300_000,
             eval_layout_us: 300_000,
+            held: Held {
+                optimized_us: 380_000,
+                development_us: 1_470_000,
+            },
         },
     ),
     (
@@ -387,6 +454,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 8_000,
             eval_layout_us: 8_000,
+            held: Held {
+                optimized_us: 18_000,
+                development_us: 70_000,
+            },
         },
     ),
     (
@@ -394,6 +465,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 110_000,
+                development_us: 500_000,
+            },
         },
     ),
     (
@@ -401,6 +476,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 96_000,
+                development_us: 500_000,
+            },
         },
     ),
     (
@@ -408,6 +487,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 90_000,
+                development_us: 340_000,
+            },
         },
     ),
     (
@@ -415,6 +498,10 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 16_000,
             eval_layout_us: 16_000,
+            held: Held {
+                optimized_us: 90_000,
+                development_us: 470_000,
+            },
         },
     ),
     (
@@ -422,51 +509,18 @@ const TARGETS: &[(&str, Target)] = &[
         Target {
             step_us: 8_000,
             eval_layout_us: 8_000,
+            held: Held {
+                optimized_us: 25_000,
+                development_us: 110_000,
+            },
         },
     ),
 ];
 
-/// Whether the workspace's record holds a task titled `title`, as the window's instance runs it:
-/// the list shows only the rows on screen, so what the entry added is read off the record's
-/// chunks.
-fn record_has_task(session: &Session, title: &str) -> bool {
-    let chunks = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance")
-        .record()
-        .chunks()
-        .clone();
-    let Some(record) = chunks.first() else {
-        return false;
-    };
-    let titled = |item: &tilolang_tilo::DynRecord| {
-        item.schema().fields.iter().any(|field| {
-            matches!(item.get(&field.id), Some(tilolang_tilo::DynValue::Text(text)) if text == title)
-        })
-    };
-    tilolang_tilo::action::resource_ids(record, TASKS)
-        .into_iter()
-        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
-        .any(|record| {
-            record
-                .schema()
-                .fields
-                .iter()
-                .any(|field| match record.get(&field.id) {
-                    Some(tilolang_tilo::DynValue::Collection(items)) => {
-                        items.iter().any(|(_, item)| titled(item))
-                    }
-                    _ => false,
-                })
-        })
-}
-
 /// The workspace a person who has used Tasks for years keeps: `n` tasks over the chunks the
 /// store keeps them in (a run of 2048 tasks a chunk), as the actions that add them one at a
 /// time write them, in the record the installed Tasks package runs over.
-fn seeded_tasks(n: usize) -> tilolang_tilo::chunk::Chunks {
+pub(super) fn seeded_tasks(n: usize) -> tilolang_tilo::chunk::Chunks {
     let tasks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(package_of(TASKS));
     let packages = tilolang_tilo::bench::compile(&tasks).expect("the tasks package compiles");
     tilolang_tilo::bench::seeded_chunks(&packages, n).expect("the workspace seeds")
@@ -479,6 +533,18 @@ fn top_title(session: &mut Session) -> String {
         .first()
         .cloned()
         .expect("the list shows a row")
+}
+
+/// The row at the top of what the window shows: the first whose top is on screen. The rows
+/// built around it reach past the window's edges, so the first of those can stay as the list
+/// scrolls under a row grown into its page.
+fn top_shown(session: &mut Session) -> String {
+    accessible(session)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::ListItem)
+        .find(|node| node.bounds.is_some_and(|bounds| bounds.y0 >= 0.0))
+        .and_then(|node| node.name)
+        .expect("the window shows a row")
 }
 
 /// The first row the list shows that the person has not checked yet, its title, and where
@@ -543,7 +609,9 @@ fn what_the_interactions_a_person_feels_cost() {
     let storage = kept_index(&route, &chunks, "interactions");
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, Some(storage)));
+    let mut session =
+        on_the_frame_clock(Session::tasks_over_launched(&route, chunks, Some(storage)));
+    opened_at_rest(&mut session);
     let wall_us = wall.elapsed().as_micros() as u64;
     let cpu_us = since(start, wall.elapsed());
     costs.add(Cost {
@@ -571,7 +639,12 @@ fn what_the_interactions_a_person_feels_cost() {
     scroll_the_list(&mut session, &mut costs);
 
     costs.print();
-    costs.report(TARGETS);
+    let past = costs.report(TARGETS);
+    assert!(
+        past.is_empty(),
+        "interactions got slower than they are held to:\n{}",
+        past.join("\n")
+    );
 }
 
 /// What one open of a window did, in counts that do not depend on the machine: the work opening
@@ -787,6 +860,10 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
     session.wait_index();
     let ready_us = since(start, wall.elapsed());
+    // The window reads its rows from the first step of the index while the rest of the record is
+    // derived off the frame: what the open builds over, and what it reads, is counted once it is
+    // whole, not when its first step lands.
+    session.settle();
     let wall_us = wall.elapsed().as_micros() as u64;
     assert!(session.builds() > 0, "the first open builds the index");
     assert_eq!(
@@ -805,7 +882,7 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
         "a cold open reads every chunk the record names, once"
     );
     eprintln!(
-        "cold open at {SEEDED} tasks over {} chunks: CPU {:.2} ms, wall {:.2} ms",
+        "cold open at {SEEDED} tasks over {} chunks: first rows {:.2} ms of CPU, whole {:.2} ms",
         held.len(),
         ready_us as f64 / 1000.0,
         wall_us as f64 / 1000.0
@@ -1074,8 +1151,8 @@ fn a_window_reads_only_the_chunks_it_shows() {
         "scrolling read no chunk: the rows are the index's: {scrolled:?} of {all:?}"
     );
 
-    // What reads a chunk is a row read in full: opening the last task's page reads the last
-    // chunk alone.
+    // Opening the last task's page reads at most the chunk that holds it: what its page shows
+    // the index may answer on its own.
     let bottom = session
         .titles()
         .into_iter()
@@ -1086,15 +1163,16 @@ fn a_window_reads_only_the_chunks_it_shows() {
     session.window.click_at(x, y);
     session.settle();
     let opened = holding(&session);
-    assert_eq!(
-        opened,
-        [tilolang_tilo::chunk::FIRST, last],
-        "the page read the last chunk alone: {opened:?} of {all:?}"
+    assert!(
+        opened
+            .iter()
+            .all(|chunk| *chunk == tilolang_tilo::chunk::FIRST || *chunk == last),
+        "the page read no chunk but the last: {opened:?} of {all:?}"
     );
 }
 
 /// The task number the title `title` ("Item 42") names.
-fn number_of(title: &str) -> Option<usize> {
+pub(super) fn number_of(title: &str) -> Option<usize> {
     title.strip_prefix("Item ")?.parse().ok()
 }
 
@@ -1280,7 +1358,7 @@ fn type_a_task(session: &mut Session, costs: &mut Costs) {
     }));
     session.settle();
     assert!(
-        record_has_task(session, "Buy"),
+        task_in_record(session, "Buy", false),
         "the entry's task is in the workspace"
     );
 }
@@ -1301,13 +1379,13 @@ fn check_tasks(session: &mut Session, costs: &mut Costs) {
     }
 }
 
-/// Opening a task's page: its row's title, whose page the content lane shows beside the list
-/// while the overview keeps its empty state for the next time nothing is chosen.
+/// Opening a task's page: its row opens into it where it stands, the list growing the row into
+/// the item's page — the title it edits, and under it what the item holds.
 fn open_pages(session: &mut Session, costs: &mut Costs) {
-    for _ in 0..3 {
+    for at in 1..4 {
         let title = session
             .titles()
-            .get(1)
+            .get(at)
             .cloned()
             .expect("the list shows a row");
         let (x, y) = shown_at(session, &title);
@@ -1315,9 +1393,15 @@ fn open_pages(session: &mut Session, costs: &mut Costs) {
             session.window.click_at(x, y);
         }));
         session.settle();
+        let page = opened_title_field(session).unwrap_or_else(|| {
+            panic!("the row a person opened shows the page of the task it stands for: {title}")
+        });
+        let rect = widget_by_id(session.window.root(), &page)
+            .unwrap_or_else(|| panic!("the page's title {page} is laid out"))
+            .get_rect();
         assert!(
-            session.page().contains(&title),
-            "the content lane shows the page of the task the row shows: {title}"
+            rect.height() > 0.0,
+            "the page of {title} stands under its row"
         );
     }
 }
@@ -1525,20 +1609,45 @@ fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row() {
     );
 }
 
+/// The glide a wheel notch started, run to where it rests on the frame clock: where the list
+/// stands after a notch is what the notch did, not how far the frames the step measured got
+/// before the window was looked at, which is as far as the machine's speed let them.
+fn glide_out(session: &mut Session) {
+    use ui::time::testing::with_monotonic_time;
+    let mut at = ui::time::Instant::now();
+    for _ in 0..400 {
+        if !session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame
+        {
+            return;
+        }
+        at += ui::time::Duration::from_millis(16);
+        with_monotonic_time(at, || {
+            session.host.turn();
+            session.window.frame();
+        });
+    }
+    panic!("the list's glide never came to rest");
+}
+
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);
     let at = shown_at(session, &first);
     session.window.move_to(at.0, at.1);
     session.settle();
-    let mut top = top_title(session);
+    let mut top = top_shown(session);
     for notch in 0..8 {
         let down = notch % 2 == 0;
         costs.add(cost(session, "scroll", |session| {
             session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
         }));
+        glide_out(session);
         session.settle();
-        let now = top_title(session);
+        let now = top_shown(session);
         assert_ne!(now, top, "the list scrolled");
         top = now;
     }
@@ -1567,7 +1676,7 @@ fn a_change_reindexes_the_resources_it_touched() {
     session.window.press_key(NamedKey::Enter);
     session.settle();
     assert!(
-        record_has_task(&session, "Buy milk"),
+        task_in_record(&session, "Buy milk", false),
         "the task the entry added is in the workspace"
     );
 
@@ -1632,8 +1741,152 @@ fn typing_in_the_entry_renders_the_entry() {
     );
 }
 
+/// A row opens where it stands after the person's own changes have taken rows out of the place
+/// they stand in: the rows they kept are rows that open into their item like any other, and
+/// opening one is reading on in the same place, so every one of them stays.
+#[test]
+fn a_row_opens_where_it_stands_after_tasks_are_checked() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, chunks, None);
+    for _ in 0..4 {
+        let (_, x, y) = first_check(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+    }
+    let title = session.titles().get(1).cloned().expect("a row");
+    let (x, y) = shown_at(&mut session, &title);
+    let shown = session.titles();
+    let before = renders(&session);
+    session.window.click_at(x, y);
+    session.settle();
+    let ran = renders(&session) - before;
+    assert!(
+        opened_title_field(&mut session).is_some(),
+        "the row of {title} opens where it stands"
+    );
+    // The row and the page it grows into run, and the list that holds it hears which row is
+    // open; the rows beside it, and the place's query, run not at all.
+    assert!(
+        ran <= 12,
+        "opening the row of {title} ran {ran} boundaries: the rows beside it ran again"
+    );
+    assert_eq!(
+        session.titles(),
+        shown,
+        "the rows checked off stand where they stood, the one opened among them"
+    );
+}
+
+/// A task in another place opened from search, as a hit's `open` shows it, with or without a task
+/// typed into the entry first: the window goes to the task's place and opens its row into its
+/// page, though the place's rows arrive after the window names the task open. A row clicked
+/// there next opens as well.
+#[test]
+fn a_task_opened_from_search_shows_its_page() {
+    use ui::winit::keyboard::NamedKey;
+
+    let _motion = ui::motion::testing::settled();
+    for typed in [false, true] {
+        let chunks = seeded_tasks(SMALL);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let mut session = Session::tasks_over_in(&route, chunks, None);
+        let today = session.titles();
+        let entries: Vec<ui::tilo_resource::search_index::IndexEntry> = session
+            .sent
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::PublishSearchIndex { delta_json } => Some(
+                    ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
+                        .expect("the session takes every delta")
+                        .upsert,
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if typed {
+            session.window.chord(&["ctrl"], "n");
+            session.settle();
+            session.window.type_text("Buy milk");
+            session.window.press_key(NamedKey::Enter);
+            session.settle();
+            assert!(
+                task_in_record(&session, "Buy milk", false),
+                "the entry's task is in the workspace"
+            );
+        }
+        // A task of the Inbox, neither due today nor done.
+        let hit = entries
+            .iter()
+            .find(|entry| entry.title == "Item 1" && !today.contains(&entry.title))
+            .expect("a task of the Inbox Today does not show");
+        let title = hit.title.clone();
+        let anchor = hit.resource.clone();
+        session
+            .host
+            .instances_mut()
+            .next()
+            .expect("the window's instance")
+            .reveal(anchor);
+        session.settle();
+        assert!(
+            opened_title_field(&mut session).is_some(),
+            "{title}, opened from search (typed first: {typed}), shows its page: rows {:?}",
+            session.titles()
+        );
+        // Another row of the place the window moved to opens into its page as a click asks.
+        let other = session
+            .titles()
+            .into_iter()
+            .find(|shown| *shown != title)
+            .expect("another row of the Inbox");
+        let (x, y) = shown_at(&mut session, &other);
+        session.window.click_at(x, y);
+        session.settle();
+        assert!(
+            opened_title_field(&mut session).is_some(),
+            "{other}, clicked after {title} opened from search (typed first: {typed}), shows its \
+             page: rows {:?}",
+            session.titles()
+        );
+    }
+}
+
+/// The row standing open into its item where it stands: the page a person reads there, and the
+/// field they type the item's title into. `None` while no row stands open.
+fn opened_title_field(session: &mut Session) -> Option<String> {
+    let view = session.hosted().view()?;
+    let mut found = None;
+    for list in view.lists() {
+        if list.starts_with(tilo_ui_host::shell::DETAIL) {
+            continue;
+        }
+        let Some(rows) = view.rows_of(&list) else {
+            continue;
+        };
+        let rows = rows.borrow();
+        for key in rows.rendered() {
+            let Some(row) = rows.row(&key) else {
+                continue;
+            };
+            if let Some(field) = find(row, &|node| {
+                node.kind == "ui.TextInput"
+                    && node.binding.as_ref().is_some_and(|b| b.field().is_some())
+            }) {
+                found = Some(field.key.clone());
+                break;
+            }
+        }
+    }
+    found
+}
+
 /// Typing a task's title on its page: the keystroke edits one field of one task, so the page
-/// that shows it and the row behind it run again, and the rest of the window stands.
+/// that shows it — the row grown into it where it stands — and the row behind it run again, and
+/// the rest of the window stands.
 #[test]
 fn typing_a_tasks_title_reruns_the_views_that_read_it() {
     let _motion = ui::motion::testing::settled();
@@ -1644,18 +1897,8 @@ fn typing_a_tasks_title_reruns_the_views_that_read_it() {
     let (x, y) = shown_at(&mut session, &title);
     session.window.click_at(x, y);
     session.settle();
-    let key = {
-        let view = session.hosted().view().expect("the window is connected");
-        let tree = view.detail_tree().expect("the page is shown");
-        let key = find(&tree, &|node| {
-            node.kind == "ui.TextInput"
-                && node.binding.as_ref().is_some_and(|b| b.field().is_some())
-        })
-        .unwrap_or_else(|| panic!("the page edits its title: {tree:?}"))
-        .key
-        .clone();
-        format!("{}{key}", tilo_ui_host::shell::DETAIL)
-    };
+    let key = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page that edits its title"));
     let rect = widget_by_id(session.window.root(), &key)
         .unwrap_or_else(|| panic!("the title {key} is laid out"))
         .get_rect();
@@ -1782,6 +2025,7 @@ struct Done {
     index_fields: u64,
     evaluated: u64,
     versions: u64,
+    version_changes: u64,
     sent: u64,
     nodes: u64,
     shaped: u64,
@@ -1827,6 +2071,7 @@ impl Done {
             index_fields: reads.index.fields,
             evaluated: reads.evaluated,
             versions: reads.versions,
+            version_changes: reads.version_changes,
             sent,
             nodes: session.window.harness().layout_nodes_built(),
             shaped,
@@ -1847,6 +2092,7 @@ impl Done {
             index_fields: self.index_fields.saturating_sub(earlier.index_fields),
             evaluated: self.evaluated.saturating_sub(earlier.evaluated),
             versions: self.versions.saturating_sub(earlier.versions),
+            version_changes: self.version_changes.saturating_sub(earlier.version_changes),
             sent: self.sent.saturating_sub(earlier.sent),
             nodes: self.nodes.saturating_sub(earlier.nodes),
             shaped: self.shaped.saturating_sub(earlier.shaped),
@@ -1901,6 +2147,7 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
     let chunks = seeded_tasks(n);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut out = Vec::new();
     // What a writer's first change in a record renumbers is none of these steps'.
     for _ in 0..2 {
         let (_, x, y) = first_check(&mut session);
@@ -1908,7 +2155,6 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
         session.settle();
     }
     assert!(!session.titles().is_empty(), "the window shows the place");
-    let mut out = Vec::new();
     let (_, x, y) = first_check(&mut session);
     out.push((
         "check a task",
@@ -1950,16 +2196,62 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
         "scroll",
         step(&mut session, |session| session.window.scroll(0.0, -3.0)),
     ));
+    // The page of the row at the top of the list, opened where it stands: the page reads the
+    // task it shows and the index around it, never the workspace the task is one of.
+    let first = top_title(&mut session);
+    let (x, y) = shown_at(&mut session, &first);
+    out.push((
+        "open a task page",
+        step(&mut session, |session| session.window.click_at(x, y)),
+    ));
     (out, rows)
 }
 
 /// A step of the window costs what it changed and what the window shows, never the size of the
-/// workspace: checking a task off, switching the sidebar's place, a keystroke in the entry, the
-/// Enter that adds the task and a notch of the scroll do the same work in ten thousand tasks as
-/// in a thousand. What would grow with the workspace is a loop over the collection, a filter no
-/// index answers, a publication of rows the window cannot show or a layout of rows off screen.
-/// An index reads a tree whose depth is the logarithm of what it holds, so ten times the
-/// workspace must not make a step do twice the work: what a step costs is what it changed.
+/// workspace: opening the window, checking a task off, switching the sidebar's place, a keystroke
+/// in the entry, the Enter that adds the task, a notch of the scroll and the page of a row do the
+/// same work in ten thousand tasks as in a thousand. What would grow with the workspace is a loop
+/// over the collection, a filter no index answers, a publication of rows the window cannot show, a
+/// layout of rows off screen, or a history read of the workspace's every change rather than of the
+/// chunk the row it shows is stored in. An index reads a tree whose depth is the logarithm of what
+/// it holds, so ten times the workspace must not make a step do twice the work: what a step costs
+/// is what it changed.
+/// Adding a task runs the row it adds and the views that count it, not every row the window
+/// shows: the task is written into its collection's newest chunk, which the window had not read
+/// but the workspace's index already reflects, so taking that chunk in moves nothing any row
+/// read.
+#[test]
+fn adding_a_task_runs_the_row_it_adds_not_every_row() {
+    use ui::winit::keyboard::NamedKey;
+
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let storage = kept_index(&route, &chunks, "adding");
+    let mut session = Session::tasks_over_in(&route, chunks, Some(storage));
+    let (x, y) = place_at(&mut session, "Inbox");
+    session.window.click_at(x, y);
+    session.settle();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Buy");
+    session.settle();
+    let rows = rows_shown(&mut session);
+    let done = step(&mut session, |session| {
+        session.window.press_key(NamedKey::Enter);
+    });
+    assert!(
+        task_in_record(&session, "Buy", false),
+        "the entry's task is in the workspace"
+    );
+    assert!(
+        rows > 20 && done.renders <= 12,
+        "adding a task with {rows} rows on screen ran {} boundaries: the rows it did not \
+         touch ran again",
+        done.renders
+    );
+}
+
 #[test]
 fn a_step_costs_what_it_changes_not_the_workspace() {
     let _motion = ui::motion::testing::settled();
@@ -1968,6 +2260,25 @@ fn a_step_costs_what_it_changes_not_the_workspace() {
     assert_eq!(
         large_rows, small_rows,
         "the window shows {large_rows} rows of {SEEDED} tasks and {small_rows} of {SMALL}"
+    );
+    // A resource's log is the log of the chunk holding it: what a step's history reads — the
+    // marks of the rows it shows and the history behind them — is a chunk's changes, never the
+    // workspace's every change.
+    let mut past = Vec::new();
+    for (label, done) in &large {
+        if done.version_changes > tilolang_tilo::chunk::ITEMS {
+            past.push(format!(
+                "{label} read {} changes of the record for its versions at {SEEDED} tasks; a \
+                 chunk holds at most {}",
+                done.version_changes,
+                tilolang_tilo::chunk::ITEMS
+            ));
+        }
+    }
+    assert!(
+        past.is_empty(),
+        "a step's history reads the chunk it shows:\n{}",
+        past.join("\n")
     );
     let mut grew = Vec::new();
     let mut table = vec![format!(
@@ -2178,4 +2489,203 @@ fn a_window_at_rest_asks_its_host_for_no_frame() {
         window.redraw_sources()
     );
     assert_eq!(schedule.next_wake_deadline, None);
+}
+
+/// Opening a row's page mounts the task's document where the row stands: the frame that shows it
+/// adds the document's widgets to the retained layout tree and measures those, and no frame
+/// composes the window's whole layout tree again for it. Rows open all day, and the window's
+/// composition is the work none of them may cost — the row's document is a slot mount.
+#[test]
+fn opening_a_rows_page_mounts_the_document_where_the_row_stands() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    session.settle();
+    let title = top_title(&mut session);
+    let (x, y) = shown_at(&mut session, &title);
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    let page = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page of {title}"));
+    assert!(
+        !page.is_empty(),
+        "the page of {title} stands where the row did"
+    );
+    // The frame that showed it mounted the document and measured it; the window's own
+    // composition stood, as it does for a row coming into view.
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "opening the page of {title} composed the window's layout tree {} time(s) in the {} \
+         rounds that showed it: the document mounts where its row stands",
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    // One frame placed every widget — the one that mounted the document. A window laid out
+    // twice for one row is the cost a person waits on.
+    assert_eq!(
+        rest.full, 1,
+        "the step placed every widget of the window {} times in {} rounds: one mounts the \
+         document and the rest move what they show",
+        rest.full, rest.rounds
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
+}
+
+/// Choosing a note in the tree shows it beside the tree, and pressing the note the window is
+/// already reading shows what is there: the content column's document stands, reconciled in
+/// place, and no frame composes the window's layout tree again for a press on it.
+#[test]
+fn choosing_a_note_in_the_tree_opens_it_without_composing_the_window() {
+    let mut session = Session::rich();
+    let plus = session.new_note_button();
+    for round in 0..3 {
+        session.window.click_at(plus.0, plus.1);
+        session.settle();
+        let title = session.field("Untitled");
+        session.window.click_at(title.0, title.1);
+        session.window.type_text(&format!("Note {round}"));
+        session.settle();
+    }
+    let titles = session.titles();
+    assert_eq!(titles.len(), 3, "the tree shows the notes made: {titles:?}");
+    session.settle();
+    for title in titles {
+        let (x, y) = shown_at(&mut session, &title);
+        // The first press chooses it; the one after it presses the note the window reads.
+        session.window.click_at(x, y);
+        session.settle();
+        let before = Lay::of(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+        let after = Lay::of(&mut session);
+        assert_eq!(
+            after.rebuilt, before.rebuilt,
+            "pressing {title} again composed the window's layout tree: the note stands beside \
+             the tree already"
+        );
+    }
+}
+
+/// The nodes another document may invalidate: the editor's own stack, its own node and the
+/// nodes that hold it up to the window's column, never the window's composition.
+const EDITOR_SUBTREE: usize = 12;
+
+/// Reading one note after another: choosing another note in the tree shows that note where the
+/// last one stood — the column's editor lays its own blocks out again — and nothing above the
+/// editor is replaced, so no frame composes the window's layout tree for the note a person
+/// turned to. Notes are read one after another all day, and the window around them stands.
+#[test]
+fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
+    let _motion = ui::motion::testing::settled();
+    let mut session = Session::rich();
+    let plus = session.new_note_button();
+    for round in 0..2 {
+        session.window.click_at(plus.0, plus.1);
+        session.settle();
+        let title = session.field("Untitled");
+        session.window.click_at(title.0, title.1);
+        session.window.type_text(&format!("Note {round}"));
+        session.settle();
+        // The notes read differently: it is their bodies that another note replaces.
+        let body = session.field("Write something");
+        session.window.click_at(body.0, body.1);
+        session
+            .window
+            .type_text(&format!("What note {round} is about."));
+        session.settle();
+    }
+    let titles = session.titles();
+    assert_eq!(titles.len(), 2, "the tree shows the notes made: {titles:?}");
+    // The first press chooses the note the window then reads; what is measured is the next
+    // choice, the one a person makes over and over.
+    let (x, y) = shown_at(&mut session, &titles[0]);
+    session.window.click_at(x, y);
+    session.settle();
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    let (x, y) = shown_at(&mut session, &titles[1]);
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "choosing {} composed the window's layout tree {} time(s) in the {} rounds that showed \
+         it: the note is read in the editor that stands",
+        titles[1],
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    assert!(
+        rest.marked <= EDITOR_SUBTREE,
+        "choosing {} asked the layout to measure {} of the window's {} nodes: the editor's own \
+         stack and what holds it",
+        titles[1],
+        rest.marked,
+        after.nodes
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
+}
+
+/// The same where the document is a task's: opening another task in the list reads its notes
+/// in the editor that stands, so the page a person turns to costs its own blocks and never the
+/// window's composition.
+#[test]
+fn choosing_another_task_keeps_the_windows_composition() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    session.settle();
+    let titles = session.titles();
+    assert!(titles.len() > 1, "the list shows rows: {titles:?}");
+    let (x, y) = shown_at(&mut session, &titles[0]);
+    session.window.click_at(x, y);
+    session.settle();
+    let first = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page of {}", titles[0]));
+    assert!(!first.is_empty(), "the page of {} stands", titles[0]);
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    let (x, y) = shown_at(&mut session, &titles[1]);
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    let second = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person chose shows the page of {}", titles[1]));
+    assert_ne!(
+        second, first,
+        "the window shows the page of the task the person chose"
+    );
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "choosing {} composed the window's layout tree {} time(s) in the {} rounds that showed \
+         it: its notes are read in the editor that stands",
+        titles[1],
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    assert!(
+        rest.marked <= after.nodes as usize,
+        "choosing {} asked the layout to measure {} of the window's {} nodes",
+        titles[1],
+        rest.marked,
+        after.nodes
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
 }

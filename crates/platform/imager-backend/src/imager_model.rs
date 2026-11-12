@@ -229,16 +229,28 @@ impl TiloRelease {
         }
     }
 
-    pub fn target_label(&self) -> String {
+    /// What the release says about the machines it starts on, for a surface
+    /// to put in the person's language.
+    pub fn target_name(&self) -> TargetName {
         if self.hardware_profile != "generic" {
-            return format!("{} only", self.hardware_profile);
+            return TargetName::Profile(self.hardware_profile.clone());
         }
         match self.architecture.as_str() {
-            "aarch64" => "Generic ARM64",
-            "x86_64" => "Generic x86-64",
-            _ => "Generic media",
+            "aarch64" => TargetName::Arm64,
+            "x86_64" => TargetName::X86_64,
+            _ => TargetName::Media,
         }
-        .into()
+    }
+
+    /// The same as a stored word a label or a comparison carries, never shown
+    /// as copy.
+    fn target_key(&self) -> String {
+        match self.target_name() {
+            TargetName::Arm64 => "aarch64".to_owned(),
+            TargetName::X86_64 => "x86-64".to_owned(),
+            TargetName::Media => "media".to_owned(),
+            TargetName::Profile(profile) => profile,
+        }
     }
 
     pub fn selection_id(&self) -> String {
@@ -274,7 +286,7 @@ impl TiloRelease {
                 "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
-                self.target_label()
+                self.target_key()
             ),
             installable: authenticated,
             identity: None,
@@ -426,26 +438,19 @@ impl TargetDrive {
             format!("/dev/{}", self.name)
         }
     }
-    /// Human description of what currently lives on the drive.
-    pub fn contents_summary(&self) -> String {
-        if self.partitions.is_empty() {
-            return "no partitions".into();
-        }
-        let labels: Vec<String> = self
-            .partitions
+    /// The names the drive's partitions go by: the label a person set, else
+    /// the filesystem it holds, for a surface to name in their language. A
+    /// partition with neither adds no name; the count still speaks for it.
+    pub fn partition_names(&self) -> Vec<&str> {
+        self.partitions
             .iter()
-            .map(|p| {
+            .filter_map(|p| {
                 p.label
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| p.fstype.clone())
-                    .unwrap_or_else(|| "data".into())
+                    .as_deref()
+                    .filter(|label| !label.is_empty())
+                    .or_else(|| p.fstype.as_deref().filter(|kind| !kind.is_empty()))
             })
-            .collect();
-        match self.partitions.len() {
-            1 => format!("1 partition ({})", labels.join(", ")),
-            count => format!("{count} partitions ({})", labels.join(", ")),
-        }
+            .collect()
     }
     /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
@@ -472,28 +477,6 @@ impl Action {
         match self {
             Action::Flash => "flash",
             Action::Install => "install",
-        }
-    }
-    /// The plain-language name of the whole operation, for titles and reviews.
-    pub fn title(&self) -> &'static str {
-        match self {
-            Action::Flash => "Write image",
-            Action::Install => "Install Tilo",
-        }
-    }
-    /// The imperative verb for the primary button and the step caption —
-    /// deliberately short and unambiguous ("Write" vs "Install").
-    pub fn verb(&self) -> &'static str {
-        match self {
-            Action::Flash => "Write",
-            Action::Install => "Install",
-        }
-    }
-    /// Past-tense form for the Done screen ("written" / "installed").
-    pub fn past(&self) -> &'static str {
-        match self {
-            Action::Flash => "written",
-            Action::Install => "installed",
         }
     }
     pub fn from_key(k: &str) -> Action {
@@ -575,17 +558,6 @@ impl Step {
             Step::Done => 5,
         }
     }
-    /// Short step-indicator caption.
-    pub fn title(&self) -> &'static str {
-        match self {
-            Step::Source => "Source",
-            Step::Drive => "Drive",
-            Step::Customize => "Customize",
-            Step::Confirm => "Confirm",
-            Step::Write => "Write",
-            Step::Done => "Done",
-        }
-    }
     /// The next step in the flow (saturates at the last step).
     #[must_use]
     pub fn next(&self) -> Step {
@@ -615,6 +587,19 @@ impl Step {
 // serialises to the installation-media preconfiguration profile.
 // ---------------------------------------------------------------------------
 
+/// The machines a release starts on, as a surface names them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetName {
+    /// The generic build for ARM64.
+    Arm64,
+    /// The generic build for x86-64.
+    X86_64,
+    /// A generic build whose architecture the app names by its medium.
+    Media,
+    /// A build for one hardware profile.
+    Profile(String),
+}
+
 /// Filesystem used for the installed system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -631,13 +616,6 @@ impl Filesystem {
             Self::Btrfs => "btrfs",
             Self::Ext4 => "ext4",
             Self::Xfs => "xfs",
-        }
-    }
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Btrfs => "Btrfs (recommended)",
-            Self::Ext4 => "Ext4",
-            Self::Xfs => "XFS",
         }
     }
     pub fn from_key(k: &str) -> Option<Self> {

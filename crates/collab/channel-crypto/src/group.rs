@@ -65,6 +65,16 @@ pub(crate) struct IncomingCommit {
     pub(crate) removed: Vec<Vec<u8>>,
 }
 
+/// Who a Welcome says it is from and who it says is in the group, by
+/// credential identity (the device each leaf names).
+#[derive(Debug)]
+pub(crate) struct WelcomeParties {
+    /// The leaf whose key signed the Welcome's `GroupInfo`.
+    pub(crate) sender: Vec<u8>,
+    /// Every leaf of the tree, the joiner's own among them.
+    pub(crate) members: Vec<Vec<u8>>,
+}
+
 /// One device's view of one channel's MLS group.
 ///
 /// Holds `MemberKey` by value (move-in on `create`/`process_welcome`) —
@@ -127,6 +137,41 @@ impl ChannelGroup {
             owner.credential_with_key(),
         )
         .map_err(Error::openmls)?;
+        Self::created(channel_id, owner, group)
+    }
+
+    /// [`Self::create`] for the group a channel's genesis frame founds: the
+    /// group is named after the genesis' digest, so every member, a joiner
+    /// that never saw that frame included, knows which genesis its group
+    /// grew from ([`Self::genesis`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create`].
+    pub(crate) fn found(
+        channel_id: ChannelId,
+        owner: MemberKey,
+        genesis: [u8; 32],
+    ) -> Result<Self> {
+        let group = MlsGroup::new_with_group_id(
+            &owner.provider,
+            &owner.signer,
+            &group_create_config(),
+            GroupId::from_slice(&genesis),
+            owner.credential_with_key(),
+        )
+        .map_err(Error::openmls)?;
+        Self::created(channel_id, owner, group)
+    }
+
+    /// The digest of the genesis frame this group was founded by, as every
+    /// member's MLS group context carries it. `None` for a group named at
+    /// random, as groups were before they were named after their genesis.
+    pub(crate) fn genesis(&self) -> Option<[u8; 32]> {
+        self.group.group_id().as_slice().try_into().ok()
+    }
+
+    fn created(channel_id: ChannelId, owner: MemberKey, group: MlsGroup) -> Result<Self> {
         let mut created = Self {
             channel_id,
             member: owner,
@@ -585,15 +630,19 @@ impl ChannelGroup {
             .map(|credential| credential.identity().to_vec())
     }
 
-    /// The signature key of the member whose credential identity is
-    /// `identity`: it names the member key the device joined with.
-    pub(crate) fn signature_key_of(&self, identity: &[u8]) -> Option<Vec<u8>> {
-        self.group.members().find_map(|member| {
-            BasicCredential::try_from(member.credential)
-                .ok()
-                .filter(|credential| credential.identity() == identity)
-                .map(|_| member.signature_key)
-        })
+    /// The signature key of every member by its credential identity: the
+    /// member key each device joined with. Read once for a whole set of
+    /// devices, never once per device, which would walk every member for
+    /// each of them.
+    pub(crate) fn signature_keys(&self) -> std::collections::HashMap<Vec<u8>, Vec<u8>> {
+        self.group
+            .members()
+            .filter_map(|member| {
+                BasicCredential::try_from(member.credential)
+                    .ok()
+                    .map(|credential| (credential.identity().to_vec(), member.signature_key))
+            })
+            .collect()
     }
 
     fn clear_pending(&mut self) -> Result<()> {
@@ -724,6 +773,19 @@ impl ChannelGroup {
         welcome_bytes: &[u8],
         member: MemberKey,
     ) -> Result<Self> {
+        Self::join_checked(channel_id, welcome_bytes, member, |_| Ok(()))
+    }
+
+    /// [`Self::process_welcome`], with `check` judging who the Welcome says
+    /// sent it and which devices it says are in the group before the group is
+    /// taken: an `Err` from it refuses the Welcome. Reading them is a look at
+    /// each leaf's credential, no signature work.
+    pub(crate) fn join_checked(
+        channel_id: ChannelId,
+        welcome_bytes: &[u8],
+        member: MemberKey,
+        check: impl FnOnce(&WelcomeParties) -> Result<()>,
+    ) -> Result<Self> {
         let msg_in =
             MlsMessageIn::tls_deserialize_exact(welcome_bytes).map_err(Error::tls_codec)?;
         let welcome = match msg_in.extract() {
@@ -753,6 +815,10 @@ impl ChannelGroup {
                 });
             }
         };
+        // The tree's leaf signatures are left unchecked: the tree is the
+        // committer's word whatever they say ([`crate::welcome`]). Everything
+        // else of the Welcome is checked here.
+        let reading = member.provider.reading_welcome();
         let staged = StagedWelcome::new_from_welcome(
             &member.provider,
             &group_join_config(),
@@ -762,6 +828,22 @@ impl ChannelGroup {
             None,
         )
         .map_err(Error::openmls)?;
+        drop(reading);
+        let identity = |credential: Credential| {
+            BasicCredential::try_from(credential)
+                .map(|credential| credential.identity().to_vec())
+                .unwrap_or_default()
+        };
+        check(&WelcomeParties {
+            sender: staged
+                .welcome_sender()
+                .map(|leaf| identity(leaf.credential().clone()))
+                .map_err(Error::openmls)?,
+            members: staged
+                .members()
+                .map(|member| identity(member.credential))
+                .collect(),
+        })?;
         let group = staged
             .into_group(&member.provider)
             .map_err(Error::openmls)?;
@@ -816,7 +898,19 @@ impl ChannelGroup {
         key_history: &[u8],
         member: MemberKey,
     ) -> Result<Self> {
-        let mut joined = Self::process_welcome(channel_id, welcome_bytes, member)?;
+        Self::join_with_history_checked(channel_id, welcome_bytes, key_history, member, |_| Ok(()))
+    }
+
+    /// [`Self::process_welcome_with_history`], judged by `check` as
+    /// [`Self::join_checked`] judges.
+    pub(crate) fn join_with_history_checked(
+        channel_id: ChannelId,
+        welcome_bytes: &[u8],
+        key_history: &[u8],
+        member: MemberKey,
+        check: impl FnOnce(&WelcomeParties) -> Result<()>,
+    ) -> Result<Self> {
+        let mut joined = Self::join_checked(channel_id, welcome_bytes, member, check)?;
         joined.import_key_history(key_history)?;
         Ok(joined)
     }

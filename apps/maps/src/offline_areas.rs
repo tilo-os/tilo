@@ -28,7 +28,25 @@ pub struct OfflineAreas {
     pub devices: BTreeMap<String, DeviceAreas>,
 }
 
-#[resource(kind = "maps.offline-areas", label = "Offline areas")]
+impl OfflineAreas {
+    /// What the record holds: the areas each device downloaded for offline use.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "maps.offline-areas",
+    read_content = OfflineAreas::read_document
+)]
 impl OfflineAreas {
     /// `region` was downloaded on `device`: a download of the same footprint
     /// refreshes that area instead of listing it twice.

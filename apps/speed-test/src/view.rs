@@ -20,6 +20,7 @@ use ui::widget::{
     Stepper, Text, Tone, Widget,
 };
 
+use crate::locales::CATALOG;
 use crate::model::{Model, Phase, Projection, Quality, age_label, data_label, dial, qualities};
 use crate::resource::{Measurement, SpeedEffect, SpeedTest};
 use crate::run::{Reading, Runs, Stage};
@@ -160,7 +161,7 @@ fn build(
             Container::new()
                 .with_inset(Rhythm::Group)
                 .with_child(Box::new(
-                    Banner::error("Test interrupted").with_message(error.clone()),
+                    Banner::error(CATALOG.t("speed-test-interrupted")).with_message(error.clone()),
                 )),
         ));
     }
@@ -207,7 +208,7 @@ fn idle_page(
                 .with_no_padding()
                 .readable()
                 .with_child(Box::new(
-                    Banner::error("Test interrupted").with_message(error.clone()),
+                    Banner::error(CATALOG.t("speed-test-interrupted")).with_message(error.clone()),
                 )),
         ));
     }
@@ -226,8 +227,11 @@ fn idle_page(
 fn server_label(model: &Model) -> String {
     match model.readings.location.as_deref() {
         // A server that answered before: "Cloudflare at AMS".
-        Some(server) if !server.starts_with("Nearest") => format!("Measures against {server}"),
-        _ => "Measures against the nearest Cloudflare server".to_owned(),
+        Some(server) if !server.starts_with("Nearest") => CATALOG.t_args(
+            "speed-test-measures-against",
+            &[("server", ui::i18n::ArgValue::Text(server.to_owned()))],
+        ),
+        _ => CATALOG.t("speed-test-measures-nearest"),
     }
 }
 
@@ -346,14 +350,14 @@ impl Decorator for TestColumns {
 
 /// The dial, what it is doing, and the one action.
 fn test_column(model: &Model, dial: &DialSource, run: Option<ActionBinding<()>>) -> Column {
-    let status = match model.phase {
-        Phase::Idle => "Ready to test",
-        Phase::Ping => "Measuring latency",
-        Phase::Download => "Measuring download",
-        Phase::Upload => "Measuring upload",
-        Phase::Complete => "Test complete",
-        Phase::Error => "Ready to try again",
-    };
+    let status = CATALOG.t(match model.phase {
+        Phase::Idle => "speed-test-idle",
+        Phase::Ping => "speed-test-measuring-latency",
+        Phase::Download => "speed-test-measuring-download",
+        Phase::Upload => "speed-test-measuring-upload",
+        Phase::Complete => "speed-test-complete",
+        Phase::Error => "speed-test-ready-again",
+    });
     let (label, role) = if model.is_running() {
         ("Stop test", ButtonRole::Secondary)
     } else {
@@ -370,7 +374,7 @@ fn test_column(model: &Model, dial: &DialSource, run: Option<ActionBinding<()>>)
         .with_rhythm(ui::tokens::Rhythm::Section)
         .push(centred(Box::new(Dial::new(dial, model))))
         .push(centred(Box::new(
-            Text::new(status).with_role(TextRole::Subheading),
+            Text::new(&status).with_role(TextRole::Subheading),
         )))
         .push(centred(Box::new(run)));
     if model.phase != Phase::Idle && model.phase != Phase::Error {
@@ -410,15 +414,20 @@ fn results_column(model: &Model) -> Column {
         .unwrap_or_else(|| "Cloudflare".to_owned());
     // Only what was measured is shown: before a test there are no numbers,
     // and a dash in their place reads as a value.
-    let mut facts = vec![Property::new("Server", server)];
+    let mut facts = vec![Property::new(CATALOG.t("speed-test-server"), server)];
     if let Some(jitter) = readings.jitter {
         facts.push(
-            Property::new("Jitter", format!("{jitter:.1} ms")).with_kind(ui::TextKind::Numeric),
+            Property::new(CATALOG.t("speed-test-jitter"), format!("{jitter:.1} ms"))
+                .with_kind(ui::TextKind::Numeric),
         );
     }
     if readings.bytes > 0 {
         facts.push(
-            Property::new("Data used", data_label(readings.bytes)).with_kind(ui::TextKind::Numeric),
+            Property::new(
+                CATALOG.t("speed-test-data-used"),
+                data_label(readings.bytes),
+            )
+            .with_kind(ui::TextKind::Numeric),
         );
     }
     let facts = PropertyList::new(facts);
@@ -442,10 +451,13 @@ fn results_column(model: &Model) -> Column {
                 "Mbps",
             )),
         ]);
-        column = column.push(Box::new(Section::titled("Results", vec![Box::new(tiles)])));
+        column = column.push(Box::new(Section::titled(
+            CATALOG.t("speed-test-section-results"),
+            vec![Box::new(tiles)],
+        )));
     }
     column = column.push(Box::new(Section::titled(
-        "Connection",
+        CATALOG.t("speed-test-section-connection"),
         vec![Box::new(facts)],
     )));
 
@@ -460,7 +472,7 @@ fn results_column(model: &Model) -> Column {
             })
             .collect();
         column = column.push(Box::new(Section::titled(
-            "Connection quality",
+            CATALOG.t("speed-test-section-quality"),
             vec![Box::new(PropertyList::new(rows))],
         )));
     }
@@ -475,17 +487,26 @@ fn results_column(model: &Model) -> Column {
                 Box::new(
                     ListRow::new(
                         format!("history-{index}"),
-                        format!("{:.1} Mbps down", result.download),
+                        CATALOG.t_args(
+                            "speed-test-down",
+                            &[("rate", ui::i18n::ArgValue::Number(result.download))],
+                        ),
                     )
-                    .secondary(format!(
-                        "{:.1} Mbps up, {:.0} ms ping",
-                        result.upload, result.ping
+                    .secondary(CATALOG.t_args(
+                        "speed-test-up-and-ping",
+                        &[
+                            ("rate", ui::i18n::ArgValue::Number(result.upload)),
+                            ("ping", ui::i18n::ArgValue::Number(result.ping)),
+                        ],
                     ))
                     .meta(age_label(now, result.at)),
                 )
             })
             .collect();
-        column = column.push(Box::new(Section::titled("Recent tests", rows)));
+        column = column.push(Box::new(Section::titled(
+            CATALOG.t("speed-test-section-recent"),
+            rows,
+        )));
     }
     column
 }
@@ -765,5 +786,30 @@ mod tests {
                 "dial and primary action overlap at {viewport:?}"
             );
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        assert!(
+            crate::locales::CATALOG.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            crate::locales::CATALOG.languages()
+        );
+        crate::locales::CATALOG.set_locale("de-DE");
+        assert_eq!(
+            crate::locales::CATALOG.t("speed-test-clear"),
+            "Die Messungen gelöscht"
+        );
+        crate::locales::CATALOG.set_locale("en-US");
+        assert_eq!(
+            crate::locales::CATALOG.t("speed-test-clear"),
+            "Cleared the measurements"
+        );
     }
 }

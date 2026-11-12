@@ -40,3 +40,74 @@ feeds-refresh-refused-status = Die Website hat die Anfrage abgelehnt (HTTP { $st
 feeds-refresh-not-a-feed = Die Antwort war kein Feed
 feeds-refresh-untrusted = Das Zertifikat der Website hat sich geändert, jemand gibt sich womöglich als sie aus
 feeds-refresh-unavailable = Abruf konnte nicht gestartet werden
+feeds-window-name = Feeds
+feeds-reading-settings = Leseeinstellungen
+feeds-refreshing = Feeds werden aktualisiert
+feeds-no-article = Kein Artikel ausgewählt
+feeds-articles-with-tag = Artikel mit diesem Schlagwort zeigen
+feeds-feed-actions = Aktionen für diesen Feed
+
+## Fenster- und Barrierefreiheits-Texte
+feeds-a11y-text-size = Textgröße
+feeds-a11y-subscriptions = Abos
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+feeds-a11y-star = { $article } markieren
+feeds-a11y-tag = Schlagwort { $tag }
+
+## What the window shows
+feeds-add-caption = Füge die Adresse eines RSS-, Atom- oder Gemini-Feeds ein, oder die einer Website, die einen anbietet.
+feeds-add-label = Feed-Adresse
+feeds-folder-caption = Ordner fassen verwandte Abos zusammen.
+feeds-folder-label = Ordnername
+feeds-folder-placeholder = Newsletter
+feeds-rename-caption = Wähle einen eigenen Namen für dieses Abo.
+feeds-rename-label = Name des Abos
+feeds-tags-caption = Trenne Schlagwörter durch Kommas.
+feeds-tags-label = Schlagwörter
+
+## What the overview, a refresh and the reading settings say
+feeds-status-refreshing = Aktualisiere { $done } von { $total } Feeds
+feeds-status-new = { $count ->
+    [one] 1 neuer Artikel
+   *[other] { $count } neue Artikel
+}
+feeds-status-failed = { $count ->
+    [one] 1 Feed konnte nicht aktualisiert werden
+   *[other] { $count } Feeds konnten nicht aktualisiert werden
+}
+feeds-status-up-to-date = Alle Feeds sind aktuell
+feeds-filter-all = Alle Artikel
+feeds-filter-unread = Ungelesen
+feeds-filter-starred = Markiert
+feeds-filter-folder = Ordner
+feeds-filter-feed = Feed
+feeds-filter-tag = Schlagwort
+feeds-theme-system = System
+feeds-theme-light = Hell
+feeds-theme-sepia = Sepia
+feeds-theme-dark = Dunkel
+feeds-font-sans = Ohne Serifen
+feeds-font-serif = Mit Serifen
+feeds-font-mono = Dicktengleich
+
+## Actions
+
+feeds-effects-refresh-all = Alle Abonnements aktualisieren
+feeds-effects-import-opml = OPML importieren…
+feeds-effects-new-folder-form = Neuer Ordner…
+feeds-effects-export-opml = OPML exportieren…
+feeds-effects-reveal-tag = Markierte Artikel anzeigen
+feeds-effects-reader-text-larger = Lesetext vergrößern
+feeds-effects-reader-text-smaller = Lesetext verkleinern
+feeds-effects-reader-font = Leseschrift verwenden
+feeds-effects-reader-paper = Lesepapier verwenden
+feeds-library = Feeds
+feeds-library-add-subscription = Abonnement hinzufügen
+feeds-library-unsubscribe = Abonnement beenden
+feeds-library-mark-feed-read = Abonnement als gelesen markieren
+feeds-library-mark-everything-read = Alle Artikel als gelesen markieren
+feeds-library-new-folder = Neuer Ordner
+feeds-library-delete-folder = Ordner löschen
+feeds-library-import-subscriptions = Abonnements importieren
+feeds-library-refreshed = Abgerufene Artikel erfassen

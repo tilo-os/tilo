@@ -1,5 +1,16 @@
 # Patches against upstream
 
+## iroh relay handshake without its confirmation's round trip
+
+`iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in
+client change: a relay client that answered the relay's challenge sends its
+datagrams right away and reads the relay's confirmation (or denial) as its
+stream's first frame, where it waited a round trip for it. The relay server
+already reads in that order, so relays need no change. `vendor/iroh` turns it
+on for its relay actor. A page entering a workspace reaches its host a round
+trip sooner. `vendor/iroh-relay/TILO-PATCH.md` has the details and an
+upstream-ready description. Remove it once upstream releases the change.
+
 ## Rig Chat tool-name fragments
 
 `rig-core` 0.44.0 is the checksum-verified MIT registry runtime crate. Its
@@ -75,12 +86,20 @@ netlink at once, and `netwatch` has the kernel drop the address-lifetime refresh
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
 waking the process to ignore them. Its monitor also re-reads the interfaces
 once its netlink socket has subscribed, so a change made while it starts is
-not lost. Each directory's `TILO-PATCH.md` has the details and an
+not lost. A browser page also keeps its relay connection across a network
+change (it is pinged; upstream closed it for having no local address). Each directory's `TILO-PATCH.md` has the details and an
 upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
 `iroh` builds an `rlib` only: as a path package its
 upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
+
+## Control messages on musl
+
+`vendor/noq-udp` reads a received control message's payload unaligned. musl's
+`cmsghdr` is 4-byte aligned, so the receive timestamp Linux sockets carry is
+not 8-byte aligned, and the upstream alignment assertion panicked the static
+`tilo` command on its first packet. See `vendor/noq-udp/TILO-PATCH.md`.
 
 ## Tables without relocations
 
@@ -475,6 +494,24 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## No debug layers or async render entry (`lib.rs`, `render.rs`, `recording.rs`, `wgpu_engine.rs`)
+
+The `debug_layers` feature (bounding-box, line-soup and watertightness
+overlays drawn with render pipelines), and `Renderer::render_to_texture_async`,
+the only entry that drew them, are removed with the render-pass machinery only
+they used (`Command::Draw`, render shaders, the coarse pass's captured buffers)
+and the `futures-intrusive` dependency. No Tilo crate enabled the feature or
+called the entry.
+
+## A scene without images keeps the image atlas (`render.rs`)
+
+A scene with no image resolves to no atlas, and upstream then replaced the
+persistent atlas with a 1×1 one. The resolver still held its images as
+uploaded, so the next scene that drew them read a fresh, empty texture: a
+window whose frame first renders its blurred backdrop (a scene of plain
+paths) lost every picture it had uploaded before, until one changed. Such a
+scene now leaves the atlas as it is. Own test in `render.rs`.
+
 ## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
 
 Upstream evicts a resident image only when an allocation fails, and never
@@ -745,6 +782,14 @@ that `ImePurpose` stands for. It replaces the earlier multiline-only setter:
 multiline is one of the hints. Other platforms keep `set_ime_purpose`, and
 `None` returns Wayland to the purpose's own mapping.
 
+## `vendor/winit`: every enable states the caret
+
+Enabling a `zwp_text_input_v3` resets what it was told, and winit sent the
+IME cursor area only to text inputs already entered. A window keeps the last
+area it was given and every enable (on `enter`, or when IME is allowed) sends
+the content type and that area before its commit, so the compositor knows
+where a field's caret stands as soon as the field has the keyboard.
+
 ## `vendor/winit`: buffers another process drew
 
 A Tilo app's frames are drawn by its room's render service
@@ -866,6 +911,9 @@ translation, one text-input and drag stack stay in place; the requests a layer
 surface has no notion of (a title, app id, client side decorations, minimize,
 maximize, fullscreen, move, resize, a window menu) are ignored for one. Its
 first configure arrives through the layer shell's handler and takes the size
-the compositor gives it, then a redraw is asked for as for a toplevel. A
+the compositor gives it, then a redraw is asked for as for a toplevel.
+`request_inner_size` on a layer surface asks the compositor for that size
+(`set_size` and a commit) and the window takes what the next configure
+gives, so a panel that fits its content resizes in place. A
 compositor without the layer shell reports the window as uncreatable instead
 of opening a toplevel somewhere else.

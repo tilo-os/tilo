@@ -4,13 +4,14 @@
 
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_here, handle_host_action, handle_host_hello,
-    handle_live_join, handle_open_record, handle_presence, handle_remote_action, handle_subscribe,
-    handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces, route_record_content,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_run, handle_commit,
+    handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
+    handle_host_said, handle_live_join, handle_open_record, handle_presence, handle_remote_action,
+    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
+    route_record_content,
 };
 #[cfg(test)]
-use super::{ReplayWrite, finish_replay_write};
+use super::{ReplayWrite, answered_as_replay, finish_replay_write};
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —
@@ -28,16 +29,15 @@ pub(super) async fn handle_inbound_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let replaying = matches!(
-        env,
-        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
-    );
+    let replaying = answered_as_replay(&env);
     let mut ticket = None;
-    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
+    let mut answer = Vec::new();
+    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket, &mut answer).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
     Box::pin(finish_replay_write(
         ReplayWrite {
             ticket,
+            answer,
             reply,
             replaying,
         },
@@ -59,6 +59,7 @@ pub(super) async fn handle_envelope(
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
     replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
@@ -137,17 +138,29 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceShow { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         env @ Envelope::OpenRecord { .. } => {
-            handle_open_record(peer, session, subscribed, env).await
+            handle_open_record(peer, session, subscribed, env, answer).await
         }
         Envelope::RetiredLiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
+        }
+        env @ Envelope::HostSaid { .. } => {
+            handle_host_said(peer, session, subscribed, env).await;
+            Ok(None)
         }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
         Envelope::WorkspacesRequest { request_id, frame } => {
             handle_workspaces(peer, session, request_id, &frame).await
         }
-        Envelope::HereRequest { request_id, frame } => {
-            handle_here(peer, session, request_id, &frame).await
+        Envelope::AgentRun { request_id, label } => {
+            Ok(Some(handle_agent_run(
+                peer, session, subscribed, request_id, &label,
+            )))
+        }
+        Envelope::ChannelReader => {
+            session
+                .channel_reader
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
         }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
@@ -170,7 +183,14 @@ pub(super) async fn handle_envelope(
         | Envelope::RecordOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::HereReply { .. }
+        | Envelope::AgentRunAnswer { .. }
+        | Envelope::AgentRunStopped
+        // Only the host answers an entry, once, before the session.
+        | Envelope::Entered(_)
+        // Who is here is the live plane's alone: a device that still asks the host
+        // is answered by nobody.
+        | Envelope::RetiredHereRequest { .. }
+        | Envelope::RetiredHereReply { .. }
         | Envelope::FetchGrant { .. } => Ok(None),
     }
 }

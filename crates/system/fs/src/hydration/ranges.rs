@@ -421,11 +421,25 @@ impl Hydrator {
         priority: Priority,
     ) -> Result<()> {
         let wants = chunk_wants(manifest, claimed);
-        let wants = self.fill_from_local(content, manifest, wants).await?;
+        let mut wants = self.fill_from_local(content, manifest, wants).await?;
         if wants.is_empty() {
             return Ok(());
         }
         let peers = self.known_peers();
+        if peers.is_empty() && self.source.is_some() {
+            // No peer to ask for ranges: the source hands over whole chunks,
+            // which then fill the area as resident chunks do.
+            let chunks = wants
+                .iter()
+                .filter_map(|want| manifest.chunks().get(want.index))
+                .map(|chunk| Hash::from(chunk.hash))
+                .collect::<std::collections::BTreeSet<_>>();
+            self.fetch_from_source(chunks.into_iter().collect()).await;
+            wants = self.fill_from_local(content, manifest, wants).await?;
+            if wants.is_empty() {
+                return Ok(());
+            }
+        }
         if peers.is_empty() {
             return Err(anyhow!("no peers to fetch {content} from"));
         }
@@ -780,14 +794,13 @@ mod tests {
         Arc<crate::store::ContentStore>,
         iroh::protocol::Router,
     ) {
-        use iroh::endpoint::{Endpoint, presets};
         let server_store = Arc::new(crate::store::ContentStore::memory());
         let id = server_store.write_content(data).await.unwrap().unwrap();
-        let server = Endpoint::bind(presets::N0).await.unwrap();
+        let server = test_relay::direct_endpoint().await;
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
-        let client = Endpoint::bind(presets::N0).await.unwrap();
+        let client = test_relay::direct_endpoint().await;
         let hydrator = Hydrator::new(client, Arc::new(crate::store::ContentStore::memory()));
         hydrator.add_peer(server.addr());
         (hydrator, id, server_store, router)
@@ -919,13 +932,12 @@ mod tests {
     /// no longer exists.
     #[tokio::test]
     async fn an_abandoned_fetch_gives_its_ranges_back() {
-        use iroh::endpoint::{Endpoint, presets};
         let data = pseudo(3 * 1024 * 1024, 17);
         let source = crate::store::ContentStore::memory();
         let id = source.write_content(&data).await.unwrap().unwrap();
         let quiet = crate::hydration::test_peers::silent().await;
         let hydrator = Hydrator::new(
-            Endpoint::bind(presets::N0).await.unwrap(),
+            test_relay::direct_endpoint().await,
             Arc::new(crate::store::ContentStore::memory()),
         );
         // The manifest is here; the bytes only the quiet peer holds.

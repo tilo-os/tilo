@@ -5,9 +5,8 @@
 //! an [`Engine`] to index and search them. The engine is reached only
 //! through [`MakeEngine`], so a program that should not carry tantivy until
 //! someone searches (the browser desktop's start module) can leave it out:
-//! with the `lazy-engine` feature, the program hands over a loader
-//! ([`defer_engine`]) that fetches the engine's code and passes back
-//! [`tantivy_engine`] ([`install_engine`]). Until then commits wait and
+//! with the `lazy-engine` feature, the program fetches the engine's code and
+//! installs it ([`ENGINE`]). Until then commits wait and
 //! searches find nothing; [`engine_ready`] tells a surface to say so, and
 //! [`engine_generation`] to search again once the engine is in.
 
@@ -121,123 +120,49 @@ pub fn tantivy_engine() -> Box<dyn Engine> {
     Box::new(TantivyEngine::new())
 }
 
-#[cfg(not(feature = "lazy-engine"))]
-mod loading {
-    use super::MakeEngine;
-
-    /// Linked in: always there.
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-engine build has no engine until it is fetched"
-    )]
-    pub(crate) fn make() -> Option<MakeEngine> {
-        Some(super::tantivy_engine)
-    }
-
-    /// Linked in: always there.
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-engine build has no engine until it is fetched"
-    )]
-    pub(crate) fn installed() -> Option<MakeEngine> {
-        Some(super::tantivy_engine)
-    }
-
-    /// Whether no search waits for the engine: none does, it is linked in.
-    #[must_use]
-    pub fn engine_ready() -> bool {
-        true
-    }
-
-    /// Fetch the engine now, ahead of a search. It is linked in.
-    pub fn prepare_engine() {}
-
-    /// How many times the engine arrived: never, as it was always there.
-    #[must_use]
-    pub fn engine_generation() -> u64 {
-        0
-    }
+/// The engine where it is linked.
+#[must_use]
+pub fn builtin_engine() -> MakeEngine {
+    tantivy_engine
 }
 
-#[cfg(feature = "lazy-engine")]
-mod loading {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-    use super::MakeEngine;
-
-    static MAKE: OnceLock<MakeEngine> = OnceLock::new();
-    static LOAD: OnceLock<fn()> = OnceLock::new();
-    static REQUESTED: AtomicBool = AtomicBool::new(false);
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
-
-    /// The engine, or `None` while its code is still to come (and then
-    /// fetched).
-    pub(crate) fn make() -> Option<MakeEngine> {
-        let make = MAKE.get().copied();
-        if make.is_none() {
-            prepare_engine();
-        }
-        make
-    }
-
-    /// The engine if its code is in, without fetching it.
-    pub(crate) fn installed() -> Option<MakeEngine> {
-        MAKE.get().copied()
-    }
-
-    /// Whether no search waits for the engine: its code is in, or nothing
-    /// asked for it. While it is on its way, searches of indexes too large
-    /// to answer from their records find nothing and their commits wait.
-    #[must_use]
-    pub fn engine_ready() -> bool {
-        MAKE.get().is_some() || !REQUESTED.load(Ordering::Acquire)
-    }
-
-    /// Fetch the engine now, ahead of a search: a surface about to search
-    /// (the palette opening) calls it so that results come with the first
-    /// keystroke. Fetches once; again after [`engine_load_failed`].
-    pub fn prepare_engine() {
-        if MAKE.get().is_some() || REQUESTED.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        match LOAD.get() {
-            Some(load) => load(),
-            None => REQUESTED.store(false, Ordering::Release),
-        }
-    }
-
-    /// Bumped when the engine arrives: a surface that searched before
-    /// searches again once this moved.
-    #[must_use]
-    pub fn engine_generation() -> u64 {
-        GENERATION.load(Ordering::Acquire)
-    }
-
-    /// How the program fetches the engine's code: `load` starts the fetch
-    /// and, once the code is in, calls [`install_engine`] (or
-    /// [`engine_load_failed`]).
-    pub fn defer_engine(load: fn()) {
-        let _ = LOAD.set(load);
-    }
-
-    /// The engine's code is in: indexes commit and search from now on.
-    pub fn install_engine(make: MakeEngine) {
-        if MAKE.set(make).is_ok() {
-            GENERATION.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    /// The fetch failed: the next search fetches again.
-    pub fn engine_load_failed() {
-        REQUESTED.store(false, Ordering::Release);
-    }
+tilo_lock::lazy_code! {
+    /// The engine. A program built with `lazy-engine` fetches its code the
+    /// first time something searches (or [`prepare_engine`] asks); until
+    /// then searches of indexes too large to answer from their records find
+    /// nothing and their commits wait, and a surface that searched searches
+    /// again once [`engine_generation`] moved.
+    pub static ENGINE: MakeEngine = builtin_engine, feature = "lazy-engine";
 }
 
-#[cfg(feature = "lazy-engine")]
-pub use loading::{defer_engine, engine_load_failed, install_engine};
-pub use loading::{engine_generation, engine_ready, prepare_engine};
-pub(crate) use loading::{installed, make};
+/// The engine, or `None` while its code is still to come (and then fetched).
+pub(crate) fn make() -> Option<MakeEngine> {
+    ENGINE.get()
+}
+
+/// The engine if its code is in, without fetching it.
+pub(crate) fn installed() -> Option<MakeEngine> {
+    if ENGINE.is_in() { ENGINE.get() } else { None }
+}
+
+/// Whether no search waits for the engine: its code is in, or nothing asked
+/// for it.
+#[must_use]
+pub fn engine_ready() -> bool {
+    !ENGINE.fetching()
+}
+
+/// Fetch the engine now, ahead of a search: a surface about to search (the
+/// palette opening) calls it so that results come with the first keystroke.
+pub fn prepare_engine() {
+    let _ = ENGINE.get();
+}
+
+/// Bumped when the engine arrives.
+#[must_use]
+pub fn engine_generation() -> u64 {
+    ENGINE.generation()
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Fields {

@@ -7,8 +7,8 @@ version = 3
 fields = [
   { path = "enabled", type = "bool", readonly = true },
   { path = "panic_mode", type = "bool", readonly = true },
-  { path = "default_zone", type = "ZoneKind" },
-  { path = "zones", type = "BTreeMap<String, StoredZone>" },
+  { path = "default_zone", type = { named = "ZoneKind" } },
+  { path = "zones", type = { map = { named = "StoredZone" } } },
 ]
 
 [[resources.verbs]]
@@ -33,8 +33,8 @@ kind = "undoable"
 id = "delete-rule"
 kind = "undoable"
 params = [
-  { name = "zone", required = true, schema = { type = "string", enum = ["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"] } },
-  { name = "rule", required = true, schema = { type = "string" } },
+  { name = "zone", type = { named = "ZoneKind" }, required = true, schema = { type = "string", enum = ["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"] } },
+  { name = "rule", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -44,19 +44,87 @@ params = [
   { name = "config", required = true, schema = {} },
 ]
 
+[[resources.verbs]]
+id = "read-blocked"
+kind = "read"
+
+[[resources.types]]
+name = "Action"
+cases = [
+  { name = "allow" },
+  { name = "deny" },
+]
+
+[[resources.types]]
+name = "Matcher"
+cases = [
+  { name = "service", fields = [{ name = "0", type = "text" }] },
+  { name = "port", fields = [{ name = "port", type = "text" }, { name = "proto", type = { named = "Proto" } }] },
+]
+
+[[resources.types]]
+name = "Proto"
+cases = [
+  { name = "tcp" },
+  { name = "udp" },
+]
+
+[[resources.types]]
+name = "StoredRule"
+fields = [
+  { name = "matcher", type = { named = "Matcher" } },
+  { name = "action", type = { named = "Action" } },
+  { name = "source", type = "text" },
+  { name = "enabled", type = "bool" },
+]
+
+[[resources.types]]
+name = "StoredZone"
+fields = [
+  { name = "target", type = { named = "Target" } },
+  { name = "interfaces", type = { set = "text" } },
+  { name = "services", type = { set = "text" } },
+  { name = "rules", type = { collection = { named = "StoredRule" } } },
+  { name = "masquerade", type = "bool" },
+  { name = "deleted_rules", type = { set = "text" } },
+]
+
+[[resources.types]]
+name = "Target"
+cases = [
+  { name = "default" },
+  { name = "accept" },
+  { name = "reject" },
+  { name = "drop" },
+]
+
+[[resources.types]]
+name = "ZoneKind"
+cases = [
+  { name = "drop" },
+  { name = "block" },
+  { name = "public" },
+  { name = "external" },
+  { name = "dmz" },
+  { name = "work" },
+  { name = "home" },
+  { name = "internal" },
+  { name = "trusted" },
+]
+
 [[resources]]
 kind = "firewall.applied"
 label = "Applied configuration"
 version = 1
 fields = [
-  { path = "devices", type = "BTreeMap<String, String>" },
+  { path = "devices", type = { map = "text" } },
 ]
 
 [[resources.verbs]]
 id = "applied"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "config", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "config", type = "text", required = true, schema = { type = "string" } },
 ]
 

@@ -171,6 +171,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_append_is_known_unwritten_only_before_it_writes() {
+        use crate::native::atomic::{Privacy, PublicationState, append, replace};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("journal");
+        replace(&path, b"a", Privacy::OwnerOnly).unwrap();
+        append(&path, b"b").unwrap();
+        let error = with_failure(Checkpoint::BeforePublish, || append(&path, b"c")).unwrap_err();
+        assert_eq!(error.state(), PublicationState::NotPublished);
+        assert_eq!(std::fs::read(&path).unwrap(), b"ab");
+        let error = with_failure(Checkpoint::AfterPublish, || append(&path, b"d")).unwrap_err();
+        assert_eq!(error.state(), PublicationState::PublicationUnknown);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abd");
+        let missing = append(&root.path().join("missing"), b"e").unwrap_err();
+        assert_eq!(missing.state(), PublicationState::NotPublished);
+    }
+
+    #[test]
     fn nth_failure_selects_one_real_publication() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("record");

@@ -15,27 +15,47 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::conversation::{
-    ConversationClock, DayBreaks, DayDividerFace, EarlierUnavailableFace, UnreadDividerFace,
+    ConversationClock, DayBreaks, EarlierUnavailableFace, SectionDividerFace, unread_label,
 };
 use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
-    EmptyState, EmptyStateContent, MediaArt,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, ChipFace, ControlSize, EmptyState,
+    EmptyStateContent, MediaArt,
 };
 
 /// The skeleton standing for the messages of an earlier part on their way.
 const EARLIER_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 3 };
 
-use super::agent_work::{
-    AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
-};
+use super::agent_work::{draw_agent_work, measure_agent_work};
 use super::{
     MessageColumn, RowM, TimelineItem, attachment_icon, clock_label, file_card_height,
-    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h,
+    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h, time_label,
 };
 use crate::app::{ChatApp, Hit};
-use crate::model::{self, AgentWork, Message};
+use crate::model::{self, Message};
 use crate::paint::{line_in, line_of, text, width_of};
+
+/// A conversation laid out for a frame: the items it stands, the bands above them, and the
+/// height the painting starts at.
+struct Placed {
+    items: Vec<TimelineItem>,
+    /// The message the "new messages" line stands above, if any.
+    first_unread: Option<String>,
+    /// The place the earlier messages take, and the "new messages" line's height.
+    earlier_h: f64,
+    new_h: f64,
+    /// Where the items' first line is painted.
+    y: f64,
+}
+
+/// One row of the timeline before it is measured: the message it stands for, and the day
+/// divider above it where the local day changes.
+struct TimelineRow {
+    index: usize,
+    id: String,
+    show_header: bool,
+    divider: Option<String>,
+}
 
 impl ChatApp {
     fn draw_empty_messages(&mut self, paint: PaintCtx<'_>, area: Rect) {
@@ -136,57 +156,13 @@ impl ChatApp {
             return;
         }
 
-        let groups = self.timeline_groups();
-        let clock = ConversationClock::local();
-        let (items, measured) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
-        let first_unread = self.scrollback.first_unread.clone();
-        let earlier_h = if reads_back {
-            Self::earlier_height(tr, theme, text_w)
-        } else {
-            0.0
-        };
-        let new_h = first_unread
-            .as_ref()
-            .map_or(0.0, |_| UnreadDividerFace::height(theme));
-        let total = measured + earlier_h + new_h;
-        let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
-
-        // The newest edge at the bottom; content shorter than the view
-        // starts at its top.
-        let start_y = (area.y1 - total).min(area.y0);
-        self.keep_view(&items, &tops, area, start_y, total);
-
-        self.scroll_content = total;
-        self.scroll_viewport = area.height().max(0.0);
-        self.scroll_to_revealed(&items, &tops, area, start_y);
-        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
-        let mut y = (start_y + self.scroll).clamp(start_y, area.y0);
-        // Store the normalised (bounded) offset, not the raw wheel accumulator.
-        // This prevents an unbounded value from leaking across a resize or a
-        // channel switch, and gives sync an accurate read-edge answer.
-        self.scroll = y - start_y;
-        // `scroll == 0` is the newest edge: `start_y` starts the timeline at
-        // its bottom-aligned position, while increasing offsets travel back
-        // through history toward the view's top.
-        let at_end = self.scroll <= 0.5;
-        // Scrolling back to the newest message reads it. The read receipt
-        // is the sync's, asked for once when the timeline arrives at its
-        // newest edge, not on each wheel notch that brought it there (a
-        // notch only pans the view: `events.rs`).
-        if at_end && !self.timeline_at_end {
-            self.read_on_present = true;
-        }
-        self.timeline_at_end = at_end;
-        self.timeline_total_height = total;
-        // The message at the top of the view, kept there next frame.
-        self.scrollback.anchor = (!at_end)
-            .then(|| view_anchor(&items, &tops, area, y))
-            .flatten();
-        // Reading within a view of the earlier messages' place opens the
-        // part before.
-        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
-            self.scrollback.reached_top();
-        }
+        let Placed {
+            items,
+            first_unread,
+            earlier_h,
+            new_h,
+            mut y,
+        } = self.place_timeline(tr, theme, area, text_w, reads_back);
 
         let first_row_hit = hits.len();
         // Only what stands in view is painted; a row keeps its scene for
@@ -343,11 +319,12 @@ impl ChatApp {
         }
     }
 
-    /// The "new messages" line, `height` tall at `y`: the cursor beneath it.
+    /// The "new messages" line, `height` tall at `y`: the cursor beneath it. It is the day's
+    /// divider in the accent, in the toolkit's words.
     fn draw_unread_line(&self, mut paint: PaintCtx<'_>, area: Rect, y: f64, height: f64) -> f64 {
         let band = Rect::new(area.x0, y, area.x1, y + height);
         let (leading, trailing) = (area.x0 + self.chrome.gutter, area.x1 - self.chrome.gutter);
-        UnreadDividerFace::paint(&mut paint, band, leading, trailing);
+        SectionDividerFace::accent(&unread_label()).paint(&mut paint, band, leading, trailing);
         y + height
     }
 
@@ -457,9 +434,92 @@ impl ChatApp {
         ChatApp::push_hit(hits, rect, Hit::JumpToLatest);
     }
 
-    /// Measure every row across every group, with a day divider wherever the
-    /// local day changes — not only at the oldest loaded message — returning
-    /// the timeline's items and its total height.
+    /// Lay the conversation out for a frame: its items, where each stands, and where the
+    /// view begins, against what the reader has scrolled and what was revealed.
+    fn place_timeline(
+        &mut self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        text_w: f32,
+        reads_back: bool,
+    ) -> Placed {
+        let groups = self.timeline_groups();
+        let clock = ConversationClock::local();
+        let window = self.timeline_window(area);
+        let (items, measured) =
+            self.measure_message_rows(tr, theme, &groups, text_w, clock, window);
+        let first_unread = self.scrollback.first_unread.clone();
+        let earlier_h = if reads_back {
+            Self::earlier_height(tr, theme, text_w)
+        } else {
+            0.0
+        };
+        let new_h = first_unread
+            .as_ref()
+            .map_or(0.0, |_| SectionDividerFace::height(theme));
+        let total = measured + earlier_h + new_h;
+        let tops = Self::item_tops(&items, theme, earlier_h, new_h, first_unread.as_deref());
+        // The newest edge at the bottom; content shorter than the view
+        // starts at its top.
+        let start_y = (area.y1 - total).min(area.y0);
+        self.keep_view(&items, &tops, area, start_y, total);
+
+        self.scroll_content = total;
+        self.scroll_viewport = area.height().max(0.0);
+        self.scroll_to_revealed(&items, &tops, area, start_y);
+        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
+        let y = (start_y + self.scroll).clamp(start_y, area.y0);
+        // Store the normalised (bounded) offset, not the raw wheel accumulator.
+        // This prevents an unbounded value from leaking across a resize or a
+        // channel switch, and gives sync an accurate read-edge answer.
+        self.scroll = y - start_y;
+        // `scroll == 0` is the newest edge: `start_y` starts the timeline at
+        // its bottom-aligned position, while increasing offsets travel back
+        // through history toward the view's top.
+        let at_end = self.scroll <= 0.5;
+        // Scrolling back to the newest message reads it. The read receipt
+        // is the sync's, asked for once when the timeline arrives at its
+        // newest edge, not on each wheel notch that brought it there (a
+        // notch only pans the view: `events.rs`).
+        if at_end && !self.timeline_at_end {
+            self.read_on_present = true;
+        }
+        self.timeline_at_end = at_end;
+        self.timeline_total_height = total;
+        // The message at the top of the view, kept there next frame.
+        self.scrollback.anchor = (!at_end)
+            .then(|| view_anchor(&items, &tops, area, y))
+            .flatten();
+        // Reading within a view of the earlier messages' place opens the
+        // part before.
+        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
+            self.scrollback.reached_top();
+        }
+        Placed {
+            items,
+            first_unread,
+            earlier_h,
+            new_h,
+            y,
+        }
+    }
+
+    /// The stretch of the timeline a frame measures, as distances from the newest edge: what
+    /// stands in view, and a viewport either side of it, so scrolling meets rows that were
+    /// measured before they came into view. `scroll` already counts from that edge, so this
+    /// holds however tall the rows not yet measured turn out to be.
+    fn timeline_window(&self, area: Rect) -> (f64, f64) {
+        let viewport = area.height().max(0.0);
+        (self.scroll - viewport, self.scroll + viewport + viewport)
+    }
+
+    /// Measure the rows across every group that stand within `window` — distances from the
+    /// timeline's newest edge — with a day divider wherever the local day changes, not only
+    /// at the oldest loaded message, returning the timeline's items and its total height. A
+    /// row outside the window stands at what it was measured at, or at what a row of this
+    /// conversation is estimated to cost, and is measured when a frame's window reaches it:
+    /// a timeline of thousands of messages lays out what stands in view, not every row of it.
     pub(super) fn measure_message_rows(
         &self,
         tr: &mut TextRenderer,
@@ -467,48 +527,132 @@ impl ChatApp {
         groups: &[model::MessageGroup],
         text_w: f32,
         clock: ConversationClock,
+        window: (f64, f64),
     ) -> (Vec<TimelineItem>, f64) {
+        let rows = self.timeline_rows(groups, clock);
+        let stands = self.rows_in_window(&rows, theme, window);
         let mut total = 0.0;
-        let mut items: Vec<TimelineItem> = Vec::new();
+        let mut items: Vec<TimelineItem> = Vec::with_capacity(rows.len());
+        for (at, row) in rows.iter().enumerate() {
+            if let Some(label) = row.divider.clone() {
+                let height = SectionDividerFace::height(theme);
+                total += height;
+                items.push(TimelineItem::Divider { label });
+            }
+            // Where the row stands: what it was measured at, or what a row of this
+            // conversation is estimated to cost until a frame reaches it.
+            let height = self
+                .timeline
+                .borrow()
+                .kept_height(&row.id)
+                .unwrap_or_else(|| self.timeline.borrow().estimate());
+            let rm = match self
+                .messages
+                .get(row.index)
+                .filter(|_| stands.get(at).copied().unwrap_or(true))
+            {
+                Some(m) => self.measure_row_kept(tr, theme, m, row.show_header, text_w),
+                None => RowM::unmeasured(&row.id, height),
+            };
+            total += rm.height();
+            items.push(TimelineItem::Row(rm));
+        }
+        (items, total)
+    }
+
+    /// Every row of the timeline in order, with the day divider it stands under: what a
+    /// message says the timeline shows, without measuring any of them.
+    fn timeline_rows(
+        &self,
+        groups: &[model::MessageGroup],
+        clock: ConversationClock,
+    ) -> Vec<TimelineRow> {
+        let mut rows = Vec::new();
         let mut days = DayBreaks::new();
         for g in groups {
-            for (gi, &idx) in g.message_indices.iter().enumerate() {
-                let Some(m) = self.messages.get(idx) else {
+            for (gi, &index) in g.message_indices.iter().enumerate() {
+                let Some(m) = self.messages.get(index) else {
                     continue;
                 };
                 let day = clock.day(m.ts);
-                if days.begins(day) {
-                    let height = DayDividerFace::height(theme);
-                    total += height;
-                    items.push(TimelineItem::Divider {
-                        label: clock.day_label(day),
-                    });
-                }
-                let rm = self.measure_row_kept(tr, theme, m, gi == 0, text_w);
-                total += rm.height();
-                items.push(TimelineItem::Row(rm));
+                let divider = days.begins(day).then(|| clock.day_label(day));
+                rows.push(TimelineRow {
+                    index,
+                    id: m.id.clone(),
+                    show_header: gi == 0,
+                    divider,
+                });
             }
         }
-        (items, total)
+        rows
+    }
+
+    /// Which of `rows` stand within `window`, a range of distances from the timeline's
+    /// newest edge: the rows in view and the margin either side of them, counted up from
+    /// the edge with the heights the rows are laid out at.
+    fn rows_in_window(&self, rows: &[TimelineRow], theme: &Theme, window: (f64, f64)) -> Vec<bool> {
+        let (from, to) = window;
+        let divider = SectionDividerFace::height(theme);
+        let mut stands = vec![false; rows.len()];
+        let mut from_bottom = 0.0;
+        for (at, row) in rows.iter().enumerate().rev() {
+            let height = self
+                .timeline
+                .borrow()
+                .kept_height(&row.id)
+                .unwrap_or_else(|| self.timeline.borrow().estimate());
+            if let Some(stands) = stands.get_mut(at)
+                && from_bottom + height >= from
+                && from_bottom <= to
+            {
+                *stands = true;
+            }
+            from_bottom += height;
+            if row.divider.is_some() {
+                from_bottom += divider;
+            }
+        }
+        stands
     }
 
     /// One timeline item's height: a divider's row, or a message's.
     fn item_height(item: &TimelineItem, theme: &Theme) -> f64 {
         match item {
-            TimelineItem::Divider { .. } => DayDividerFace::height(theme),
+            TimelineItem::Divider { .. } => SectionDividerFace::height(theme),
             TimelineItem::Row(rm) => rm.height(),
         }
+    }
+
+    /// The height the agent's work takes under the reply `m`.
+    fn measure_row_work(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &Message,
+        text_w: f32,
+    ) -> f64 {
+        m.work.as_ref().map_or(0.0, |work| {
+            let words = !m.text.is_empty();
+            measure_agent_work(
+                tr,
+                theme,
+                work,
+                self.expanded_agent.contains(&m.id),
+                text_w,
+                words,
+            )
+        })
     }
 
     /// One day divider, in the toolkit's face: the same band, rules and
     /// centring Messages draws, so a day reads the same in both apps.
     fn draw_day_divider(&self, mut paint: PaintCtx<'_>, area: Rect, label: &str, y: f64) -> f64 {
         let theme = paint.theme;
-        let height = DayDividerFace::height(theme);
+        let height = SectionDividerFace::height(theme);
         let band = Rect::new(area.x0, y, area.x1, y + height);
         let leading = area.x0 + self.chrome.gutter;
         let trailing = area.x1 - self.chrome.gutter;
-        DayDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
+        SectionDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
         y + height
     }
 
@@ -551,9 +695,7 @@ impl ChatApp {
         let work_h = if editing {
             0.0
         } else {
-            m.work
-                .as_ref()
-                .map_or(0.0, |work| measure_agent_work(tr, theme, work, text_w))
+            self.measure_row_work(tr, theme, m, text_w)
         };
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
@@ -582,7 +724,9 @@ impl ChatApp {
         } else {
             0.0
         };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
+        // A channel's thread link; a direct conversation shows the answers
+        // themselves, so it has no thread to open.
+        let thread_h = if self.keeps_threads() && model::reply_count(&self.messages, &m.id) > 0 {
             thread_bar_h(theme) + f64::from(sp.s2)
         } else {
             0.0
@@ -629,6 +773,7 @@ impl ChatApp {
             thread_h,
             editing,
             edit_ctrl_h,
+            unmeasured: false,
         }
     }
 
@@ -710,21 +855,9 @@ impl ChatApp {
             let paint = PaintCtx::new(scene, tf, tr, theme);
             self.draw_reasoning_toggle(paint, rm, &m.id, column, y, hits);
         }
-        if !rm.editing
-            && let Some(work) = &m.work
-        {
-            Self::draw_agent_work(
-                PaintCtx::new(scene, tf, tr, theme),
-                work,
-                Rect::new(
-                    column.text_x,
-                    *y,
-                    column.text_x + f64::from(column.text_width),
-                    *y + rm.work_h,
-                ),
-            );
-            *y += rm.work_h;
-        }
+        let folds = (!rm.editing)
+            .then(|| self.draw_row_work(PaintCtx::new(scene, tf, tr, theme), &m, rm, column, y))
+            .flatten();
         // Right-click a message (header + body) opens its menu: editing
         // your own, reporting anyone else's, removing it as a moderator.
         // Recorded before the reaction / thread hits so those still win in
@@ -735,6 +868,10 @@ impl ChatApp {
                 Rect::new(area.x0, content_top, area.x1, *y),
                 Hit::MessageMenu { msg: m.id.clone() },
             );
+        }
+        // Above the row's menu: a press on what the agent did opens the list.
+        if let Some(area) = folds {
+            Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
         }
         self.push_author_hit(&m, &parts, hits);
         if !rm.editing {
@@ -765,7 +902,7 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let caption = crate::i18n::t(if self.expanded_reasoning.contains(id) {
+        let caption = crate::i18n::t(if self.expanded_agent.contains(id) {
             "chat-agent-hide-reasoning"
         } else {
             "chat-agent-show-reasoning"
@@ -779,6 +916,28 @@ impl ChatApp {
         Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
         Self::push_hit(hits, rect, Hit::AgentReasoning(id.to_owned()));
         *y += rm.reasoning_h;
+    }
+
+    /// What the agent did for the reply `m`, from `*y`; advances `*y` past it.
+    /// Returns where it is when it folds, to open and close it there.
+    fn draw_row_work(
+        &self,
+        mut paint: PaintCtx<'_>,
+        m: &Message,
+        rm: &RowM,
+        column: MessageColumn,
+        y: &mut f64,
+    ) -> Option<Rect> {
+        let work = m.work.as_ref()?;
+        let area = Rect::new(
+            column.text_x,
+            *y,
+            column.text_x + f64::from(column.text_width),
+            *y + rm.work_h,
+        );
+        *y += rm.work_h;
+        let open = self.expanded_agent.contains(&m.id);
+        draw_agent_work(&mut paint, work, open, area, !m.text.is_empty()).then_some(area)
     }
 
     /// Keep where a shown message drew its texts, cut to the timeline's
@@ -898,47 +1057,18 @@ impl ChatApp {
                     attachment: index,
                 },
             );
-            *y += gap;
-            let caption = self.resource_navigation.label(&m.id, index, false);
-            let button_w = ButtonFace::new(Rect::ZERO, &caption)
-                .intrinsic_width(tr, theme)
-                .min(width);
-            let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-            );
-            ChatApp::push_hit(
-                hits,
-                rect,
-                Hit::CopyResourceLink {
-                    msg: m.id.clone(),
-                    attachment: index,
-                },
-            );
-            *y += height;
         }
     }
 
-    /// The height of the chip and "Copy link" a message's resource
-    /// attachments take: a control's row each, with their gaps.
+    /// The height a message's resource chips take: a control's row each, with its gap. Copying a
+    /// chip's link is in the message's menu, which a right-click on the chip opens.
     fn resource_controls_height(m: &Message, theme: &Theme) -> f64 {
         let height = ButtonFace::height(ControlSize::Regular, theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         m.attachments
             .iter()
             .filter(|attached| attached.is_chip())
-            .map(|attached| {
-                if attached.at().is_some() {
-                    gap + height + gap + height
-                } else {
-                    gap + height
-                }
-            })
-            .fold(0.0, |total, row| total + row)
+            .fold(0.0, |total, _| total + gap + height)
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -976,7 +1106,7 @@ impl ChatApp {
         // The time's line box is bottom-aligned to the name's, which keeps
         // their baselines together at any text scale.
         let time_style = theme.text(TextRole::Caption).numeric();
-        let clock = clock_label(m.ts);
+        let clock = time_label(m);
         let th = line_of(ctx.text, &time_style);
         let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
         let (clock_w, clock_h) = text(
@@ -1025,41 +1155,6 @@ impl ChatApp {
             );
         }
         *y += header_row_h(tr, theme);
-    }
-
-    /// Paint the durable account an agent attached to its own reply.
-    ///
-    /// The card deliberately avoids a spinner or a claim that the agent is
-    /// live. `AgentWork` records what has happened; current availability is
-    /// still communicated by presence. The rationale is the agent's public
-    /// explanation, never hidden chain-of-thought, and trace rows exist only
-    /// for operations the dispatch path actually attempted.
-    pub(super) fn draw_agent_work(mut paint: PaintCtx<'_>, work: &AgentWork, card: Rect) {
-        let theme = paint.theme;
-        let spacing = &theme.tokens.spacing;
-        CardFace::new().paint(&mut paint, card);
-
-        let presentation = AgentWorkPresentation::from(work);
-        let inset = f64::from(spacing.s3);
-        let width = ui::num::f32_of_f64((card.width() - 2.0 * inset).max(0.0));
-        let mut y = card.y0 + inset;
-        y += draw_agent_work_line(
-            &mut paint,
-            &presentation.summary,
-            AgentWorkLineStyle::Summary,
-            Point::new(card.x0 + inset, y),
-            width,
-        );
-        for line in presentation.details {
-            y += f64::from(spacing.s2);
-            y += draw_agent_work_line(
-                &mut paint,
-                &line.text,
-                line.style,
-                Point::new(card.x0 + inset, y),
-                width,
-            );
-        }
     }
 
     /// The "Edited" marker, attachment, reactions and thread link below the
@@ -1366,9 +1461,13 @@ impl ChatApp {
         let cy = bar.center().y;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         for pid in parts.iter().take(3) {
-            let name = self.user_name(pid);
-            AvatarFace::new(&name, pid)
-                .presence(self.identity_colour(pid))
+            // An agent who answered wears its own face, as its byline does.
+            let name = self.display_name(pid);
+            let mut face = AvatarFace::new(&name, pid);
+            if self.is_agent_author(pid) {
+                face = face.agent();
+            }
+            face.presence(self.identity_colour(pid))
                 .ringed_on(if open || self.hovered(bar) {
                     ground
                 } else {

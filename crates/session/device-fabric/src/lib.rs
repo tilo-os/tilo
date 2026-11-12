@@ -29,7 +29,7 @@ use tilo_network_actor::fabric::{
 };
 // The identity and stamp every record here is authored with: a service that
 // shares something of this device's names them.
-pub use tilo_network_actor::fabric::{DeviceId, FabricStamp};
+pub use tilo_fabric_core::{DeviceId, FabricStamp};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
 /// these fields are accepted from a remote peer or an untrusted application.

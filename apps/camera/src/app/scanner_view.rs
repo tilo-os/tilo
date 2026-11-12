@@ -1,6 +1,7 @@
 //! The code scanner: the viewfinder with a scan guide, the decoded code's
 //! outline, its result card beside or below the guide, and the recent scans.
 
+use crate::CATALOG;
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -116,7 +117,7 @@ impl CameraApp {
             if code.is_some() {
                 self.draw_detected_overlay(scene, t, tr, theme, full, layout.hint);
             } else {
-                let hint = ui::i18n!("Point the camera at a QR code or barcode");
+                let hint = CATALOG.t("Point the camera at a QR code or barcode");
                 let local = theme.on_ground(theme.tokens.colors.media.scrim);
                 let mut ctx = PaintCtx::new(scene, t, tr, &local);
                 let size = ctx.measure_role(&hint, TextRole::Label, None);
@@ -581,11 +582,12 @@ impl CameraApp {
             body.x1,
             header_mid + control / 2.0,
         );
-        let close = ButtonFace::icon_only(close, Icon::X, "Dismiss");
+        let dismiss = crate::CATALOG.t("camera-a11y-dismiss-scan");
+        let close = ButtonFace::icon_only(close, Icon::X, &dismiss);
         let hit = close.hit_rect(theme);
         let hovered = close.contains(theme, self.last_mouse);
         Button::paint(scene, t, tr, theme, &close.hovered(hovered));
-        self.tooltip_targets.push((hit, "Dismiss".to_owned()));
+        self.tooltip_targets.push((hit, dismiss.clone()));
         self.push_region(hit, Action::DismissScan);
         for (i, (label, rect)) in content.actions.iter().zip(actions).enumerate() {
             let rect = rect + body.origin().to_vec2();
@@ -604,7 +606,7 @@ impl CameraApp {
         let heading = f64::from(local.text(TextRole::Subheading).line_height_px())
             + 2.0 * f64::from(spacing.s3);
         let row = ListRowFace::new("Scan")
-            .secondary("Kind")
+            .secondary(&CATALOG.t("camera-scan-kind"))
             .meta("now")
             .leading(RowLeading::Icon(Icon::Link))
             .height(tr, &local);
@@ -626,7 +628,7 @@ impl CameraApp {
         let local = on_panel(theme);
         let entries = self.scan_history();
         let now = super::now_secs();
-        let heading = ui::i18n!("Recent scans");
+        let heading = CATALOG.t("Recent scans");
         let heading_h = f64::from(local.text(TextRole::Subheading).line_height_px());
         let header = heading_h + 2.0 * f64::from(spacing.s3);
         // Measure the rows that fit, then size the panel to them.

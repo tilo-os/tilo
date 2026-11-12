@@ -69,9 +69,20 @@ fn bar(app: &mut TestApp<App>) -> ui::window_toolbar::WindowToolbar {
 
 #[test]
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
-    // The narrowest window that keeps the theme list docked beside the editor.
-    let width = 600.0;
-    let mut app = frame("editor", (600, 2400), 1.0);
+    // The narrowest window that keeps the theme list docked beside the editor: the sidebar's own
+    // minimum and a column of content beside it, which is where the shell docks it.
+    let theme = ui::Theme::dark();
+    let metrics = theme.tokens.metrics;
+    let width = f64::from(
+        metrics.sidebar_min_width
+            + ui::widget::arrange::column_min_width(ui::widget::arrange::rem_of(&theme)),
+    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the layout metrics are whole, positive point widths"
+    )]
+    let mut app = frame("editor", (width as u32, 2400), 1.0);
     let preview = rect(&mut app, "theme-preview");
     let gutter = f64::from(app.harness().theme().tokens.spacing.s4);
     assert!(

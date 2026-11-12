@@ -69,14 +69,14 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
 
 [dev-dependencies]
+# Encodes cover fixtures.
+image = { workspace = true, features = ["png"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `ebook` claims `--features ebook/thin` in the
 # collection build, and the app then links the whole runtime statically.
 ebook-samples = { package = "ebook", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
-# Encodes cover fixtures.
-image = { workspace = true, features = ["png"] }
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
 # env var (library discovery + the empty-shelf reload) so cargo's default
 # parallel runner can't race them.

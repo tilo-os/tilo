@@ -162,17 +162,16 @@ fn read_images(doc: &Doc, notebook: &mut Notebook) -> Result<(), ModelError> {
             Some((Value::Object(ObjType::Map), reference)) => Bytes::Blob {
                 hash: *hash.as_bytes(),
                 len: integer(doc, &reference, "len")?,
+                sealed: None,
             },
             Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(bytes) => {
-                    let stored = Bytes::of(bytes);
-                    if stored.needs_store()
-                        && let Err(error) = notebook::content().put(bytes)
-                    {
+                ScalarValue::Bytes(bytes) => match Bytes::keep(&notebook::content(), bytes) {
+                    Ok(stored) => stored,
+                    Err(error) => {
                         tracing::warn!(%digest, %error, "notes: an old notebook's picture was not kept");
+                        continue;
                     }
-                    stored
-                }
+                },
                 _ => continue,
             },
             _ => continue,

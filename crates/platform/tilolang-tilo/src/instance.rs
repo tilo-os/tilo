@@ -21,6 +21,7 @@
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
+mod convert;
 pub mod form;
 mod person_state;
 #[cfg(feature = "record")]
@@ -28,6 +29,11 @@ pub mod record;
 pub mod rows;
 mod shown;
 mod views;
+
+pub use convert::{
+    PREVIEW_CHARS, inline_title, inline_view, link_of, preview, shown_values, window_tree,
+};
+pub(crate) use convert::{bound_values, convert_with, referenced_resource, rows_message};
 pub mod wire;
 
 use std::cell::{Cell, RefCell};
@@ -93,6 +99,13 @@ pub trait Publication {
     fn update(&self);
     /// Whether records are still being read off the frame.
     fn pending(&self) -> bool;
+    /// Bring what is published up to date, waiting for the records being read off the frame:
+    /// for an embedder with no frame to take them in on, which reads what is published once it
+    /// covers the record. Whether what is published changed.
+    fn settle(&self) -> bool {
+        self.update();
+        false
+    }
     /// How many records the updates so far have looked at, one per record per turn: what
     /// publishing a change costs, whatever the workspace holds.
     fn visited(&self) -> u64 {
@@ -107,7 +120,7 @@ pub trait Publication {
 
 mod platform;
 
-pub use platform::{Platform, PlatformWeb, PlatformWords};
+pub use platform::{Platform, PlatformBlobs, PlatformWeb, PlatformWords};
 
 /// How an instance starts.
 pub struct Config {
@@ -173,11 +186,51 @@ impl crate::runtime::ShownHost for PlatformShown {
     fn shown(&self, kind: &str, value: &str) -> String {
         self.0.shown(kind, value)
     }
+
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        self.0.clock(hour, minute)
+    }
+}
+
+/// Where an edit the window made applies: the lane's own view showing the item, the lane's view
+/// showing another item of the same list, or a view of the item opened for the edit.
+enum Place {
+    /// The lane's own view, showing the item.
+    Here(Rc<RefCell<ViewInstance>>),
+    /// The lane's own view, drawing another item of its page: `before` is the item it shows.
+    Beside {
+        view: Rc<RefCell<ViewInstance>>,
+        before: ResourceRef,
+    },
+    /// A view of the item, opened for the edit.
+    Fresh(Rc<RefCell<ViewInstance>>),
+}
+
+impl Place {
+    /// Whether the lane shows the item the edit was made in.
+    fn shown(&self) -> bool {
+        matches!(self, Self::Here(_) | Self::Beside { .. })
+    }
+
+    fn view(&self) -> &Rc<RefCell<ViewInstance>> {
+        match self {
+            Self::Here(view) | Self::Beside { view, .. } | Self::Fresh(view) => view,
+        }
+    }
+
+    fn into_view(self) -> Rc<RefCell<ViewInstance>> {
+        match self {
+            Self::Here(view) | Self::Beside { view, .. } | Self::Fresh(view) => view,
+        }
+    }
 }
 
 /// One of the window's two views: a resource shown through a view.
 struct Shown {
     target: ResourceRef,
+    /// The item of the window's own view this lane shows in place (a tree beside what it
+    /// shows), when it shows one there: edits to its page apply to the lane's own view.
+    in_place: Option<ResourceRef>,
     /// The view `open(r, view: v)` named, when it named one; the default view of the type
     /// otherwise.
     with: Option<String>,
@@ -197,6 +250,7 @@ impl Shown {
         show_content_rows(&mut view);
         Self {
             target,
+            in_place: None,
             with: None,
             view: Rc::new(RefCell::new(view)),
             sent: None,
@@ -263,6 +317,9 @@ pub struct Instance {
     /// How the policy's people are the runtime's principals, as presence pairs them.
     people: crate::members::People,
     names_changed: bool,
+    /// The person's formats moved: what a view writes of a time or a day (`.clock()`, a date in a
+    /// sentence) is written again, and what it shows is shown in the new style.
+    formats_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
@@ -274,7 +331,7 @@ pub struct Instance {
     /// arranges on the canvas.
     opens_to_place: Vec<(ResourceRef, Option<String>, bool)>,
     /// What a person's press of a primary action made, to open as they asked for it.
-    pressed_opens: Vec<String>,
+    pressed_opens: Vec<(u64, String)>,
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -319,6 +376,9 @@ pub struct Instance {
     /// The number of the last press of a view's own control the instance made: its frame runs
     /// it, where an invocation is run by the host after the presses it came with.
     last_fire: u64,
+    /// The press the host took from [`Self::take_chosen`] and runs: the item an action it runs
+    /// shows is what the person typed after that press goes into.
+    taken_press: u64,
     /// How many presses the instance ran in order: an invocation is run by the host after the
     /// presses it came with, so a later press can run before it.
     ran: u64,
@@ -374,6 +434,7 @@ impl Instance {
             members_from: None,
             people,
             names_changed: false,
+            formats_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
@@ -408,6 +469,7 @@ impl Instance {
             composing: false,
             fired: 0,
             last_fire: 0,
+            taken_press: 0,
             ran: 0,
             ran_ahead: BTreeSet::new(),
             fired_told: 0,
@@ -510,6 +572,13 @@ impl Instance {
         self.out.push(ToUi::Activate);
     }
 
+    /// Have the window read in `locale` (`de-DE`), the language the instance's words now come in:
+    /// its own chrome relabels with the next frame it is sent, and every view is drawn again.
+    pub fn speak(&mut self, locale: String) {
+        self.out.push(ToUi::Speak(locale));
+        self.formats_changed = true;
+    }
+
     /// What search hits and agents asked the window to show, until it shows them.
     #[must_use]
     pub fn open_requests(&self) -> Rc<RefCell<Vec<crate::effects::OpenEffect>>> {
@@ -519,7 +588,7 @@ impl Instance {
     /// Show what the person's own step made, as a press of the action that made it does: it
     /// comes to the front as their input does, and takes the keyboard.
     pub fn opens_what_it_made(&mut self, anchor: String) {
-        self.pressed_opens.push(anchor);
+        self.pressed_opens.push((self.taken_press, anchor));
     }
 
     /// Where the door's answers to effects mark work for the next frame.
@@ -691,7 +760,11 @@ impl Instance {
     /// ([`Instance::press_ran`]). One a frame: what a press made opens, and the window hears
     /// it ran, before the press after it.
     pub fn take_chosen(&mut self) -> Option<(u64, ActionAddress, Option<String>)> {
-        self.chosen.pop_front()
+        let chosen = self.chosen.pop_front();
+        if let Some((press, _, _)) = &chosen {
+            self.taken_press = *press;
+        }
+        chosen
     }
 
     /// Send the window `message` with this frame's batch: what the host knows of the actions it
@@ -728,6 +801,12 @@ impl Instance {
     /// The names of the workspace changed: views showing names show them again.
     pub fn names_changed(&mut self) {
         self.names_changed = true;
+    }
+
+    /// The person's formats changed: every view that writes a time or a day writes it again in
+    /// the new style, and the window shows what it wrote.
+    pub fn formats_changed(&mut self) {
+        self.formats_changed = true;
     }
 
     /// Say whether this replica is the workspace's origin (the device that governs the workspace). Only
@@ -814,6 +893,8 @@ impl Instance {
         host.set_clock(move || platform.now());
         host.runtime()
             .set_web(PlatformWeb(Rc::clone(&self.platform)));
+        host.runtime()
+            .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
@@ -1054,7 +1135,7 @@ impl Instance {
         // in place in the list of the place it belongs to, when the view lists its type. A
         // script opened it, so a narrow window brings it in front at once.
         if let Some(shown) = shown {
-            self.show_in_window(&shown, Some(ui::Front::Action));
+            self.show_in_window(&shown, Some(ui::Front::Action), 0);
         }
     }
 
@@ -1156,19 +1237,20 @@ impl Instance {
     fn take_open_requests(&mut self) -> bool {
         // What a press made comes to the front as the person's input does, and takes the
         // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
-        let anchors: Vec<(crate::effects::OpenEffect, ui::Front)> =
+        let anchors: Vec<(crate::effects::OpenEffect, ui::Front, u64)> =
             std::mem::take(&mut self.pressed_opens)
                 .into_iter()
-                .map(|anchor| {
+                .map(|(press, anchor)| {
                     (
                         crate::effects::OpenEffect::Open { anchor },
                         ui::Front::Input,
+                        press,
                     )
                 })
                 .chain(
                     std::mem::take(&mut *self.open_requests.borrow_mut())
                         .into_iter()
-                        .map(|open| (open, ui::Front::Action)),
+                        .map(|open| (open, ui::Front::Action, self.last_fire)),
                 )
                 .collect();
         if anchors.is_empty() {
@@ -1177,7 +1259,7 @@ impl Instance {
         let Some(host) = self.host() else {
             return false;
         };
-        for (open, front) in anchors {
+        for (open, front, press) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
             let anchor = open.anchor();
             let anchor = anchor
@@ -1191,7 +1273,7 @@ impl Instance {
                         && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
                     {
                         match plan.view.as_deref() {
-                            None => self.show_in_window(&target, Some(front)),
+                            None => self.show_in_window(&target, Some(front), press),
                             Some(view) => self.open_detail(&target, Some(view), Some(front)),
                         }
                     }
@@ -1397,11 +1479,50 @@ impl Instance {
         }
     }
 
+    /// Carry out `message`, one thing the window told of the person at it, as a step of theirs,
+    /// and send what followed it: what a press made, and what the window hears after a press.
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
         let pressed = matches!(message, ToApp::Fire { .. });
-        let outcome = match message {
+        let outcome = self.carry_out(message, &mut ran);
+        if let Err(words) = outcome {
+            self.notice(words, ui::NoticeKind::Error);
+            // What the controls show goes back to what they are bound to.
+            for lane in [Lane::Root, Lane::Detail] {
+                if let Some(view) = self.lane_mut(lane) {
+                    view.bound.clear();
+                }
+                self.send_bound(lane);
+            }
+        }
+        let tickets = self.commit_planned();
+        if let (Some((aref, result)), Some(first)) = (ran, first) {
+            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
+        }
+        self.follow_opens();
+        if pressed {
+            // What the press made opens now, and the window hears right after it that the press
+            // ran: what the person typed after it goes to what it opened, never to what a later
+            // press of the same batch opens.
+            // What it opened is drawn before what the person did after the press reaches the
+            // view: the page beside the list shows the item the press opened, and what they
+            // type into it is that item's.
+            self.take_open_requests();
+            self.poll_views();
+            self.press_ran(self.last_fire);
+            self.tell_took();
+        }
+    }
+
+    /// Carry out what the window told `self` of, answering what it could not do in words; `ran`
+    /// takes the action it applied and what that returned, when it ran one.
+    fn carry_out(
+        &mut self,
+        message: ToApp,
+        ran: &mut Option<(ActionRef, Value)>,
+    ) -> Result<(), Words> {
+        match message {
             ToApp::Back => {
                 self.close_detail();
                 Ok(())
@@ -1411,16 +1532,14 @@ impl Instance {
                 key,
                 event,
                 value,
-            } => self.fire(lane, &key, &event, value.as_ref(), &mut ran),
+            } => self.fire(lane, &key, &event, value.as_ref(), ran),
             edit @ (ToApp::Toggle { .. }
             | ToApp::Splice { .. }
             | ToApp::Edit { .. }
             | ToApp::EditRich { .. }) => self.edit_event(edit),
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
-                if let Some(target) = wire::runtime_resource(&resource) {
-                    self.show_in_window(&target, Some(ui::Front::Input));
-                }
+                self.show_now(&resource);
                 Ok(())
             }
             ToApp::OpenReference { reference } => {
@@ -1432,8 +1551,9 @@ impl Instance {
                 list,
                 start,
                 end,
+                open,
             } => {
-                self.request_rows(lane, &list, start as usize..end as usize);
+                self.request_rows(lane, &list, start as usize..end as usize, open.as_deref());
                 Ok(())
             }
             ToApp::Answer(answer) => {
@@ -1444,7 +1564,7 @@ impl Instance {
                 self.form_edit(form, &field, text);
                 Ok(())
             }
-            ToApp::FormSubmit { form } => self.form_submit(form, &mut ran),
+            ToApp::FormSubmit { form } => self.form_submit(form, ran),
             ToApp::FormCancel { form } => {
                 if self.form.as_ref().is_some_and(|open| open.id == form) {
                     self.form = None;
@@ -1469,6 +1589,7 @@ impl Instance {
                 // not given.
                 let fired = self.fired.saturating_add(1);
                 self.fired = fired;
+                self.last_fire = fired;
                 if argument.is_none() && self.open_chosen_form(&address) {
                     Ok(())
                 } else {
@@ -1476,29 +1597,6 @@ impl Instance {
                     Ok(())
                 }
             }
-        };
-        if let Err(words) = outcome {
-            self.notice(words, ui::NoticeKind::Error);
-            // What the controls show goes back to what they are bound to.
-            for lane in [Lane::Root, Lane::Detail] {
-                if let Some(view) = self.lane_mut(lane) {
-                    view.bound.clear();
-                }
-                self.send_bound(lane);
-            }
-        }
-        let tickets = self.commit_planned();
-        if let (Some((aref, result)), Some(first)) = (ran, first) {
-            self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
-        }
-        self.follow_opens();
-        if pressed {
-            // What the press made opens now, and the window hears right after it that the press
-            // ran: what the person typed after it goes to what it opened, never to what a later
-            // press of the same batch opens.
-            self.take_open_requests();
-            self.press_ran(self.last_fire);
-            self.tell_took();
         }
     }
 
@@ -1518,6 +1616,17 @@ impl Instance {
         }
     }
 
+    /// Show what the presses the host ran this frame made ([`Self::press_ran`]) once they are
+    /// in the record: what they opened, drawn, and the window told they ran, in the frame that
+    /// ran them rather than the next, so the window takes all of it in one frame and what the
+    /// person typed after a press goes to what it opened.
+    pub fn show_ran(&mut self) {
+        self.take_open_requests();
+        self.poll_views();
+        self.tell_took();
+        self.flush();
+    }
+
     /// Tell the window how many of its presses ran, when that changed: what they opened was
     /// sent before.
     fn tell_took(&mut self) {
@@ -1527,8 +1636,23 @@ impl Instance {
         }
     }
 
-    /// Render the rows `range` of the list `list` of the view of `lane`, and send them.
-    fn request_rows(&mut self, lane: Lane, list: &str, range: std::ops::Range<usize>) {
+    /// Show the resource `resource` a component was activated for, in front of the window.
+    fn show_now(&mut self, resource: &tilo_render_protocol::patch::ResourceRef) {
+        if let Some(target) = wire::runtime_resource(resource) {
+            self.show_in_window(&target, Some(ui::Front::Input), self.last_fire);
+        }
+    }
+
+    /// Render the rows `range` of the list `list` of the view of `lane` for the window, and the
+    /// document of the row `open` — the row standing open into its item where it stands, which
+    /// the window shows and no other row does.
+    fn request_rows(
+        &mut self,
+        lane: Lane,
+        list: &str,
+        range: std::ops::Range<usize>,
+        open: Option<&str>,
+    ) {
         let Some(host) = self.host() else {
             return;
         };
@@ -1540,9 +1664,11 @@ impl Instance {
         let Some(rows) = view.lists.get_mut(list) else {
             return;
         };
-        let requested = rows.request(range);
+        let requested = rows.request(range, open);
         let message = rows_message(&host, &*names, &handle, lane, list, requested);
         self.out.push(message);
+        // The rows rendered can hold lists of their own, and those scrolled away took theirs.
+        self.track_lists(lane);
         self.send_bound(lane);
     }
 
@@ -1817,20 +1943,26 @@ impl Instance {
         }
     }
 
-    /// The view an edit the window made in the view of `lane` showing `target` applies to, and
-    /// whether the lane still shows it: the lane's own view while it shows `target`; otherwise
-    /// (the lane moved on to another resource before the edit arrived, as a press opening the
-    /// next note does) a view of `target` opened for the edit, so that what was typed into a
-    /// note lands in that note.
-    fn edited(
-        &self,
-        lane: Lane,
-        target: &ui::ResourceRef,
-    ) -> Result<(Rc<RefCell<ViewInstance>>, bool), Words> {
-        if let Some(shown) = self.lane(lane)
-            && wire::resource(&shown.target) == *target
-        {
-            return Ok((Rc::clone(&shown.view), true));
+    /// Where an edit the window made in the view of `lane` showing `target` applies.
+    fn edited(&self, lane: Lane, target: &ui::ResourceRef) -> Result<Place, Words> {
+        if let Some(shown) = self.lane(lane) {
+            // The lane's own view, showing the item the edit was made in.
+            if wire::resource(&shown.target) == *target {
+                return Ok(Place::Here(Rc::clone(&shown.view)));
+            }
+            // The window draws its page beside its list for the item it shows: the edit is the
+            // item's, and the page shows it again once the edit landed.
+            if let Some(before) = &shown.in_place
+                && wire::resource(before) != *target
+            {
+                return Ok(Place::Beside {
+                    view: Rc::clone(&shown.view),
+                    before: before.clone(),
+                });
+            }
+            if shown.in_place.is_some() {
+                return Ok(Place::Here(Rc::clone(&shown.view)));
+            }
         }
         let open_failed = || Words::phrase("tilolang-open-failed");
         let host = self.host().ok_or_else(open_failed)?;
@@ -1839,7 +1971,7 @@ impl Instance {
             tracing::warn!(%error, "the resource an edit was made in did not open");
             open_failed()
         })?;
-        Ok((Rc::new(RefCell::new(view)), false))
+        Ok(Place::Fresh(Rc::new(RefCell::new(view))))
     }
 
     /// Apply a splice of the bound text control `key` of the view of `target` in `lane`:
@@ -1853,17 +1985,19 @@ impl Instance {
         (at, delete): (u32, u32),
         insert: &str,
     ) -> Result<(), Words> {
-        let (view, shown) = self.edited(lane, target)?;
-        if shown && let Some(lane) = self.lane_mut(lane) {
+        let place = self.edited(lane, target)?;
+        if place.shown()
+            && let Some(lane) = self.lane_mut(lane)
+        {
             let acked = lane.acked.entry(key.to_owned()).or_default();
             *acked = (*acked).max(seq);
         }
-        let current = match view.borrow().bound_value(key) {
+        let current = match place.view().borrow().bound_value(key) {
             Some(Value::Text(text)) => text,
             _ => String::new(),
         };
         let text = spliced(&current, at as usize, delete as usize, insert);
-        self.edit_in(lane, &view, shown, key, Value::Text(text))
+        self.edit_at(lane, target, place, key, Value::Text(text))
     }
 
     /// Apply an edit of the bound control `key` of the view of `target` in `lane`.
@@ -1874,20 +2008,57 @@ impl Instance {
         key: &str,
         value: Value,
     ) -> Result<(), Words> {
-        let (view, shown) = self.edited(lane, target)?;
-        self.edit_in(lane, &view, shown, key, value)
+        let place = self.edited(lane, target)?;
+        self.edit_at(lane, target, place, key, value)
     }
 
-    /// Apply an edit of the bound control `key` of `view`; while `lane` shows it (`shown`),
-    /// the window shows what it sent.
-    fn edit_in(
+    /// Apply the edit of the bound control `key` made in the view of `target` in `lane`, where
+    /// the window's page draws `target` or another item: the page shows the item while the edit
+    /// lands, and the window shows again the item it showed, with what the edit made.
+    fn edit_at(
         &mut self,
         lane: Lane,
-        view: &Rc<RefCell<ViewInstance>>,
-        shown: bool,
+        target: &ui::ResourceRef,
+        place: Place,
         key: &str,
         value: Value,
     ) -> Result<(), Words> {
+        let shown = place.shown();
+        let beside = match &place {
+            Place::Beside { before, .. } => Some(before.clone()),
+            _ => None,
+        };
+        if beside.is_some()
+            && let Some(item) = wire::runtime_resource(target)
+        {
+            let view = place.view();
+            if let Err(error) = view.borrow().show(&item) {
+                tracing::warn!(%error, "the item an edit was made in did not show");
+                return Err(Words::phrase("tilolang-open-failed"));
+            }
+            // Drawn, so the fields are the item's own: what the edit names is in its page.
+            if let Err(error) = view.borrow_mut().poll_patches() {
+                tracing::warn!(%error, "the view an edit was made in did not run");
+                return Err(Words::phrase("tilolang-open-failed"));
+            }
+            let view = place.into_view();
+            let outcome = Self::edit_view(&view.borrow(), key, value);
+            if let Some(before) = beside
+                && let Err(error) = view.borrow().show(&before)
+            {
+                tracing::warn!(%error, "the item the window showed did not show again");
+            }
+            // The page is what the window showed, drawn again whole: the frame that takes the
+            // item it showed and the one it showed the edit in is one.
+            if let Some(shown) = self.lane_mut(lane) {
+                shown.sent = None;
+                shown.bound.clear();
+            }
+            outcome?;
+            self.send_open(lane, None);
+            return Ok(());
+        }
+        let view = place.into_view();
         Self::edit_view(&view.borrow(), key, value)?;
         if shown {
             self.shown_by_window(lane, key);
@@ -2014,7 +2185,8 @@ impl Instance {
             Some("primary") => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Value::Ref(made) = result {
-                    self.pressed_opens.push(made.target.id_string());
+                    self.pressed_opens
+                        .push((self.last_fire, made.target.id_string()));
                 }
             }
             _ => {}
@@ -2107,6 +2279,54 @@ impl Instance {
         self.record_loader = None;
     }
 
+    /// Whether work is still under way off the frame that changes what the window shows: an
+    /// index the store is deriving, or records the publication is reading. A window drawn while
+    /// it is has not read the workspace the record holds.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.host().is_some_and(|host| host.index_pending())
+            || self
+                .publication
+                .as_ref()
+                .is_some_and(|publication| publication.pending())
+    }
+
+    /// Whether a frame has work the window has not seen: a change no sync has sent it yet
+    /// (`moved`: the record moved, an index was taken in), a commit the door answered
+    /// (`door_work`), an invocation the window handed the host (`outgoing`), a write the record's
+    /// outbox owes ([`Self::settle_owed`]), or work under way off the frame
+    /// ([`Self::pending`]). A frame taken while any of it holds shows what the workspace held
+    /// before it, so a window that owes one syncs — and the host runs what it is owed — before it
+    /// rests.
+    #[must_use]
+    pub fn owes_a_frame(&self) -> bool {
+        self.moved
+            || self.settle_owed()
+            || self.door_work.get()
+            || !self.outgoing.borrow().is_empty()
+            || self.pending()
+    }
+
+    /// Whether the record's outbox owes a settlement a frame would take in: only a live window
+    /// settles it, and only once it reads the record.
+    fn settle_owed(&self) -> bool {
+        self.settle_due && !self.opening && self.mode == Mode::Live
+    }
+
+    /// Wait for the work under way off the frame and take it in, so that what the window shows
+    /// next is read from indexes and a publication that cover the record: for an embedder with
+    /// no frame to take them in on. Whether what the window shows may have moved.
+    pub fn settle_pending(&mut self) -> bool {
+        let indexed = self.host().is_some_and(|host| host.wait_index());
+        let published = self
+            .publication
+            .as_ref()
+            .is_some_and(|publication| publication.settle());
+        let moved = indexed || published;
+        self.moved |= moved;
+        moved
+    }
+
     /// The second half of a frame: what the person did and what the door answered, run in the
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
@@ -2115,7 +2335,8 @@ impl Instance {
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
-        let renamed = std::mem::take(&mut self.names_changed);
+        let renamed =
+            std::mem::take(&mut self.names_changed) | std::mem::take(&mut self.formats_changed);
         if renamed {
             for view in [self.root.as_ref(), self.detail.as_ref()]
                 .into_iter()
@@ -2169,7 +2390,7 @@ impl Instance {
             .members_from
             .as_ref()
             .is_some_and(|(person, policy, people)| {
-                *person == standing.person && *policy == standing.policy && *people == self.people
+                *person == standing.person && *policy == *standing.policy && *people == self.people
             });
         if seen {
             return false;
@@ -2178,7 +2399,11 @@ impl Instance {
             crate::members::members_of(&standing, &self.people),
             Some(crate::members::reads_of(&standing, &self.people, &host)),
         );
-        self.members_from = Some((standing.person, standing.policy, self.people.clone()));
+        self.members_from = Some((
+            standing.person,
+            std::sync::Arc::unwrap_or_clone(standing.policy),
+            self.people.clone(),
+        ));
         true
     }
 
@@ -2198,12 +2423,7 @@ impl Instance {
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let tree = {
-            let instance = view.view.borrow();
-            convert_with(&host, &*names, &instance, |convert| {
-                convert.node(instance.tree())
-            })
-        };
+        let tree = window_tree(&host, &*names, &view.view);
         let mut patches = Vec::new();
         if let Some(sent) = &view.sent {
             wire::diff(sent, &tree, &mut patches);
@@ -2275,174 +2495,6 @@ pub fn spliced(current: &str, at: usize, delete: usize, insert: &str) -> String 
     text.push_str(insert);
     text.push_str(current.get(end..).unwrap_or_default());
     text
-}
-
-/// Run `run` with the converter of `view`'s trees over `host`, naming people by `names`.
-fn convert_with<T>(
-    host: &Host,
-    names: &dyn NameHost,
-    view: &ViewInstance,
-    run: impl FnOnce(&Convert<'_>) -> T,
-) -> T {
-    let field_name = |binding: &Binding| Instance::field_name(host, binding);
-    let cases = |id: &str| cases(host, id);
-    let toggles = |key: &str, event: &str| toggles(host, view, key, event);
-    let invokes = |key: &str, event: &str| invokes(view, key, event);
-    let embeds = |reference: &crate::runtime::rich::Reference| inline_view(host, names, reference);
-    run(&Convert {
-        names,
-        field_name: &field_name,
-        cases: &cases,
-        toggles: &toggles,
-        invokes: &invokes,
-        embeds: &embeds,
-    })
-}
-
-/// The tilolang resource a reference in rich text names, when it names one of a package this
-/// host has loaded: by its id, of no type yet.
-fn referenced_resource(
-    host: &Host,
-    reference: &crate::runtime::rich::Reference,
-) -> Option<ResourceRef> {
-    let at = reference.as_resource()?;
-    host.package(&at.app)?;
-    let id = crate::runtime::rich::resource_id(reference)?;
-    ResourceRef::parse_id(id, String::new())
-}
-
-/// How a reference in rich text reads for the viewer: a person by what the workspace calls them; a
-/// resource of a package here by its title now, when the viewer holds it, and as only existing
-/// when they do not (a reference never grants a read); a resource of another app as its run.
-#[must_use]
-pub fn inline_view(
-    host: &Host,
-    names: &dyn NameHost,
-    reference: &crate::runtime::rich::Reference,
-) -> tilo_render_protocol::patch::rich::InlineView {
-    use crate::runtime::Store as _;
-    use tilo_render_protocol::patch::rich::InlineView;
-    if let Some(person) = reference.as_person() {
-        return InlineView::Person {
-            identity: person.to_owned(),
-            name: names.name(&Principal::new(person)),
-        };
-    }
-    let Some(mut target) = referenced_resource(host, reference) else {
-        return InlineView::Elsewhere;
-    };
-    match host.store().type_of(&target) {
-        Ok(ty) => {
-            target.ty = ty;
-            InlineView::Resource {
-                title: host.label_at(&target),
-                icon: None,
-                detail: None,
-            }
-        }
-        Err(_) => InlineView::Unreadable,
-    }
-}
-
-/// No names: what a bound value converts with (it holds none).
-struct NoNames;
-
-impl NameHost for NoNames {
-    fn name(&self, who: &Principal) -> String {
-        // A principal the view named carries its name; one from a record carries only its id.
-        who.shown()
-    }
-}
-
-/// A converter that reads nothing beside the values it converts.
-fn plain(names: &NoNames) -> Convert<'_> {
-    Convert {
-        names,
-        field_name: &|_| String::new(),
-        cases: &|_| Vec::new(),
-        toggles: &|_, _| None,
-        invokes: &|_, _| None,
-        embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
-    }
-}
-
-/// The values the bound controls under `node` (a node of `view`) hold now.
-fn bound_values(node: &UiNode, view: &ViewInstance, out: &mut Vec<(String, ui::Value)>) {
-    if node.binding.is_some()
-        && let Some(value) = view.bound_value(&node.key)
-    {
-        let names = NoNames;
-        out.push((node.key.clone(), plain(&names).value(&value)));
-    }
-    for child in &node.children {
-        if !ui::is_virtual_list(&node.kind) || child.kind == wire::SLOT {
-            bound_values(child, view, out);
-        }
-    }
-}
-
-/// The resource and field the event `event` of the node `key` of `view` toggles, when the
-/// action it applies toggles one (`pin` toggles `pinned`).
-fn toggles(
-    host: &Host,
-    view: &ViewInstance,
-    key: &str,
-    event: &str,
-) -> Option<(ResourceRef, String)> {
-    let aref = view.event_action(key, event)?;
-    let field = host.find_in_packages(|package| {
-        package
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.id == aref.action)
-            .map(|action| action.toggles.clone())
-    })??;
-    match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
-        _ => None,
-    }
-}
-
-/// The resource and the action the event `event` of the node `key` of `view` runs, when it
-/// runs an action on a resource: what a menu tells a placed command by.
-fn invokes(view: &ViewInstance, key: &str, event: &str) -> Option<(ResourceRef, String)> {
-    let aref = view.event_action(key, event)?;
-    match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
-        _ => None,
-    }
-}
-
-/// The window's message of rows `requested` of the list `list` of the view `view` of `lane`.
-fn rows_message(
-    host: &Host,
-    names: &dyn NameHost,
-    view: &Rc<RefCell<ViewInstance>>,
-    lane: Lane,
-    list: &str,
-    requested: rows::Requested,
-) -> ToUi {
-    let instance = view.borrow();
-    let rows = convert_with(host, names, &instance, |convert| {
-        requested.rows.iter().map(|row| convert.node(row)).collect()
-    });
-    ToUi::Rows {
-        lane,
-        list: list.to_owned(),
-        len: u32::try_from(requested.len).unwrap_or(u32::MAX),
-        start: u32::try_from(requested.start).unwrap_or(u32::MAX),
-        keys: requested.keys,
-        rows,
-    }
-}
-
-/// The virtual lists of a view's tree, by key.
-fn virtual_lists(tree: &UiNode) -> Vec<String> {
-    virtual_list_paths(tree)
-        .into_iter()
-        .map(|(key, _)| key)
-        .collect()
 }
 
 /// The virtual lists of a view's tree, by key, with their keys from the root.
@@ -2583,6 +2635,16 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
                 }
                 continue;
             }
+            // What a list holds beside its rows — the slots a host fills with rows of its own,
+            // such as the items someone removed that the person has not seen go — is no row of
+            // the list: its rows are the ones the steps name, and the slot stands as content.
+            Patch::Insert { parent, node, .. } if node.kind == wire::SLOT => {
+                (parent.as_slice(), false)
+            }
+            // A row the steps take out says where it stood; one they do not is no row.
+            Patch::Remove {
+                parent, at: None, ..
+            } => (parent.as_slice(), false),
             Patch::Insert { parent, .. }
             | Patch::Remove { parent, .. }
             | Patch::Move { parent, .. } => (parent.as_slice(), true),
@@ -2591,29 +2653,40 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
             | Patch::SetEvent { path, .. }
             | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
         };
-        let mut taken = false;
-        for (list, at) in lists {
-            if structural && path == at.as_slice() {
-                sorted.list(list).structure.push(patch.clone());
-                taken = true;
-                break;
+        // The innermost list the patch is of: a list inside a row — the document of a row
+        // standing open can hold one — takes the changes of its own rows, and the list of that
+        // row the rest of the row.
+        let of_list = lists
+            .iter()
+            .filter(|(_, at)| {
+                (structural && path == at.as_slice())
+                    || (path.len() > at.len() && path.starts_with(at))
+            })
+            .max_by_key(|(_, at)| at.len());
+        // What holds a list changed: the list may be another now. A row inserted, removed or
+        // moved carries the lists inside it along.
+        if structural && of_list.is_none_or(|(_, at)| path != at.as_slice()) {
+            for (list, at) in lists {
+                if at.len() > path.len() && at.starts_with(path) {
+                    sorted.list(list).reread = true;
+                }
             }
-            if path.len() > at.len() && path.starts_with(at) {
+        }
+        match of_list {
+            Some((list, at)) if path == at.as_slice() => {
+                sorted.list(list).structure.push(patch.clone());
+            }
+            Some((list, at)) => {
                 if let Some(row) = path.get(at.len()) {
                     let changes = sorted.list(list);
                     if !changes.rows.contains(row) {
                         changes.rows.push(row.clone());
                     }
                 }
-                taken = true;
-                break;
             }
-            if structural && at.starts_with(path) {
-                // What holds the list changed: the list may be another now.
-                sorted.list(list).reread = true;
-            }
+            None => {}
         }
-        if !taken {
+        if of_list.is_none() {
             sorted.content = true;
             if let Some(changed) = &mut sorted.changed {
                 changed.push(path.to_vec());

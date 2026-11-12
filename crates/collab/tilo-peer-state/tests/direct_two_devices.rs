@@ -7,11 +7,8 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
-mod common;
-
-use common::{addr, device, localhost_endpoint};
+use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -38,16 +35,16 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerg
     edit.put(ROOT, "value", value).unwrap();
     edit.commit_edit("fixture", "value");
     let change = edit.save_after(&heads);
-    peer.publish(|peer, key, now| {
+    peer.publish(|peer| {
         peer.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, now)
+            .publish_incremental(APP, RECORD, change, key, SystemTime::now())
     })
     .unwrap();
     peer.read(|peer| peer.document_heads(APP, RECORD))
 }
 
-/// Wait until `done` holds of `sync`'s replica.
-async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
+/// Wait until `done` holds of `sync`'s replica; `what` names the wait that gave up.
+async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool + Sync) {
     let mut changes = sync.changes();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !sync.read(&done) {
@@ -55,7 +52,7 @@ async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
         }
     })
     .await
-    .expect("the replicas converge");
+    .unwrap_or_else(|_| panic!("the replicas converge: {what}"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -113,7 +110,7 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // B converges to A's rows and document heads.
     let rows = a.read(StatePeer::rows);
-    until(&b, |b| b.rows() == rows).await;
+    until(&b, "B holds A's rows", |b| b.rows() == rows).await;
     assert_eq!(
         b.read(|b| b.document_heads(APP, RECORD)),
         a.read(|a| a.document_heads(APP, RECORD))
@@ -121,7 +118,10 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // B edits the document; A converges to B's edit.
     let edited = edit(&b, &b_key, "from b");
-    until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
+    until(&a, "A holds B's edit", |a| {
+        a.document_heads(APP, RECORD) == edited
+    })
+    .await;
     let on_a = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
     assert_eq!(
         on_a.get(ROOT, "value")
@@ -228,7 +228,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 
     // What A made reaches B.
     let rows = a.read(StatePeer::rows);
-    until(&b, |b| b.rows() == rows).await;
+    until(&b, "B holds A's rows", |b| b.rows() == rows).await;
     let from_a = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
     assert_eq!(
         from_a
@@ -243,9 +243,15 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 
     // What B writes reaches A, and A's next write reaches B.
     let edited = edit(&b, &b_key, "from b");
-    until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
+    until(&a, "A holds the edit", |a| {
+        a.document_heads(APP, RECORD) == edited
+    })
+    .await;
     let edited = edit(&a, &a_key, "from a again");
-    until(&b, |b| b.document_heads(APP, RECORD) == edited).await;
+    until(&b, "B holds the edit", |b| {
+        b.document_heads(APP, RECORD) == edited
+    })
+    .await;
 
     link.abort();
     a_router.shutdown().await.unwrap();
@@ -298,12 +304,15 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     });
 
     // The member has the host's history before it writes to it.
-    until(&member, |member| {
+    until(&member, "the member holds the record", |member| {
         member.document_heads(APP, RECORD).is_some()
     })
     .await;
     // The member writes as the device the host serves: its own.
     let edited = edit(&member, &key, "from the member");
-    until(&host, |host| host.document_heads(APP, RECORD) == edited).await;
+    until(&host, "the host holds the member's edit", |host| {
+        host.document_heads(APP, RECORD) == edited
+    })
+    .await;
     paired.abort();
 }

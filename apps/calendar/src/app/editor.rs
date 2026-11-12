@@ -30,8 +30,12 @@ use crate::date;
 use crate::draw_util::text_in_band;
 use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};
 use crate::model::{Event, Palette, Priority, Recurrence, Task};
+use ui::widget::DrawChild;
 
-const DONE: &str = "Done";
+/// The sheet's primary answer, which closes the editor.
+fn done_label() -> String {
+    crate::resource::t("calendar-done")
+}
 
 /// One dropdown of the editor with the value it last published, so a pick
 /// is applied to the model exactly once.
@@ -43,11 +47,12 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    /// A dropdown named `name` whose `icon` says what it chooses.
-    pub(super) fn new(name: &str, icon: Icon) -> Self {
+    /// A dropdown named by the catalogue message `key`, whose `icon` says
+    /// what it chooses.
+    pub(super) fn new(key: &str, icon: Icon) -> Self {
         let state = LocalState::new(String::new());
         let dropdown = Dropdown::from_state(Vec::new(), &state)
-            .with_accessible_name(name)
+            .with_accessible_name(crate::resource::t(key))
             .leading_icon(icon);
         Self {
             state,
@@ -104,12 +109,12 @@ pub(crate) struct Choices {
 impl Choices {
     pub(super) fn new() -> Self {
         Self {
-            calendar: Choice::new("Calendar", Icon::Calendar),
-            repeat: Choice::new("Repeat", Icon::Repeat),
-            alert: Choice::new("Alert", Icon::Bell),
-            timezone: Choice::new("Time zone", Icon::Globe),
-            priority: Choice::new("Priority", Icon::Flag),
-            project: Choice::new("Project", Icon::Folder),
+            calendar: Choice::new("calendar-editor-calendar", Icon::Calendar),
+            repeat: Choice::new("calendar-editor-repeat", Icon::Repeat),
+            alert: Choice::new("calendar-editor-alert", Icon::Bell),
+            timezone: Choice::new("calendar-editor-time-zone", Icon::Globe),
+            priority: Choice::new("calendar-editor-priority", Icon::Flag),
+            project: Choice::new("calendar-project", Icon::Folder),
         }
     }
 
@@ -457,17 +462,23 @@ impl<'a> Flow<'a> {
 
 impl CalendarApp {
     /// The sheet's title: what is being edited.
-    pub(super) fn sheet_title(&self) -> &'static str {
+    pub(super) fn sheet_title(&self) -> String {
         match self.selection {
-            Some(Sel::Task(_)) => "Task",
-            Some(Sel::Event(_)) if self.fresh_draft.is_some() => "New event",
-            _ => "Event",
+            Some(Sel::Task(_)) => crate::resource::t("calendar-task-detail-title"),
+            Some(Sel::Event(_)) if self.fresh_draft.is_some() => {
+                crate::resource::t("calendar-a11y-new-event")
+            }
+            _ => crate::resource::t("calendar-event-detail-title"),
         }
     }
 
     /// The modal sheet's spec: its title and its one action, Done.
-    fn sheet_spec<'a>(&self, actions: &'a [ModalAction<'a>], body_height: f64) -> ModalSpec<'a> {
-        ModalSpec::new(self.sheet_title())
+    fn sheet_spec<'a>(
+        title: &'a str,
+        actions: &'a [ModalAction<'a>],
+        body_height: f64,
+    ) -> ModalSpec<'a> {
+        ModalSpec::new(title)
             .actions(actions)
             .closable(false)
             .body_height(body_height)
@@ -512,10 +523,12 @@ impl CalendarApp {
                 let width = self.detail_body_w();
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
                 let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
-                let actions = [ModalAction::primary(DONE)];
+                let done = done_label();
+                let title = self.sheet_title();
+                let actions = [ModalAction::primary(&done)];
                 let natural = modal_dialog::layout(
                     window,
-                    &self.sheet_spec(&actions, content_h),
+                    &Self::sheet_spec(&title, &actions, content_h),
                     text,
                     &theme,
                 );
@@ -534,7 +547,12 @@ impl CalendarApp {
                         .filter(|y| *y <= room)
                         .fold(0.0, f64::max);
                     let body_h = if body_h > 0.0 { body_h } else { room };
-                    modal_dialog::layout(window, &self.sheet_spec(&actions, body_h), text, &theme)
+                    modal_dialog::layout(
+                        window,
+                        &Self::sheet_spec(&title, &actions, body_h),
+                        text,
+                        &theme,
+                    )
                 };
                 let max = (content_h - layout.body.height()).max(0.0);
                 let scroll = if self.shots_detail_scroll_to_end {
@@ -750,8 +768,15 @@ impl CalendarApp {
         let date_w = |text: &mut TextRenderer, d: NaiveDate| {
             ButtonFace::new(Rect::ZERO, &date::fmt_day_long(d)).intrinsic_width(text, theme)
         };
+        // Both time buttons are as wide as the wider of the two times they
+        // show, in the person's clock ("11:00 AM" is wider than "00:00"), so
+        // neither is cut off and the two stay aligned.
+        let time_labels = [date::fmt_time(&event.start), date::fmt_time(&event.end)];
         let time_w = |text: &mut TextRenderer| {
-            ButtonFace::new(Rect::ZERO, "00:00").intrinsic_width(text, theme)
+            time_labels
+                .iter()
+                .map(|label| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme))
+                .fold(0.0, f64::max)
         };
         let gap = f64::from(sp.rhythm.related);
         let widest = date_w(text, event.start.date()).max(date_w(text, event.end.date()))
@@ -923,13 +948,15 @@ impl CalendarApp {
         let Some(layout) = self.modal.clone() else {
             return;
         };
-        let actions = [ModalAction::primary(DONE).hovered(
+        let done = done_label();
+        let title = self.sheet_title();
+        let actions = [ModalAction::primary(&done).hovered(
             layout
                 .actions
                 .first()
                 .is_some_and(|r| r.contains(self.last_mouse)),
         )];
-        let spec = self.sheet_spec(&actions, layout.body.height());
+        let spec = Self::sheet_spec(&title, &actions, layout.body.height());
         modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
         self.hits.push((layout.scrim, Action::CloseDetail));
         self.hits.push((layout.card, Action::Noop));
@@ -962,7 +989,7 @@ impl CalendarApp {
                         &mut hits,
                     );
                     for choice in self.choices.shown_mut(true) {
-                        Widget::draw(&mut choice.dropdown, scene, t, text, &sheet, presence);
+                        choice.dropdown.draw_child(scene, t, text, &sheet, presence);
                     }
                 }
             }
@@ -978,7 +1005,8 @@ impl CalendarApp {
             self.form.notes_label,
             self.form.notes_label.width(),
         );
-        self.notes_editor.draw(scene, t, text, &sheet, presence);
+        self.notes_editor
+            .draw_child(scene, t, text, &sheet, presence);
         scene.pop_layer();
         if self.detail_scroll_max > 0.0 {
             // The body scrolls: the shared quiet thumb in the sheet's
@@ -1100,7 +1128,7 @@ impl CalendarApp {
         let mouse = self.last_mouse;
         Self::draw_form_labels(&mut PaintCtx::new(scene, t, text, sheet), &f);
 
-        self.title_input.draw(scene, t, text, sheet, presence);
+        self.title_input.draw_child(scene, t, text, sheet, presence);
         hits.push((f.title, Action::FocusField(FormField::Title)));
 
         let popover = self.event_popovers.active();
@@ -1159,11 +1187,12 @@ impl CalendarApp {
             Self::draw_conflict(&mut PaintCtx::new(scene, t, text, sheet), f.conflict, count);
         }
 
-        self.location_input.draw(scene, t, text, sheet, presence);
+        self.location_input
+            .draw_child(scene, t, text, sheet, presence);
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
         for choice in self.choices.shown_mut(false) {
-            Widget::draw(&mut choice.dropdown, scene, t, text, sheet, presence);
+            choice.dropdown.draw_child(scene, t, text, sheet, presence);
         }
 
         // The event's colour is user content: the swatches show the colours
@@ -1182,7 +1211,8 @@ impl CalendarApp {
             hits.push((target, Action::SetEventColor(*palette)));
         }
 
-        self.invite_input.draw(scene, t, text, sheet, presence);
+        self.invite_input
+            .draw_child(scene, t, text, sheet, presence);
         hits.push((f.invite, Action::FocusField(FormField::Invite)));
         let mut ctx = PaintCtx::new(scene, t, text, sheet);
         for (attendee, rect) in event.attendees.iter().zip(&f.guests) {
@@ -1360,14 +1390,8 @@ impl CalendarApp {
             panel.y0 + pad + grid_h,
         );
         self.task_due_picker.apply_layout_external(picker);
-        Widget::draw(
-            &mut self.task_due_picker,
-            scene,
-            t,
-            text,
-            &on_panel,
-            &PresenceCtx::empty(),
-        );
+        self.task_due_picker
+            .draw_child(scene, t, text, &on_panel, &PresenceCtx::empty());
         for (hit, rect) in self.task_due_picker.hit_regions_external() {
             let action = match hit {
                 ui::widget::ExternalDatePickerHit::PreviousMonth => Action::ShiftTaskDueMonth(-1),
@@ -1387,7 +1411,11 @@ impl CalendarApp {
             t,
             text,
             &on_panel,
-            &ButtonFace::new(clear, "Clear due date").hovered(clear.contains(self.last_mouse)),
+            &ButtonFace::new(
+                clear,
+                &crate::resource::CATALOG.t("calendar-a11y-clear-due"),
+            )
+            .hovered(clear.contains(self.last_mouse)),
         );
         self.hits.push((clear, Action::SetTaskDue(None)));
     }

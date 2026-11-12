@@ -204,12 +204,17 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// top edge — the tabs of its places while it shows several, the place's own header while it
 /// shows one — and the place in front fills everything under it. A strip holding nothing is an
 /// empty window, saying so.
+///
+/// The window's own menu in its pill lists the place's actions (`window_controls`), so the
+/// place's header row keeps its title, its own buttons and the room the pill needs, and gives
+/// way its door: one bar shows one "…", as the desk's bar does when it lists the window in
+/// front's commands (`lists_actions`).
 view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a, v)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
-    ui.WindowFrame(name: window_name(shown), focused: in_front, lists_actions: lists) {
+    ui.WindowFrame(name: window_name(shown), focused: in_front, lists_actions: true) {
         controls: {
             window_controls(a, v, s, shown, in_front)
         }
@@ -271,6 +276,11 @@ action show_place(v: Viewing, strip: Text, place: session.Place) {
 /// nothing about the place but its close stands in the bar of its own. Each is one arranging
 /// action of the session's, so a press and an agent change the desk the same way, and none of
 /// them ever asks for a bar of its own.
+///
+/// The menu is the window's one door: it lists the commands of the place it shows after its own
+/// arranging ones, so the place's header row gives way its door (`WindowFrame`'s
+/// `lists_actions`). One bar shows one "…", whichever of the two keeps it, and every command
+/// the place offers stays reachable in it, named as its own view names it.
 view window_controls(
     a: Arrangement,
     v: Viewing,
@@ -278,8 +288,15 @@ view window_controls(
     shown: Option<ArrangementPlace>,
     in_front: Bool,
 ) {
+    let subject = placed_resource(shown?.record ?? "")
     row(gap: .tight, align: .center) {
-        ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
+        ui.MenuButton(
+            window_name(shown),
+            icon: .more_horizontal,
+            icon_only: true,
+            role: .plain,
+            subject: subject,
+        ) {
             ui.MenuItem("Narrow", checked: width_of(s.width) == .narrow) {
                 on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
             }

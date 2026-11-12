@@ -125,6 +125,9 @@ enum Part {
     },
     Slot {
         default: bool,
+        /// The slot holds the document a row opens into where it stands, rendered only while
+        /// that row stands open.
+        when_open: bool,
     },
     Event {
         value: Option<Box<syn::Type>>,
@@ -231,6 +234,25 @@ fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
     Ok(Part::Event { value, at, press })
 }
 
+/// `slot`, `slot(default)` or `slot(when_open)`: a slot, and whether the block fills it when it
+/// names none, and whether it holds the document a row opens into where it stands.
+fn slot_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
+    let (mut default, mut when_open) = (false, false);
+    if meta.input.peek(syn::token::Paren) {
+        meta.parse_nested_meta(|inner| {
+            if inner.path.is_ident("default") {
+                default = true;
+            } else if inner.path.is_ident("when_open") {
+                when_open = true;
+            } else {
+                return Err(inner.error("a slot takes `default` or `when_open`"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(Part::Slot { default, when_open })
+}
+
 fn part_of(field: &syn::Field) -> syn::Result<Part> {
     let mut part = None;
     let mut required = false;
@@ -260,18 +282,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
             } else if meta.path.is_ident("identity") {
                 identity = true;
             } else if meta.path.is_ident("slot") {
-                let mut default = false;
-                if meta.input.peek(syn::token::Paren) {
-                    meta.parse_nested_meta(|inner| {
-                        if inner.path.is_ident("default") {
-                            default = true;
-                            Ok(())
-                        } else {
-                            Err(inner.error("a slot takes `default`"))
-                        }
-                    })?;
-                }
-                set(&mut part, Part::Slot { default }, span)?;
+                set(&mut part, slot_part(&meta)?, span)?;
             } else if meta.path.is_ident("event") {
                 set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
@@ -519,7 +530,7 @@ impl Generated {
                 &field_doc,
                 (required, positional, data, identity),
             ),
-            Part::Slot { default } => {
+            Part::Slot { default, when_open } => {
                 self.slots.push(quote! {
                     #k::Slot {
                         name: #key.into(),
@@ -527,6 +538,7 @@ impl Generated {
                         accepts: <#ty as #k::SlotType>::accepts(),
                         many: <#ty as #k::SlotType>::MANY,
                         default: #default,
+                        when_open: #when_open,
                     }
                 });
                 self.reads.push(quote! {

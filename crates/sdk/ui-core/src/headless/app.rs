@@ -58,18 +58,12 @@ pub use super::driver::Step;
 pub use super::driver::Outcome;
 
 /// The runner inputs every application test draws with: the pinned font
-/// catalogue, so a frame's text is the same on every machine, and the dark
-/// theme — the one a capture is usually taken in.
+/// catalogue and the dark theme a capture is usually taken in.
 #[must_use]
 pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
-    let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-        crate::font_catalog::checkout_root(),
-        "en-US",
-    );
     ComponentRunnerInputs {
         theme: crate::theme::Theme::dark(),
-        text_renderer: crate::text_render::TextRenderer::with_font_catalog(&catalog)
-            .expect("the prepared font fixture loads"),
+        text_renderer: crate::font_catalog::fixture_renderer(),
     }
 }
 

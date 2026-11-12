@@ -34,10 +34,8 @@ impl Row {
         Some(Self {
             number: issue.number,
             title: format!("{}  {}", reference(issue.number), issue.title),
-            subtitle: ui::i18n::I18nManager::format(
-                "tasks-thread-last-from",
-                &[("speaker", speaker.into())],
-            ),
+            subtitle: crate::locales::CATALOG
+                .t_args("tasks-thread-last-from", &[("speaker", speaker.into())]),
             said: one_line(&last.text),
         })
     }

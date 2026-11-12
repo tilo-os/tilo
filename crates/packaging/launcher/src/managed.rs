@@ -1122,9 +1122,6 @@ impl VerifiedManagedExit {
 }
 #[cfg(target_os = "linux")]
 pub(crate) trait EnrolledProcessObserver {
-    fn selected_parent(&self) -> Option<&crate::retained_view::SelectedParentAdmission> {
-        None
-    }
     fn retained_view(&self) -> Option<&crate::retained_view::RetainedViewAdmission> {
         None
     }

@@ -24,7 +24,7 @@
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `navigation`, `icons`, `content`, `editor` (and `controls-large`,
+//!       `navigation`, `icons`, `content`, `editor`, `embed` (and `controls-large`,
 //!       `inputs-large` and `editor-large` at 200 % text), `overlays`,
 //!       `overlays-narrow` (800 × 600), `overlays-opaque`, `modal`,
 //!       `modal-question` and `modal-tall` (800 × 600).
@@ -53,6 +53,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
@@ -868,7 +869,7 @@ fn stamp(canvas: &mut Canvas<'_>, cell: Rect, widget: &mut dyn Widget, st: St, f
     }
     let presence = PresenceCtx::default();
     let previous = presence.push_viewport(page);
-    widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    widget.draw_child(scene, Affine::IDENTITY, tr, theme, &presence);
     presence.pop_viewport(previous);
 }
 
@@ -1066,7 +1067,8 @@ fn pane_blocks() -> Vec<Block> {
                         node("Type.md", 3, Some(1), false),
                         node("Roadmap.md", 4, Some(0), false),
                         node("Notes.md", 5, Some(0), false),
-                    ],
+                    ]
+                    .into(),
                     expanded: Some(vec![ResourceId("0".into()), ResourceId("1".into())]),
                     selection: Some(vec![ResourceId("3".into())]),
                     ..TreeViewProps::default()
@@ -1475,6 +1477,70 @@ fn editor_blocks() -> Vec<Block> {
         );
         Box::new(editor)
     })]
+}
+
+/// A document shown read-only with an embedded record: a card of the note it projects, its
+/// title as it reads now and the start of what it says, a note it names a link inside it.
+fn embed_blocks() -> Vec<Block> {
+    vec![block("Embedded records", 760.0, 300.0, embed_editor)]
+}
+
+fn embed_editor(_: &Theme) -> Element {
+    const GROCERIES: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:g1";
+    const PLAN: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:p1";
+    let run = |text: &str, reference: Option<&str>| tilo_ui::rich::Run {
+        text: text.to_owned(),
+        reference: reference.map(str::to_owned),
+    };
+    let paragraph = |text: &str, marks: Vec<tilo_ui::rich::Mark>| tilo_ui::rich::Block {
+        kind: "paragraph".into(),
+        text: text.to_owned(),
+        marks,
+        attrs: std::collections::BTreeMap::default(),
+    };
+    let view = |title: &str| tilo_ui::rich::InlineView::Resource {
+        title: title.to_owned(),
+        icon: None,
+        detail: None,
+    };
+    let rich = tilo_ui::rich::RichText {
+        blocks: vec![
+            paragraph("What shipped last week", Vec::new()),
+            paragraph(
+                "Groceries",
+                vec![tilo_ui::rich::Mark {
+                    start: 0,
+                    end: 9,
+                    name: tilo_ui::widget::rich_doc::EMBED_MARK.into(),
+                    value: tilo_ui::rich::Attr::Text(GROCERIES.into()),
+                }],
+            ),
+            paragraph("On to the next one.", Vec::new()),
+        ],
+        embeds: vec![
+            tilo_ui::rich::Embed {
+                reference: GROCERIES.into(),
+                view: view("Groceries"),
+                preview: Some(vec![
+                    run("Oat milk, eggs, sourdough and ", None),
+                    run("Plan", Some(PLAN)),
+                    run(", then the market", None),
+                ]),
+            },
+            tilo_ui::rich::Embed {
+                reference: PLAN.into(),
+                view: view("Plan"),
+                preview: None,
+            },
+        ],
+    };
+    Box::new(tilo_ui::widget::BlockEditor::from_props(
+        "shot.embed",
+        tilo_ui::widget::BlockEditorProps {
+            value: Some(rich),
+            ..tilo_ui::widget::BlockEditorProps::default()
+        },
+    ))
 }
 
 fn content_blocks() -> Vec<Block> {
@@ -1954,6 +2020,7 @@ pub fn run(args: &[String]) {
         block_page(&theme, &icon_blocks(), &file("icons"));
         block_page(&theme, &content_blocks(), &file("content"));
         block_page(&theme, &editor_blocks(), &file("editor"));
+        block_page(&theme, &embed_blocks(), &file("embed"));
         block_page(
             &theme.clone().with_text_scale(2.0),
             &editor_blocks(),

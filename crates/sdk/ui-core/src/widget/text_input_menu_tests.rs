@@ -10,6 +10,7 @@ use crate::synthetic_input::cursor_moved;
 use crate::testing::dispatch;
 use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
+use std::time::Duration;
 
 #[test]
 fn read_only_context_menu_copies_without_offering_or_applying_edits() {

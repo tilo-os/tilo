@@ -26,6 +26,19 @@ def canary_arm(mode):
     return textwrap.dedent(match.group(1))
 
 
+def nextest_invocations(script):
+    """The (package, test target, filterset) of each cargo nextest run in `script`."""
+    calls = re.findall(r'-p (\S+) --test (\S+)\s*\\\n\s*-E \'([^\']*)\'', script)
+    if not calls:
+        raise AssertionError('the script runs no cargo nextest with a filterset')
+    return calls
+
+
+def filterset_terms(expression):
+    """The (kind, argument) of each clause of a nextest filterset."""
+    return set(re.findall(r'(\w+)\(([^()]*)\)', expression))
+
+
 class BuilderCandidates(unittest.TestCase):
     def test_browser_recipe_and_native_acceptance(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()
@@ -84,16 +97,34 @@ class BuilderCandidates(unittest.TestCase):
     def test_browser_regressions_gate_publication(self):
         script = canary_arm('browser-tests')
         self.assertNotIn('|| true', script)
-        for binary in ('end_to_end', 'passkey_root', 'node_workspace', 'voice_browsers'):
-            self.assertIn(f'binary({binary})', script)
-            self.assertIn(f'--test {binary}', script)
-            self.assertTrue((ROOT / f'crates/browser/tilo-browser-peer/tests/{binary}.rs').is_file())
-        participant = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
-        for test in ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
-                     'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
-                     'the_creator_and_a_joined_page_both_see_every_task_live'):
-            self.assertIn(f'test(={test})', script)
-            self.assertIn(f'async fn {test}()', participant)
+        # A filter that selects nothing is a failure too: a regression that moved out of the
+        # filter's reach may not leave the gate green.
+        self.assertEqual(script.count('--no-tests=fail'), 2)
+        calls = nextest_invocations(script)
+        self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent participant')
+        peer, participant = calls
+        # The session client's browser regressions are modules of its one test binary (`it`,
+        # whose `#[path]` keeps each in its own file), so the canary names the modules there.
+        # Whole modules, never single tests: a regression added to one runs without the canary
+        # knowing its name.
+        self.assertEqual(peer[:2], ('tilo-session-client', 'it'))
+        modules = ('carriers', 'passkey_root', 'node_workspace', 'voice_browsers')
+        self.assertEqual(filterset_terms(peer[2]), {('test', f'{module}::') for module in modules})
+        binary = (ROOT / 'crates/session/client/tests/it.rs').read_text()
+        for module in modules:
+            with self.subTest(module=module):
+                self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
+                tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
+                self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
+        # The agent participant's browser regressions are single tests, so those are named.
+        self.assertEqual(participant[:2], ('tilo-agent-participant', 'host_agents'))
+        names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
+                 'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
+                 'the_creator_and_a_joined_page_both_see_every_task_live')
+        self.assertEqual(filterset_terms(participant[2]), {('test', f'={name}') for name in names})
+        source = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
+        for name in names:
+            self.assertIn(f'async fn {name}()', source)
         # Execute the canary's own shell, intercepting only the browser itself, node and the
         # expensive wrapper. Neither a peer failure nor a participant failure may pass.
         stubs = textwrap.dedent(f'''\
@@ -109,7 +140,7 @@ class BuilderCandidates(unittest.TestCase):
             (work / 'tools/ci/nextest.sh').write_text(
                 'printf "%s\\n" "$*" >> calls\n'
                 '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
-            for failure in ('none', 'tilo-browser-peer', 'tilo-agent-participant'):
+            for failure in ('none', 'tilo-session-client', 'tilo-agent-participant'):
                 with self.subTest(failure=failure):
                     (work / 'calls').unlink(missing_ok=True)
                     result = subprocess.run(['bash', '-c', stubs + script], cwd=work,
@@ -118,7 +149,7 @@ class BuilderCandidates(unittest.TestCase):
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
                     calls = (work / 'calls').read_text().splitlines()
-                    self.assertEqual(len(calls), 1 if failure == 'tilo-browser-peer' else 2)
+                    self.assertEqual(len(calls), 1 if failure == 'tilo-session-client' else 2)
                     for call in calls:
                         self.assertIn('cargo nextest run --locked --profile ci --no-tests=fail', call)
             with self.subTest(failure='another browser'):
@@ -146,17 +177,17 @@ class BuilderCandidates(unittest.TestCase):
         # t has no aarch64 node, so only x86_64's runs anywhere by itself.
         self.assertNotIn('on', tests)
         [x86_64] = [s for s in tests['matrix']['set'] if s['when'] == {'arch': 'x86_64'}]
-        self.assertEqual(x86_64['on'], ['stable', 'dispatch', 'idle'])
+        self.assertEqual(x86_64['on'], ['dispatch', 'idle'])
         # Every signature and publication waits for the candidate's Chromium; a release
-        # candidate's also for its browser regressions, and a dispatched one where it runs.
+        # (dispatched on its tag) also for its browser regressions, a dev one where they ran.
         for name in ('sign-ci-builder', 'sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(smoke_check, checks[name]['needs'], name)
         self.assertIn(tests_check, checks['sign-ci-builder']['needs'])
-        self.assertEqual(checks['sign-ci-builder']['on'], ['stable'])
+        self.assertEqual(checks['sign-ci-builder']['on'], ['dispatch'])
         for name in ('sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(tests_check, checks[name]['optional_needs'], name)
             self.assertNotIn(tests_check, checks[name]['needs'], name)
-        self.assertIn('stable', checks['publish-ci-builder']['on'])
+        self.assertIn('dispatch', checks['publish-ci-builder']['on'])
 
     def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()

@@ -7,11 +7,11 @@ use cosmic_text::fontdb::{ID, Source};
 use skrifa::{FontRef, MetadataProvider, Tag};
 
 fn catalog() -> FontCatalog {
-    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
+    crate::font_catalog::fixture_catalog()
 }
 
 fn renderer() -> TextRenderer {
-    TextRenderer::with_font_catalog(&catalog()).expect("verified controlled catalog")
+    crate::font_catalog::fixture_renderer()
 }
 
 fn named_style(family: &str) -> TextStyle {

@@ -1,10 +1,14 @@
 counter = Value: { $count }
 tab-modified = Unsaved changes
+tab-loading = Loading
+tab-playing = Playing audio
+tab-muted = Muted
+tab-close-named = Close { $title }
+tab-mute-named = Mute { $title }
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
-tab-controls-desktop = Controls your desktop
-tab-dev-build = Dev build by { $installer }
-tab-shared-with = Shared with { $place }
+tab-opened-by = { $agent } opened this window
+tab-opened-by-run = { $run }
 standalone-search-title = Search
 history-mode-title = History
 history-mode-close = Close history
@@ -46,9 +50,13 @@ host-menu-front = Bring All to Front
 host-window-minimize = Minimize
 host-window-maximize = Maximize
 host-window-restore = Restore
+host-window-snap = Snap back into the strip
+host-window-collapse = Collapse
+host-window-expand = Expand
 host-window-close = Close
 window-toolbar-back = Back
 window-toolbar-forward = Forward
+window-toolbar-new-tab = New tab
 window-toolbar-go = Go
 window-toolbar-more = More actions
 window-toolbar-views = View
@@ -232,6 +240,7 @@ history-local-action-retry = Retry
 history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
 
 history-sync-refused = This workspace didn't accept one change. Everything else keeps syncing; the change stays on this device.
+history-sync-unreadable = This record's shared copy couldn't be read here. Your own changes stay on this device and keep saving.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
 
@@ -308,6 +317,7 @@ close-broker-disconnected = The save service disconnected. Your document is stil
 block-image-untitled = Picture
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Untitled
+list-row-check = Mark { $title } done
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done
@@ -545,6 +555,8 @@ format-day-heading-short = { $weekday }, { $month } { $day }
 format-day-range-in-month = { $month } { $start } – { $end }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "encrypted, 134 GB free".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 12-hour).
@@ -593,6 +605,11 @@ participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
+interaction-editing-field = editing { $field }
+# The text a write put in a note, a page or a field stands there: what the
+# person watching sees happen, where the action's own name only says which
+# place it acts on.
+interaction-added-text = added text
 interaction-working = working
 interaction-action-doing = { $name }: { $doing }
 # The same, with the phase said where only a person can settle it.
@@ -604,11 +621,16 @@ interaction-committed = Committed
 interaction-failed = Failed
 interaction-cancelled = Cancelled
 interaction-progress = { $label } - { $done }/{ $total }
+# A peer whose caret a text widget draws in its own text: where they are, said
+# to a reader. A selection says that instead.
+presence-writing-here = { $name } is writing here
+presence-selecting-here = { $name } is selecting here
 participant-unknown-agent = Unknown agent
 
 
 # Command palette chrome: footer key hints, result count and empty states.
 palette-name = Command palette
+palette-argument-name = Action confirmation
 palette-results = Results
 palette-placeholder = Search…
 palette-empty = Nothing to show
@@ -658,10 +680,6 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
-mention-notice-title = { $name } mentioned you in ‘{ $place }’
-mention-notice-channel = { $name } mentioned you in { $channel }
-mention-notice = { $name } mentioned you
-mention-notice-someone = Someone
 rich-text-reference-unreadable = Not shared with you
 widget-block-duplicate = Duplicate block and children
 
@@ -687,6 +705,7 @@ slash-numbered = Numbered list
 slash-checklist = Checklist
 slash-page = Sub-note
 slash-link-page = Link to note
+slash-embed-page = Embed note
 slash-image = Image
 slash-quote = Quote
 slash-code = Code block
@@ -749,6 +768,11 @@ empty-state-details = Details
 file-open-drop-hint = Or drop a file here
 # The empty state while a file is dragged over the window.
 file-open-release = Release to open
+# The page rail's title, above its thumbnails, unless the app names it.
+page-sidebar-title = Pages
+# Above the documents an open-a-file empty state lists: the ones the
+# workspace already holds, whatever made them.
+widget-documents-in-workspace = In this workspace
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.
@@ -761,6 +785,27 @@ display-arrangement-caption-status = { $status } · { $name }
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }
 search-no-matches = No matches
+# What a group header and its kind chip say the results are
+search-kind-actions = Actions
+search-kind-apps = Apps
+search-kind-notes = Notes
+search-kind-records = Records
+search-kind-files = Files
+search-kind-folders = Folders
+search-kind-creators = Creators
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Window groups
+window-root-name = Tilo application window
+# What the palette's empty field says the query covers, not what it is called.
+action-palette-query = Search actions and results
+search-field-filter = Filter
+search-field-placeholder = Search
+# What the field itself is called, apart from the placeholder inside it.
+search-field-name = Search
+search-field-filter-name = Filter
+presentation-window-title = Audience presentation
 
 approved-check-reports-disabled = Phase reports unavailable
 
@@ -957,6 +1002,10 @@ text-menu-bold = Bold
 text-menu-italic = Italic
 text-menu-underline = Underline
 text-menu-strikethrough = Strikethrough
+text-menu-heading-1 = Heading 1
+text-menu-heading-2 = Heading 2
+text-menu-heading-3 = Heading 3
+text-menu-body-text = Body text
 text-menu-bulleted-list = Bulleted list
 text-menu-numbered-list = Numbered list
 
@@ -1102,6 +1151,8 @@ conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
 conversation-new-messages = New messages
+conversation-day-new = { $day }: New messages
+conversation-read-by = Read to here by { $names }
 conversation-jump-unread = Jump to first unread
 conversation-jump-present = Jump to present
 conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts
@@ -1199,3 +1250,66 @@ quote-dismiss = Stop replying
 quote-open = Show what this replies to
 
 toast-reply-placeholder = Reply…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
+widget-dialog-close = Close
+widget-dialog-cancel = Cancel
+widget-dismiss = Dismiss
+widget-hand-to-agent = Hand to an agent
+widget-more = More
+widget-copy = Copy
+widget-hosted-applications = Hosted applications
+widget-searching = Searching…
+widget-search-results = Search results
+widget-loading = Loading
+widget-timeline-name = Timeline position
+widget-timeline-hint = Chronological collection. Arrow keys move, Page Up and Page Down move a screen, Home and End jump to the beginning or end; plus and minus change density.
+widget-timeline-jump = Jump to { $marker }
+widget-timeline-group = Chronological index
+widget-timeline-group-hint = Date-indexed scrollbar
+widget-shortcut-change = Change shortcut
+widget-shortcut-unavailable = That shortcut is unavailable. Activate to choose another.
+widget-chart-series = { $name } series
+widget-step-of = Step { $step } of { $total }
+widget-steps-count = { $count ->
+    [one] { $count } step
+   *[other] { $count } steps
+  }
+widget-page-of = Page { $page } of { $total }
+widget-preview-named = { $label } preview
+widget-type-to-confirm = Type { $phrase } to confirm
+widget-color-name = Colour
+widget-color-hex = Hex colour
+widget-crop-name = Crop page
+widget-crop-hint = From { $left }% across and { $top }% down to { $right }% across and { $bottom }% down
+widget-document-switch-blocked = Document switch blocked
+widget-qr-failed = Could not draw the QR code: { $error }
+media-volume = Volume
+media-position = Position
+media-more-controls = More controls
+media-play = Play
+media-pause = Pause
+media-previous = Previous track
+media-next = Next track
+media-mute = Mute
+media-unmute = Unmute
+media-like = Like
+media-unlike = Unlike
+media-lyrics = Lyrics
+media-shuffle = Shuffle
+media-repeat = Repeat
+media-repeat-one = Repeat one
+media-repeat-all = Repeat all
+media-queue = Queue
+media-player = Video player
+media-no-video = No video loaded
+media-player-hint = Space plays or pauses; Left and Right Arrow seek; Up and Down Arrow change volume; M mutes; F toggles fullscreen
+media-key-play-pause = Space
+media-position-value = { $position } of { $duration }
+media-fullscreen-enter = Enter fullscreen
+media-fullscreen-exit = Exit fullscreen
+media-playback-settings = Playback settings
+media-toggle-on = On
+media-toggle-off = Off
+floating-window-title = Floating window

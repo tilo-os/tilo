@@ -6,13 +6,13 @@
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
 //! app applies to the window, the draft and the engine.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
 
 use ui::fact::{Measure, Measured};
 use ui::framework::Actions;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
@@ -28,6 +28,7 @@ use crate::model::{
     Container, ContainerStatus, DetailTab, DistroBox, Engine, Image, Section as Place, Volume,
 };
 use crate::podman::Action;
+use crate::resource::CATALOG;
 use crate::resource::{Containers, ContainersEffect};
 
 /// What a control in the window asks for. The app applies each one to the
@@ -106,7 +107,7 @@ pub(crate) fn section_list(
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("sections", items)])
         .selected(place_id(selected))
-        .with_accessible_name("Sections")
+        .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-sections"))
         .on_view("containers-sections", move |id| {
             if let Some(place) = Place::parse(&id) {
                 intents.push(Intent::ShowSection(place));
@@ -128,7 +129,7 @@ pub(crate) fn sidebar(
         Box::new(StatusLine::active("Connected"))
     } else if connected {
         Box::new(
-            Text::new("Sample data")
+            Text::new(&crate::resource::CATALOG.t("containers-sample-data"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         )
@@ -313,12 +314,10 @@ pub(crate) fn container_list(
                 status_rank(a.status).cmp(&status_rank(b.status))
             })
             .with_align(CellAlign::Center)
-            .with_badge(|row: &ContainerRow| {
-                (row.status.label().to_string(), status_tone(row.status))
-            }),
+            .with_badge(|row: &ContainerRow| (row.status.label(), status_tone(row.status))),
     ])
     .with_id("containers-list")
-    .with_accessible_name("Containers")
+    .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-containers"))
     .with_sort_state(sort)
     .selectable(true)
     .on_view("containers-list", move |index| {
@@ -346,7 +345,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
         Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
-                .with_message("Create a container from an image to run it here.")
+                .with_message(CATALOG.t("containers-empty-containers-hint"))
                 .with_action("New container")
                 .on_view(intents.sender(Intent::NewContainer)),
         )
@@ -360,7 +359,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
 pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
     let mut state = EmptyState::new("Podman isn't available")
         .with_icon(Icon::Box)
-        .with_message("Install Podman or start its user service to manage containers here.")
+        .with_message(CATALOG.t("containers-engine-missing-hint"))
         .with_action("Try again")
         .on_effect(intents.sender(Intent::Reconnect));
     if !engine.live
@@ -376,7 +375,7 @@ pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
             .with_icon(Icon::Box)
-            .with_message("Choose a container to see its logs, usage and settings."),
+            .with_message(CATALOG.t("containers-none-selected-hint")),
     )
 }
 
@@ -540,7 +539,7 @@ fn detail_verbs(model: &DetailModel<'_>, intents: &Intents) -> Vec<Button> {
             verb_button(
                 model,
                 verb(action),
-                action.label(),
+                &action.label(),
                 action_icon(action),
                 Intent::Lifecycle {
                     id: c.id.clone(),
@@ -618,10 +617,13 @@ fn as_of(unix_ms: Option<u64>) -> Option<ui::time::SystemTime> {
 
 fn logs(c: &Container) -> Element {
     if let Some(error) = &c.logs_error {
-        return note(&format!("Log output is unavailable: {error}"));
+        return note(&crate::resource::CATALOG.t_args(
+            "containers-logs-unavailable",
+            &[("detail", ui::i18n::ArgValue::Text(error.clone()))],
+        ));
     }
     if c.logs.is_empty() {
-        return note("The container hasn't written any log output.");
+        return note(&crate::resource::CATALOG.t("containers-logs-empty"));
     }
     let now = ui::time::wall();
     let fact = match as_of(c.logs_fetched_unix_ms) {
@@ -698,11 +700,11 @@ fn bytes_tile(label: &str, bytes: u64) -> Element {
 
 fn stats(c: &Container) -> Element {
     if !c.status.is_running() {
-        return note("Usage appears while the container runs.");
+        return note(&crate::resource::CATALOG.t("containers-usage-waiting"));
     }
     let s = &c.stats;
     if !s.available {
-        return note("Usage is unavailable. Podman did not return a telemetry sample.");
+        return note(&crate::resource::CATALOG.t("containers-usage-unavailable"));
     }
     let cpu = format!("{:.0}%", s.cpu_percent * 100.0);
     let memory = if s.mem_limit_bytes > 0 {
@@ -733,11 +735,11 @@ fn stats(c: &Container) -> Element {
     };
     stack(vec![
         Section::titled(
-            "Usage",
+            CATALOG.t("containers-section-usage"),
             vec![
-                usage("CPU", &cpu, s.cpu_percent),
-                usage("Memory (RSS)", &memory, s.mem_fraction()),
-                line("Processes", &s.pids.to_string()),
+                usage(&CATALOG.t("containers-cpu"), &cpu, s.cpu_percent),
+                usage(&CATALOG.t("containers-memory"), &memory, s.mem_fraction()),
+                line(&CATALOG.t("containers-processes"), &s.pids.to_string()),
                 Box::new(
                     Text::new(&fact.caption(now))
                         .with_role(TextRole::Caption)
@@ -745,7 +747,10 @@ fn stats(c: &Container) -> Element {
                 ),
             ],
         ),
-        Section::titled("Activity", vec![Box::new(StatGroup::new(tiles))]),
+        Section::titled(
+            CATALOG.t("containers-section-activity"),
+            vec![Box::new(StatGroup::new(tiles))],
+        ),
     ])
 }
 
@@ -770,20 +775,21 @@ fn facts(column: &PropertyColumn, rows: Vec<Property>) -> Element {
 fn inspect(c: &Container) -> Element {
     let column = PropertyColumn::new();
     let mut page = vec![Section::titled(
-        "Details",
+        CATALOG.t("containers-section-details"),
         vec![facts(
             &column,
             vec![
                 Property::new("ID", c.short_id()).with_kind(TextKind::Identifier),
-                Property::new("Command", c.command.clone()).with_kind(TextKind::Code),
-                Property::new("Created", c.created.clone()),
-                Property::new("State", c.status_detail.clone()),
+                Property::new(CATALOG.t("containers-command"), c.command.clone())
+                    .with_kind(TextKind::Code),
+                Property::new(CATALOG.t("containers-created"), c.created.clone()),
+                Property::new(CATALOG.t("containers-state"), c.status_detail.clone()),
             ],
         )],
     )];
     if !c.ports.is_empty() {
         page.push(Section::titled(
-            "Ports",
+            CATALOG.t("containers-section-ports"),
             vec![facts(
                 &column,
                 c.ports
@@ -791,7 +797,10 @@ fn inspect(c: &Container) -> Element {
                     .map(|p| {
                         Property::new(
                             format!("{}/{}", p.container_port, p.protocol),
-                            format!("Host port {}", p.host_port),
+                            CATALOG.t_args(
+                                "containers-host-port",
+                                &[("port", ArgValue::Text(p.host_port.to_string()))],
+                            ),
                         )
                         .with_kind(TextKind::Numeric)
                     })
@@ -801,7 +810,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.mounts.is_empty() {
         page.push(Section::titled(
-            "Mounts",
+            CATALOG.t("containers-section-mounts"),
             vec![facts(
                 &column,
                 c.mounts
@@ -820,7 +829,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.env.is_empty() {
         page.push(Section::titled(
-            "Environment",
+            CATALOG.t("containers-section-environment"),
             vec![facts(
                 &column,
                 c.env
@@ -832,7 +841,7 @@ fn inspect(c: &Container) -> Element {
     }
     if !c.labels.is_empty() {
         page.push(Section::titled(
-            "Labels",
+            CATALOG.t("containers-section-labels"),
             vec![facts(
                 &column,
                 c.labels
@@ -855,7 +864,7 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
             verb_button(
                 model,
                 "shell",
-                "Open shell",
+                &CATALOG.t("containers-open-shell"),
                 Icon::Terminal,
                 Intent::OpenShell(c.id.clone()),
                 intents,
@@ -867,7 +876,7 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
             verb_button(
                 model,
                 "start",
-                "Start",
+                &CATALOG.t("containers-start"),
                 Icon::Play,
                 Intent::Lifecycle {
                     id: c.id.clone(),
@@ -887,11 +896,10 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
 }
 
 fn used_by(n: u32) -> String {
-    match n {
-        0 => "Not used by any container".into(),
-        1 => "Used by 1 container".into(),
-        n => format!("Used by {n} containers"),
-    }
+    CATALOG.t_args(
+        "containers-used-by",
+        &[("count", ui::i18n::ArgValue::Number(f64::from(n)))],
+    )
 }
 
 /// One page of a section: a sentence about the whole, then its list, both
@@ -920,7 +928,7 @@ pub(crate) fn images_page(
         return Box::new(
             EmptyState::new("No images")
                 .with_icon(Icon::Layers)
-                .with_message("Pull an image to create containers from it.")
+                .with_message(CATALOG.t("containers-empty-images-hint"))
                 .with_action("Pull image")
                 .on_view(intents.sender(Intent::PullImage)),
         );
@@ -960,15 +968,20 @@ pub(crate) fn images_page(
             Box::new(row) as Element
         })
         .collect();
-    let summary = format!(
-        "{} {} use {} of disk space.",
-        engine.images.len(),
-        if engine.images.len() == 1 {
-            "image"
-        } else {
-            "images"
-        },
-        ui::format::size(engine.image_disk_bytes())
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+    )]
+    let number = engine.images.len() as f64;
+    let summary = CATALOG.t_args(
+        "containers-images-summary",
+        &[
+            ("count", ArgValue::Number(number)),
+            (
+                "size",
+                ArgValue::Text(ui::format::size(engine.image_disk_bytes())),
+            ),
+        ],
     );
     page(Some(summary), rows)
 }
@@ -986,7 +999,7 @@ pub(crate) fn volumes_page(
         return Box::new(
             EmptyState::new("No volumes")
                 .with_icon(Icon::HardDrive)
-                .with_message("A volume keeps a container's data when the container is removed.")
+                .with_message(CATALOG.t("containers-empty-volumes-hint"))
                 .with_action("New volume")
                 .on_view(intents.sender(Intent::NewVolume)),
         );
@@ -1013,7 +1026,13 @@ pub(crate) fn volumes_page(
         })
         .collect();
     let in_use = engine.volumes.iter().filter(|v| v.in_use_by > 0).count();
-    let summary = format!("{in_use} of {} volumes are in use.", engine.volumes.len());
+    let summary = CATALOG.t_args(
+        "containers-volumes-in-use",
+        &[
+            ("in_use", ArgValue::Text(in_use.to_string())),
+            ("total", ArgValue::Text(engine.volumes.len().to_string())),
+        ],
+    );
     page(Some(summary), rows)
 }
 
@@ -1030,7 +1049,7 @@ pub(crate) fn distrobox_page(
         return Box::new(
             EmptyState::new("No distroboxes")
                 .with_icon(Icon::Terminal)
-                .with_message("Boxes you create with distrobox appear here."),
+                .with_message(CATALOG.t("containers-empty-distroboxes-hint")),
         );
     }
     let rows: Vec<Element> = engine
@@ -1066,18 +1085,20 @@ pub(crate) fn distrobox_page(
 
 /// What the pull sheet says it is fetching: the bytes Podman reported, or
 /// just the phase where it named none.
-fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> Cow<'static, str> {
+fn downloading_text(fetched: Option<(u64, Option<u64>)>) -> String {
     match fetched {
-        Some((done, Some(total))) => Cow::Owned(format!(
-            "Downloading layers: {} of {}",
-            ui::format::size(done),
-            ui::format::size(total)
-        )),
-        Some((done, None)) => Cow::Owned(format!(
-            "Downloading layers: {} so far",
-            ui::format::size(done)
-        )),
-        None => Cow::Borrowed("Downloading layers"),
+        Some((done, Some(total))) => CATALOG.t_args(
+            "containers-downloading-of",
+            &[
+                ("done", ui::i18n::ArgValue::Text(ui::format::size(done))),
+                ("total", ui::i18n::ArgValue::Text(ui::format::size(total))),
+            ],
+        ),
+        Some((done, None)) => CATALOG.t_args(
+            "containers-downloading-so-far",
+            &[("done", ui::i18n::ArgValue::Text(ui::format::size(done)))],
+        ),
+        None => CATALOG.t("containers-downloading"),
     }
 }
 
@@ -1088,12 +1109,12 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
     let state: Element = match (&pull.failed, pull.stopped) {
         (Some(error), _) => Box::new(Text::new(error).with_role(TextRole::Body)),
         (None, true) => Box::new(
-            Text::new("Stopped. What had been fetched stays in the image store.")
+            Text::new(&crate::resource::CATALOG.t("containers-pull-stopped"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
         (None, false) if pull.done => Box::new(
-            Text::new("The image is ready to create containers from.")
+            Text::new(&crate::resource::CATALOG.t("containers-image-ready"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
@@ -1118,15 +1139,18 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
         // A mistaken multi-gigabyte pull must be stoppable, not only hidable.
         let stop = intents.clone();
         column = column.push(Box::new(
-            Button::new("containers-pull-stop", "Stop the download")
-                .role(ButtonRole::Secondary)
-                .on_view(move || stop.push(Intent::StopPull)),
+            Button::new(
+                "containers-pull-stop",
+                &CATALOG.t("containers-stop-download"),
+            )
+            .role(ButtonRole::Secondary)
+            .on_view(move || stop.push(Intent::StopPull)),
         ));
     }
     column
         .push(output(pull.lines.iter().map(String::as_str)))
         .push(Box::new(
-            Text::new("Every line Podman wrote, oldest first.")
+            Text::new(&crate::resource::CATALOG.t("containers-pull-log"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ))
@@ -1238,7 +1262,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             // The list column is narrow; its one action is a glyph so the
             // title keeps its room beside the sidebar toggle.
             actions.push(Box::new(
-                Button::icon_only("containers-new", Icon::Plus, "New container")
+                Button::icon_only("containers-new", Icon::Plus, &CATALOG.t("containers-new"))
                     .role(ButtonRole::Primary)
                     .on_view(intents.sender(Intent::NewContainer)),
             ));
@@ -1298,8 +1322,12 @@ fn detail_commands(parts: &Parts) -> Element {
             }
             Box::new(
                 row.push(Box::new(
-                    Button::icon_only("detail-close", Icon::PanelRight, "Close details")
-                        .on_view(intents.sender(Intent::Select(None))),
+                    Button::icon_only(
+                        "detail-close",
+                        Icon::PanelRight,
+                        &CATALOG.t("containers-close-details"),
+                    )
+                    .on_view(intents.sender(Intent::Select(None))),
                 )),
             )
         },

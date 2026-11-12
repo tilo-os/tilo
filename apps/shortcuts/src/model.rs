@@ -138,6 +138,11 @@ pub enum Head {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
     },
+    Read {
+        app: String,
+        record: String,
+        joined: bool,
+    },
 }
 
 const THEN: &str = "then";
@@ -226,6 +231,19 @@ impl Head {
                 BTreeMap::new(),
                 Vec::new(),
             ),
+            StepKind::Read {
+                app,
+                record,
+                joined,
+            } => (
+                Self::Read {
+                    app: app.clone(),
+                    record: record.clone(),
+                    joined: *joined,
+                },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
         }
     }
 
@@ -279,6 +297,15 @@ impl Head {
                     .filter_map(|rule| serde_json::from_value(rule.clone()).ok())
                     .collect(),
                 output,
+            },
+            Self::Read {
+                app,
+                record,
+                joined,
+            } => StepKind::Read {
+                app,
+                record,
+                joined,
             },
         }
     }
@@ -546,11 +573,27 @@ pub fn upgrade(
     Ok(())
 }
 
+impl Workbench {
+    /// What the record holds: the shortcut programs being written, and the proposals turned
+    /// down.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "shortcuts.workbench",
-    label = "Shortcuts",
     version = 4,
-    migrate = upgrade
+    migrate = upgrade,
+    read_content = Workbench::read_document
 )]
 impl Workbench {
     /// Open a shortcut the app proposed, named after the work it noticed, as
@@ -1066,6 +1109,7 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::Ask { .. } => "ask".into(),
         StepKind::Ai { .. } => "ai".into(),
         StepKind::Task { .. } => "task".into(),
+        StepKind::Read { .. } => "read".into(),
     };
     let base = if base.is_empty() { "step".into() } else { base };
     unique_step_id(steps, &base, "step")
@@ -1116,7 +1160,8 @@ fn collect_ids(steps: &[Step], out: &mut Vec<String>) {
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
 }

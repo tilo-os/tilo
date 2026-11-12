@@ -134,10 +134,9 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
+        record_kind: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
-        record_kind: None,
-        creation: None,
         revalidate: Arc::new(move || {
             if custody.load(Ordering::Acquire) {
                 Ok(())
@@ -188,7 +187,6 @@ impl Channel {
             service: self.service.clone(),
             budget: &self.budget,
             ids: &self.ids,
-            prepared: None,
         };
         open_read(&mut self.slot, reading, known, held).map(|(reply, _)| reply)
     }
@@ -274,6 +272,31 @@ fn changes_start_only_from_a_revision_this_channel_handed_out_entirely() {
     let whole = channel.open_changes([2; 32]).unwrap();
     assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [4; 32]));
     assert_eq!(service.since.load(Ordering::Acquire), 3);
+}
+
+/// A capture that answered a held wait the reader gave up before the
+/// answer came is never seen: the reader's next read replaces it. Once the
+/// reader reads on, it is the reader's, and blocks the next read until
+/// acknowledged.
+#[test]
+fn a_waits_capture_the_reader_never_saw_is_replaced_by_its_next_read() {
+    let service = Service::new(true, CHUNK_BYTES + 1);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let again = channel.open(None).unwrap();
+    assert!(matches!(again, Reply::Chunk { .. }), "{again:?}");
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let (capture, _, token) = channel.read_rest(&again).unwrap();
+    assert!(
+        channel.open(None).is_err(),
+        "a capture the reader read on blocks the next read"
+    );
+    assert_eq!(
+        channel.slot.acknowledge(capture, token),
+        Ok(Reply::Cancelled)
+    );
+    drop(first);
 }
 
 #[test]

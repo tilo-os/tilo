@@ -68,6 +68,7 @@ fn decision_watch() -> (
 
 /// A native task's request about its child: the run, the child's stable
 /// id, the action it names and the authenticated caller.
+#[derive(Clone, Copy)]
 pub(super) struct ChildReask<'a> {
     pub peer_id: u64,
     pub agent_id: &'a str,
@@ -187,6 +188,17 @@ impl AppBrokerState {
             && tilo_identity_host::policy_change::timers_reliable()
     }
 
+    /// The resource `target`'s action is published on now by its peer
+    /// ([`super::PublishedSurface::current_resource`]).
+    pub(super) fn published_now(&self, target: runtime_collab::TaskAction<'_>) -> Option<String> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&target.peer_id)?
+            .current_resource(target.resource, target.action)
+            .map(str::to_owned)
+    }
+
     /// Start `reask`'s child, once its person answered where it asks first.
     async fn start_native_child(
         self: &std::sync::Arc<Self>,
@@ -200,8 +212,22 @@ impl AppBrokerState {
                 .map_err(BrokerError::failed);
         }
         if !reask.target.provider.is_empty() {
-            return self.start_native_provider_child(reask).await;
+            return self
+                .launch_native_task_action(reask)
+                .await
+                .map_err(BrokerError::failed);
         }
+        // The action as its window publishes it now: one mounted anew as the
+        // window settled carries it under a new alias.
+        let current = self.published_now(reask.target);
+        let settled = current.as_deref().map(|resource| ChildReask {
+            target: runtime_collab::TaskAction {
+                resource,
+                ..reask.target
+            },
+            ..*reask
+        });
+        let reask = settled.as_ref().unwrap_or(reask);
         let gate = self
             .native_confirmation_gate(reask)
             .map_err(BrokerError::failed)?;
@@ -220,11 +246,7 @@ impl AppBrokerState {
             .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
             .map_err(BrokerError::failed)?;
         let offered = self
-            .surfaces
-            .lock()
-            .map_err(|_| BrokerError::failed("task surface unavailable".into()))?
-            .get(&target.peer_id)
-            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .offered_by(target.peer_id, target.resource, target.action)
             .ok_or_else(|| BrokerError::failed("task action unavailable".into()))?;
         let witness = self
             .native_store_witness(
@@ -262,59 +284,6 @@ impl AppBrokerState {
             BrokerError::failed("accepted task action has no broker state".into())
         })?;
         Ok((job.id, update))
-    }
-
-    /// Start the child of a `reask` that names a provider: a plain `open` of an app this session
-    /// serves runs as the system's `open` of its root, and every other step as the app's own.
-    async fn start_native_provider_child(
-        self: &std::sync::Arc<Self>,
-        reask: &ChildReask<'_>,
-    ) -> Result<(u64, tilo_actions::InvocationUpdate), BrokerError> {
-        // A task's plain `open` of an app this session serves is the system's `open` of its
-        // root: the child becomes the arrangement's own `open`, through the same rewrite the
-        // door makes ([`super::action_host::publishers::opened_request`]) and the run's own
-        // host-step door, so it is one path and never a refusal the agent has to read and
-        // retry (`docs/designs/app-language/one-app-model.md` §3).
-        if let Some(root) = self.native_served_open_root(reask) {
-            let steps = super::host_steps::for_provider(
-                &self.services,
-                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-            )
-            .ok_or_else(|| {
-                BrokerError::failed("this session does not arrange its screen".into())
-            })?;
-            let asked = tilo_actions::remote::InvokeRequest {
-                invocation: reask.invocation,
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: reask.target.provider.to_owned(),
-                    address: tilo_actions::ActionAddress::new(
-                        reask.target.resource,
-                        reask.target.action,
-                    ),
-                },
-                argument: tilo_actions::remote::InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                appearance: None,
-                wait_ms: None,
-            };
-            let request = super::action_host::publishers::opened_request(&asked, &root);
-            self.run_task_host(reask)
-                .map_err(BrokerError::failed)?
-                .invoke_host_step(steps.as_ref(), &request)
-                .map_err(|error| BrokerError::failed(error.to_string()))?;
-            return self
-                .native_host_step_observation(reask.run_id, reask.invocation)
-                .map_err(BrokerError::failed)?
-                .ok_or_else(|| {
-                    BrokerError::failed("the task's step was taken but is not recorded".into())
-                });
-        }
-        self.launch_native_task_action(reask)
-            .await
-            .map_err(BrokerError::failed)
     }
 
     /// Start `reask`'s child, a host step marked for tasks (a task's

@@ -1,7 +1,6 @@
 //! Exact selected-workspace material for a single runtime MCP execution.
 //! Uses existing custody and enrollment; never enrolls, provisions or grants.
 use super::{Arc, Connect, Joined, WorkspaceId, workspace_topic};
-use ed25519_dalek::Signer as _;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
@@ -122,9 +121,7 @@ impl Joined {
     ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
         // Read apart, so a custody that no longer matches the enrollment is
         // a confirmed change rather than a read that failed.
-        let (certificate, _) = self
-            .custody
-            .current_native_material(workspace_topic(workspace)?)?;
+        let (certificate, _) = self.custody.current_material(workspace_topic(workspace)?)?;
         let enrollment = self.owner.with_current(workspace, |view| {
             Ok((view.transport_hint()?.clone(), view.continuity()))
         })?;
@@ -171,14 +168,12 @@ impl Joined {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&certificate)
                 .map_err(|error| error.to_string())?,
-            proof: self
-                .custody
-                .device_signing_key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
-                .to_bytes()
-                .to_vec(),
+            proof: collab_types::signer::sign_now(
+                self.custody.signer.as_ref(),
+                runtime_identity::collaboration_join_signing_bytes(workspace),
+            )
+            .map_err(|error| error.to_string())?
+            .to_vec(),
         }
         .encode()
         .map_err(|error| error.to_string())?;

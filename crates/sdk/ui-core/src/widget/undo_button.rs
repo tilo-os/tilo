@@ -15,6 +15,7 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
+use crate::i18n::widget_text;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
@@ -150,7 +151,7 @@ impl UndoButton {
         if self.label.is_empty() {
             self.kind.title().to_string()
         } else {
-            crate::i18n!(&self.label)
+            widget_text(&self.label)
         }
     }
 
@@ -214,7 +215,7 @@ impl Widget for UndoButton {
         _available: Size<taffy::AvailableSpace>,
         text: &mut crate::text_render::TextRenderer,
     ) -> Size<f32> {
-        let label = crate::i18n!(&self.label);
+        let label = widget_text(&self.label);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "logical pixel counts far below f32 precision"
@@ -246,7 +247,7 @@ impl Widget for UndoButton {
         _presence: &PresenceCtx,
     ) {
         self.last_paint_state = self.paint_state();
-        let label = crate::i18n!(&self.label);
+        let label = widget_text(&self.label);
         let name = self.accessible_name();
         // The shared button painter, not a private one: an Undo button must be
         // indistinguishable from the toolbar buttons beside it.
@@ -325,8 +326,8 @@ impl Widget for UndoButton {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        Some(self.tooltip.as_str())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(std::borrow::Cow::Borrowed(self.tooltip.as_str()))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

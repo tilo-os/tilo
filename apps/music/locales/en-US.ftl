@@ -2,7 +2,7 @@ music-open-audio-file = Open audio file
 music-connect-spotify = Connect Spotify
 music-connect-spotify-library = Enable full controls
 music-spotify-playback = Authorize playback
-music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
+music-spotify-playback-authorized = Spotify: playback authorized; Premium checked before audio
 music-spotify-devices = Spotify devices
 music-browse-spotify = Browse Spotify
 music-browse-youtube = YouTube Music
@@ -27,7 +27,7 @@ music-spotify-request-timeout = Spotify did not finish this request in time. A c
 music-spotify-select-device = Select { $device }
 music-spotify-pause-device = Pause { $device }
 music-spotify-play-device = Play on { $device }
-music-spotify-playlist-choice = Spotify · { $name }
+music-spotify-playlist-choice = Spotify: { $name }
 music-spotify-remove-playlist = Remove all occurrences from this Spotify playlist
 music-spotify-rename-playlist = Rename Spotify playlist…
 music-spotify-save-playlist = Save Spotify playlist
@@ -67,7 +67,7 @@ music-recommendations-input-followed-artists = Use followed artists
 music-recommendations-empty = Nothing tailored yet. Add music, then like a song, save an album or follow an artist to find suggestions.
 music-recommendations-no-match = No eligible songs match. Adjust inputs, restore a song or add music. An account connection isn’t needed.
 music-recommendations-library = Open songs
-music-recommendations-song = { $title } · { $artist }
+music-recommendations-song = { $title } by { $artist }
 music-recommendations-play = Play
 music-recommendations-dismiss = Hide this suggestion
 music-recommendations-restore = Show again
@@ -114,3 +114,139 @@ music-preferences-followed-artists = { $new ->
 }
 music-preferences-preferred-artists = Changed the preferred artists
 music-preferences-dismissed = Changed the hidden recommendations
+
+## What the window and its player are called for assistive technology
+
+music-title = Music
+music-a11y-player = Music player
+music-a11y-search = Search music
+music-a11y-search-description = Search songs, albums, artists and playlists
+music-a11y-search-description-simple = Search for a song, album, or artist
+music-a11y-choose-source = Choose where your music comes from
+music-a11y-empty = Empty music library
+music-a11y-description = Music library and playback controls
+
+## Window and accessibility copy
+music-search-this-app = In this app
+music-a11y-songs = Songs
+music-a11y-navigation = Music navigation
+
+## Facts, property labels and section titles
+music-a11y-search-genre = Search for { $genre }
+music-a11y-move-down = Move { $track } down
+music-a11y-move-up = Move { $track } up
+music-a11y-remove-from-playlist = Remove { $track } from { $playlist }
+music-a11y-delete-playlist = Delete { $playlist }
+music-a11y-rename-playlist = Rename { $playlist }
+music-a11y-artist = { $genre }; { $listeners ->
+    [one] one monthly listener
+   *[other] { $listeners } monthly listeners
+}
+music-a11y-play = Play { $track }
+music-a11y-like = Like { $track }
+music-kind-album = Album
+music-kind-artist = Artist
+music-kind-playlist = Playlist
+music-detail-load-failed = Couldn’t load this { $kind }
+music-view-playlist = Playlist
+
+## What the window shows
+music-spotify-protected = Spotify protected audio cannot be downloaded through Tilo
+music-already-first = This item is already first in the queue
+music-already-last = This item is already last in the queue
+music-choose-track-playback = Choose a track before using playback controls
+music-choose-track-like = Choose a track to like
+music-resource-library = Music
+music-resource-player = Player
+music-a11y-loading-source = Loading audio source
+music-a11y-waiting-output = Waiting for audio output
+music-a11y-playback-controls = Playback controls
+music-view-home = Home
+music-view-songs = Songs
+music-view-albums = Albums
+music-view-artists = Artists
+music-view-playlists = Playlists
+music-view-downloads = Downloads
+music-view-liked = Liked songs
+music-view-browse = Browse
+music-view-queue = Queue
+music-view-lyrics = Lyrics
+music-view-now-playing = Now playing
+music-view-search = Search
+music-view-playlist-fallback = Playlist
+music-no-songs = No songs yet
+music-no-albums = No albums yet
+music-no-artists = No artists yet
+music-keep-search = Keep search
+music-kept = Kept
+music-forget-view = Remove from your views
+music-like = Like
+music-unlike = Unlike
+music-track-actions = Track actions
+
+music-empty-queue = There are no queued tracks
+music-shuffle-off = Turn shuffle off
+music-shuffle-on = Turn shuffle on
+music-show-in-sidebar = Show in sidebar
+music-show-in-player = Show in player
+
+## The window bar's slots
+music-back = Back
+music-new-playlist = New playlist
+
+## Home before there is music
+music-home-empty-title = Add music
+music-home-empty-message = Choose Open audio file to play a file from this device, or connect Spotify or YouTube Music.
+music-home-empty-action = Connect a source
+music-first-run-online = Find a song, album or artist, or open an audio file.
+music-first-run-offline = This version can't find music online yet. Choose Open audio file to play a file from this device.
+
+## Actions
+
+music-effects-sources = Choose a source
+music-effects-connect-spotify-library = Use the Spotify library
+music-effects-connect-spotify-playback = Authorize Spotify playback
+music-effects-spotify-account-status = Inspect Spotify account
+music-effects-spotify-devices = Refresh Spotify devices
+music-effects-spotify-queue = Show the Spotify queue
+music-effects-spotify-library-more = Load more Spotify collections
+music-effects-new-spotify-playlist = Name a new playlist
+music-effects-spotify-create-playlist = Create a private playlist
+music-effects-spotify-transfer = Transfer Spotify playback
+music-effects-spotify-remote-play = Play on a Spotify device
+music-effects-spotify-remote-pause = Pause a Spotify device
+music-effects-spotify-save = Save to Spotify library
+music-effects-spotify-unsave = Remove from Spotify library
+music-effects-spotify-rename-playlist = Rename Spotify playlist
+music-effects-spotify-playlist-add = Add to Spotify playlist
+music-effects-spotify-playlist-remove = Remove from Spotify playlist
+music-effects-browse-you-tube = Browse YouTube Music
+music-effects-search = Search the catalogue
+music-effects-playback-status = Inspect playback
+music-effects-open = Open
+music-effects-open-album = Open album
+music-effects-open-artist = Open artist
+music-effects-browse-genre = Browse genre
+music-effects-toggle-like = Like or unlike a song
+music-effects-toggle-like-playing = Like the playing song
+music-effects-add-to-queue = Add to queue
+music-effects-play-next = Play next
+music-effects-keep-offline = Keep offline
+music-effects-remove-offline = Remove from offline
+music-effects-play-pause = Play or pause
+music-effects-previous = Previous track
+music-effects-next = Next track
+music-effects-toggle-mute = Toggle mute
+music-effects-toggle-shuffle = Toggle shuffle
+music-effects-cycle-repeat = Toggle repeat
+music-effects-remove = Remove from queue
+music-effects-move-up = Move up in the queue
+music-effects-move-down = Move down in the queue
+music-effects-seek = Seek
+music-effects-set-volume = Set volume
+music-effects-queue-add = Add track to queue
+music-effects-queue-remove = Remove track from queue
+music-library = Music
+music-library-create-playlist = Create playlist
+music-library-delete-playlist = Delete playlist
+music-library-import-track = Add to library

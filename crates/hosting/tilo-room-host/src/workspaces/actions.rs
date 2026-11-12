@@ -85,6 +85,9 @@ use tilo_lock::MutexRecover as _;
 pub(crate) const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
 pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
+/// The people in the workspace and their roles: what whoever invites sees
+/// before and after inviting.
+pub(crate) const MEMBERS: &str = "member.list";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -140,7 +143,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 14] = [
+const VERBS: [Verb; 15] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -161,6 +164,13 @@ const VERBS: [Verb; 14] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
+    },
+    Verb {
+        id: MEMBERS,
+        label: "List members",
+        gate: governance::INVITE,
+        kind: ActionKind::Read,
+        params: Vec::new,
     },
     Verb {
         id: governance::UNBAN,
@@ -799,6 +809,28 @@ fn speaks_for_themselves(caller: &Caller) -> bool {
     matches!(caller.principal(), CallerPrincipal::Person(_))
 }
 
+/// Whether `caller` asks the host's own operations as the person
+/// `certificate` names: the person themselves, or an agent's grant, which
+/// the host's operations treat as its person within its scope
+/// ([`crate::host_authority`]) while every workspace takes it as their agent.
+fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
+    speaks_for_themselves(caller)
+        || (certificate.capabilities.agent.is_some()
+            && caller.is_session_delegated()
+            && matches!(caller.principal(), CallerPrincipal::Agent(_)))
+}
+
+/// Whether `caller` is the person's server key `certificate` certifies,
+/// reaching every workspace of its person: what may read that person's
+/// account. An agent the person connected through consent does not.
+fn reaches_every_workspace(caller: &Caller, certificate: &DeviceCert) -> bool {
+    certificate.capabilities.agent == Some(tilo_user_identity::AgentScope::AllWorkspaces)
+        && certificate.capabilities.server_key
+        && asks_as_person(caller, certificate)
+        && caller.device_public_key() == Some(&certificate.device_public_key)
+        && caller.user_public_key() == Some(&certificate.user_public_key)
+}
+
 /// What a catalogue offers its caller, before it is paged.
 #[derive(Default)]
 struct Offer {
@@ -833,15 +865,13 @@ impl Workspaces {
     /// device in it: the one the workspace's governance certified, or the relay's
     /// own. `None` for a workspace that carries no governed workspace, a device
     /// the workspace never certified, and any caller but a person acting
-    /// themselves: an agent or a bot governs nothing.
+    /// themselves or their server key: an agent or a bot governs nothing,
+    /// and a server key only invites (`authority::server_key_invites`).
     async fn governed_by(
         &self,
         workspace_id: u64,
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
-        if !speaks_for_themselves(caller) {
-            return None;
-        }
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
         let workspaces = self
             .inner
@@ -864,7 +894,9 @@ impl Workspaces {
                 .find(|cert| cert.device_public_key == *device)
                 .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
             drop(workspace);
-            return (cert.user_public_key == *user).then_some((governed, cert));
+            let asking = speaks_for_themselves(caller)
+                || (cert.capabilities.server_key && asks_as_person(caller, &cert));
+            return (asking && cert.user_public_key == *user).then_some((governed, cert));
         }
         None
     }
@@ -914,7 +946,8 @@ impl Workspaces {
             offer.add(GOVERNANCE, workspace.workspace(), rows);
         }
         if wants(HOST_ACTIONS_PROVIDER)
-            && let Some(certificate) = certificate.filter(|_| speaks_for_themselves(caller))
+            && let Some(certificate) =
+                certificate.filter(|certificate| asks_as_person(caller, certificate))
         {
             offer.add(host::HOST, "", self.host_rows(certificate));
         }
@@ -940,7 +973,7 @@ impl Workspaces {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
-                        speaks_for_themselves(caller)
+                        asks_as_person(caller, certificate)
                             && caller.device_public_key() == Some(&certificate.device_public_key)
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
@@ -969,10 +1002,17 @@ impl Workspaces {
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
-                // The person's own account, read by their own device.
+                // The person's own account, read by their own device or by
+                // a key of theirs that reaches all their workspaces (a
+                // backend's server key, metering what it runs).
                 let person = caller
                     .user_public_key()
-                    .filter(|_| speaks_for_themselves(caller))
+                    .filter(|_| {
+                        speaks_for_themselves(caller)
+                            || certificate.is_some_and(|certificate| {
+                                reaches_every_workspace(caller, certificate)
+                            })
+                    })
                     .ok_or(ActionHostError::UnknownAction)?;
                 let account = self
                     .own_account(person)
@@ -1041,7 +1081,7 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
         if unconfirmed(&address.action, &args, owner) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let call = GovernanceCall {
             workspace: &workspace,
@@ -1058,7 +1098,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         match action {
-            governance::INVITE | INVITATIONS | CANCEL_INVITATION => {
+            governance::INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS => {
                 self.governance_invitations(action, call).await
             }
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
@@ -1252,6 +1292,7 @@ impl Workspaces {
                         .unwrap_or(DEFAULT_INVITATION_HOURS)
                         .saturating_mul(HOUR_NS),
                 };
+                let expires_at_ns = now.saturating_add(lifetime_ns);
                 let issued = self
                     .issue(
                         workspace,
@@ -1261,7 +1302,7 @@ impl Workspaces {
                             role: args.role()?,
                             recipient_user_public_key: args.key("recipient")?,
                             invitee_name: args.text("invitee_name")?.map(str::to_owned),
-                            expires_at_ns: now.saturating_add(lifetime_ns),
+                            expires_at_ns,
                             inviter_name: args.text("inviter_name")?.map(str::to_owned),
                         },
                     )
@@ -1270,6 +1311,7 @@ impl Workspaces {
                 Ok(json!({
                     "invite": hex::encode(issued.invite_id),
                     "invitation": hex::encode(issued.signed_invitation),
+                    "expires_at_ns": expires_at_ns,
                 }))
             }
             INVITATIONS => {
@@ -1278,6 +1320,35 @@ impl Workspaces {
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(pending.iter().map(pending_json).collect())
+            }
+            MEMBERS => {
+                let governed = self
+                    .workspace(workspace)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                let governed = governed.lock().await;
+                // Whoever made a workspace of their own holds it, though its
+                // governance names this host's device as the structural owner
+                // that runs it: every other workspace here is its governor's.
+                let owner = self
+                    .own()
+                    .and_then(|own| own.owner_of(workspace))
+                    .unwrap_or_else(|| governed.peer().owner());
+                Ok(self
+                    .people(workspace, &governed)
+                    .members
+                    .iter()
+                    .filter(|member| !member.removed)
+                    .map(|member| {
+                        json!({
+                            "person": hex::encode(member.user_public_key),
+                            "name": member.display_name,
+                            "role": role_name(member.role),
+                            "owner": member.user_public_key == owner,
+                            "administrator": member.administrator,
+                        })
+                    })
+                    .collect())
             }
             CANCEL_INVITATION => {
                 self.cancel(
@@ -1744,6 +1815,34 @@ impl GovernedPlane {
     }
 }
 
+impl GovernedPlane {
+    /// Where a frame of `workspace_id`'s goes: this host's own governance
+    /// stays here, and what its embedder's apps place elsewhere (a Browser
+    /// window on a VM host) is theirs, with the caller's certificate where
+    /// one was verified.
+    fn route_certified_by(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        // Governance this host answers itself stays here; what its embedder's
+        // apps place elsewhere (a Browser window on a VM host) is theirs.
+        if let RemoteActionMessage::Invoke(request) = message
+            && (PROVIDERS.contains(&request.target.provider.as_str())
+                || self.governance.answers_own_account(&request.target))
+        {
+            return None;
+        }
+        let apps = self.apps.as_ref()?;
+        match certificate {
+            Some(certificate) => apps.route_certified(workspace_id, caller, certificate, message),
+            None => apps.route(workspace_id, caller, message),
+        }
+    }
+}
+
 impl AppServingPlane for GovernedPlane {
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         self.governs(caller, message)
@@ -1798,6 +1897,46 @@ impl AppServingPlane for GovernedPlane {
             return None;
         }
         tilo_actions::remote::serve(&self.governance.as_host(certificate), caller, message)
+    }
+
+    fn route(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.route_certified_by(workspace_id, caller, None, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.route_certified_by(workspace_id, caller, Some(certificate), message)
+    }
+
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
+        self.apps.as_ref()?.relayed(workspace_id, from, message)
+    }
+
+    fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+        if let Some(apps) = self.apps.as_ref() {
+            apps.run_arrived(workspace_id, caller);
+        }
+    }
+
+    fn tracks(&self, workspace_id: u64) -> bool {
+        self.apps
+            .as_ref()
+            .is_some_and(|apps| apps.tracks(workspace_id))
     }
 }
 

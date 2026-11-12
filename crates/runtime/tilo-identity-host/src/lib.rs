@@ -13,17 +13,21 @@
 //! Hosts supply their committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].
 
+#![cfg_attr(
+    target_family = "wasm",
+    allow(
+        clippy::arc_with_non_send_sync,
+        reason = "a page's custody reaches JavaScript and stays on the page's one thread; `Arc` keeps a page's handles the same type as a desktop's"
+    )
+)]
+
 #[cfg(unix)]
 pub mod broker;
-#[cfg(unix)]
 pub mod certificates;
-#[cfg(unix)]
 pub mod certification_ceremony;
-#[cfg(unix)]
 pub mod custody;
 #[cfg(unix)]
 pub mod device_admin;
-#[cfg(unix)]
 pub mod device_fleet;
 #[cfg(unix)]
 pub mod enrolled_transport;
@@ -40,8 +44,10 @@ pub mod policy_change;
 pub mod provisioning;
 #[cfg(unix)]
 pub mod registry;
+pub mod roles;
+pub mod sources;
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 mod unsupported_host;
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
 pub use unsupported_host::{device_fleet, provisioning, registry};

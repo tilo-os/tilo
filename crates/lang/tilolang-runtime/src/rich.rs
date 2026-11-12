@@ -31,6 +31,10 @@ use tilo_doc::snapshot::BlockView;
 /// ui-core's `mention`).
 pub const MENTION: &str = tilo_reference::embed::MARK;
 
+/// The mark a paragraph projecting another resource carries: one level deep, what a card of it
+/// shows of its own content (`tilo_doc`'s and ui-core's `Mark::Transclusion`).
+pub const PROJECTION: &str = tilo_doc::schema::MARK_PROJECTION;
+
 /// What a `mention` mark refers to: a person, or a resource by the catalogue's reference
 /// (`tilo_reference::embed`), the one form native apps write too.
 pub use tilo_reference::Embed as Reference;
@@ -82,6 +86,44 @@ pub struct RichValue {
     pub blocks: Vec<BlockView>,
 }
 
+/// `path` as a page standing in `from` reaches it: the folders it shares with `from` left out,
+/// and one `..` for each folder of `from` above them — `../Plan.md` for a page in `Home` naming
+/// one in `Work`, `Monday.md` for a page in `Home/Standups` naming the one beside it.
+#[must_use]
+pub fn relative_path(from: &str, path: &str) -> String {
+    let from_parts: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let shared = from_parts
+        .iter()
+        .zip(&parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let up = "../".repeat(from_parts.len().saturating_sub(shared));
+    format!("{up}{}", parts.get(shared..).unwrap_or_default().join("/"))
+}
+
+/// The page `href` names, as the page standing in `from` reaches it: its own path a page of the
+/// same bundle holds, or none for a link to anywhere else (one with a scheme, or one that
+/// climbs above the bundle's own folder).
+#[must_use]
+pub fn bundle_path(from: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() || href.contains("://") || href.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    for part in href.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 fn paragraph(text: &str) -> BlockView {
     BlockView {
         id: String::new(),
@@ -93,6 +135,28 @@ fn paragraph(text: &str) -> BlockView {
     }
 }
 
+/// Whether `block` is one projection of a resource (an embed) and nothing else: a card of it
+/// where the text is drawn.
+fn projects(block: &BlockView) -> bool {
+    let len = block.text.chars().count();
+    block
+        .marks
+        .iter()
+        .any(|mark| mark.name == PROJECTION && mark.start == 0 && mark.end == len)
+}
+
+/// Whether `block` is the empty paragraph a line break left open, and nothing more: the place
+/// the next line starts. Text continues it; a block of its own (an embed) takes it, since the
+/// break already ended the paragraph before it, while a paragraph somebody left empty (two line
+/// breaks) stands on its own and the block comes after it.
+fn left_open(block: &BlockView) -> bool {
+    block.kind == "paragraph"
+        && block.text.trim().is_empty()
+        && block.marks.is_empty()
+        && block.attrs.is_empty()
+        && block.children.is_empty()
+}
+
 /// The paragraph `b` as one reader reads it ([`RichValue::read_text`]).
 fn read_block(
     b: &BlockView,
@@ -100,7 +164,9 @@ fn read_block(
     unshared: &str,
 ) -> String {
     let runs = b.marks.iter().filter_map(|m| match &m.value {
-        MarkValue::Str(value) if m.name == MENTION => Some((m.start, m.end, value.as_str())),
+        MarkValue::Str(value) if m.name == MENTION || m.name == PROJECTION => {
+            Some((m.start, m.end, value.as_str()))
+        }
         _ => None,
     });
     tilo_reference::embed::read_text(&b.text, runs, read, unshared)
@@ -183,12 +249,17 @@ impl RichValue {
         })
     }
 
-    /// Every reference it holds, in the order the text says them, each once.
+    /// Every reference it holds, in the order the text says them, each once: a run mentioning
+    /// one, and a paragraph projecting one (an embed), which links it here as a mention does.
     #[must_use]
     pub fn references(&self) -> Vec<Reference> {
         let mut out: Vec<Reference> = Vec::new();
         for b in &self.blocks {
-            let mut marks: Vec<&MarkSpan> = b.marks.iter().filter(|m| m.name == MENTION).collect();
+            let mut marks: Vec<&MarkSpan> = b
+                .marks
+                .iter()
+                .filter(|m| m.name == MENTION || m.name == PROJECTION)
+                .collect();
             marks.sort_by_key(|m| m.start);
             for m in marks {
                 if let MarkValue::Str(v) = &m.value
@@ -202,62 +273,130 @@ impl RichValue {
         out
     }
 
-    /// Append `label` as a run referring to `to`, after the text so far, in the last paragraph
-    /// (a new one when there is none).
-    pub fn push_reference(&mut self, label: &str, to: &Reference) {
-        if self.blocks.is_empty() {
+    /// The references the text projects (an embed): what a card of it shows of itself, one
+    /// level deep. Empty for text that only mentions and links.
+    #[must_use]
+    pub fn projections(&self) -> Vec<Reference> {
+        let mut out: Vec<Reference> = Vec::new();
+        for block in &self.blocks {
+            for mark in &block.marks {
+                if mark.name != PROJECTION {
+                    continue;
+                }
+                if let MarkValue::Str(value) = &mark.value
+                    && let Some(reference) = Reference::of_mark(value)
+                    && !out.contains(&reference)
+                {
+                    out.push(reference);
+                }
+            }
+        }
+        out
+    }
+
+    /// The paragraph more text continues: the last one, or a new one when there is none or the
+    /// last is a block of its own (an embed), which text never runs on into.
+    fn open_paragraph(&mut self) -> Option<&mut BlockView> {
+        if self.blocks.last().is_none_or(projects) {
             self.blocks.push(paragraph(""));
         }
-        let Some(last) = self.blocks.last_mut() else {
+        self.blocks.last_mut()
+    }
+
+    /// Append `text` as a run of the paragraph the text continues ([`Self::open_paragraph`]),
+    /// named by `mark` when it is more than words.
+    fn push_run(&mut self, text: &str, mark: Option<(&str, MarkValue)>) {
+        let Some(last) = self.open_paragraph() else {
             return;
         };
         let start = last.text.chars().count();
-        last.text.push_str(label);
+        last.text.push_str(text);
         let end = last.text.chars().count();
-        if start < end {
+        if let Some((name, value)) = mark
+            && start < end
+        {
             last.marks.push(MarkSpan {
                 start,
                 end,
-                name: MENTION.to_owned(),
-                value: MarkValue::Str(to.mark_value()),
+                name: name.to_owned(),
+                value,
             });
         }
+    }
+
+    /// Append `block`, which is a block of its own (an embed): it takes the place of the empty
+    /// paragraph a line break left open ([`left_open`]), since that break already ended the
+    /// paragraph it followed.
+    fn push_own_block(&mut self, block: BlockView) {
+        match self.blocks.last_mut() {
+            Some(last) if left_open(last) => *last = block,
+            _ => self.blocks.push(block),
+        }
+    }
+
+    /// Append `label` as a run referring to `to`, after the text so far, in the last paragraph
+    /// (a new one when there is none).
+    pub fn push_reference(&mut self, label: &str, to: &Reference) {
+        self.push_run(label, Some((MENTION, MarkValue::Str(to.mark_value()))));
     }
 
     /// Append the moment `at` (RFC 3339) as a run every reader reads in their own zone and
     /// language (`tilo_doc::inline_time`); the run is the moment as written, for a reader that
     /// shows text as it is.
     pub fn push_time(&mut self, at: &str) {
-        if self.blocks.is_empty() {
-            self.blocks.push(paragraph(""));
-        }
-        let Some(last) = self.blocks.last_mut() else {
-            return;
-        };
-        let start = last.text.chars().count();
-        last.text.push_str(at);
-        let end = last.text.chars().count();
-        if start < end {
-            last.marks.push(MarkSpan {
-                start,
-                end,
-                name: tilo_doc::inline_time::MARK.to_owned(),
-                value: MarkValue::Str(
+        self.push_run(
+            at,
+            Some((
+                tilo_doc::inline_time::MARK,
+                MarkValue::Str(
                     tilo_doc::inline_time::InlineTime {
                         at: at.to_owned(),
                         show: tilo_doc::inline_time::Show::default(),
                     }
                     .mark_value(),
                 ),
-            });
-        }
+            )),
+        );
+    }
+
+    /// Append `label` as a paragraph of its own projecting `to` (an embed): what a card of it
+    /// shows where the text is drawn, opening it.
+    pub fn push_projection(&mut self, label: &str, to: &Reference) {
+        self.push_own_block(BlockView {
+            id: String::new(),
+            kind: "paragraph".to_owned(),
+            text: label.to_owned(),
+            marks: vec![MarkSpan {
+                start: 0,
+                end: label.chars().count(),
+                name: PROJECTION.to_owned(),
+                value: MarkValue::Str(to.mark_value()),
+            }],
+            attrs: std::collections::BTreeMap::new(),
+            children: Vec::new(),
+        });
     }
 
     /// Append `other` with its formatting: its first paragraph continues the last one, the
-    /// rest follow it.
+    /// rest follow it. A paragraph that is one projection (an embed) is a block of its own, so
+    /// it never continues the paragraph before it, and text never runs on into it.
     pub fn push_rich(&mut self, other: &Self) {
         let mut blocks = other.blocks.iter();
-        if let (Some(first), Some(last)) = (blocks.next(), self.blocks.last_mut()) {
+        let Some(first) = blocks.next() else {
+            return;
+        };
+        let own = BlockView {
+            id: String::new(),
+            ..first.clone()
+        };
+        if projects(first) {
+            self.push_own_block(own);
+        } else if self.blocks.is_empty() {
+            self.blocks.push(own);
+        } else {
+            let Some(last) = self.open_paragraph() else {
+                return;
+            };
             let shift = last.text.chars().count();
             last.text.push_str(&first.text);
             last.marks.extend(first.marks.iter().map(|m| MarkSpan {
@@ -265,11 +404,6 @@ impl RichValue {
                 end: m.end.saturating_add(shift),
                 ..m.clone()
             }));
-        } else if let Some(first) = other.blocks.first() {
-            self.blocks.push(BlockView {
-                id: String::new(),
-                ..first.clone()
-            });
         }
         self.blocks.extend(blocks.map(|b| BlockView {
             id: String::new(),
@@ -277,14 +411,14 @@ impl RichValue {
         }));
     }
 
-    /// Append `text`, unformatted, to the last paragraph; a line break starts a new one.
+    /// Append `text`, unformatted, to the last paragraph; a line break starts a new one. Text a
+    /// paragraph ends with (`"…\n"`) leaves the next line open: the paragraph after it holds
+    /// only what comes next, and a block of its own takes its place rather than standing after
+    /// an empty one.
     pub fn push_text(&mut self, text: &str) {
         let mut lines = text.split('\n');
         if let Some(first) = lines.next() {
-            match self.blocks.last_mut() {
-                Some(last) => last.text.push_str(first),
-                None => self.blocks.push(paragraph(first)),
-            }
+            self.push_run(first, None);
         }
         for line in lines {
             self.blocks.push(paragraph(line));
@@ -525,6 +659,47 @@ fn marked_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_names_one_beside_it_by_the_path_from_where_it_stands() {
+        assert_eq!(relative_path("", "Plan.md"), "Plan.md");
+        assert_eq!(relative_path("Home/", "Home/Groceries.md"), "Groceries.md");
+        assert_eq!(
+            relative_path("Home/Standups/", "Home/Standups/Monday.md"),
+            "Monday.md"
+        );
+        assert_eq!(relative_path("Home/", "Work/Plan.md"), "../Work/Plan.md");
+        assert_eq!(
+            relative_path("A/B/C/", "A/X.md"),
+            "../../X.md",
+            "one step up for each folder of its own above the one they meet at"
+        );
+        assert_eq!(
+            relative_path("Home/", "Home/Ideas (2).md"),
+            "Ideas (2).md",
+            "a name a file name may keep, spaces and brackets alike"
+        );
+    }
+
+    #[test]
+    fn a_link_reads_as_the_page_it_names_and_nothing_else() {
+        assert_eq!(
+            bundle_path("Home/", "Groceries.md").as_deref(),
+            Some("Home/Groceries.md")
+        );
+        assert_eq!(
+            bundle_path("A/B/C/", "../../X.md").as_deref(),
+            Some("A/X.md")
+        );
+        assert_eq!(
+            bundle_path("", "Work/Plan.md").as_deref(),
+            Some("Work/Plan.md")
+        );
+        assert_eq!(bundle_path("Home/", "https://example.test/a.md"), None);
+        assert_eq!(bundle_path("Home/", "/etc/passwd"), None);
+        assert_eq!(bundle_path("Home/", "../../escape.md"), None);
+        assert_eq!(bundle_path("Home/", ""), None);
+    }
 
     #[test]
     fn anchors_number_paragraphs_and_the_items_of_a_list_under_it() {

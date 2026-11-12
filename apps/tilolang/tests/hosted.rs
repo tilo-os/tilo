@@ -36,20 +36,41 @@ use tilolang_app::hosted::HostedWindow;
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
-use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
+#[path = "hosted/chunks.rs"]
+mod chunks;
+
 #[path = "hosted/cost.rs"]
 mod cost;
+
+#[path = "hosted/language.rs"]
+mod language;
+
+#[path = "hosted/menus.rs"]
+mod menus;
+
+#[path = "hosted/packages.rs"]
+mod packages;
+
+use packages::{package, package_of};
+
+#[path = "hosted/offers.rs"]
+mod offers;
+
+#[path = "hosted/typing.rs"]
+mod typing;
 
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
 const TASKS: &str = "so.tilo.lang.tasks";
+/// The day at a glance, over Tasks', Notes' and Chat's own places.
+const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -196,28 +217,6 @@ impl CollabTransport for Crowded {
     }
 }
 
-/// The package in `dir` (from this crate's), built with the packages it uses.
-fn package(dir: &str) -> Bundle {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
-    let (package, used) = built.split_last().expect("the package is built last");
-    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
-}
-
-/// Where the package of the app `app` is, from this crate's: the apps the tests open are
-/// shipped with it, and the rich body is their `tests/` one.
-fn package_of(app: &str) -> &'static str {
-    match app {
-        NOTES => "../tl/notes",
-        RICHBODY => "tests/richbody",
-        SIGNED => "tests/signed",
-        TASKS => "../tl/tasks",
-        other => panic!("no test package is {other}"),
-    }
-}
-
 /// A window-sized region of a host's scene, as a window process's surface is.
 struct Region;
 
@@ -245,6 +244,19 @@ enum Window {
 }
 
 impl Window {
+    /// The frame harness over `hosted`.
+    fn in_harness(hosted: HostedWindow) -> Self {
+        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
+        Self::Harness(Box::new(harness))
+    }
+
+    /// The live `App` a window process runs over `hosted`.
+    fn live(hosted: HostedWindow) -> Self {
+        let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+        app.init_layout();
+        Self::Live(Box::new(app))
+    }
+
     /// The live window's frames, as its surface runs them, until it is at rest.
     fn live_frame(app: &mut ui::App) {
         // The wake's input is all handled, as the window's event loop says once it is.
@@ -374,6 +386,7 @@ impl Window {
                     held |= match *name {
                         "ctrl" => ModifiersState::CONTROL,
                         "shift" => ModifiersState::SHIFT,
+                        "alt" => ModifiersState::ALT,
                         other => panic!("no modifier {other}"),
                     };
                 }
@@ -403,6 +416,13 @@ impl Window {
             Self::Live(_) => panic!("the window is the live one"),
         }
     }
+
+    fn app(&mut self) -> &mut ui::App {
+        match self {
+            Self::Live(app) => app,
+            Self::Harness(_) => panic!("the window is the harness"),
+        }
+    }
 }
 
 /// A person at a window whose instance a tilolang host runs.
@@ -414,7 +434,7 @@ struct Session {
     /// What wakes the host when its work off the frame is ready to be taken in.
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
-    _broker: Box<dyn std::any::Any>,
+    broker: Box<dyn std::any::Any>,
 }
 
 impl Session {
@@ -430,20 +450,12 @@ impl Session {
 
     /// A person at a Tasks window the live `App` runs.
     fn live_tasks() -> Self {
-        Self::open(TASKS, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(TASKS, "ada", Window::live)
     }
 
     /// A person at a Notes window the live `App` runs.
     fn live_notes() -> Self {
-        Self::open(NOTES, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(NOTES, "ada", Window::live)
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
@@ -455,11 +467,7 @@ impl Session {
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
     fn live_rich() -> Self {
-        Self::open(RICHBODY, "ada", |hosted| {
-            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-            app.init_layout();
-            Window::Live(Box::new(app))
-        })
+        Self::open(RICHBODY, "ada", Window::live)
     }
 
     /// A person at a Notes window the live `App` runs, whose connection's queue is full while
@@ -472,38 +480,69 @@ impl Session {
             changes: Arc::clone(changes),
             joined: None,
         }));
-        Self::over(
-            manager,
-            &route,
-            NOTES,
-            "ada",
-            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
-            None,
-            (Box::new(()), Rc::default()),
-            |hosted| {
-                let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
-                app.init_layout();
-                Window::Live(Box::new(app))
-            },
-        )
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        let wire = (Box::new(()) as Box<dyn std::any::Any>, Rc::default());
+        let spec = Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada");
+        let mut session = Self::launch(manager, &route, spec, chunks, None, wire, Window::live);
+        session.settle();
+        session
     }
 
     /// `person` at a harness window of the app `app`, whose presence `present` sets up.
     fn new(app: &str, person: &str, present: impl FnOnce(&mut ui::presence::PresenceCtx)) -> Self {
         Self::open(app, person, |hosted| {
-            let mut window = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
-            window.update_presence(|presence| {
+            let mut window = Window::in_harness(hosted);
+            window.harness().update_presence(|presence| {
                 present(presence);
                 true
             });
-            Window::Harness(Box::new(window))
+            window
         })
+    }
+
+    /// `person` at a harness window of the app `app`, at a desktop that speaks `language`
+    /// (`de-DE`): the language their session names for every window.
+    fn in_language(app: &str, person: &str, language: &'static str) -> Self {
+        let mut session = Self::opened_in_language(app, person, language, Window::in_harness);
+        session.settle();
+        session
     }
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names.
     fn open(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        let mut session = Self::opened(app, person, window);
+        session.settle();
+        session
+    }
+
+    /// [`Self::open`], before the window had a frame.
+    fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        Self::opened_in_language(app, person, "en-US", window)
+    }
+
+    /// [`Self::opened`] at a desktop that speaks `language`.
+    fn opened_in_language(
+        app: &str,
+        person: &str,
+        language: &'static str,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+        Self::brokered(&route, app, person, language, chunks, None, window)
+    }
+
+    /// [`Self::launch`] over a connection whose other end is the test's broker.
+    fn brokered(
+        route: &RouteSpec,
+        app: &str,
+        person: &str,
+        language: &'static str,
+        chunks: tilolang_tilo::chunk::Chunks,
+        storage: Option<std::path::PathBuf>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
@@ -511,16 +550,9 @@ impl Session {
             inbox: Rc::clone(&inbox),
             joined: None,
         });
-        Self::over(
-            manager,
-            &route,
-            app,
-            person,
-            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
-            None,
-            (Box::new(inbox), sent),
-            window,
-        )
+        let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
+        Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 
     /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
@@ -532,29 +564,9 @@ impl Session {
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-        let manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-            joined: None,
-        });
-        Self::over(
-            manager,
-            route,
-            TASKS,
-            "ada",
-            chunks,
-            storage,
-            (Box::new(inbox), sent),
-            |hosted| {
-                Window::Harness(Box::new(FrameHarness::new(
-                    ui::State::new(),
-                    Box::new(hosted),
-                    VIEWPORT,
-                )))
-            },
-        )
+        let mut session = Self::tasks_over_launched(route, chunks, storage);
+        session.settle();
+        session
     }
 
     /// [`Self::tasks_over_in`], not settled: the window as it is when it opens, before its first
@@ -564,57 +576,28 @@ impl Session {
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
-        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-        let manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-            joined: None,
-        });
-        Self::launch(
-            manager,
+        Self::brokered(
             route,
             TASKS,
             "ada",
+            "en-US",
             chunks,
             storage,
-            (Box::new(inbox), sent),
-            |hosted| {
-                Window::Harness(Box::new(FrameHarness::new(
-                    ui::State::new(),
-                    Box::new(hosted),
-                    VIEWPORT,
-                )))
-            },
+            Window::in_harness,
         )
     }
 
-    /// `person` at the window `window` makes of the hosted window of the app `app`, whose
-    /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
-    /// `wire` is what the broker's end holds and what the instance sends it, `chunks` the
-    /// workspace record the instance runs over, and `storage` where the package keeps what it
-    /// keeps (nothing: in memory). The window settles before it is handed over.
-    fn over(
-        manager: CollaborationManager,
-        route: &RouteSpec,
-        app: &str,
-        person: &str,
-        chunks: tilolang_tilo::chunk::Chunks,
-        storage: Option<std::path::PathBuf>,
-        wire: (Box<dyn std::any::Any>, Sent),
-        window: impl FnOnce(HostedWindow) -> Window,
-    ) -> Self {
-        let mut session = Self::launch(manager, route, app, person, chunks, storage, wire, window);
-        session.settle();
-        session
-    }
-
-    /// [`Self::over`], before the window had a frame.
+    /// The window `window` makes of the hosted window of the instance `spec`, whose package
+    /// [`package_of`] names, whose instance's connection is `manager`, on `route`; `wire` is what
+    /// the broker's end holds and what the instance sends it, `chunks` the workspace record the
+    /// instance runs over, and `storage` where the package keeps what it keeps (nothing: in
+    /// memory), before the window had a frame. The host's own process speaks the source language
+    /// throughout: the language the window reads in is the one the session handed over with
+    /// `spec`, never this one.
     fn launch(
         mut manager: CollaborationManager,
         route: &RouteSpec,
-        app: &str,
-        person: &str,
+        spec: Spec,
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
         (broker, sent): (Box<dyn std::any::Any>, Sent),
@@ -625,28 +608,25 @@ impl Session {
             cluster_id: route.cluster_id,
             record: None,
             record_kind: None,
-            handle: Some(person.to_owned()),
+            handle: Some(spec.person.clone()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::of(chunks, manager, route.clone(), person);
+        let record = InstanceRecord::of(chunks, manager, route.clone(), spec.person.clone());
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
-        let kept = host.kept(app).unwrap();
+        let kept = host.kept(&spec.app).unwrap();
+        let bundle = package(package_of(&spec.app));
         let (ours, theirs) = Channel::pair().unwrap();
         let watched = ours.as_fd().try_clone_to_owned().unwrap();
         let hosted = Hosted::with_record(
-            Spec {
-                app: app.to_owned(),
-                workspace: route.cluster_id.to_string(),
-                instance: 1,
-                person: person.to_owned(),
-            },
+            spec,
             record,
-            Arc::new(package(package_of(app))),
+            bundle,
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
-            &Phrases::new("en-US"),
+            &Rc::new(Phrases::new("en-US")),
+            host.formats(),
             wake,
         );
         host.add(hosted, Some(watched));
@@ -655,8 +635,15 @@ impl Session {
             window: window(HostedWindow::over(theirs)),
             sent,
             woken,
-            _broker: broker,
+            broker,
         }
+    }
+
+    /// What the broker delivers to the instance's connection next.
+    fn inbox(&self) -> &Inbox {
+        self.broker
+            .downcast_ref::<Inbox>()
+            .expect("the broker's end holds the connection's inbox")
     }
 
     /// Forget the requests the instance sent so far.
@@ -819,18 +806,8 @@ impl Session {
         out
     }
 
-    /// The texts the window's content lane shows: the page of the row a person opened, where
-    /// the overview keeps its empty state for the next time nothing is chosen.
-    fn page(&mut self) -> Vec<String> {
-        let view = self.hosted().view().expect("the window is connected");
-        let mut out = Vec::new();
-        if let Some(tree) = view.detail_tree() {
-            texts(&tree, &mut out);
-        }
-        out
-    }
-
-    /// The titles of the notebook's notes, as its list shows them.
+    /// The titles of the items the window lists, as it shows them: the rows of its lists, each
+    /// naming its item — a list's in the row itself, a tree's in its node's label.
     fn titles(&mut self) -> Vec<String> {
         let view = self.hosted().view().expect("the window is connected");
         let mut titles = Vec::new();
@@ -842,13 +819,7 @@ impl Session {
             let rows = rows.borrow();
             for key in rows.rendered() {
                 let row = rows.row(&key).expect("a rendered row");
-                let title = find(row, &|node| node.kind == "ui.ListRow")
-                    .and_then(|row| match row.props.get("title") {
-                        Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("a row shows its note's title: {row:?}"));
-                titles.push(title);
+                titles.push(title_of(row));
             }
         }
         titles
@@ -866,18 +837,32 @@ impl Session {
     /// The key in the composed tree of the open note's field whose placeholder is
     /// `placeholder`.
     fn field_key(&mut self, placeholder: &str) -> String {
-        let detail = self
-            .hosted()
-            .view()
-            .and_then(tilo_ui_host::AppWindow::detail_tree)
-            .expect("a note is open");
-        let key = find(&detail, &|node| {
-            matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-        })
-        .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-        .key
-        .clone();
-        format!("{}{key}", tilo_ui_host::shell::DETAIL)
+        let view = self.hosted().view().expect("the window is connected");
+        let field = |tree: &tilo_ui_host::UiNode| {
+            find(tree, &|node| {
+                matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
+            })
+            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
+            .key
+            .clone()
+        };
+        // A window whose page is another's after it opens the page in the lane after its own;
+        // one whose page is its own (a tree beside what it shows) draws it in its content.
+        if let Some(detail) = view.detail_tree() {
+            return format!("{}{}", tilo_ui_host::shell::DETAIL, field(&detail));
+        }
+        let root = view.root_tree().expect("the window's view");
+        let mut page = Vec::new();
+        content_nodes(&root, &mut page);
+        page.iter()
+            .find_map(|node| {
+                find(node, &|node| {
+                    matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
+                })
+            })
+            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
+            .key
+            .clone()
     }
 
     /// The centre of the open note's field whose placeholder is `placeholder`.
@@ -904,6 +889,22 @@ impl Session {
     }
 }
 
+/// The title a window's row shows of its item: a tree's row names it in its node's label, a
+/// list's row in the row the item draws.
+fn title_of(row: &tilo_ui_host::UiNode) -> String {
+    if let Some(node) = find(row, &|node| node.kind == "ui.TreeViewNode")
+        && let Some(label) = node.props.get("label")
+    {
+        return tilo_ui_host::reconcile::display(label);
+    }
+    find(row, &|node| node.kind == "ui.ListRow")
+        .and_then(|row| match row.props.get("title") {
+            Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a row shows its item's title: {row:?}"))
+}
+
 fn find<'a>(
     node: &'a tilo_ui_host::UiNode,
     want: &dyn Fn(&tilo_ui_host::UiNode) -> bool,
@@ -912,6 +913,18 @@ fn find<'a>(
         return Some(node);
     }
     node.children.iter().find_map(|child| find(child, want))
+}
+
+/// The nodes of the content slot of `tree`, the window shell's page beside its sidebar.
+fn content_nodes<'a>(tree: &'a tilo_ui_host::UiNode, out: &mut Vec<&'a tilo_ui_host::UiNode>) {
+    if tree.kind == "slot" && tree.props.get("name") == Some(&tilo_ui_host::Value::text("content"))
+    {
+        out.extend(tree.children.iter());
+        return;
+    }
+    for child in &tree.children {
+        content_nodes(child, out);
+    }
 }
 
 fn widget_by_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
@@ -1177,6 +1190,7 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
         .expect("the title field is laid out")
         .get_rect();
     session.window.click_at(rect.center().x, rect.center().y);
+    // Each letter is a change of the record: the page reads the one that named them the editor.
     session.window.type_text("Plan");
     session.settle();
     // The person's name changes, as a roster renames them: the page follows.
@@ -1196,92 +1210,43 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     );
 }
 
-/// The desktop's bar over the live window, as the shell runs it: the window declares its slots
-/// there, and what the person does with them reaches the window on its shell-ui connection,
-/// naming the input the shell had sent the window by then.
-struct Bar {
-    shell: std::os::unix::net::UnixStream,
+/// The person presses New note in the header row of the live window, which the desktop hosts.
+fn press_new_note(session: &mut Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
 }
 
-impl Bar {
-    /// The bar over `session`'s live window, which the desktop hosts.
-    fn over(session: &mut Session) -> Self {
-        let (shell, app) = std::os::unix::net::UnixStream::pair().unwrap();
-        let Window::Live(window) = &mut session.window else {
-            panic!("the bar is over the live window");
-        };
-        window.test_floating_service_connection(
-            ui::floating_surface::FloatingSurfaceServiceClient::from_test_stream(app).unwrap(),
-        );
-        Self { shell }
-    }
-
-    /// The person presses the bar's slot `name` after the input with the serial `after`; the
-    /// window reads it at once, before the input it has not handled yet.
-    fn press(&mut self, session: &mut Session, name: &str, after: u32) {
-        use std::io::Write as _;
-        let id = ui::window_toolbar::declared()
-            .expect("the window declares its bar's slots")
-            .actions
-            .iter()
-            .find(|action| action.name == name)
-            .unwrap_or_else(|| panic!("the bar has {name:?}"))
-            .id
-            .clone();
-        let mut frame = serde_json::to_vec(
-            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent {
-                event: ui::window_toolbar::ToolbarEvent::Action { id },
-                after_input: Some(after),
-            },
-        )
-        .unwrap();
-        frame.push(b'\n');
-        self.shell.write_all(&frame).unwrap();
-        let Window::Live(window) = &mut session.window else {
-            panic!("the bar is over the live window");
-        };
-        window.test_pump_floating_service();
-    }
-}
-
-/// The serial the next `count` input events end at.
-fn input_after(count: u32) -> u32 {
-    INPUT.with(std::cell::Cell::get).wrapping_add(count)
-}
-
-/// The person types in a note's body, presses "+" in the window's bar and types the new
-/// note's title, quicker than the window reads its input: the press reaches the window before
-/// the keys typed before it. It runs where the person made it, after those keys and before the
-/// ones after it, so each lands where it was typed.
+/// The person types in a note's body, presses New note in its column's header row and types
+/// the new note's title, quicker than the window reads its input: each key lands where it was
+/// typed, the ones before the press in the old note and the ones after it in the new note's
+/// title.
 #[test]
-fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_where_the_keyboard_was_follows_into_what_it_opens()
+fn a_new_note_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_where_the_keyboard_was_follows_into_what_it_opens()
  {
     ui::window_toolbar::set_hosted(true);
     let mut session = Session::live_notes();
-    bar_press_between_the_keys(&mut session);
+    press_between_the_keys(&mut session);
 }
 
 #[test]
-fn a_bar_press_runs_between_the_keys_before_and_after_it_from_a_rich_body_too() {
+fn a_new_note_press_runs_between_the_keys_before_and_after_it_from_a_rich_body_too() {
     ui::window_toolbar::set_hosted(true);
     let mut session = Session::live_rich();
-    bar_press_between_the_keys(&mut session);
+    press_between_the_keys(&mut session);
 }
 
-/// The person types in a note's body, presses "+" in the bar and types the new note's title:
-/// the keys typed after the press are the new note's title, wherever the keyboard was.
-fn bar_press_between_the_keys(session: &mut Session) {
-    let mut bar = Bar::over(session);
-    bar.press(session, "New note", input_after(0));
+/// The person types in a note's body, presses New note and types the new note's title: the
+/// keys typed after the press are the new note's title, wherever the keyboard was.
+fn press_between_the_keys(session: &mut Session) {
+    press_new_note(session);
     session.settle();
     session.window.type_text("First");
     session.settle();
     let body = session.body();
     session.window.click_at(body.0, body.1);
     session.settle();
-    // "Body" is eight key events; the press comes after them, and reaches the window first.
-    bar.press(session, "New note", input_after(8));
     session.window.type_text("Body");
+    press_new_note(session);
     session.window.type_text("Echo");
     session.settle();
     let mut titles = session.titles();
@@ -1311,11 +1276,11 @@ fn open_note(session: &mut Session) -> (String, String) {
     (title, body_text(session))
 }
 
-/// With the keyboard in a note's body, "+" in the window's bar, run by the window before the
-/// next keys reach it, and the new note's title typed: the keys go to the new note's title,
-/// never its body, round after round.
+/// With the keyboard in a note's body, New note pressed in the header row, run by the host
+/// while the next keys reach the window, and the new note's title typed: the keys go to the new
+/// note's title, never its body, round after round.
 #[test]
-fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_title() {
+fn after_a_new_note_press_from_the_body_typing_goes_to_the_new_notes_title() {
     ui::window_toolbar::set_hosted(true);
     for notebook in 0..4 {
         typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
@@ -1326,7 +1291,7 @@ fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_t
 }
 
 #[test]
-fn after_a_bar_press_from_a_rich_body_typing_goes_to_the_new_notes_title() {
+fn after_a_new_note_press_from_a_rich_body_typing_goes_to_the_new_notes_title() {
     ui::window_toolbar::set_hosted(true);
     for notebook in 0..4 {
         typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
@@ -1340,7 +1305,6 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
     mut session: Session,
     notebook: usize,
 ) {
-    let mut bar = Bar::over(&mut session);
     for round in 0..6 {
         if round % 2 == 1 {
             let body = session.body();
@@ -1349,7 +1313,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
             session.window.type_text("Text");
             session.settle();
         }
-        bar.press(&mut session, "New note", input_after(0));
+        press_new_note(&mut session);
         // The press reaches the host, which runs it and answers, before the window's next
         // frame: the keys come first.
         if round % 3 == 2 {
@@ -1490,7 +1454,7 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
 
 /// "+", a title typed, Ctrl+Z, Ctrl+Shift+Z: the window's undo takes back what was typed into the
 /// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
-/// field keeps no history of its own beside it.
+/// field keeps no history of its own beside it, and a burst of typing is one step of it.
 fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
     let plus = session.new_note_button();
     session.window.click_at(plus.0, plus.1);
@@ -1526,17 +1490,19 @@ fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
         ["Groceries"],
         "what was typed after the redo is a step of its own"
     );
-    // Typed key by key, frames between them: each word is a step, as in every other app.
+    // Typed key by key, frames between them and no pause: the burst is one step, as typing into
+    // one field is in every other app.
     for key in " for sunday".chars() {
         session.window.type_text(&key.to_string());
         session.settle();
     }
+    assert_eq!(session.titles(), ["Groceries for sunday"]);
     session.window.chord(&["ctrl"], "z");
     session.settle();
     assert_eq!(
         session.titles(),
-        ["Groceries for "],
-        "Ctrl+Z takes back the last word typed"
+        ["Groceries"],
+        "Ctrl+Z takes back the whole burst typed since the redo"
     );
 }
 
@@ -1770,6 +1736,109 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
         other => panic!("a rich body: {other:?}"),
     };
     assert_eq!(kinds, ["heading", "list_item"]);
+}
+
+/// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
+fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => rich
+            .blocks
+            .iter()
+            .map(|block| (block.kind.clone(), block.text.clone()))
+            .collect(),
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// The level a block of the open note's body carries, when it is a heading.
+fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
+            Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
+            _ => None,
+        },
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// A heading typed as `## ` at the start of a line is a heading of that level with no marker
+/// left, and Ctrl+Z brings the marker back: what the person typed last is one step of theirs,
+/// kept in the record.
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())],
+        "the marker became the line's kind, and is no text of its own"
+    );
+    assert_eq!(
+        heading_level(&mut session, 0),
+        Some(2),
+        "two hashes make a second-level heading"
+    );
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())],
+        "Ctrl+Z takes back the promotion alone: the words typed before it stay"
+    );
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_live_window() {
+    a_typed_heading_prefix_is_a_heading_undo_puts_back();
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_frame_harness() {
+    let mut session = Session::rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())]
+    );
+}
+
+/// The format menu's Ctrl+Alt+2 makes the line the person is in a heading, over writing that is
+/// already there, and Ctrl+Alt+0 makes it body text again: the record keeps the line's kind,
+/// and its words are never moved.
+#[test]
+fn the_heading_chord_makes_the_line_a_heading_and_body_text_again() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("Plan");
+    session.settle();
+    session.window.chord(&["ctrl", "alt"], "2");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), "Plan".to_owned())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl", "alt"], "0");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "Plan".to_owned())],
+        "Ctrl+Alt+0 is the way back to body text"
+    );
 }
 
 /// The document editor as captured, when shots are asked for with `TILO_RICHBODY_SHOTS`: a
@@ -2014,6 +2083,36 @@ fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
     }
 }
 
+/// Whether a box a row of the window shows is checked: the box the open task's row draws, bound
+/// to the field the app keeps it in.
+fn a_checked_row_box(session: &mut Session) -> bool {
+    fn boxes(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Checkbox" {
+            out.push(node.key.clone());
+        }
+        for child in &node.children {
+            boxes(child, out);
+        }
+    }
+    let mut keys = Vec::new();
+    {
+        let view = session.hosted().view().expect("the window is connected");
+        for list in view.lists() {
+            if list.starts_with(tilo_ui_host::shell::DETAIL) {
+                continue;
+            }
+            let rows = view.rows_of(&list).expect("the list's rows");
+            let rows = rows.borrow();
+            for key in rows.rendered() {
+                boxes(rows.row(&key).expect("a rendered row"), &mut keys);
+            }
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    keys.iter()
+        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
+}
+
 /// The accessible nodes of the window, each with the widget that draws it.
 fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
     fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
@@ -2178,33 +2277,6 @@ fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// Whether a control the window shows is bound to `true` now: the box of a task the palette
-/// checked off.
-fn a_checked_control(session: &mut Session) -> bool {
-    /// The keys of the bound controls under `node`, each carrying its tree's `prefix`.
-    fn bound(node: &tilo_ui_host::UiNode, prefix: &str, out: &mut Vec<String>) {
-        if node.binding.is_some() {
-            out.push(format!("{prefix}{}", node.key));
-        }
-        for child in &node.children {
-            bound(child, prefix, out);
-        }
-    }
-    let view = session.hosted().view().expect("the window is connected");
-    let mut keys = Vec::new();
-    for (tree, prefix) in [
-        (view.root_tree(), ""),
-        (view.detail_tree(), tilo_ui_host::shell::DETAIL),
-    ] {
-        if let Some(tree) = tree {
-            bound(&tree, prefix, &mut keys);
-        }
-    }
-    let view = session.hosted().view().expect("the window is connected");
-    keys.iter()
-        .any(|key| matches!(view.bound_value(key), Some(tilo_ui_host::Value::Bool(true))))
-}
-
 /// Opens the window's own command palette on `query` and runs the row it leads with.
 fn choose(session: &mut Session, query: &str) {
     session
@@ -2309,6 +2381,27 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
 }
 
 #[test]
+fn a_window_given_the_keyboard_before_its_instance_answered_types_into_the_entry() {
+    use ui::winit::keyboard::NamedKey;
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::opened(TASKS, "ada", Window::live);
+    // The desk gives a window the keyboard as it maps it, before what its instance sends has
+    // arrived: the entry the window shows once it does takes what the person types.
+    if let Window::Live(app) = &mut session.window {
+        Window::live_input(app, ui::winit::event::WindowEvent::Focused(true));
+    }
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    let titles = session.titles();
+    assert!(
+        titles.iter().any(|title| title == "Water the plants"),
+        "{titles:?}"
+    );
+}
+
+#[test]
 fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
     use ui::winit::keyboard::NamedKey;
     let _settled = ui::motion::testing::settled();
@@ -2330,15 +2423,15 @@ fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
         .expect("the opened task offers Complete");
     assert_eq!(complete.1.as_deref(), Some("Ctrl+enter"));
 
-    // Running it there checks the task off at the app: the box the window shows for it is
-    // checked, on the same record the palette wrote.
     assert!(
-        !a_checked_control(&mut session),
+        !a_checked_row_box(&mut session),
         "the task starts unchecked"
     );
+    // Running it there checks the task off at the app: the row the window holds for it, on the
+    // same record the palette wrote, shows its box checked.
     choose(&mut session, "Complete");
     assert!(
-        a_checked_control(&mut session),
+        a_checked_row_box(&mut session),
         "the task the palette ran Complete on shows checked"
     );
 }
@@ -2529,7 +2622,8 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    // A task made by the list's entry: it is a record the window holds.
+    // A task made by the list's entry: it is a record the window holds. The window opens on
+    // Today, so the day it names none of is today, and the day is there to clear.
     session.window.chord(&["ctrl"], "n");
     session.settle();
     session.window.type_text("Water the plants");
@@ -2553,6 +2647,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tomorrow",
             "Next week",
             "Pick date…",
+            "No date",
             "Remind me…",
             "Remind",
         ],
@@ -2674,4 +2769,155 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
         session.titles().is_empty(),
         "the bar's New task makes no task nobody typed"
     );
+}
+
+/// The node a tool names `name` in what the live window describes: its id, role, bounds and
+/// whether it reads checked.
+fn described(
+    app: &mut ui::App,
+    name: &str,
+) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+    app.build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.label().map(str::trim) == Some(name))
+}
+
+/// The names of the controls the live window offers a tool, as it hands them to the desk.
+fn controls_of(app: &mut ui::App) -> Vec<String> {
+    app.window_controls()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// A task typed into the live Tasks window's entry, from its palette's New task.
+fn live_task(title: &str) -> Session {
+    let mut session = Session::live_tasks();
+    choose(&mut session, "New task");
+    session.window.type_text(title);
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    session
+}
+
+/// A task's box is a checkbox of its own, named for what pressing it does, and a click where it
+/// is drawn marks the task done: a change the workspace takes, decided against the package's
+/// surface as a session's workspace decides it.
+#[test]
+fn a_click_on_a_tasks_box_marks_it_done() {
+    let _settled = ui::motion::testing::settled();
+    let surface = package(package_of(TASKS))
+        .surface()
+        .expect("the package has a surface");
+    collaboration::app_surface::register_package(TASKS, &surface);
+    let mut session = live_task("Water the plants");
+    let (_, shown) =
+        described(session.window.app(), "Mark Water the plants done").expect("the row's box");
+    assert_eq!(shown.role(), ui::accesskit::Role::CheckBox);
+    assert_eq!(
+        shown.toggled(),
+        Some(ui::accesskit::Toggled::False),
+        "it starts open"
+    );
+    let rect = shown.bounds().expect("the box is laid out");
+    session.window.click_at(
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    );
+    session.settle();
+    assert!(
+        task_in_record(&session, "Water the plants", true),
+        "the click marked the task done in the workspace"
+    );
+}
+
+/// What a tool and a screen reader reach of a task by name in the window a window process runs,
+/// as the desk lists its controls: its row's menu, and its box, which marks it done.
+#[test]
+fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
+    use ui::winit::keyboard::NamedKey;
+    let _settled = ui::motion::testing::settled();
+    let mut session = live_task("Water the plants");
+    let offered_now = controls_of(session.window.app());
+    assert!(
+        offered_now
+            .iter()
+            .any(|name| name == "Mark Water the plants done"),
+        "the window offers the task's box by name: {offered_now:?}"
+    );
+
+    let (row, _) = described(session.window.app(), "Water the plants").expect("the row");
+    session
+        .window
+        .app()
+        .dispatch_a11y_action(row, &ui::a11y::Action::ShowContextMenu);
+    session.settle();
+    let menu = controls_of(session.window.app());
+    assert!(
+        menu.iter().any(|name| name == "Open as page"),
+        "the row's menu opens where the row stands: {menu:?}"
+    );
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
+
+    let (check, _) =
+        described(session.window.app(), "Mark Water the plants done").expect("the box");
+    assert_eq!(
+        session
+            .window
+            .app()
+            .dispatch_a11y_action(check, &ui::a11y::Action::Activate),
+        None,
+        "the box takes the press itself"
+    );
+    session.settle();
+    assert!(
+        task_in_record(&session, "Water the plants", true),
+        "the box marked the task done"
+    );
+}
+
+/// Whether the workspace's record holds a task titled `title`, done when `done` says so, as the
+/// window's instance runs it: the list shows only the rows on screen, so it is read off the
+/// record's chunks.
+fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
+    use tilolang_tilo::DynValue;
+    let chunks = session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance")
+        .record()
+        .chunks()
+        .clone();
+    let Some(record) = chunks.first() else {
+        return false;
+    };
+    let has = |item: &tilolang_tilo::DynRecord, wanted: &dyn Fn(&DynValue) -> bool| {
+        item.schema()
+            .fields
+            .iter()
+            .any(|field| item.get(&field.id).is_some_and(wanted))
+    };
+    let the_task = |item: &tilolang_tilo::DynRecord| {
+        has(
+            item,
+            &|value| matches!(value, DynValue::Text(text) if text == title),
+        ) && (!done
+            || has(item, &|value| {
+                matches!(value, DynValue::Register(serde_json::Value::Bool(true)))
+            }))
+    };
+    tilolang_tilo::action::resource_ids(record, TASKS)
+        .into_iter()
+        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
+        .any(|record| {
+            has(&record, &|value| match value {
+                DynValue::Collection(items) => items.iter().any(|(_, item)| the_task(item)),
+                _ => false,
+            })
+        })
 }

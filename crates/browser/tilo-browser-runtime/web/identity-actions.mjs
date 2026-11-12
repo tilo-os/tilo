@@ -44,7 +44,6 @@
  * chooses (their profile, signed by the root): each of their devices, paired
  * or signed in, comes up with it (`syncProfile`).
  */
-import {standInBody} from './login-code.mjs';
 import {forInvites, openInvites} from './pairing.mjs';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
@@ -67,6 +66,10 @@ export const RESET_PHOTO = Object.freeze({id: 'reset-photo', title: 'Use your in
   subtitle: 'Take your picture away', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
   subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
+/** Opening the agent setup again, in the person's card: the first screen's
+ * own flow, with a fresh code (`showAgentSetup`). */
+export const CONNECT_AGENT = Object.freeze({id: 'connect-agent', title: 'Connect an agent or computer',
+  subtitle: 'A prompt it runs, or Tilo’s MCP address for an MCP client', source: 'devices'});
 /**
  * How many actions make an identity worth keeping. One post or one moved
  * window is a visitor trying things; five separate ones (writing, sending,
@@ -167,14 +170,14 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * that it signed in.
  * `keepStandIn()` gives a person set up through an agent a stand-in on
  * their host, so that clearing this tab, the one place their root is, does
- * not lose them: the host makes a key (`standIn.ask`, a root-signed
- * `key`), the root certifies it here as an approver of the person's new
- * devices (`standIn.certify(key)`, resolving to the certificate as hex),
- * and the host keeps the certificate (`certify`). Once the person keeps
- * their root with a passkey, the root revokes the stand-in as it revokes
- * any of their devices (`standIn.revoke(key)`, signed by the root and kept
- * with the person, which every session of theirs announces to its host) and
- * the host forgets it (`retire`). `standInStore` remembers which key it was.
+ * not lose them (`standIn.keep()`, the shared client's `keepStandIn`: the
+ * host makes a key, the root certifies it here as an approver of the
+ * person's new devices, and the host keeps the certificate; it resolves to
+ * the key). Once the person keeps their root with a passkey, the root revokes
+ * the stand-in as it revokes any of their devices (`standIn.revoke(key)`,
+ * signed by the root and kept with the person, which every session of theirs
+ * announces to its host) and the host forgets it (`standIn.retire()`).
+ * `standInStore` remembers which key it was.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -186,7 +189,7 @@ export function createIdentityActions({
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
   invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
-  standIn = null, standInStore = null,
+  standIn = null, standInStore = null, profiled = () => {}, showAgentSetup = null,
 }) {
   const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
   const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
@@ -194,7 +197,7 @@ export function createIdentityActions({
     const key = remembered();
     if (!key || !standIn) return;
     await standIn.revoke(key);
-    await standIn.ask(await standInBody('retire', identity, now()));
+    await standIn.retire();
     try { standInStore?.removeItem(standInKey); } catch { /* Forgotten on the host already. */ }
   };
   let mount;
@@ -204,7 +207,8 @@ export function createIdentityActions({
   const unkept = () => (withPasskeys ? [KEEP, RECOVERY, SIGN_IN] : [RECOVERY]);
   const actions = () => [...(naming ? [NAME] : []),
     ...(photos ? [PHOTO, ...(photos.current() ? [RESET_PHOTO] : [])] : []),
-    ...(identity.kept ? [RECOVERY] : unkept()), ...(pairing ? [PAIR] : [])];
+    ...(identity.kept ? [RECOVERY] : unkept()),
+    ...(pairing ? [PAIR] : []), ...(showAgentSetup ? [CONNECT_AGENT] : [])];
   // Keep the profile (name and picture) on every host; a refusal throws,
   // an unreachable host is only reported.
   // What the person says they are doing and how they share it, as their
@@ -217,11 +221,14 @@ export function createIdentityActions({
   let links = {photoFrom: null, linked: [], known: false};
   let waitingAccounts = null;
   const keepProfile = async (displayName, photo, what) => {
+    const at = now();
     const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo, ...said,
-      photoFrom: photo ? links.photoFrom : null, linked: links.linked})));
+      photoFrom: photo ? links.photoFrom : null, linked: links.linked, now: at})));
     const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
     for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
     if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
+    // Kept: everyone here fetches it again when this device says it changed.
+    if (results.some(result => result.status === 'fulfilled')) profiled(at);
   };
   // The workspace's host said which accounts are linked (`[{service, handle,
   // picture?}]`): the profile names them, and wears an account's picture
@@ -284,7 +291,7 @@ export function createIdentityActions({
   // invites is open; only one that answers such an invite is asked about.
   const askPending = async () => {
     for (const id of invites.prune()) closeInvite(id);
-    if (!invites.size) { stopPairing?.(); stopPairing = null; return; }
+    if (!invites.size) { stopPairing?.(); stopPairing = null; void pairing.close?.(); return; }
     let pending;
     try { pending = await pairing.pending(); } catch (error) { onError(error); return; }
     for (const request of forInvites(pending, invites)) {
@@ -324,7 +331,9 @@ export function createIdentityActions({
       offer({...KEEP, title: 'Keep with passkey'}, question,
         `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
     } else {
-      offer({...RECOVERY, title: 'Save key'}, question,
+      // The button answers the question in the person's words: what it does
+      // for them, not the key it makes to do it (the body says that).
+      offer({...RECOVERY, title: 'Remember me'}, question,
         `A recovery key, saved to your password manager or as a file, brings you back as yourself. Any time later: ${searchChord}, “${RECOVERY.title}”.`,
         KEEP.id);
     }
@@ -338,15 +347,23 @@ export function createIdentityActions({
       if (identity.kept || !standIn) return null;
       const existing = remembered();
       if (existing) return existing;
-      const {key} = await standIn.ask(await standInBody('key', identity, now()));
-      const cert = await standIn.certify(key);
-      await standIn.ask({op: 'certify', cert});
+      const key = await standIn.keep();
       try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
       return key;
     },
-    /** A pairing link for an agent set up from this tab: `{link, expiresAt}`,
-     * opening `workspace` (on the same host) when named, else this one. */
-    async connectAgent({workspace} = {}) {
+    /** A pairing link for an agent set up from this tab: `{link, invite,
+     * expiresAt}`, opening `workspace` (on the same host) when named, else
+     * this one. `adopt` (`{id, expiresAt}`) is an invite this tab made before
+     * it was loaded again, approved the same way while it is open: its link
+     * is already in the agent's hands. */
+    async connectAgent({workspace, adopt = null} = {}) {
+      if (adopt) {
+        const invite = invites.adopt(adopt);
+        if (!invite) return null;
+        agents.add(invite.id);
+        stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
+        return {link: null, invite: invite.id, expiresAt: invite.expiresAt};
+      }
       const invite = invites.open();
       const link = workspace ? pairing?.link(invite.id, workspace) : pairing?.link(invite.id);
       if (!link) {
@@ -355,7 +372,7 @@ export function createIdentityActions({
       }
       agents.add(invite.id);
       stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
-      return {link, expiresAt: invite.expiresAt};
+      return {link, invite: invite.id, expiresAt: invite.expiresAt};
     },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
@@ -394,7 +411,7 @@ export function createIdentityActions({
           // Kept with a passkey: the stand-in approves nothing from now on.
           await retireStandIn().catch(onError);
           // The next step, asked as the passkey sheet closes.
-          offer({...RECOVERY, title: 'Save key'}, 'Also save a recovery key?',
+          offer({...RECOVERY, title: 'Save it'}, 'Also save a recovery key?',
             'In case this passkey is ever lost: to your password manager, or as a file.');
         } else if (id === RECOVERY.id) {
           const recoveryKey = await identity.createRecoveryKey();
@@ -456,14 +473,18 @@ export function createIdentityActions({
           shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
-        } else if (id === REVOKE_DEVICE && typeof value === 'string') {
-          // An agent's grant taken back at the person's door: the root
-          // revokes the device it runs on, as it revokes any of theirs.
-          await identity.revokeDevice(value);
+        } else if (id === REVOKE_DEVICE && typeof value?.key === 'string') {
+          // A device of the person's, or an agent's grant, taken back: the
+          // root revokes the key, for the reason the person chose.
+          await identity.revokeDevice(value.key, value.reason);
         } else if (id === SIGN_IN.id) {
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});
           reload();
+        } else if (id === CONNECT_AGENT.id && showAgentSetup) {
+          // The first screen again, with a fresh code: the person's agent runs
+          // `tilo login`, or an MCP-only client is added with Tilo's address.
+          showAgentSetup();
         } else {
           throw new IdentityError('unknown-action', `no identity action ${id}`);
         }

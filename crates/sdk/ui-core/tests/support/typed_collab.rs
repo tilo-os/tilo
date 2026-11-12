@@ -433,7 +433,7 @@ impl Connection {
             }
             Topic::Catalogue => tokio::task::spawn_local(async move {
                 deliver(Event::Catalogue(
-                    serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                    serde_json::to_string(&runtime_collab::CatalogueChange::snapshot(&[])).unwrap(),
                 ));
                 std::future::pending::<()>().await;
             }),

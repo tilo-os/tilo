@@ -241,6 +241,15 @@ pub(crate) trait RecordDoor {
         let _ = live;
         self.apply_answering(action, invoker)
     }
+
+    /// What a read of this door's record answers, asked as `payload`
+    /// ([`super::chain::CHAIN_READ_TYPE`]): a chain of parts reads what its
+    /// parts hold, where the app's own record reads its document. A record
+    /// that keeps no chain of its own answers none.
+    fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let _ = payload;
+        Err(format!("`{}` answers no reads of its parts", self.id()))
+    }
 }
 
 impl<P: Resource> RecordDoor for Held<P> {
@@ -275,6 +284,15 @@ impl<P: Resource> RecordDoor for Held<P> {
     }
 }
 
+/// Who a change made now is by: the invoker the host delivered the
+/// invocation being carried out for (an agent, a Shortcut, an app, or a
+/// person over the broker), else `me`, the person at this window. Every write
+/// path reads it, so an agent's change is the agent's in whichever record
+/// it lands, and names the person it acts for.
+pub(crate) fn acting(me: &str) -> ActionInvoker {
+    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me))
+}
+
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
 pub(crate) fn answer(
@@ -289,8 +307,7 @@ pub(crate) fn answer(
         .find(|door| door.id() == request.record)
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
-    let invoker =
-        ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me));
+    let invoker = acting(me);
     let theirs = invoker.actor == me || invoker.on_behalf_of.as_deref() == Some(me);
     if !theirs {
         return Err(format!(
@@ -509,9 +526,15 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The app's record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
+    /// The app's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)): one per
+    /// kind in the workspace it is open in, each member's own there, opened with the window and
+    /// declared where the app declares its records, so a host that reads it without the window
+    /// ([`super::record_index`]) reads it by its kind.
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
+            // Declared, not opened: a host that reads the record without the
+            // window ([`super::record_index`]) reads it by its kind.
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
         let _ = storage.person::<P>();
@@ -709,6 +732,6 @@ fn record_dispatch<R: Resource, P: Resource>(
         let me = me
             .as_deref()
             .ok_or_else(|| ActionError::Refused("nobody edits a past version".into()))?;
-        held.apply(action, &ActionInvoker::actor(me))
+        held.apply(action, &acting(me))
     })
 }

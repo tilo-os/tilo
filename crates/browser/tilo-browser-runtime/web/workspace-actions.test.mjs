@@ -36,7 +36,9 @@ function adasRoom({owner = true, letsIn = owner, waitList = []} = {}) {
         if (!owner) throw new Error('only the owner lists people');
         return {name: 'Acme', members: [{userPublicKey: ADA, owner: true}]};
       },
+      mayInvite: async () => letsIn,
       waitList: async () => {
+        calls.push(['waitList']);
         if (!letsIn) throw new Error('only someone the room lets invite lists the wait list');
         return waitList;
       },
@@ -85,12 +87,13 @@ test('a host that sends mail mails the invitation to the address, and nothing is
 });
 
 test('someone the workspace does not let invite is never offered the wait list', async () => {
-  const {peer} = adasRoom({owner: false});
+  const {peer, calls} = adasRoom({owner: false});
   const {mount, shown} = desktop();
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     inviteLink: sealedLink, ui: {}});
   await actions.attach(mount);
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'a host that keeps its door from this person offers nothing');
+  assert.ok(!calls.some(([call]) => call === 'waitList'), 'nor asks the host for a list it would refuse');
   await actions.perform(WAITING.id);
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
 });

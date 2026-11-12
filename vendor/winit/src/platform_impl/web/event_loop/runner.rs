@@ -46,6 +46,13 @@ pub struct Execution {
     wait_until_strategy: Cell<WaitUntilStrategy>,
     exit: Cell<bool>,
     runner: RefCell<RunnerEnum>,
+    /// An iteration of the loop is running on this stack. The loop is entered
+    /// once and never again from inside one: a wake that arrives meanwhile is
+    /// served by a task of its own ([`Shared::defer_wake`]).
+    iterating: Cell<bool>,
+    /// A wake is already waiting in a task to run the loop once this iteration
+    /// ends, so later wakes join it instead of adding another.
+    wake_queued: Cell<bool>,
     suspended: Cell<bool>,
     event_loop_recreation: Cell<bool>,
     events: RefCell<VecDeque<EventWrapper>>,
@@ -96,6 +103,16 @@ impl RunnerEnum {
 struct Runner {
     state: State,
     event_handler: Box<EventHandler>,
+}
+
+/// Marks the loop as iterating for as long as it is, including when a
+/// panicking handler unwinds out of it.
+struct Iteration<'a>(&'a Execution);
+
+impl Drop for Iteration<'_> {
+    fn drop(&mut self) {
+        self.0.iterating.set(false);
+    }
 }
 
 impl Runner {
@@ -170,6 +187,8 @@ impl Shared {
                 wait_until_strategy: Cell::new(WaitUntilStrategy::default()),
                 exit: Cell::new(false),
                 runner: RefCell::new(RunnerEnum::Pending),
+                iterating: Cell::new(false),
+                wake_queued: Cell::new(false),
                 suspended: Cell::new(false),
                 event_loop_recreation: Cell::new(false),
                 events: RefCell::new(VecDeque::new()),
@@ -598,6 +617,22 @@ impl Shared {
     //
     // This will also process any events that have been queued or that are queued during processing
     fn run_until_cleared<E: Into<EventWrapper>>(&self, events: impl Iterator<Item = E>) {
+        // One iteration at a time. A wake whose timer or task lands while an
+        // iteration is in flight — a page event dispatched from inside a
+        // handler, a task that started before this iteration ended — must not
+        // start a second iteration on this stack: the running one still owns
+        // the runner (`handle_event`) and every callback it is inside.
+        if self.0.iterating.get() {
+            self.0
+                .events
+                .borrow_mut()
+                .extend(events.into_iter().map(Into::into));
+            self.defer_wake();
+            return;
+        }
+        self.0.iterating.set(true);
+        let _iteration = Iteration(&self.0);
+
         for event in events {
             self.handle_event(event.into());
         }
@@ -622,6 +657,23 @@ impl Shared {
         }
     }
 
+    /// Run the loop once more after this task, if a wake arrived while an
+    /// iteration was in flight. Queued wakes join this one, so a page that
+    /// wakes the loop many times in one event still runs it once.
+    fn defer_wake(&self) {
+        if self.0.wake_queued.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        self.window().queue_microtask(
+            &Closure::once_into_js(move || {
+                this.0.wake_queued.set(false);
+                this.poll();
+            })
+            .unchecked_into(),
+        );
+    }
+
     fn handle_unload(&self) {
         self.exit();
         self.apply_control_flow();
@@ -637,7 +689,16 @@ impl Shared {
         if self.is_closed() {
             self.exit();
         }
-        match *self.0.runner.borrow_mut() {
+        // The runner is borrowed for as long as an event is being handled. An
+        // event that arrives meanwhile (a wake scheduled by an earlier frame,
+        // a page event dispatched while the one in hand is served) waits in
+        // the queue for the iteration already running to take it, rather than
+        // borrowing the runner a second time and trapping the page.
+        let Ok(mut runner) = self.0.runner.try_borrow_mut() else {
+            self.0.events.borrow_mut().push_back(event.into());
+            return;
+        };
+        match *runner {
             RunnerEnum::Running(ref mut runner) => {
                 runner.handle_single_event(self, event);
             }
@@ -647,6 +708,7 @@ impl Shared {
             // If the Runner has been destroyed, there is nothing to do.
             RunnerEnum::Destroyed => return,
         }
+        drop(runner);
 
         let is_closed = self.exiting();
 
@@ -727,8 +789,13 @@ impl Shared {
             }
         };
 
-        if let RunnerEnum::Running(ref mut runner) = *self.0.runner.borrow_mut() {
-            runner.state = new_state;
+        // A wake that lands inside an iteration (`handle_unload`, from a page
+        // event dispatched while a handler ran) leaves the state alone: the
+        // iteration in flight applies the control flow it ends with.
+        if let Ok(mut running) = self.0.runner.try_borrow_mut() {
+            if let RunnerEnum::Running(ref mut runner) = *running {
+                runner.state = new_state;
+            }
         }
     }
 

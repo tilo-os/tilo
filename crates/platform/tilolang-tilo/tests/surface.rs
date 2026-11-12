@@ -12,7 +12,7 @@ use tilolang_tilo::publish::{
 use tilolang_tilo::record::DynValue;
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
-use crate::fixtures::{COUNTER, Replica, TODO, field_id};
+use crate::fixtures::{COUNTER, Replica, TASKS_SOURCE, TODO, field_id};
 
 fn counter() -> Meta {
     let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]);
@@ -105,6 +105,8 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
     let first = replica.host.next_ticket();
     view.edit(&input, &tilolang_runtime::value::Value::text("Groceries"))
         .unwrap();
+    // The keystroke is a change of the record as it is typed, and the change it queues is what
+    // the workspace commits.
     let committed = replica.host.take_committed_from(first);
     assert_eq!(committed.len(), 1, "the keystroke commits one change");
     let surfaces = package_surfaces(&meta);
@@ -563,4 +565,235 @@ fn a_requirement_refuses_the_invocation_whose_rule_does_not_hold() {
     );
     plan(&mut replica, "due", Some(&open), json!({}))
         .expect("the rule holds for the task that is not done");
+}
+
+/// A requirement over an option field the app leaves unset: `t.due != .none` does not hold for a
+/// task with no day, so the action that clears the day is unavailable, and holds once a day is
+/// set.
+#[test]
+fn a_requirement_over_an_unset_option_field_reads_the_field_as_none() {
+    const PLAN: &str = r#"app so.tilo.plan "Plan"
+
+    type Task {
+      title: Text merge text
+      due: Option<Date> = .none
+    }
+
+    type Tasks {
+      tasks: Collection<Task>
+    }
+
+    action add(t: Tasks, title: Text) { t.tasks.insert(Task(title: title, due: .none)) }
+
+    action set_day(t: Task, day: Option<Date>) { t.due = day }
+
+    action clear_day(t: Task) (label: "No date") {
+      require t.due != .none "It has no date"
+      t.due = .none
+    }
+
+    root Tasks
+
+    default view main for Tasks
+
+    view main(t: Tasks) {
+      page {
+        for task in t.tasks {
+          text(task.title)
+        }
+      }
+    }
+    "#;
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(PLAN, "")]);
+    let meta = packages[0].meta.clone();
+    let app = meta.app.clone();
+    replica.host.root_of(&app).unwrap();
+    replica.commit();
+    let root = replica.host.root_of(&app).unwrap().doc;
+    let clear = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "clear_day")
+        .unwrap();
+    let plan = |replica: &mut Replica, name: &str, at: &str, args: serde_json::Value| {
+        let action = meta.actions.iter().find(|a| a.name == name).unwrap();
+        let args = args.as_object().cloned().unwrap_or_default();
+        replica.host.plan(&PlanRequest {
+            app: &app,
+            kind: "tl.so.tilo.plan.Tasks",
+            action_id: &action.id,
+            resource: Some(at),
+            args: &args,
+            caller: None,
+            from: None,
+        })
+    };
+    let planned = plan(&mut replica, "add", &root, json!({ "title": "milk" })).unwrap();
+    replica.apply(&planned);
+    let items_field = field_id(&meta, "Tasks", "tasks");
+    let root_ty = meta.types.iter().find(|t| t.name == "Tasks").unwrap();
+    let task_ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
+    let id = match replica.root(&app).get(&items_field) {
+        Some(DynValue::Collection(items)) => {
+            let (first, _) = items.iter().next().unwrap();
+            first.as_str().to_owned()
+        }
+        other => panic!("no tasks: {other:?}"),
+    };
+    let item = tilolang_runtime::value::ResourceRef::root(&root, root_ty.id.clone())
+        .item(&id, task_ty.id.clone())
+        .id_string();
+    assert_eq!(
+        replica.host.availability(&item, &clear.id),
+        Some(tilo_actions::Availability::Unavailable {
+            code: "unmet".to_owned(),
+            reason: "It has no date".to_owned(),
+        }),
+        "a task with no day has none to clear"
+    );
+    let day = plan(
+        &mut replica,
+        "set_day",
+        &item,
+        json!({ "day": "2026-11-10" }),
+    )
+    .unwrap();
+    replica.apply(&day);
+    assert_eq!(
+        replica.host.availability(&item, &clear.id),
+        Some(tilo_actions::Availability::Available),
+        "a task due by a day has one to clear"
+    );
+}
+
+/// The Tasks app's own clearing action over a task the entry made: a task typed with no day has
+/// none to clear, so the app says the action cannot run.
+#[test]
+fn the_tasks_app_says_a_task_with_no_day_has_none_to_clear() {
+    let (mut replica, mut packages) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[
+            (
+                include_str!("../../../../apps/tl/discussion/app.tl"),
+                include_str!("../../../../apps/tl/discussion/app.ids"),
+            ),
+            (
+                include_str!("../../../../apps/tl/chat/app.tl"),
+                include_str!("../../../../apps/tl/chat/app.ids"),
+            ),
+            (
+                include_str!("../../../../apps/tl/notes/app.tl"),
+                include_str!("../../../../apps/tl/notes/app.ids"),
+            ),
+            (
+                TASKS_SOURCE,
+                include_str!("../../../../apps/tl/tasks/app.ids"),
+            ),
+        ],
+    );
+    let meta = packages.pop().unwrap().meta;
+    let app = meta.app.clone();
+    replica.host.root_of(&app).unwrap();
+    replica.commit();
+    let root = replica.host.root_of(&app).unwrap().doc;
+    let plan = |replica: &mut Replica, name: &str, at: &str, args: serde_json::Value| {
+        let action = meta.actions.iter().find(|a| a.name == name).unwrap();
+        let args = args.as_object().cloned().unwrap_or_default();
+        replica.host.plan(&PlanRequest {
+            app: &app,
+            kind: "tl.so.tilo.tasks.Tasks",
+            action_id: &action.id,
+            resource: Some(at),
+            args: &args,
+            caller: None,
+            from: None,
+        })
+    };
+    let planned = plan(
+        &mut replica,
+        "new_task",
+        &root,
+        json!({ "title": "Water the plants" }),
+    )
+    .unwrap();
+    replica.apply(&planned);
+    let items_field = field_id(&meta, "Tasks", "items");
+    let root_ty = meta.types.iter().find(|t| t.name == "Tasks").unwrap();
+    let task_ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
+    let id = match replica.root(&app).get(&items_field) {
+        Some(DynValue::Collection(items)) => {
+            let (first, _) = items.iter().next().unwrap();
+            first.as_str().to_owned()
+        }
+        other => panic!("no tasks: {other:?}"),
+    };
+    let item = tilolang_runtime::value::ResourceRef::root(&root, root_ty.id.clone())
+        .item(&id, task_ty.id.clone())
+        .id_string();
+    let clear = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "due_clear")
+        .unwrap();
+    assert_eq!(
+        replica.host.availability(&item, &clear.id),
+        Some(tilo_actions::Availability::Unavailable {
+            code: "unmet".to_owned(),
+            reason: "It has no date".to_owned(),
+        }),
+        "a task typed with no day has none to clear"
+    );
+}
+
+/// A native app's read action is an action of its record in the catalogue,
+/// typed by the value the surface publishes it answers with.
+#[test]
+fn a_read_actions_answer_is_typed_by_the_surface() {
+    let text = r#"
+[[resources]]
+kind = "pdf.document"
+label = "PDF"
+version = 1
+fields = [
+  { path = "source", type = "text", readonly = true },
+]
+
+[[resources.verbs]]
+id = "read-form-fields"
+kind = "read"
+params = []
+returns = { type = { named = "FormFields" }, schema = { type = "object" } }
+
+[[resources.types]]
+name = "FormFields"
+fields = [
+  { name = "file", type = "text" },
+  { name = "fields", type = { list = { named = "FormField" } } },
+]
+
+[[resources.types]]
+name = "FormField"
+fields = [{ name = "name", type = "text" }]
+"#;
+    let meta = tilolang_tilo::catalogue::described("so.tilo.pdf-viewer", "PDF Viewer", text)
+        .expect("the surface reads as a package");
+    let read = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "read_form_fields")
+        .expect("the read action is published");
+    assert_eq!(read.result.as_deref(), Some("FormFields"), "{read:?}");
+    assert_eq!(read.class, tilolang::types::EffectClass::Read);
+    let form = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "FormFields")
+        .expect("the answer's record is a type");
+    let fields: Vec<(&str, &str)> = form
+        .fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.ty.as_str()))
+        .collect();
+    assert_eq!(fields, [("file", "Text"), ("fields", "List<FormField>")]);
 }

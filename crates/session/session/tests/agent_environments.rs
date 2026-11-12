@@ -20,8 +20,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -39,7 +37,7 @@ use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::{Dialog, PortalEffect};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{HEIGHT, WIDTH};
+use crate::common::{HEIGHT, WIDTH};
 
 /// The person at the desk, who owns its workspaces.
 const PERSON: &str = "ada";
@@ -195,7 +193,7 @@ fn start(role: &str, vars: &[(&str, String)], inherit: bool) -> Child {
     command
         .args([
             "--exact",
-            "program",
+            "agent_environments::program",
             "--nocapture",
             "--test-threads",
             "1",
@@ -272,7 +270,7 @@ impl Environment {
     /// The next thing it says, while the session runs.
     #[track_caller]
     fn next(&self, session: &mut Session) -> (String, String) {
-        common::wait_for(session, "the environment to say something", |_| {
+        crate::common::wait_for(session, "the environment to say something", |_| {
             self.said.try_recv().ok()
         })
     }
@@ -381,7 +379,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
 /// The question on the sheet, once one stands.
 #[track_caller]
 fn asked(session: &mut Session, questions: &Questions) -> Dialog {
-    common::wait_for(session, "a question for the person", |session| {
+    crate::common::wait_for(session, "a question for the person", |session| {
         (questions.pending().len() == 1)
             .then(|| {
                 session
@@ -418,7 +416,7 @@ fn seated(session: &Session) -> Vec<(String, String, String)> {
 /// Wait until `agent` is seated, and say how.
 #[track_caller]
 fn seated_as(session: &mut Session, agent: &str) -> (String, String, String) {
-    common::wait_for(session, format!("{agent} at the desk"), |session| {
+    crate::common::wait_for(session, format!("{agent} at the desk"), |session| {
         seated(session).into_iter().find(|(key, _, _)| key == agent)
     })
 }
@@ -452,7 +450,7 @@ impl Program {
 
     #[track_caller]
     fn answers(&self, session: &mut Session) -> Vec<Value> {
-        common::wait_for(session, "the program's answers", |_| {
+        crate::common::wait_for(session, "the program's answers", |_| {
             self.answers.try_recv().ok()
         })
     }
@@ -477,7 +475,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, questions, door) = session(root.path());
 
     let dev = Environment::open(
@@ -546,7 +544,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     elsewhere.end();
 
     dev.end();
-    common::wait_for(&mut session, "the environment's door to go", |session| {
+    crate::common::wait_for(&mut session, "the environment's door to go", |session| {
         (!path.exists()
             && !seated(session)
                 .iter()
@@ -563,7 +561,7 @@ fn an_environments_door_serves_its_own_programs_alone() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, questions, door) = session(root.path());
 
     let dev = Environment::open(&door, "dev", Some(STUDIO), None);
@@ -611,7 +609,7 @@ fn always_allow_is_remembered_per_environment() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, questions, door) = session(root.path());
 
     let first = Environment::open(&door, "dev", Some(STUDIO), Some(("Claude Code", "own")));
@@ -667,7 +665,7 @@ fn two_programs_of_one_name_are_two_agents() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, questions, door) = session(root.path());
 
     let first = Program::connect(&door, None);
@@ -693,7 +691,7 @@ fn two_programs_of_one_name_are_two_agents() {
             &stop,
         )
         .expect("the person's Stop");
-    common::wait_for(&mut session, "the first agent to stop", |session| {
+    crate::common::wait_for(&mut session, "the first agent to stop", |session| {
         let keys: Vec<String> = seated(session).into_iter().map(|(key, ..)| key).collect();
         (keys == ["claude-code@host#2".to_owned()]).then_some(())
     });
@@ -709,7 +707,7 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, questions, door) = session(root.path());
 
     let studio = Program::connect(&door, Some(STUDIO));

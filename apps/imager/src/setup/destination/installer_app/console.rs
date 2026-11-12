@@ -140,7 +140,8 @@ impl InstallerApp {
                     "size": disk.size,
                     "size_bytes": disk.size_bytes,
                     "model": disk.model,
-                    "contents": disk.contents_summary(),
+                    "partitions": disk.partitions.len(),
+                    "filesystems": disk.partition_filesystems(),
                     "installer_medium": disk.is_system,
                     "read_only": disk.read_only,
                     "removable": disk.removable,
@@ -177,7 +178,7 @@ impl InstallerApp {
                 "xkb_variant": layout.variant_or_empty(),
             },
             "network": {
-                "summary": self.network.connection_summary(),
+                "summary": super::network_summary(&self.network),
                 "notice": self.network.notice,
                 "busy": self.network.is_busy(),
                 "selected": self.network.selected_ssid,
@@ -205,7 +206,10 @@ impl InstallerApp {
                 "hostname": local_text(&self.hostname).trim(),
                 "locale": self.locale().trim(),
                 "timezone": self.timezone().trim(),
-                "encryption": self.encryption_summary(),
+                // The method and every factor that unlocks it, as the Review
+                // rows list them: a caller gets the facts, not one joined line.
+                "encryption": "LUKS",
+                "unlock_factors": self.encryption_factors(),
             },
             "media": {
                 "codecs": self.codecs,

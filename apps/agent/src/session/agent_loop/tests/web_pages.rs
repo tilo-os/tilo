@@ -74,7 +74,7 @@ fn looking_at_a_site_reads_and_captures_it_in_the_browser_not_by_fetch() {
     );
     let capture = format!("tilo.content:{}", f.session.cfg.content.put(&png).unwrap());
     f.world.borrow_mut().browser = Some(capture.clone());
-    f.session.broker_surfaces = f.world.borrow().surfaces();
+    f.session.broker_catalogue = super::catalogue_of(&f.world.borrow().surfaces());
     let model = Arc::new(LooksAtSites {
         bodies: Mutex::new(Vec::new()),
     });
@@ -111,7 +111,10 @@ fn looking_at_a_site_reads_and_captures_it_in_the_browser_not_by_fetch() {
         first.contains("open its address in the browser"),
         "the loop tells the model to look at pages in the browser: {first}"
     );
-    assert!(first.contains("fetch is only for a quick read of text nobody needs to see"));
+    assert!(
+        first.contains("`read_page` is only a quick read of text nobody needs to see"),
+        "{first}"
+    );
     let last = bodies.last().unwrap().to_string();
     assert!(
         last.contains("image/png"),

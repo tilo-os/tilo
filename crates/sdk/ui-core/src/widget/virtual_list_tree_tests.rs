@@ -12,10 +12,12 @@ use crate::testing::Dispatch;
 use crate::theme::Theme;
 
 /// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
-/// the model's order, and a parent need not be the row above.
+/// the model's order, and a parent need not be the row above. `groups` are the headings its rows
+/// stand under, as a list of tasks grouped by the day each is due is.
 struct Nested {
     keys: Vec<u64>,
     parents: HashMap<u64, u64>,
+    groups: HashMap<u64, String>,
 }
 
 impl ListModel for Nested {
@@ -33,6 +35,13 @@ impl ListModel for Nested {
         self.keys.iter().position(|candidate| candidate == key)
     }
 
+    fn group_at(&self, index: usize) -> Option<RowGroup> {
+        let key = self.key_at(index)?;
+        self.groups
+            .get(&key)
+            .map(|heading| RowGroup::heading(heading.clone()))
+    }
+
     fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
         let key = self.key_at(index)?;
         let parent = self
@@ -40,7 +49,11 @@ impl ListModel for Nested {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+            above: None,
+        })
     }
 }
 
@@ -49,6 +62,7 @@ fn nested() -> VirtualList<Nested> {
         keys: vec![0, 1, 2, 3, 4],
         // 1 and 2 nest under 0, one under the other; 4 names 0 from away from it.
         parents: HashMap::from([(1, 0), (2, 1), (4, 0)]),
+        groups: HashMap::new(),
     };
     VirtualList::new(model, 20.0, |_, _, key| {
         Box::new(super::tests::ProbeRow::new(
@@ -146,6 +160,245 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
         "the press read the row it stands on"
     );
     assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
+}
+
+/// A row that starts a group stands at the group's own first level: its parent is a row of the
+/// group above, under another heading, so indenting it would put it under a row that is not
+/// there. It says what it is in instead, and the rows that stay in their parent's group keep
+/// their nesting.
+#[test]
+fn a_row_whose_parent_stands_in_another_group_stands_on_the_groups_first_level() {
+    let marks = Rc::new(TreeMarks::default());
+    let model = Nested {
+        keys: vec![0, 1, 2, 3],
+        // 1 is a step of 0; 2 and 3 are steps of 0 too, and the sort put them under another
+        // day than the task they belong to.
+        parents: HashMap::from([(1, 0), (2, 0), (3, 2)]),
+        groups: HashMap::from([
+            (0, "Monday".to_owned()),
+            (1, "Monday".to_owned()),
+            (2, "Thursday".to_owned()),
+            (3, "Thursday".to_owned()),
+        ]),
+    };
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        shape(&list, &marks),
+        vec![
+            (0, 0, true, false),
+            (1, 1, false, true),
+            // The group's first row stands on its own level, naming the task it is a step of.
+            (2, 0, true, false),
+            // A row whose parent stands in its own group keeps its place under it.
+            (3, 1, false, true),
+        ],
+        "what stands under what"
+    );
+}
+
+/// A row standing open into its item folds its branch: the rows under it are what the item's
+/// document lists, so the list keeps them out of its own, and closing the row brings them
+/// back where they stood. What the person folded stays folded underneath.
+#[test]
+fn a_row_standing_open_folds_its_branch_and_closing_it_brings_the_rows_back() {
+    let marks = Rc::new(TreeMarks::default());
+    let list = OpenableTree {
+        keys: vec![0, 1, 2, 3],
+        // 1 and 2 nest under 0, one under the other; 3 stands beside them.
+        parents: HashMap::from([(1, 0), (2, 1)]),
+    };
+    let mut list = VirtualList::new(list, 20.0, |_, _, key| {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(400.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let row = 20.0;
+    assert!(
+        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+        "every row shows before anything opens"
+    );
+
+    list.set_open(Some(0));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.viewport.item_height(1),
+        Some(0.0),
+        "the branch folds under the row standing open"
+    );
+    assert_eq!(
+        list.viewport.item_height(2),
+        Some(0.0),
+        "all the way down its chain"
+    );
+    assert_eq!(
+        list.viewport.item_height(3),
+        Some(row),
+        "a row beside the open one shows"
+    );
+
+    list.set_open(None);
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.viewport.item_height(1),
+        Some(row),
+        "closing the row brings its branch back"
+    );
+    assert_eq!(
+        list.viewport.item_height(2),
+        Some(row),
+        "as deep as it stood"
+    );
+    assert!(
+        (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
+        "the whole list stands as it did"
+    );
+}
+
+/// A tree whose first level folds nothing keeps no column for a chevron: its rows stand on
+/// the column the words over them do, and one with a branch to fold keeps the step.
+#[test]
+fn a_tree_with_nothing_to_fold_keeps_no_chevrons_column() {
+    let marks = Rc::new(TreeMarks::default());
+    let list = VirtualList::new(
+        OpenableTree {
+            keys: vec![0, 1],
+            parents: HashMap::new(),
+        },
+        20.0,
+        |_, _, key| {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let mut list = list;
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert_eq!(list.row_depth(&0), 0);
+    assert!(!list.row_is_branch(&0));
+    assert!(
+        (list.lead - list.bleed).abs() < 0.5,
+        "no chevron stands in front of the first level, so its rows keep no column: \
+         {} in from {}",
+        list.lead,
+        list.bleed
+    );
+
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = VirtualList::new(
+        Nested {
+            keys: vec![0, 1],
+            parents: HashMap::from([(1, 0)]),
+            groups: HashMap::new(),
+        },
+        20.0,
+        |_, _, key| {
+            Box::new(super::tests::ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        list.lead > list.bleed + 0.5,
+        "a row with subtasks hands its chevron a column: {} in from {}",
+        list.lead,
+        list.bleed
+    );
+}
+
+/// A tree whose first level stops folding anything while its rows stay keeps the column it
+/// gave its chevrons: a task ticked off takes its subtasks out of a list of open tasks, and the
+/// rows the person is looking at, the one under their finger too, stay where they stood. Rows
+/// read anew line up with the words over them again, and a row that comes to fold takes its
+/// column at once.
+#[test]
+fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
+    let probe = |_: &Nested, _: usize, key: &u64| -> Element {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    };
+    let mut list = VirtualList::new(
+        Nested {
+            keys: vec![0, 1, 2],
+            parents: HashMap::from([(1, 0)]),
+            groups: HashMap::new(),
+        },
+        20.0,
+        probe,
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::new(TreeMarks::default()));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let column = list.lead;
+    assert!(
+        column > list.bleed + 0.5,
+        "a row with subtasks hands its chevron a column: {column} in from {}",
+        list.bleed
+    );
+
+    // The subtask leaves the list; the rows it stood among stay.
+    list.update_model(|model| model.keys = vec![0, 2]);
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - column).abs() < 0.5,
+        "the rows that stay keep their column: {} against {column}",
+        list.lead
+    );
+
+    // Other rows altogether: the list reads them anew, and nothing of them folds.
+    list.update_model(|model| {
+        model.keys = vec![5, 6];
+        model.parents.clear();
+    });
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - list.bleed).abs() < 0.5,
+        "rows read anew with nothing to fold keep no column: {} in from {}",
+        list.lead,
+        list.bleed
+    );
+
+    // A row of them comes to hold a subtask: its chevron takes the column at once.
+    list.update_model(|model| {
+        model.keys = vec![5, 7, 6];
+        model.parents.insert(7, 5);
+    });
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - column).abs() < 0.5,
+        "a first level that comes to fold takes its column: {} against {column}",
+        list.lead
+    );
 }
 
 /// A tree reads as a tree: the list says what it is, each row says how deep it stands, and a
@@ -269,7 +522,11 @@ impl ListModel for Movable {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+            above: None,
+        })
     }
 
     fn accepts_children(&self, index: usize) -> bool {
@@ -844,7 +1101,11 @@ impl ListModel for Headed {
             .get(&key)
             .copied()
             .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow { parent })
+        Some(TreeRow {
+            parent,
+            depth: None,
+            above: None,
+        })
     }
 
     fn group_at(&self, index: usize) -> Option<RowGroup> {
@@ -895,7 +1156,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
 
     let (chevron, folded) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, false)
         .expect("the row folds the subtask under it");
     assert!(!folded, "the group starts open");
     assert!(
@@ -922,7 +1183,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let narrow = list.row_box(0).expect("the first row on a phone");
     let (chevron, _) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, narrow)
+        .rect(&marks, &Theme::dark(), &0, narrow, false)
         .expect("the row folds the subtask under it");
     assert!(
         (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -936,7 +1197,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let row = list.row_box(0).expect("the first row stands somewhere");
     let (chevron, _) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, false)
         .expect("the row folds the subtask under it");
     press(
         &mut list,
@@ -953,7 +1214,7 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
     let row = list.row_box(0).expect("the folded row stands somewhere");
     let (chevron, folded) = list
         .chevrons()
-        .rect(&marks, &Theme::dark(), &0, row)
+        .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
         .expect("a folded row still shows its disclosure");
     assert!(folded, "the chevron points at what it folded away");
     assert!(
@@ -1011,4 +1272,123 @@ fn a_branch_row_starts_on_the_column_its_neighbours_do() {
         list.disclosure_rect(&3).is_none(),
         "a leaf folds nothing, and still keeps the step free"
     );
+}
+
+/// A tree whose rows open the item into a document of its own where they stand, one under
+/// another: the rows say how they nest, and hold the fields that edit them.
+struct OpenableTree {
+    keys: Vec<u64>,
+    parents: HashMap<u64, u64>,
+}
+
+impl ListModel for OpenableTree {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.keys.get(index).copied()
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        self.keys.iter().position(|candidate| candidate == key)
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+        let key = self.key_at(index)?;
+        Some(TreeRow {
+            parent: self.parents.get(&key).copied(),
+            depth: None,
+            above: None,
+        })
+    }
+
+    fn opens_in_place(&self, _index: usize) -> bool {
+        true
+    }
+}
+
+/// A tree row standing open into the item's document: its title field, the page under it and
+/// the box that ticks it off.
+#[test]
+fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use crate::widget::{Checkbox, Column, TextInput};
+    use accesskit::Role as AkRole;
+
+    let done = crate::LocalState::new(false);
+    let state = done.clone();
+    let model = OpenableTree {
+        keys: vec![0, 1, 2],
+        parents: HashMap::from([(1, 0)]),
+    };
+    let list = VirtualList::with_selection_delegate(model, 20.0, move |_, _, key, build| {
+        if build.expanded {
+            let document: Element = Box::new(
+                Column::new()
+                    .push(Box::new(
+                        TextInput::new(Vec::new())
+                            .with_text_role(crate::tokens::TextRole::Title)
+                            .with_id("title")
+                            .with_accessible_name("Title")
+                            .with_initial_value("Subtasks"),
+                    ))
+                    .push(Box::new(
+                        TextInput::new(Vec::new())
+                            .with_id("notes")
+                            .multiline(true)
+                            .with_accessible_name("Notes"),
+                    ))
+                    .push(Box::new(
+                        Checkbox::from_state(&state).with_accessible_name("Done"),
+                    )),
+            );
+            Box::new(super::open::RowOpen::new(document, true)) as Element
+        } else {
+            Box::new(super::tests::ProbeRow::new(
+                format!("task {key}"),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            )) as Element
+        }
+    })
+    .with_tree(Rc::new(TreeMarks::default()))
+    .with_viewport_height(300.0);
+    let mut harness = FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
+    harness
+        .root_mut::<VirtualList<OpenableTree>>()
+        .set_open(Some(0));
+    harness.relayout();
+
+    let nodes = harness.a11y_nodes();
+    let (row_id, row) = super::tests::named(&nodes, AkRole::TreeItem, "Subtasks");
+    let row_bounds = row.bounds().expect("the row stands where it is drawn");
+    let controls = super::tests::inside(&nodes, row_id);
+    assert!(
+        controls
+            .iter()
+            .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
+        "the open row is one tree item, not one inside another"
+    );
+    super::tests::named(&controls, AkRole::TextInput, "Title");
+    super::tests::named(&controls, AkRole::MultilineTextInput, "Notes");
+    let (checkbox, _) = super::tests::named(&controls, AkRole::CheckBox, "Done");
+    for (id, _) in &controls {
+        let bounds = super::tests::exported(&nodes, *id)
+            .bounds()
+            .expect("a control stands where it is drawn");
+        assert!(
+            super::tests::within(row_bounds, bounds),
+            "{bounds:?} stands outside its row {row_bounds:?}"
+        );
+    }
+
+    harness
+        .perform_a11y_action(checkbox, &Action::Activate)
+        .expect("the box is operated");
+    assert!(done.with(|checked| *checked), "the tick reaches the box");
 }

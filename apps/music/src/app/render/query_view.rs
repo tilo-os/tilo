@@ -123,12 +123,12 @@ impl Home {
         }
     }
 
-    /// What the button that takes the person there says.
-    fn show_label(id: &str) -> &'static str {
+    /// The catalogue message naming the button that takes the person there.
+    fn show_message(id: &str) -> &'static str {
         if id == "sidebar" {
-            "Show in sidebar"
+            "music-show-in-sidebar"
         } else {
-            "Show in player"
+            "music-show-in-player"
         }
     }
 }
@@ -842,12 +842,12 @@ impl Music {
         let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
             Box::new(
-                ui::widget::Banner::error(ui::i18n::I18nManager::lookup_plain("arriving-failed"))
+                ui::widget::Banner::error(crate::i18n::t("arriving-failed"))
                     .with_message(text)
                     .with_action(super::super::page_part::press(
                         actions.as_ref(),
                         asked,
-                        Button::new(&id, &ui::i18n::I18nManager::lookup_plain("arriving-retry")),
+                        Button::new(&id, &crate::i18n::t("arriving-retry")),
                         retry,
                     )),
             )
@@ -900,14 +900,17 @@ impl Music {
             let keep_action: Option<Button> = match keep {
                 Keep::Nothing => None,
                 Keep::Offer => Some(press(
-                    Button::new("music.keep-view", "Keep search")
-                        .with_icon(Icon::Bookmark)
-                        .role(ButtonRole::Secondary)
-                        .tooltip("Keep this search beside your library"),
+                    Button::new(
+                        "music.keep-view",
+                        &crate::i18n::CATALOG.t("music-keep-search"),
+                    )
+                    .with_icon(Icon::Bookmark)
+                    .role(ButtonRole::Secondary)
+                    .tooltip("Keep this search beside your library"),
                     Action::KeepQuery,
                 )),
                 Keep::Kept => Some(
-                    Button::new("music.keep-view", "Kept")
+                    Button::new("music.keep-view", &crate::i18n::CATALOG.t("music-kept"))
                         .with_icon(Icon::Bookmark)
                         .role(ButtonRole::Secondary)
                         .toggled(true)
@@ -915,8 +918,11 @@ impl Music {
                         .with_enabled(false),
                 ),
                 Keep::Forget(id) => Some(press(
-                    Button::new("music.forget-view", "Remove from your views")
-                        .role(ButtonRole::Secondary),
+                    Button::new(
+                        "music.forget-view",
+                        &crate::i18n::CATALOG.t("music-forget-view"),
+                    )
+                    .role(ButtonRole::Secondary),
                     Action::ForgetKept(id),
                 )),
             };
@@ -1141,7 +1147,8 @@ impl Music {
                 .with_no_padding()
                 .with_gap(gap)
                 .push(Box::new(
-                    ui::widget::Text::new("In this app").with_role(ui::tokens::TextRole::Heading),
+                    ui::widget::Text::new(&crate::i18n::t("music-search-this-app"))
+                        .with_role(ui::tokens::TextRole::Heading),
                 ));
             for (id, label, decl, action, spec) in rows {
                 let (icon, home) = (decl.icon, decl.home);
@@ -1182,10 +1189,16 @@ impl Music {
                     .push(control);
                 if let Some(home) = home {
                     row = row.push(Box::new(press(
-                        Button::new(&format!("music.control-show.{id}"), Home::show_label(&home))
-                            .role(ButtonRole::Plain)
-                            .control_size(ControlSize::Small)
-                            .with_accessible_name(&format!("{}: {label}", Home::show_label(&home))),
+                        Button::new(
+                            &format!("music.control-show.{id}"),
+                            &crate::i18n::t(Home::show_message(&home)),
+                        )
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .with_accessible_name(&format!(
+                            "{}: {label}",
+                            crate::i18n::t(Home::show_message(&home))
+                        )),
                         Action::ShowControl {
                             home,
                             action: Box::new(action),

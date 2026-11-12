@@ -125,7 +125,9 @@
             {
               "name": "device",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             }
           ]
         },
@@ -531,8 +533,7 @@
             },
             {
               "name": "password",
-              "required": true,
-              "type": "text"
+              "required": true
             }
           ]
         },
@@ -549,8 +550,7 @@
             },
             {
               "name": "password",
-              "required": false,
-              "type": "text"
+              "required": false
             }
           ]
         },
@@ -563,52 +563,69 @@
             {
               "name": "profile",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "ssid",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "identity",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "anonymous_identity",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "ca_certificate",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "method",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "inner_auth",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "client_certificate",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "private_key",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "password",
-              "required": false,
-              "type": "text"
+              "required": false
             }
           ]
         },
@@ -671,7 +688,9 @@
             {
               "name": "server",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -710,7 +729,9 @@
             {
               "name": "apn",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -1547,7 +1568,9 @@
             {
               "name": "all",
               "required": false,
-              "type": "bool"
+              "type": {
+                "option": "bool"
+              }
             }
           ]
         },
@@ -1560,7 +1583,9 @@
             {
               "name": "all",
               "required": false,
-              "type": "bool"
+              "type": {
+                "option": "bool"
+              }
             }
           ]
         },
@@ -1733,7 +1758,9 @@
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -1746,27 +1773,52 @@
             {
               "name": "role",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "invitee_name",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "recipient",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "expires_in_seconds",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             },
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "show-invite",
+          "label": "Open the invite sheet on a workspace: where a link into it is made, the part it brings",
+          "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -1797,7 +1849,9 @@
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -1887,12 +1941,16 @@
             {
               "name": "steps",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             },
             {
               "name": "scope",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },

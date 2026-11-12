@@ -1,10 +1,18 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-compositor"
 description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and hosted surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
+
+# One test binary for the integration tests, whose files it includes as modules:
+# a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The protocol server, the desktop element model and the renderers: pixman
@@ -54,6 +62,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
+# What a hosted surface is, and the shapes, key claims and outputs it is told of: the session's
+# own vocabulary, so a surface app is written once for every host.
+tilo-session-core = { path = "../core" }
 # The liveness door beside the control socket: whether the loop still turns,
 # and where every thread is when it does not.
 tilo-liveness = { path = "../liveness" }
@@ -90,6 +101,9 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# A test holds the displays' clock still, so a frame is due at the instant its
+# grid says rather than at the instant the machine got round to drawing it.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 # A share of a window as the session keeps it, to prove the colour a client
 # commits is what the stream carrying the window's frames announces.
 tilo-window-share = { path = "../window-share" }

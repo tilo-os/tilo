@@ -1,0 +1,10 @@
+Subject: Confirm your address for the {{workspace}} wait list
+
+Someone, hopefully you, put {{email}} on the wait list for {{workspace}}.
+
+Confirm it to get on the list:
+{{link}}
+
+Not you? Ignore this mail. An address nobody confirms is forgotten in two days.
+
+Take me off the list: {{remove_link}}

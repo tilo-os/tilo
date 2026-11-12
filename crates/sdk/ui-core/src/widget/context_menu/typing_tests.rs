@@ -1,6 +1,7 @@
 //! A context menu takes typing: a query narrows its rows with the shared
 //! ranking, Enter runs the best match, and a sentence none answers is asked.
 
+use crate::i18n::widget_format;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -129,7 +130,13 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_and_never_reported_as_a_row() 
     assert_eq!(menu.shown_rows(), &[send_at], "only sending it");
     assert_eq!(
         menu.items()[send_at].label(),
-        Some(crate::i18n!("menu-ask-typed", "text" => "summarise this for Ana").as_str())
+        Some(
+            widget_format(
+                "menu-ask-typed",
+                &[("text", "summarise this for Ana".into())]
+            )
+            .as_str()
+        )
     );
     dispatch(&mut menu, &named_key(NamedKey::Enter));
     assert!(ran.borrow().is_empty(), "no row ran");
@@ -245,5 +252,41 @@ fn a_menu_a_button_opened_takes_no_typing() {
     assert!(
         !dispatch(&mut menu, &char_key("s")),
         "a typed key is not its"
+    );
+}
+
+/// Send pressed by assistive technology or an agent sends once and ends the box, as a press of the
+/// pointer does: nothing of the box stays drawn over the window after its message left.
+#[test]
+fn a_send_pressed_by_its_name_ends_the_box() {
+    crate::shared_selection::set_send_host_available(true);
+    let _ = crate::shared_selection::take_send_to();
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    let mut menu = context_menu(&ran);
+    menu.set_about(Some(crate::shared_selection::SharedSelection::of_text(
+        "Report.pdf",
+    )));
+    menu.open_at([120.0, 80.0]);
+    menu.set_query("summarise this for Ana");
+    dispatch(&mut menu, &named_key(NamedKey::Enter));
+    crate::shared_selection::set_send_host_available(false);
+    assert!(menu.send_to_alone_open(), "the box took the menu's place");
+
+    let mut doc = automerge::AutoCommit::new();
+    assert!(Widget::perform_semantic_action(
+        &mut menu,
+        "send-to:send",
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        crate::shared_selection::take_send_to().len(),
+        1,
+        "the message left, once"
+    );
+    assert!(
+        !menu.send_to_alone_open() && !menu.is_showing(),
+        "and the box went with it"
     );
 }

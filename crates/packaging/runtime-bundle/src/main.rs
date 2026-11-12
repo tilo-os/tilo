@@ -7,7 +7,7 @@
 //!                            # names the bundle <rel>+native.<abi digest>
 //! tilo-runtime-bundle verify  <dir> [--require-publisher <hex>]
 //!                                  [--require-signature]
-//!                                  [--require-arch <arch>]
+//!                                  [--require-arch <arch>] [--record]
 //! tilo-runtime-bundle path    --version <ver>            # print resolved default
 //! tilo-runtime-bundle key generate --out <path>          # write a fresh identity
 //! tilo-runtime-bundle font-index <catalog>               # record a font catalog's faces
@@ -24,7 +24,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use runtime_bundle::{
     BuildOptions, Identity, VerifyOptions, build_abi_bundle, build_bundle_with,
-    default_bundle_path, resolve_bundle_path, system_bundle_path, verify_bundle_with,
+    default_bundle_path, resolve_bundle_path, system_bundle_path, verify_bundle_recorded_with,
+    verify_bundle_with,
 };
 
 #[derive(Debug, Parser)]
@@ -112,6 +113,10 @@ enum Cmd {
         /// Defaults to no arch enforcement.
         #[arg(long)]
         require_arch: Option<String>,
+        /// Leave the record of this verification where a launch reads it, as an install does:
+        /// the first app started on the bundle then reads no payload byte this proved.
+        #[arg(long)]
+        record: bool,
     },
     /// Print the resolved bundle path for a given version.
     Path {
@@ -213,7 +218,16 @@ fn main() -> ExitCode {
             require_publisher,
             require_signature,
             require_arch,
-        } => cmd_verify(&dir, require_publisher, require_signature, require_arch),
+            record,
+        } => cmd_verify(
+            &dir,
+            &VerifyOptions {
+                require_publisher,
+                require_signature,
+                require_arch,
+            },
+            record,
+        ),
         Cmd::Path { version, system } => cmd_path(&version, system),
         Cmd::Key { cmd } => cmd_key(cmd),
         Cmd::FontIndex { catalog } => cmd_font_index(&catalog),
@@ -245,13 +259,7 @@ fn cmd_build(
                 return ExitCode::from(1);
             }
             println!("built bundle at {}", out.display());
-            println!("  version  : {}", manifest.version);
-            println!("  arch     : {}", manifest.arch);
-            println!("  files    : {}", manifest.files.len());
-            println!("  root-hash: blake3:{}", manifest.root_hash);
-            if let Some(pk) = &manifest.publisher_hex {
-                println!("  publisher: ed25519:{pk}");
-            }
+            print_manifest(&manifest);
             if manifest.signature_hex.is_some() {
                 println!("  signed   : yes");
             }
@@ -264,29 +272,28 @@ fn cmd_build(
     }
 }
 
-fn cmd_verify(
-    dir: &Path,
-    require_publisher: Option<String>,
-    require_signature: bool,
-    require_arch: Option<String>,
-) -> ExitCode {
-    match verify_bundle_with(
-        dir,
-        &VerifyOptions {
-            require_publisher,
-            require_signature,
-            require_arch,
-        },
-    ) {
+/// What a built or verified bundle is.
+fn print_manifest(manifest: &runtime_bundle::BundleManifest) {
+    println!("  version  : {}", manifest.version);
+    println!("  arch     : {}", manifest.arch);
+    println!("  files    : {}", manifest.files.len());
+    println!("  root-hash: blake3:{}", manifest.root_hash);
+    if let Some(pk) = &manifest.publisher_hex {
+        println!("  publisher: ed25519:{pk}");
+    }
+}
+
+fn cmd_verify(dir: &Path, opts: &VerifyOptions, record: bool) -> ExitCode {
+    let verified = if record {
+        let records = runtime_bundle::record::directory();
+        verify_bundle_recorded_with(dir, opts, records.as_deref()).map(|(manifest, _)| manifest)
+    } else {
+        verify_bundle_with(dir, opts)
+    };
+    match verified {
         Ok(manifest) => {
             println!("bundle {} verified", dir.display());
-            println!("  version  : {}", manifest.version);
-            println!("  arch     : {}", manifest.arch);
-            println!("  files    : {}", manifest.files.len());
-            println!("  root-hash: blake3:{}", manifest.root_hash);
-            if let Some(pk) = &manifest.publisher_hex {
-                println!("  publisher: ed25519:{pk}");
-            }
+            print_manifest(&manifest);
             ExitCode::SUCCESS
         }
         Err(e) => {

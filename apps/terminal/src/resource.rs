@@ -51,6 +51,17 @@ pub struct Terminal {
     /// process that takes the session.
     #[model(readonly)]
     pub pane: Option<Atom>,
+    /// Device
+    ///
+    /// The device of the window the session is set up in: the one that
+    /// recorded where it runs, or whose process last took it.
+    #[model(readonly)]
+    pub device: Option<Atom>,
+    /// Holder
+    ///
+    /// Who that window is: the participant who set the session up there.
+    #[model(readonly)]
+    pub holder: Option<Atom>,
     /// Runs
     ///
     /// The commands the session ran, one item each, written when it ends.
@@ -232,6 +243,28 @@ impl Terminal {
         self.pane.as_ref().map_or("", |pane| pane.0.as_str())
     }
 
+    /// Whether the session belongs to a window other than one `me` opens on
+    /// `device`: it was set up, or its process taken, on another device or
+    /// by someone else. A window opened on it joins the session rather than
+    /// starting a shell of its own; one `me` reopens on `device` takes its
+    /// session back. A new session belongs to no window yet.
+    pub fn runs_elsewhere(&self, device: &str, me: &str) -> bool {
+        let is =
+            |field: &Option<Atom>, value: &str| field.as_ref().is_some_and(|atom| atom.0 == value);
+        (self.pane.is_some() || self.target.is_some())
+            && !(is(&self.device, device) && is(&self.holder, me))
+    }
+
+    /// The window the session is set up in from now on: on `device`, the
+    /// action's author's.
+    fn set_up_on(&mut self, cx: &ActionCx, device: Option<String>) {
+        self.device = device.filter(|device| !device.is_empty()).map(Atom);
+        self.holder = cx
+            .author()
+            .filter(|author| !author.is_empty())
+            .map(|author| Atom(author.to_owned()));
+    }
+
     /// The session stored under `obj` of another record's document: a
     /// terminal nested in an editor's panel.
     ///
@@ -265,11 +298,27 @@ impl Terminal {
     }
 }
 
+impl Terminal {
+    /// What the record holds: where the session runs, the relay session it re-attaches to, and
+    /// the pane the collaborators' presence is scoped to.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "terminal.session",
-    label = "Terminal",
     params = session,
-    effects = TerminalEffect
+    effects = TerminalEffect,
+    read_content = Terminal::read_document
 )]
 impl Terminal {
     /// Run a command line in the session.
@@ -320,6 +369,17 @@ impl Terminal {
         self.queue(cx, requests, &command)
     }
 
+    /// Stop the command line the session is running.
+    ///
+    /// A session this device runs stops at its shell, as Ctrl+C does there.
+    /// A session its workspace's host runs has no shell here: naming this
+    /// has the host end the run, as the person's Ctrl+C in that session does,
+    /// and answers how many runs it stopped.
+    #[action(keywords = "stop, cancel, interrupt, ctrl c")]
+    pub fn stop(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     /// Record a run that ended.
     #[action(external)]
     pub fn record_run(
@@ -331,6 +391,7 @@ impl Terminal {
             Some(hash) => Bytes::Blob {
                 hash: content_hash(hash).ok_or("the output is not a content hash")?,
                 len: run.output_len,
+                sealed: None,
             },
             None => Bytes::Empty,
         };
@@ -370,16 +431,20 @@ impl Terminal {
         Ok(())
     }
 
-    /// Record where the session runs.
+    /// Record where the session runs, and the window it is set up in: on
+    /// `device`, by whoever records it.
     #[action(external)]
     pub fn record_target(
         &mut self,
+        cx: &mut ActionCx,
         #[param("An encoded session target")] target: String,
+        #[param("The device of the window that sets the session up")] device: Option<String>,
     ) -> Result<(), Refusal> {
         if SessionTarget::decode(&target).is_none() {
             return Err(Refusal::new("session target is invalid"));
         }
         self.target = Some(Atom(target));
+        self.set_up_on(cx, device);
         Ok(())
     }
 
@@ -401,13 +466,20 @@ impl Terminal {
         Ok(())
     }
 
-    /// Scope presence to a new process's pane.
+    /// Scope presence to a new process's pane, and say where that process
+    /// runs: on `device`, started by whoever claims it.
     #[action(external)]
-    pub fn claim_pane(&mut self, #[param("The pane's id")] pane: String) -> Result<(), Refusal> {
+    pub fn claim_pane(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The pane's id")] pane: String,
+        #[param("The device the process runs on")] device: Option<String>,
+    ) -> Result<(), Refusal> {
         if uuid::Uuid::parse_str(&pane).is_err() {
             return Err(Refusal::new("pane id is invalid"));
         }
         self.pane = Some(Atom(pane));
+        self.set_up_on(cx, device);
         Ok(())
     }
 }
@@ -778,6 +850,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
+            self.runs_on(device, me);
+        }
+        // A command run at this session is asked of its record: the prompt is
+        // where that action lands, so a colleague or an agent that runs one
+        // is shown acting there.
+        self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),
@@ -870,6 +949,13 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
+            self.runs_on(device, me);
+        }
+        // A command run at this session is asked of its record: the prompt is
+        // where that action lands, so a colleague or an agent that runs one
+        // is shown acting there.
+        self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record)) = (
                 cx.person::<crate::history::CommandHistory>(),

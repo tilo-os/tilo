@@ -29,8 +29,8 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, UpdateMark, serve,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RecordReadRequest,
+    RemoteActionMessage, RemoteActionTarget, UpdateMark, serve,
 };
 
 use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
@@ -89,6 +89,9 @@ pub type InvocationCall = Arriving<InvocationUpdate, ActionHostError>;
 /// callers must keep observing the original [`InvocationCall`] until it
 /// reports `Cancelled` or another terminal state.
 pub type CancellationCall = Arriving<(), ActionHostError>;
+/// A record read: the readings as every reader is answered them
+/// (`{"revision", "records": [{"record", "value" | "absent" | "arriving"}]}`).
+pub type RecordReadCall = Arriving<serde_json::Value, ActionHostError>;
 
 impl Arrival<InvocationUpdate, ActionHostError> {
     /// Whether the invocation can no longer change: refused, or finished.
@@ -194,6 +197,7 @@ struct Inner {
     next_correlation: u64,
     catalogue: HashMap<u64, CatalogueWalk>,
     invocations: HashMap<InvocationId, Running>,
+    reads: HashMap<u64, ArrivalWriter<serde_json::Value, ActionHostError>>,
     /// Whether the host holds a waiting observe until something changes;
     /// cleared the first time it answers one at once with nothing new.
     host_waits: bool,
@@ -265,6 +269,7 @@ impl RemoteActions {
                 next_correlation: 1,
                 catalogue: HashMap::new(),
                 invocations: HashMap::new(),
+                reads: HashMap::new(),
                 host_waits: true,
                 wake: WakeHandle::new(),
             })),
@@ -466,11 +471,36 @@ impl RemoteActions {
         }
     }
 
+    /// Read a record of the window's workspace through the record door, as
+    /// a request of its own or continuing `on_behalf_of`, an invocation the
+    /// host delivered here: the host decides it as that invocation's caller.
+    #[must_use]
+    pub fn read_record(
+        &self,
+        on_behalf_of: Option<InvocationId>,
+        read: RecordReadRequest,
+    ) -> RecordReadCall {
+        let answer = Arriving::pending(self.source());
+        let correlation = {
+            let mut inner = self.lock();
+            let correlation = inner.next_correlation;
+            inner.next_correlation = inner.next_correlation.wrapping_add(1);
+            inner.reads.insert(correlation, answer.writer());
+            correlation
+        };
+        self.send(RemoteActionMessage::RecordRead {
+            correlation,
+            on_behalf_of,
+            read,
+        });
+        answer
+    }
+
     /// Whether any request is still waiting for its answer.
     #[must_use]
     pub fn is_busy(&self) -> bool {
         let inner = self.lock();
-        !inner.catalogue.is_empty() || !inner.invocations.is_empty()
+        !inner.catalogue.is_empty() || !inner.invocations.is_empty() || !inner.reads.is_empty()
     }
 
     /// Ask the host to cancel an invocation this client is still observing.
@@ -693,20 +723,42 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             answer.writer().finish(result);
             None
         }
+        RemoteActionMessage::RecordReading {
+            correlation,
+            result,
+        } => {
+            let answer = inner.reads.remove(&correlation)?;
+            match result.and_then(|text| {
+                serde_json::from_str(&text).map_err(|error| ActionHostError::Unavailable {
+                    reason: format!("the record read answered no readings: {error}"),
+                })
+            }) {
+                Ok(readings) => answer.ready(readings),
+                Err(error) => answer.fail(error),
+            }
+            None
+        }
         RemoteActionMessage::CatalogueRequest { .. }
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
-        | RemoteActionMessage::RecordRequest { .. }
-        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::RecordRead { .. }
+        | RemoteActionMessage::RetiredRecordRequest
+        | RemoteActionMessage::RetiredRecordResponse
         | RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
+        | RemoteActionMessage::Confirm { .. }
+        | RemoteActionMessage::ConfirmResponse { .. }
         // Retired verbs: nothing sends them, and nothing answers. An
         // offer a surface makes is its host's to read, not this client's.
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutRequest { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetRequest { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }

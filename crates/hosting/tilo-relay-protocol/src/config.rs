@@ -169,17 +169,38 @@ impl Default for RelayConfig {
 }
 
 /// Per-person limits a public host applies to members' traffic.
+///
+/// A guest (a person acting in a workspace that is not theirs, such as a
+/// public lounge) spends the guest budget (`changes_per_window`, `burst`). A
+/// person acting in a workspace of their own, or through their server key
+/// anywhere, spends the owner budget (`owner_changes_per_window`,
+/// `owner_burst`) instead: a backend making a workspace per customer runs at
+/// full speed while guests stay paced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemberLimitsConfig {
-    /// Changes refilled per window.
+    /// A guest's changes refilled per window.
     pub changes_per_window: u32,
-    /// The window, in seconds.
+    /// The window, in seconds, of both change budgets.
     pub window_secs: u32,
-    /// Changes a person may send at once.
+    /// Changes a guest may send at once.
     pub burst: u32,
+    /// An owner's changes refilled per window.
+    #[serde(default = "default_owner_changes_per_window")]
+    pub owner_changes_per_window: u32,
+    /// Changes an owner may send at once.
+    #[serde(default = "default_owner_burst")]
+    pub owner_burst: u32,
     /// Record content bytes a person may send per hour.
     pub content_bytes_per_hour: u64,
+}
+
+const fn default_owner_changes_per_window() -> u32 {
+    1000
+}
+
+const fn default_owner_burst() -> u32 {
+    1000
 }
 
 impl Default for MemberLimitsConfig {
@@ -188,6 +209,8 @@ impl Default for MemberLimitsConfig {
             changes_per_window: 20,
             window_secs: 10,
             burst: 40,
+            owner_changes_per_window: default_owner_changes_per_window(),
+            owner_burst: default_owner_burst(),
             content_bytes_per_hour: 8 * 1024 * 1024,
         }
     }

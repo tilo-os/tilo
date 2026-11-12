@@ -143,6 +143,6 @@ mod tests {
         seed: seeded(),
         registry: registry(),
         resources: |document| folder_resources(document),
-        palette: ["Refresh folder", "Add this folder to Favorites", "Sort by name"],
+        palette: ["Refresh", "Add this folder to Favorites", "Sort by name"],
     }
 }

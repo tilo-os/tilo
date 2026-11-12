@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-automerge"
 version = "0.1.0"
 edition = "2024"
@@ -7,6 +9,12 @@ license = "MIT"
 description = "Apply incoming Automerge changes without keeping patch events nothing reads, and read typed values out of a document."
 repository.workspace = true
 homepage.workspace = true
+
+# One test binary for the integration tests, whose files it includes as modules:
+# a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lib]
 name = "tilo_automerge"

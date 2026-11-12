@@ -907,11 +907,40 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    /// `.excerpt`, `.text`, `.references` and `.people` of a `RichText`.
+    /// `.name`, `.media`, `.size` and `.url` of a `File`: what it is called, the media type it
+    /// holds, how many bytes it is, and where its bytes are (`.text()` reads them).
+    pub(super) fn file_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
+        if name.name == "size" {
+            return Ex::host(Imp::FileSize, vec![v], Ty::Int);
+        }
+        let part = match name.name.as_str() {
+            "name" => 0,
+            "media" => 1,
+            "url" => 2,
+            other => {
+                self.err(
+                    "E021",
+                    name.span,
+                    format!(
+                        "a `File` has the fields `name`, `media`, `size` and `url`, not `{other}`; `.text()` reads its content and `.files()` the files an archive holds"
+                    ),
+                );
+                return Ex::error();
+            }
+        };
+        Ex::host(
+            Imp::FilePart,
+            vec![v, Ex::new(Ek::I32(part), Ty::Bool)],
+            Ty::Text,
+        )
+    }
+
+    /// `.excerpt`, `.text`, `.markdown`, `.references` and `.people` of a `RichText`.
     pub(super) fn rich_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         let (part, ty) = match name.name.as_str() {
             "excerpt" => (0, Ty::Text),
             "text" => (1, Ty::Text),
+            "markdown" => (4, Ty::Text),
             "references" => (
                 2,
                 Ty::List(Box::new(Ty::Record(super::program::resource_key()))),
@@ -922,7 +951,7 @@ impl Checker<'_> {
                     "E021",
                     name.span,
                     format!(
-                        "`RichText` has the members `excerpt`, `text`, `references` and `people`, not `{other}`"
+                        "`RichText` has the members `excerpt`, `text`, `markdown`, `references` and `people`, not `{other}`"
                     ),
                 );
                 return Ex::error();

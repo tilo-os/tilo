@@ -15,7 +15,16 @@
 use crate::grant_key::GrantKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, io, path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 /// How long an access token works before the client refreshes it.
 pub const ACCESS_LIFETIME: Duration = Duration::from_secs(60 * 60);
@@ -28,6 +37,9 @@ pub const CODE_LIFETIME: Duration = Duration::from_secs(60);
 /// oldest client nobody holds a grant for gives way first.
 const MAX_CLIENTS: usize = 10_000;
 const MAX_CODES: usize = 4_096;
+/// How often using a token writes when its grant was last used to the file:
+/// a use is noted in memory at once, and kept at most this much later.
+const LAST_USED_SAVE_MS: u64 = 60 * 1000;
 
 /// What a grant lets its agent reach.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +50,17 @@ pub enum Scope {
     Account,
     /// One workspace, and nothing else: the agent cannot see or name others.
     Workspace(String),
+}
+
+impl Scope {
+    /// The scope as keys name it: `all`, or the workspace's id.
+    #[must_use]
+    pub fn name(&self) -> String {
+        match self {
+            Self::Account => "all".to_owned(),
+            Self::Workspace(id) => id.clone(),
+        }
+    }
 }
 
 /// A client that registered itself (RFC 7591). Only public clients are
@@ -51,17 +74,55 @@ pub struct Client {
     pub issued_at_ms: u64,
 }
 
+/// How a grant came to be.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantKind {
+    /// An agent the person approved through OAuth: it holds the client's
+    /// access and refresh tokens.
+    #[default]
+    Agent,
+    /// An API key the person approved: one bearer token, lasting as long
+    /// as the grant's certificate — until revoked, for a key reaching all
+    /// their workspaces, unless they chose an expiry.
+    Key,
+    /// A grant for one workspace that the all-workspaces grant `parent`
+    /// minted, with a bearer token like a key's. It ends with its parent.
+    Minted { parent: String },
+}
+
 /// A person's consent: this client, acting for this person, with this scope.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Grant {
     pub id: String,
     /// The person's identity root key, hex.
     pub person: String,
+    /// The OAuth client holding the grant; empty for a key or a minted grant.
     pub client_id: String,
-    /// What the person saw the client called when they agreed.
+    /// What the person saw the client called when they agreed, or the name
+    /// a key or a minted grant was given. Its runs are named after it.
     pub client_name: String,
     pub scope: Scope,
+    #[serde(default)]
+    pub kind: GrantKind,
+    /// When the grant's certificate expires, in Unix milliseconds; `None`
+    /// for a server key that lasts until revoked.
+    #[serde(default)]
+    pub expires_ms: Option<u64>,
+    /// The key may operate web pages in Browser without asking its person
+    /// each time: what its certificate carries, and what a key made before
+    /// the person could choose does not.
+    #[serde(default)]
+    pub browser_pages: bool,
     pub created_ms: u64,
+    /// When a token of the grant last reached the door, in Unix
+    /// milliseconds.
+    #[serde(default)]
+    pub last_used_ms: Option<u64>,
+    /// The device of the person that approved the grant, as its certificate
+    /// names it, with the start of its key.
+    #[serde(default)]
+    pub created_by: Option<String>,
     #[serde(default)]
     pub revoked_ms: Option<u64>,
     /// The grant's key and the person's certificate for it, until the grant
@@ -115,6 +176,89 @@ impl Grant {
         self.revoked_ms.get_or_insert(now_ms);
         self.key = None;
     }
+
+    /// The all-workspaces grant that minted this one, if one did.
+    #[must_use]
+    pub fn parent(&self) -> Option<&str> {
+        match &self.kind {
+            GrantKind::Minted { parent } => Some(parent),
+            GrantKind::Agent | GrantKind::Key => None,
+        }
+    }
+}
+
+fn scope_of(key: &GrantKey) -> Scope {
+    match key.scope() {
+        tilo_user_identity::AgentScope::AllWorkspaces => Scope::Account,
+        one @ tilo_user_identity::AgentScope::Workspace(_) => Scope::Workspace(one.name()),
+    }
+}
+
+fn expiry_ms(key: &GrantKey) -> Option<u64> {
+    key.cert().expires_at_ns.map(|expiry| expiry / 1_000_000)
+}
+
+/// Revoke `id` and every grant it minted, forgetting their tokens. Answers
+/// the grants revoked.
+fn revoke_with_minted(state: &mut State, id: &str, now_ms: u64) -> Vec<String> {
+    let mut revoked = vec![id.to_owned()];
+    revoked.extend(
+        state
+            .grants
+            .values()
+            .filter(|grant| grant.parent() == Some(id) && grant.live())
+            .map(|grant| grant.id.clone()),
+    );
+    for each in &revoked {
+        if let Some(grant) = state.grants.get_mut(each) {
+            grant.revoke(now_ms);
+        }
+    }
+    // A key's token is kept, its grant revoked, so the door tells whoever
+    // still sends it that it was revoked rather than that it never was a
+    // key. The tokens an agent's grant rotates through go.
+    state
+        .tokens
+        .retain(|_, token| token.kind == TokenKind::Key || !revoked.contains(&token.grant));
+    revoked
+}
+
+/// Why a token reaches nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Denied {
+    /// Not a token the door issued, or one it no longer knows.
+    Unknown,
+    /// Its grant, or the grant that minted it, was revoked, at `at_ms`
+    /// (Unix milliseconds) when the door knows.
+    Revoked { at_ms: Option<u64> },
+    /// It, or its grant's certificate, expired at `at_ms`.
+    Expired { at_ms: Option<u64> },
+}
+
+impl Denied {
+    /// Why `grant` reaches nothing at `now_ms`, if it does not: revoked, or
+    /// past its certificate's expiry.
+    fn of(grant: &Grant, now_ms: u64) -> Option<Self> {
+        if grant.revoked_ms.is_some() || grant.key.is_none() {
+            return Some(Self::Revoked {
+                at_ms: grant.revoked_ms,
+            });
+        }
+        (!grant.usable(now_ms)).then_some(Self::Expired {
+            at_ms: grant.expires_ms,
+        })
+    }
+
+    /// The code the door answers it with: `invalid_token`, `key_revoked`
+    /// or `key_expired`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "invalid_token",
+            Self::Revoked { .. } => "key_revoked",
+            Self::Expired { .. } => "key_expired",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +266,8 @@ impl Grant {
 enum TokenKind {
     Access,
     Refresh,
+    /// A key's or a minted grant's one bearer token.
+    Key,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,6 +314,8 @@ pub struct Store {
     path: Option<PathBuf>,
     state: Mutex<State>,
     codes: Mutex<HashMap<String, Code>>,
+    /// When the file was last written, in Unix milliseconds.
+    saved_ms: AtomicU64,
 }
 
 /// Why a token request was refused, as RFC 6749 names it.
@@ -185,6 +333,7 @@ impl Store {
             path: None,
             state: Mutex::default(),
             codes: Mutex::default(),
+            saved_ms: AtomicU64::new(0),
         }
     }
 
@@ -203,6 +352,7 @@ impl Store {
             path: Some(path),
             state: Mutex::new(state),
             codes: Mutex::default(),
+            saved_ms: AtomicU64::new(0),
         })
     }
 
@@ -212,14 +362,22 @@ impl Store {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = change(&mut state);
-        if let Some(path) = &self.path {
-            let bytes = serde_json::to_vec(&*state).map_err(io::Error::other)?;
-            tilo_files::native::private::write_atomic(path, &bytes)?;
-        }
+        self.save(&state)?;
         // Held until the file is written: two changes writing their
         // snapshots unlocked could leave the older one on disk.
         drop(state);
         Ok(answer)
+    }
+
+    /// Write `state` to the file, the caller holding its lock.
+    fn save(&self, state: &State) -> io::Result<()> {
+        if let Some(path) = &self.path {
+            let bytes = serde_json::to_vec(state).map_err(io::Error::other)?;
+            tilo_files::native::private::write_atomic(path, &bytes)?;
+            self.saved_ms
+                .store(tilo_clock::unix_now_ms(), Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn read<T>(&self, read: impl FnOnce(&State) -> T) -> T {
@@ -287,17 +445,18 @@ impl Store {
         challenge: String,
         now_ms: u64,
     ) -> io::Result<String> {
-        let scope = match key.scope() {
-            tilo_user_identity::AgentScope::AllWorkspaces => Scope::Account,
-            one @ tilo_user_identity::AgentScope::Workspace(_) => Scope::Workspace(one.name()),
-        };
         let grant = Grant {
             id: format!("grant-{}", secret(12)?),
             person: key.person(),
             client_id: client.id.clone(),
             client_name: client.name.clone(),
-            scope,
+            scope: scope_of(key),
+            kind: GrantKind::Agent,
+            expires_ms: expiry_ms(key),
+            browser_pages: key.browser_pages(),
             created_ms: now_ms,
+            last_used_ms: None,
+            created_by: None,
             revoked_ms: None,
             key: Some(KeptKey {
                 secret: hex::encode(key.secret()),
@@ -364,7 +523,11 @@ impl Store {
             else {
                 return Err(TokenError::InvalidGrant);
             };
-            state.tokens.retain(|_, token| token.expires_ms > now_ms);
+            // A key's token stays past its expiry, so the door says it
+            // expired rather than that it never was a key.
+            state
+                .tokens
+                .retain(|_, token| token.kind == TokenKind::Key || token.expires_ms > now_ms);
             for (secret, kind, lifetime) in [
                 (&access, TokenKind::Access, ACCESS_LIFETIME),
                 (&refresh, TokenKind::Refresh, REFRESH_LIFETIME),
@@ -421,25 +584,135 @@ impl Store {
         }
     }
 
-    /// The live grant the access token `token` was issued under.
-    #[must_use]
-    pub fn access(&self, token: &str, now_ms: u64) -> Option<Grant> {
-        self.read(|state| {
-            let token = state.tokens.get(&digest(token))?;
-            if token.kind != TokenKind::Access || token.expires_ms <= now_ms {
-                return None;
+    /// The live grant the access token or key `token` was issued under,
+    /// noting that it was used now. A minted grant answers only while the
+    /// grant that minted it is live.
+    ///
+    /// # Errors
+    /// Why the token reaches nothing: unknown, revoked or expired.
+    pub fn access(&self, token: &str, now_ms: u64) -> Result<Grant, Denied> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = state
+            .tokens
+            .get(&digest(token))
+            .filter(|token| token.kind != TokenKind::Refresh)
+            .ok_or(Denied::Unknown)?;
+        let (id, expires_ms) = (token.grant.clone(), token.expires_ms);
+        let grant = state.grants.get(&id).ok_or(Denied::Unknown)?;
+        if let Some(denied) = Denied::of(grant, now_ms) {
+            return Err(denied);
+        }
+        if expires_ms <= now_ms {
+            return Err(Denied::Expired {
+                at_ms: Some(expires_ms),
+            });
+        }
+        if let Some(parent) = grant.parent() {
+            let parent = state.grants.get(parent).ok_or(Denied::Unknown)?;
+            if let Some(denied) = Denied::of(parent, now_ms) {
+                return Err(denied);
             }
+        }
+        let grant = state.grants.get_mut(&id).ok_or(Denied::Unknown)?;
+        grant.last_used_ms = Some(now_ms);
+        let used = grant.clone();
+        if now_ms.saturating_sub(self.saved_ms.load(Ordering::Relaxed)) >= LAST_USED_SAVE_MS
+            && let Err(error) = self.save(&state)
+        {
+            tracing::warn!(%error, "could not keep when a key was last used");
+        }
+        drop(state);
+        Ok(used)
+    }
+
+    /// Record a grant the person approved as an API key on their device
+    /// `created_by`, or one a grant minted (`kind`), named `name`, with `key`
+    /// and its certificate, and issue its one bearer token, lasting as long
+    /// as the certificate. A minted grant's parent must be live. The token
+    /// is answered here once; only its digest is kept.
+    ///
+    /// # Errors
+    /// The store could not be written, or the parent is not live.
+    pub fn record_key(
+        &self,
+        key: &GrantKey,
+        name: &str,
+        kind: GrantKind,
+        created_by: Option<String>,
+        now_ms: u64,
+    ) -> io::Result<(Grant, String)> {
+        let token = format!("tilo_sk_{}", secret(32)?);
+        let grant = Grant {
+            id: format!("grant-{}", secret(12)?),
+            person: key.person(),
+            client_id: String::new(),
+            client_name: name.to_owned(),
+            scope: scope_of(key),
+            kind,
+            expires_ms: expiry_ms(key),
+            browser_pages: key.browser_pages(),
+            created_ms: now_ms,
+            last_used_ms: None,
+            created_by,
+            revoked_ms: None,
+            key: Some(KeptKey {
+                secret: hex::encode(key.secret()),
+                cert: hex::encode(key.cert_bytes()),
+            }),
+        };
+        self.change(|state| {
+            if let Some(parent) = grant.parent()
+                && !state
+                    .grants
+                    .get(parent)
+                    .is_some_and(|parent| parent.usable(now_ms))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "the grant that would mint this one is not live",
+                ));
+            }
+            state.grants.insert(grant.id.clone(), grant.clone());
+            state.tokens.insert(
+                digest(&token),
+                Token {
+                    kind: TokenKind::Key,
+                    grant: grant.id.clone(),
+                    expires_ms: grant.expires_ms.unwrap_or(u64::MAX),
+                },
+            );
+            Ok(())
+        })??;
+        Ok((grant, token))
+    }
+
+    /// The live grant `id`.
+    #[must_use]
+    pub fn grant(&self, id: &str) -> Option<Grant> {
+        self.read(|state| state.grants.get(id).filter(|grant| grant.live()).cloned())
+    }
+
+    /// The live grants `parent` minted, newest first.
+    #[must_use]
+    pub fn minted_by(&self, parent: &str) -> Vec<Grant> {
+        let mut grants: Vec<Grant> = self.read(|state| {
             state
                 .grants
-                .get(&token.grant)
-                .filter(|grant| grant.usable(now_ms))
+                .values()
+                .filter(|grant| grant.parent() == Some(parent) && grant.live())
                 .cloned()
-        })
+                .collect()
+        });
+        grants.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(a.id.cmp(&b.id)));
+        grants
     }
 
     /// Forget one token (RFC 7009). Revoking a refresh token revokes the
     /// whole grant, as the RFC allows: the client asked to be forgotten.
-    /// Answers the grant that was revoked, if any.
+    /// Answers the grants that were revoked: the grant and what it minted.
     ///
     /// # Errors
     /// The store could not be written.
@@ -448,41 +721,42 @@ impl Store {
         token: &str,
         client_id: &str,
         now_ms: u64,
-    ) -> io::Result<Option<String>> {
+    ) -> io::Result<Vec<String>> {
         self.change(|state| {
             let key = digest(token);
-            let token = state.tokens.get(&key).cloned()?;
-            let grant = state.grants.get_mut(&token.grant)?;
-            if grant.client_id != client_id {
-                return None;
+            let Some(token) = state.tokens.get(&key).cloned() else {
+                return Vec::new();
+            };
+            if state
+                .grants
+                .get(&token.grant)
+                .is_none_or(|grant| grant.client_id != client_id)
+            {
+                return Vec::new();
             }
             state.tokens.remove(&key);
             if token.kind == TokenKind::Refresh {
-                grant.revoke(now_ms);
-                let id = grant.id.clone();
-                state.tokens.retain(|_, token| token.grant != id);
-                return Some(id);
+                return revoke_with_minted(state, &token.grant, now_ms);
             }
-            None
+            Vec::new()
         })
     }
 
-    /// Revoke `person`'s grant `grant`. Answers whether it was theirs and live.
+    /// Revoke `person`'s grant `grant` and every grant it minted. Answers
+    /// the grants revoked, none when it was not theirs and live.
     ///
     /// # Errors
     /// The store could not be written.
-    pub fn revoke_grant(&self, person: &str, grant: &str, now_ms: u64) -> io::Result<bool> {
+    pub fn revoke_grant(&self, person: &str, grant: &str, now_ms: u64) -> io::Result<Vec<String>> {
         self.change(|state| {
-            let Some(found) = state
+            if !state
                 .grants
-                .get_mut(grant)
-                .filter(|found| found.person == person && found.live())
-            else {
-                return false;
-            };
-            found.revoke(now_ms);
-            state.tokens.retain(|_, token| token.grant != grant);
-            true
+                .get(grant)
+                .is_some_and(|found| found.person == person && found.live())
+            {
+                return Vec::new();
+            }
+            revoke_with_minted(state, grant, now_ms)
         })
     }
 
@@ -525,7 +799,7 @@ pub fn secret(bytes: usize) -> io::Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buffer))
 }
 
-fn digest(secret: &str) -> String {
+pub(crate) fn digest(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 

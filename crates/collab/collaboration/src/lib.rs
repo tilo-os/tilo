@@ -117,9 +117,10 @@ pub mod state;
 // host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
+    pub use tilo_clock::now;
     #[cfg(all(test, feature = "broker-transport"))]
-    pub use tilo_clock::SystemTime;
-    pub use tilo_clock::{Duration, Instant, now};
+    pub use tilo_clock::time::SystemTime;
+    pub use tilo_clock::time::{Duration, Instant};
     // The broker stamps the documents it publishes with the wall clock.
     #[cfg(feature = "broker-transport")]
     pub use tilo_clock::wall;
@@ -178,9 +179,7 @@ mod lane;
 #[cfg(feature = "broker-transport")]
 pub mod write_attribution_lane;
 
-mod surface_publication;
-pub use runtime_collab::{SurfaceDelta, SurfaceTable};
-pub use surface_publication::SurfacePublication;
+pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -223,12 +222,6 @@ mod portable_committed {
         never: std::convert::Infallible,
     }
     impl CommittedDocument {
-        pub fn creation_workspace(
-            &self,
-        ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
-            match self.never {}
-        }
-
         pub fn with_mutation<T>(
             &self,
             _apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -245,6 +238,19 @@ mod portable_committed {
             match self.never {}
         }
         pub fn refuse(&self) {
+            match self.never {}
+        }
+        pub fn is_whole(&self) -> bool {
+            match self.never {}
+        }
+        pub fn was_refused(&self) -> bool {
+            match self.never {}
+        }
+        pub fn take_into<D, T, E>(
+            &self,
+            _document: &mut D,
+            _merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
+        ) -> Option<T> {
             match self.never {}
         }
     }
@@ -272,7 +278,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, open_selected, write_attribution};
+pub use runtime_collab::{file_clipboard, write_attribution};
 
 use collab_types::presence::PresenceKey;
 pub use collab_types::presence::{Collaborator, PresencePayload};
@@ -445,22 +451,6 @@ pub enum CollabRequest {
         on_behalf_of: tilo_actions::InvocationId,
         reply: crate::invocation_scope::ExternalModerationReply,
     },
-    SelectedDiscovery {
-        request_id: u64,
-        command: runtime_collab::open_selected::discovery::Request,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-    },
-    OpenSelectedV2 {
-        request_id: u64,
-        command: runtime_collab::open_selected::v2::Request,
-        on_behalf_of: tilo_actions::InvocationId,
-    },
-    OpenSelected {
-        request_id: u64,
-        command: runtime_collab::open_selected::Request,
-        on_behalf_of: tilo_actions::InvocationId,
-    },
-
     LocalFileClipboard {
         request_id: u64,
         command: runtime_collab::file_clipboard::Command,
@@ -539,12 +529,6 @@ pub enum CollabRequest {
         before_seq: u64,
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
-    },
-    /// Replace this application's complete exported resource/action surface,
-    /// whole. For small surfaces a caller builds directly; the toolkit's own
-    /// publication sends [`Self::PublishActionSurface`].
-    PublishActions {
-        actions: Vec<ExportedAction>,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new
@@ -730,13 +714,7 @@ pub enum ActionDirectoryRequest {
 /// carries: the one exported-action shape, shared with the broker.
 pub use runtime_collab::{ExportedAction, ExportedInput};
 
-pub use runtime_collab::BrokerActionSurface;
-
-#[derive(serde::Deserialize)]
-#[cfg(feature = "broker-transport")]
-pub struct BrokerActionCatalogueWire {
-    pub(crate) surfaces: Vec<BrokerActionSurface>,
-}
+pub use runtime_collab::{ActionCatalogue, BrokerActionSurface, CatalogueChange};
 
 pub use runtime_collab::route::{ChannelAccessState, RouteSpec};
 
@@ -916,9 +894,25 @@ pub struct CollaborationManager {
     /// background. The app it serves keeps working on its local replica and
     /// says so ([`Self::join_refusal`]).
     join_refusal: Option<String>,
+    /// Whether document publication had failed at the last
+    /// [`Self::take_document_publication_change`].
+    publication_failed: bool,
 }
 
 impl CollaborationManager {
+    /// The tid of the thread serving this connection's broker, for tests
+    /// that hold the connection idle and count whether it wakes at all.
+    #[cfg(all(test, unix, feature = "broker-transport"))]
+    pub fn shovel_thread(&self) -> Option<i32> {
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        transport
+            .as_any()?
+            .downcast_ref::<broker::BrokerTransport>()?
+            .shovel_tid()
+    }
+
     /// Speak to an explicitly supplied transport.
     ///
     /// The manager announces nothing on its own: send a
@@ -939,6 +933,7 @@ impl CollaborationManager {
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: true,
             join_refusal: None,
+            publication_failed: false,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1072,6 +1067,7 @@ impl CollaborationManager {
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: false,
             join_refusal: None,
+            publication_failed: false,
         }
     }
 
@@ -1151,22 +1147,6 @@ impl CollaborationManager {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
-    /// The whole action the change `change` was part of, when this endpoint's
-    /// transport keeps the index of actions it carries in `workspace`: every
-    /// unit the action wrote, which is what one undo takes back. None for a
-    /// manager with no such index.
-    #[must_use]
-    pub fn action_of(
-        &self,
-        workspace: &str,
-        change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        let Backend::Transport(transport) = &self.backend else {
-            return None;
-        };
-        transport.action_of(workspace, change)
-    }
-
     /// The current state when it differs from the one this method last
     /// returned (initially, the state the manager was constructed in). Lets
     /// an owner run connect-time work once, when the manager becomes ready.
@@ -1208,7 +1188,7 @@ impl CollaborationManager {
             cluster_id: pending.cluster_id,
             record,
             record_kind: Some(checkout.kind.as_str().to_owned()),
-            handle: presence_handle_env(),
+            handle: crate::local_identity::own_name(),
         }) {
             return Err("native route queue unavailable".into());
         }
@@ -1572,6 +1552,27 @@ impl CollaborationManager {
         }
     }
 
+    /// Whether `route`'s join is still on its way: it has neither opened,
+    /// nor found its record's history to read first, nor failed. The owner
+    /// hears each of those as an event.
+    #[must_use]
+    pub fn document_route_joining(&self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => transport.document_route_joining(&route.channel_id()),
+            Backend::Disabled(_) => false,
+        }
+    }
+
+    /// Whether changes queued for record `route` were let go since the last
+    /// ask, because the route was not open to take them: the owner sends
+    /// the record whole once it is.
+    pub fn take_unpublished_route(&mut self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => transport.take_unpublished_route(&route.channel_id()),
+            Backend::Disabled(_) => false,
+        }
+    }
+
     /// Independently sample the existing transport read gates without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_document_read_phase_for_test(
@@ -1594,13 +1595,6 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         }
-    }
-
-    /// Test-only: whether `route` has resolved its document mode, so a
-    /// document mutation on it would be admitted rather than refused.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
-        self.document_route_publishable(route)
     }
 
     /// [`Self::send_to_route`] with the reason a request was not handed off.
@@ -1699,6 +1693,16 @@ impl CollaborationManager {
 
     pub fn document_publication_failed(&self) -> bool {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
+    }
+
+    /// Whether document publication failed, or recovered, since the last
+    /// ask: an owner sends its records whole again once on each change. A
+    /// refusal stands until a later change goes through, and the same
+    /// changes sent again are refused again, so sending them again on every
+    /// pass while it stands would only loop.
+    pub fn take_document_publication_change(&mut self) -> bool {
+        let failed = self.document_publication_failed();
+        std::mem::replace(&mut self.publication_failed, failed) != failed
     }
 
     /// The kind of record `route` was joined with, as the transport holds it.
@@ -1838,16 +1842,6 @@ impl CollaborationManager {
         }
         events
     }
-}
-
-/// The presence handle announced on `Hello`. `TILO_PRESENCE_HANDLE` wins,
-/// then `TILO_USER_ID`; absent both, the broker's synthetic name.
-pub fn presence_handle_env() -> Option<String> {
-    let environment = crate::host::environment();
-    let identity = &environment.identity;
-    [&identity.presence_handle, &identity.user_id]
-        .into_iter()
-        .find_map(|handle| handle.clone().filter(|v| !v.trim().is_empty()))
 }
 
 pub use runtime_collab::route::channel_key;
@@ -2088,6 +2082,7 @@ mod local_document_report_tests {
                     id: "private-group".into(),
                     label: "Private work".into(),
                     kind: "task".into(),
+                    title: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                     [2; 16],
@@ -2213,6 +2208,53 @@ mod portable_transport_tests {
 
 /// Original authority retained across display background work.
 pub use runtime_collab::DisplayOrigin;
+
+/// A refusal stands until a later change goes through: the owner sends its
+/// records whole again once when publication fails and once when it
+/// recovers, never on every pass in between.
+#[cfg(test)]
+mod publication_change_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Refusing(Arc<AtomicBool>);
+    impl CollabTransport for Refusing {
+        fn status(&self) -> TransportStatus {
+            TransportStatus::Ready
+        }
+        fn submit(&mut self, _: TransportCommand) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            None
+        }
+        fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
+        fn document_publication_failed(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    #[test]
+    fn a_standing_refusal_is_one_change_and_its_end_another() {
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(Refusing(Arc::clone(&failed))));
+        assert!(!manager.take_document_publication_change());
+        failed.store(true, Ordering::Release);
+        assert!(manager.take_document_publication_change(), "it failed");
+        for _ in 0..3 {
+            assert!(
+                !manager.take_document_publication_change(),
+                "the same refusal is no new change"
+            );
+        }
+        failed.store(false, Ordering::Release);
+        assert!(manager.take_document_publication_change(), "it recovered");
+        assert!(!manager.take_document_publication_change());
+    }
+}
 
 /// A primary route whose broker answers late leaves the app up: the manager
 /// joins in the background and takes the answer, the broker's hold-ups and

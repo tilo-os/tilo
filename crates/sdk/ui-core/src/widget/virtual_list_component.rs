@@ -24,14 +24,17 @@ use crate::widget::arrange::{
     Align, Fit, Length, MEASURE_REM, Page, Row, Slot, Stack, TranscriptEdges,
 };
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
-use crate::widget::conversation::{ConversationClock, DayDivider};
+use crate::widget::conversation::{ConversationClock, SectionDivider};
 use crate::widget::{
-    Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
-    MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
+    Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
+    MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
-use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
+use super::{ListModel, ListModelChange, TreeMarks, VirtualList};
 use crate::widget::ChangeMarkProps;
+
+#[path = "virtual_list_facts.rs"]
+mod facts;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
@@ -60,6 +63,10 @@ pub struct ListItemProps {
     /// When it was written, in a transcript: the time beside its author's name, and a divider
     /// over the first message of each day.
     pub time: Option<Moment>,
+    /// Who else has read to it (`seen_by(c, m)`), in a transcript: their faces, small, once,
+    /// on the line where their reading ends — each of them shows on no other line, and the
+    /// author never beside their own words.
+    pub read_by: Vec<Person>,
     /// What the item offers on its context menu (a right-click, the Menu key or a long press
     /// opens it, and selects the row unless the row opens where it stands): each of its
     /// allowed actions, after the menu the row's view placed (`attached`) and without those
@@ -92,6 +99,10 @@ pub struct ListItemProps {
     /// The row is one of the items done with: they stand after every group, under the list's
     /// tail title, closed until the person opens them.
     pub tail: bool,
+    /// The item is one the person has finished with — its box checked off — though its row may
+    /// still stand in the list until they leave the place: a heading counts what is left to do,
+    /// so it does not count this row ([`crate::widget::heading_count`]).
+    pub done: bool,
     /// The item the view shows just over this one in its group: the place the actions offered
     /// on the row take when one reads a place (`above`). None for the first of a group.
     pub above: Option<ResourceId>,
@@ -115,8 +126,16 @@ pub struct ListItemProps {
     /// and title, in the row's column — the row becomes the item, its title written once — and
     /// what the item holds follows under them. Without a document, choosing the row opens the
     /// item elsewhere (`ui.VirtualList`'s `activate`).
-    #[component(slot)]
+    ///
+    /// Only the row standing open carries it: the runtime builds a row's document when the row
+    /// opens and drops it when it closes, so a list of ten thousand rows on screen costs the one
+    /// document a person reads.
+    #[component(slot(when_open))]
     pub detail: ItemRow,
+    /// The row opens into a document of its own where it stands: what its view gives as `detail`
+    /// comes once it stands open. The list's rows offer to open when this says so, whether or not
+    /// one carries its document yet.
+    pub opens: bool,
 }
 
 /// The row of a [`ListItemProps`].
@@ -209,12 +228,21 @@ pub struct VirtualListProps {
     /// last group that names one. The rows keep the order their list gives. `None` leaves them
     /// among the others.
     pub ungrouped_title: Option<String>,
+    /// The title of the view this list stands under, as the view's header reads it, and how
+    /// many things it counts beside it (`view_count`): a list whose rows all stand in one group
+    /// heads them with nothing when that heading says what the title already says — the same
+    /// words, counting the same rows — since the title over the list says it once. The host
+    /// fills both from the shell of the window the list stands in
+    /// ([`VirtualList::in_view`]).
+    pub view_title: Option<String>,
+    /// How many things the view's title counts beside it (`view_title`).
+    pub view_count: Option<i64>,
     /// The list holds more than one selected row: a click with ctrl (or cmd) adds or takes
     /// away the row it lands on, one with shift takes the range from the last row chosen, and
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
     /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
-    /// [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that
+    /// [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that
     /// shows it, and while that is above the view a pill at the foot offers the way back to it
     /// ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it
     /// builds, so a list keeps its rows and only the two the divider moved between build again.
@@ -461,9 +489,11 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
     Some(ListItemProps {
         key: item.key.clone(),
         item: item.item.clone(),
+        opens: item.opens,
         presence: item.presence.clone(),
         author: item.author.clone(),
         time: item.time,
+        read_by: item.read_by.clone(),
         menu: item.menu.iter().map(MenuPart::again).collect(),
         swipe: item.swipe.as_ref().map(SwipeActionProps::again),
         attached: Attachments {
@@ -489,6 +519,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         group_done: item.group_done,
         group_tone: item.group_tone,
         tail: item.tail,
+        done: item.done,
         above: item.above.clone(),
         removed: item.removed,
         parent: item.parent.clone(),
@@ -532,12 +563,31 @@ impl ListModel for DescribedRows {
         }
     }
 
-    fn request_range(&mut self, range: Range<usize>) {
+    fn request_range(&mut self, range: Range<usize>, open: Option<&String>) {
         if let Held::Rendered(rows) = &self.held
             && let Ok(mut rows) = rows.try_borrow_mut()
         {
-            rows.request_range(range);
+            rows.request_range(range, open.cloned());
         }
+    }
+
+    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// height the rows around it take, and shows a placeholder there until it arrives, rather
+    /// than a row of nothing.
+    ///
+    /// A row standing in for an item someone removed is the list's own, given whole beside the
+    /// rows the host renders: the host never renders it, and asking it for one would leave the
+    /// row on its way forever.
+    fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
+        if let Held::Rendered(rows) = &self.held
+            && let Some(key) = self.key_at(index)
+            && !self.is_removed(&key)
+            && let Ok(rows) = rows.try_borrow()
+            && !rows.rendered(&key)
+        {
+            return crate::arriving::Arrival::local();
+        }
+        crate::arriving::Arrival::Ready(())
     }
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
@@ -563,7 +613,7 @@ impl ListModel for DescribedRows {
         let Some(key) = self.key_at(index) else {
             return false;
         };
-        self.with_item(&key, |item| !matches!(item.detail, ItemRow::None))
+        self.with_facts(&key, |item| item.opens || item.detail)
             .unwrap_or(false)
     }
 
@@ -571,11 +621,11 @@ impl ListModel for DescribedRows {
     /// with, or the list's heading for the items that name none.
     fn group_at(&self, index: usize) -> Option<super::RowGroup> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| {
+        self.with_facts(&key, |item| {
             // A row with something to report — a change nobody has seen, an item removed and
             // not yet seen go — is not folded away with its group: its group's rows are out of
             // the way, and what it says is for the person, wherever it would stand.
-            if item.change.is_some() || item.removed {
+            if item.change || item.removed {
                 return None;
             }
             if item.tail {
@@ -598,16 +648,31 @@ impl ListModel for DescribedRows {
         .flatten()
     }
 
+    /// Whether the row's item is one the person is done with — checked off, or removed and not
+    /// yet seen go — which a heading over it does not count ([`super::heading_count`]).
+    fn done(&self, index: usize) -> bool {
+        let Some(key) = self.key_at(index) else {
+            return false;
+        };
+        self.with_item(&key, |item| item.done || item.removed)
+            .unwrap_or(false)
+    }
+
     /// What the row stands as in a tree: the item it is a subtask of, when that item is one of
     /// the list's rows, and the count of its subtasks.
     fn tree_at(&self, index: usize) -> Option<super::TreeRow<String>> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| {
+        self.with_facts(&key, |item| {
             let parent = item
                 .parent
                 .as_ref()
                 .and_then(|parent| DescribedRows::key_presenting(self, &parent.0));
-            super::TreeRow { parent }
+            super::TreeRow {
+                parent,
+                depth: None,
+                // A list says nothing of the row over a row: its rows stand in its own order.
+                above: None,
+            }
         })
     }
 
@@ -625,11 +690,8 @@ impl ListModel for DescribedRows {
 
     fn label(&self, index: usize) -> Option<String> {
         let key = self.key_at(index)?;
-        self.with_item(&key, |item| match item.row {
-            ItemRow::Row(row) if !row.title.is_empty() => Some(row.title),
-            _ => None,
-        })
-        .flatten()
+        self.with_facts(&key, |item| item.title.filter(|title| !title.is_empty()))
+            .flatten()
     }
 
     fn key_presenting(&self, id: &str) -> Option<String> {
@@ -783,22 +845,9 @@ pub(crate) fn by_hand() -> bool {
     )
 }
 
-/// The list with `open` standing open where it stands in it: the row showing that item, unless
-/// the item is no row of the list (a place that does not hold it).
-fn with_open<M: ListModel<Key = String>>(
-    mut list: VirtualList<M>,
-    open: Option<&ResourceId>,
-    rows: &DescribedRows,
-) -> VirtualList<M> {
-    if let Some(key) = open.and_then(|item| rows.key_presenting(&item.0)) {
-        list.set_open(Some(key));
-    }
-    list
-}
-
 /// The resource the item `key` shows, as an event carries it.
 fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
-    rows.with_item(key, |item| item.item.map(|id| Value::Resource(id.0)))
+    rows.with_facts(key, |item| item.item.map(|id| Value::Resource(id.0)))
         .flatten()
 }
 
@@ -876,25 +925,37 @@ fn row_of(
     }
 }
 
-/// A row of a tree that is a view of the app's own: its content stands `depth` steps in, one
-/// disclosure gutter each, and how far its branch got follows it.
-fn indent_view(view: Element, depth: u32, progress: Option<String>) -> Element {
-    let mut line = Row::row().fill_width().align(Align::Center);
-    {
-        // The row's own depth, and the step its chevron takes in front of it: a row with
-        // nothing to fold stands there all the same, on the column of its depth.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "logical pixels are bounded far below f32::MAX"
-        )]
-        let indent = ((f64::from(depth) + 1.0) * TREE_INDENT) as f32;
+/// A row of a tree that is a view of the app's own: the view stands in the box a list gives a
+/// row's content — one disclosure gutter (`nest`) in for each depth it stands in — so its leading
+/// control and its title stand on the column a [`ListRow`]'s do at that depth, and how far its
+/// branch got follows it.
+fn indent_view(
+    view: Element,
+    depth: u32,
+    nest: f32,
+    chevron_column: f32,
+    progress: Option<String>,
+) -> Element {
+    // The line packs what it holds, so the view starts on the row's column and not one gap
+    // further: the chevron column the list keeps in front of its rows, the row's own depth and
+    // the step its chevron takes in front of it are the whole of the room before it, and a row
+    // with nothing to fold stands there all the same.
+    let mut line = Row::row()
+        .fill_width()
+        .align(Align::Center)
+        .gap(Rhythm::None);
+    let indent = chevron_column + crate::num::f32_of_f64(f64::from(depth) * f64::from(nest));
+    if indent > 0.0 {
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
     let mut slot = Slot::new(view);
     slot.fit = Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
     line = line.push_slot(slot);
     if let Some(progress) = progress {
-        line = line.push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
+        // The figure stands a related gap after the row, as the rest of the line does.
+        line = line
+            .push(Box::new(Spacer::token(crate::tokens::SpacingStep::S2)))
+            .push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
     }
     Box::new(line)
 }
@@ -906,7 +967,12 @@ fn bare_row(
     key: &str,
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
-    RowBuild { expanded, .. }: RowBuild,
+    RowBuild {
+        expanded,
+        nest,
+        chevron_column,
+        ..
+    }: RowBuild,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
     // What the row over it states, read before the row's own: a row that stands under its
     // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
@@ -932,20 +998,30 @@ fn bare_row(
             progress,
             ..
         } = item;
-        // Where the row belongs, while the item it is under is no row of this list: the row
-        // says it, rather than standing indented under nothing.
+        // Where the row belongs, while the item it is under is no row of this list — or no row of
+        // its group, the list grouping what it holds: the row says it, rather than standing
+        // indented under nothing.
         let breadcrumb =
             parent_title.filter(|_| !tree.is_some_and(|marks| marks.is_nested(&key.to_owned())));
         let shortcuts = declared_shortcuts(&menu, &attached.menu);
+        // The mark the item's page takes where the row stands open into it: the row the page
+        // takes the place of is not drawn, and the change the person has not seen goes with the
+        // item, never away with it.
+        let page_mark = expanded
+            .then(|| change.as_ref().map(ChangeMarkProps::again))
+            .flatten();
         // What someone else changed and the person has not seen, at the row's own height: on a
         // list row their face on its trailing edge and their colour under it; beside a row's
         // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
-                if props.secondary.is_none()
-                    && let Some(title) = &breadcrumb
-                {
-                    props.secondary = Some(format!("in {title}"));
+                // What the row is in comes before what it says of itself: a narrow row elides
+                // the fact its neighbours repeat, and keeps the one nothing above it says.
+                if let Some(title) = &breadcrumb {
+                    props.secondary = Some(match props.secondary.take() {
+                        Some(own) if !own.is_empty() => format!("in {title} · {own}"),
+                        _ => format!("in {title}"),
+                    });
                 }
                 // The list paces the rows it builds unless a row says its own, so one option on
                 // the list covers its content.
@@ -979,7 +1055,9 @@ fn bare_row(
                     // A tree's row stands one step per depth in from the column its list
                     // leads, whether or not it has subtasks to fold: the chevron that folds it
                     // hangs in the step in front of its content.
-                    row = row.depth(marks.depth(&key.to_owned()));
+                    row = row
+                        .depth(marks.depth(&key.to_owned()))
+                        .chevron_column(f64::from(chevron_column));
                     if value_free && let Some(progress) = progress.clone() {
                         row = row.value(progress);
                     }
@@ -990,11 +1068,16 @@ fn bare_row(
                 let view = with_mark(
                     view,
                     change.and_then(|change| change.face(&format!("{key}~change"))),
+                    Align::Center,
                 );
                 match tree {
-                    Some(marks) => {
-                        indent_view(view, marks.depth(&key.to_owned()), progress.clone())
-                    }
+                    Some(marks) => indent_view(
+                        view,
+                        marks.depth(&key.to_owned()),
+                        nest,
+                        chevron_column,
+                        progress.clone(),
+                    ),
                     None => view,
                 }
             }
@@ -1005,12 +1088,40 @@ fn bare_row(
         // the row's own, written once, and what the item holds follows under them. A view takes
         // the step a tree gives a row's view, a list row the one it gives a row's content.
         let row = match (expanded, detail) {
-            (true, ItemRow::View(document)) => match tree {
-                Some(marks) => indent_view(document, marks.depth(&key.to_owned()), None),
-                None => document,
-            },
+            (true, ItemRow::View(document)) => {
+                // The face stands on the page's own line, where the row's line was, not down
+                // the middle of a page that runs far below it.
+                let document = with_mark(
+                    document,
+                    page_mark.and_then(|change| change.face(&format!("{key}~change"))),
+                    Align::Start,
+                );
+                let document = match tree {
+                    Some(marks) => indent_view(
+                        document,
+                        marks.depth(&key.to_owned()),
+                        nest,
+                        chevron_column,
+                        None,
+                    ),
+                    None => document,
+                };
+                // The row stands open into its item: the document takes its place, and the
+                // row keeps the name the document titles itself with, so the list shows one
+                // row where the person pressed and a reader hears which item it opened.
+                Box::new(super::open::RowOpen::new(document, tree.is_some())) as Element
+            }
             (true, ItemRow::Row(props)) => {
                 let mut document = ListRow::from_props(key, *props);
+                if let Some(mark) = page_mark.and_then(ChangeMarkProps::row) {
+                    document = document.change(
+                        mark.identity,
+                        mark.name,
+                        mark.spoken,
+                        mark.said,
+                        mark.show,
+                    );
+                }
                 if let Some(marks) = tree {
                     document = document.depth(marks.depth(&key.to_owned()));
                 }
@@ -1033,12 +1144,13 @@ fn nesting_parent(
     if !marks.is_nested(&key.to_owned()) {
         return None;
     }
-    let parent = rows.with_item(key, |item| item.parent.clone()).flatten()?;
+    let parent = rows.with_facts(key, |item| item.parent).flatten()?;
     rows.key_presenting(&parent.0)
 }
 
-/// `row` with a change mark after it, on its line, when it has one.
-fn with_mark(row: Element, mark: Option<crate::widget::Chip>) -> Element {
+/// `row` with a change mark after it, on its line, when it has one: beside the row's own line,
+/// or at `align` down it where what the mark stands beside is an item's page.
+fn with_mark(row: Element, mark: Option<crate::widget::Chip>, align: Align) -> Element {
     match mark {
         Some(mark) => {
             let mut row = Slot::new(row);
@@ -1047,7 +1159,7 @@ fn with_mark(row: Element, mark: Option<crate::widget::Chip>) -> Element {
             Box::new(
                 Row::row()
                     .fill_width()
-                    .align(Align::Center)
+                    .align(align)
                     .push_slot(row)
                     .push(Box::new(mark)),
             )
@@ -1081,7 +1193,9 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 /// A message of a transcript: its item's row, under its author and the time when the item
 /// names them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one
 /// before it on the same day, shows the author's avatar and name once, over its first message;
-/// the others line up under it. The first message of a day has the day's divider over it.
+/// the others line up under it. The first message of a day has the day's divider over it, and
+/// where it is also the first message the reader has not seen, the day and the place reading
+/// starts again are one band, in the accent, saying both.
 ///
 /// Each message is one row of the page's column: a run's next line stands a tight gap under
 /// the one before, a new run a section's gap under the last.
@@ -1095,7 +1209,7 @@ fn message_of(
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
     let first_unread = unread.is_some_and(|item| {
-        rows.with_item(key, |props| {
+        rows.with_facts(key, |props| {
             props
                 .item
                 .as_ref()
@@ -1103,7 +1217,7 @@ fn message_of(
         })
         .unwrap_or(false)
     });
-    let said = rows.with_item(key, |item| (item.author, item.time));
+    let said = rows.with_facts(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
         let row = row_of(rows, key, feel, None, RowBuild::default());
         return page_row(under_unread(row, first_unread), RUN_GAP, measure);
@@ -1112,7 +1226,7 @@ fn message_of(
         .index_of(&key.to_owned())
         .and_then(|index| index.checked_sub(1))
         .and_then(|index| rows.key_at(index))
-        .and_then(|key| rows.with_item(&key, |item| (item.author, item.time)));
+        .and_then(|key| rows.with_facts(&key, |item| (item.author, item.time)));
     let clock = ConversationClock::local();
     let day = at.map(|at| clock.day(at.0));
     let new_day = day.is_some()
@@ -1164,29 +1278,74 @@ fn message_of(
                 .push(said),
         )
     };
+    // Who has read to this line: their faces at its trailing end, once each, where their
+    // reading ends. The author's own face stands at the line's head already.
+    let read_by: Vec<Person> = rows
+        .with_facts(key, |item| item.read_by)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|who| who.identity != author.identity)
+        .collect();
+    let message = message.push_fit(said, Fit::fill(1.0));
+    let message = if read_by.is_empty() {
+        message
+    } else {
+        message.push(read_faces(key, read_by))
+    };
     // The message swipes and shows its toolbar whole, its author with it; the day's divider
     // stays.
-    let message = attach(
-        Box::new(message.push_fit(said, Fit::fill(1.0))),
-        swipe,
-        attached,
-    );
+    let message = attach(Box::new(message), swipe, attached);
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    let shown = match day.filter(|_| new_day) {
-        Some(day) => Box::new(
+    // The band over this line: the day it opens, the place reading starts again, or — where the
+    // day turns over at the reader's first unseen line — one band in the accent saying both,
+    // never a day's divider stacked over the unread one.
+    let divider = match (day.filter(|_| new_day), first_unread) {
+        (Some(day), true) => Some(SectionDivider::unread_day(&clock.day_label(day))),
+        (Some(day), false) => Some(SectionDivider::new(clock.day_label(day))),
+        (None, true) => Some(SectionDivider::unread()),
+        (None, false) => None,
+    };
+    let shown = match divider {
+        Some(divider) => Box::new(
             Stack::stack()
                 .gap(RUN_GAP)
-                .push(Box::new(DayDivider::new(clock.day_label(day))))
+                .push(Box::new(divider))
                 .push(message),
         ) as Element,
         None => message,
     };
-    page_row(under_unread(shown, first_unread), gap, measure)
+    page_row(shown, gap, measure)
+}
+
+/// The faces of those who have read to the row `key`, small, at the trailing end of its line:
+/// each of them stands on the one line their reading ends at, and nowhere else.
+fn read_faces(key: &str, read: Vec<Person>) -> Element {
+    let mut faces = Row::row().gap(Rhythm::Tight).align(Align::Center);
+    for who in &read {
+        faces = faces.push(Box::new(
+            Avatar::person(who.name.clone(), who.identity.clone()).size(AvatarSize::Small),
+        ));
+    }
+    let names = read
+        .iter()
+        .map(|who| who.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Box::new(
+        crate::widget::Container::new()
+            .with_no_padding()
+            .landmark(
+                crate::i18n::widget_format("conversation-read-by", &[("names", names.into())]),
+                format!("{key}~read"),
+            )
+            .with_child(Box::new(faces)),
+    )
 }
 
 /// `content` under the "New messages" divider, for the row of the first message the reader had
-/// not read: the divider is the toolkit's ([`crate::widget::conversation::UnreadDivider`]),
-/// placed from what the app says is unread, so every conversation draws the same one.
+/// not read: the divider is the toolkit's ([`crate::widget::conversation::SectionDivider`], in
+/// the accent where reading starts again), placed from what the app says is unread, so every
+/// conversation draws the same one.
 ///
 /// It stands in the row's own column, one gap above what the row shows, so the row keeps the
 /// column it has without it: the divider adds its band and nothing else.
@@ -1197,7 +1356,7 @@ fn under_unread(content: Element, first_unread: bool) -> Element {
     Box::new(
         Stack::stack()
             .gap(RUN_GAP)
-            .push(Box::new(crate::widget::conversation::UnreadDivider::new()))
+            .push(Box::new(SectionDivider::unread()))
             .push(content),
     )
 }
@@ -1214,6 +1373,14 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
         None => page,
     };
     Box::new(page.push_slot(Slot::new(content)))
+}
+
+/// Whether the row of `key` offers a menu: what its item offers on one, or the view put on it.
+fn offers_menu(rows: &DescribedRows, key: &str) -> bool {
+    rows.with_item(key, |item| {
+        !item.menu.is_empty() || !item.attached.menu.is_empty()
+    })
+    .unwrap_or(false)
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
@@ -1271,6 +1438,8 @@ impl Described for DescribedList {
             tail_title,
             tree,
             ungrouped_title,
+            view_title,
+            view_count,
             multi_select,
             unseen_from,
             mut rows,
@@ -1313,7 +1482,9 @@ impl Described for DescribedList {
             if follow_end {
                 list = list.following_end();
             }
-            let list = list.unread_from(marked);
+            let list = list
+                .unread_from(marked)
+                .with_menu_around(|rows, key| offers_menu(rows, key));
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
@@ -1337,6 +1508,11 @@ impl Described for DescribedList {
         }
         if let Some(title) = tail_title {
             list = list.with_tail_title(title);
+        }
+        if let Some(title) = view_title {
+            // What the title counts, as the rows a heading counts: a number never negative.
+            let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
+            list = list.in_view(title, count);
         }
         // A column's one list takes the column's height and scrolls its rows; a list among a
         // page's other content is as tall as its rows, and the page scrolls them with the rest.
@@ -1414,7 +1590,9 @@ impl Described for DescribedList {
                 fired.fire(Some(Value::List(items)));
             });
         }
-        list = with_open(list, open.as_ref(), &reading.borrow());
+        // The item the host holds open stands open where its row stands, unless the item is no
+        // row of the list (a place that does not hold it).
+        list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if !opened_changed.is_none() || !closed_changed.is_none() {
             let (opened, closed) = (opened_changed, closed_changed);
             let opening = Rc::clone(&reading);
@@ -1427,6 +1605,7 @@ impl Described for DescribedList {
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
         }
+        let list = list.with_menu_around(|rows, key| offers_menu(rows, key));
         let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
             row_menu(list, at, &select)
         });
@@ -1450,6 +1629,8 @@ impl Described for DescribedList {
             selection_follows_focus,
             tail_title,
             ungrouped_title,
+            view_title,
+            view_count,
             multi_select,
             unseen_from,
             mut rows,
@@ -1482,6 +1663,8 @@ impl Described for DescribedList {
         };
         list.set_multi_select(multi_select);
         list.set_tail_title(tail_title);
+        let count = view_count.map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX));
+        list.set_view_title(view_title, count);
         list.set_feel(feel);
         if replaced {
             // The rows build anew where they stand: the list's scroll, its keyboard row and
@@ -1492,11 +1675,9 @@ impl Described for DescribedList {
         // rows it left and arrived at build again.
         list.set_unread(unseen_from);
         // The item the host holds open: its row grows into its document where it stands, and
-        // an item that left the list opens nothing.
-        let standing = open
-            .as_ref()
-            .and_then(|item| reading.borrow().key_presenting(&item.0));
-        list.set_open(standing);
+        // an item that left the list opens nothing. An item the rows cannot answer for yet
+        // leaves the row the person has open as it is, and opens as its row arrives.
+        list.hold_open(open.as_ref().map(|item| item.0.as_str()));
         if let Some(picked) = picked {
             list.set_selection(picked);
         }
@@ -1563,6 +1744,17 @@ impl Decorator for DescribedList {
         "DescribedList"
     }
 
+    /// The column its rows are read in: a list whose rows keep the readable measure says so, so
+    /// a bar at the foot of the column stands in it.
+    fn readable_column(&self) -> Option<Length> {
+        let Face {
+            page_column,
+            at_measure,
+            ..
+        } = self.face;
+        (page_column && at_measure).then_some(Length::Rem(MEASURE_REM))
+    }
+
     /// The list's change is the described list's: it adds no structure of its own, so rows
     /// the list builds anew stay mounted in place and the window keeps its tree.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
@@ -1573,7 +1765,7 @@ impl Decorator for DescribedList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{Event, Fired, Intent};
+    use crate::component::{BoundValue, Event, Fired, Intent};
     use crate::widget::MenuItemProps;
 
     /// The rows of a list given its items whole: a row a title each.
@@ -1727,8 +1919,8 @@ mod tests {
     }
 
     /// The messages of a transcript, two of one day and two of the next: each shows a line of
-    /// its own, under its author and the time it was said.
-    fn transcript_messages() -> DescribedRows {
+    /// its own, under its author and the time it was said, and says who has read to it.
+    fn transcript_messages(read_by: impl Fn(usize) -> Vec<Person>) -> DescribedRows {
         let at = [
             1_790_000_000_i64,
             1_790_000_060,
@@ -1744,8 +1936,10 @@ mod tests {
                 author: Some(Person {
                     identity: format!("person-{index}"),
                     name: format!("Writer {index}"),
+                    hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
                 }),
                 time: Some(Moment(*said)),
+                read_by: read_by(index),
                 row: ItemRow::Row(Box::new(ListRowProps {
                     title: format!("message {index}"),
                     ..ListRowProps::default()
@@ -1761,24 +1955,47 @@ mod tests {
 
     /// What `list` lays out, as the inspection sees it: where each widget stands.
     fn laid_out(list: DescribedList) -> crate::headless::InspectionNode {
-        let mut harness = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            list,
-            (900, 600),
-            crate::theme::Theme::dark(),
-        );
+        laid_out_in(list, crate::theme::Theme::dark())
+    }
+
+    /// What `list` lays out under `theme`, as the inspection sees it.
+    fn laid_out_in(
+        list: DescribedList,
+        theme: crate::theme::Theme,
+    ) -> crate::headless::InspectionNode {
+        let mut harness =
+            crate::headless::FrameHarness::for_root(crate::State::new(), list, (900, 600), theme);
         harness.relayout();
         harness.inspection().root
     }
 
-    /// Where the first widget `widget` stands, in `node`.
-    fn rect_of_widget(node: &crate::headless::InspectionNode, widget: &str) -> Option<[f64; 4]> {
+    /// The names the faces of `widget` say, in `node` and under it.
+    fn find_widget(node: &crate::headless::InspectionNode, widget: &str, out: &mut Vec<String>) {
         if node.widget == widget {
-            return Some(node.rect);
+            out.push(
+                node.semantics
+                    .as_ref()
+                    .and_then(|semantics| semantics.name.clone())
+                    .unwrap_or_default(),
+            );
         }
-        node.children
-            .iter()
-            .find_map(|child| rect_of_widget(child, widget))
+        for child in &node.children {
+            find_widget(child, widget, out);
+        }
+    }
+
+    /// Where each widget `widget` stands, in `node` and under it, in reading order.
+    fn rects_of_widget(
+        node: &crate::headless::InspectionNode,
+        widget: &str,
+        out: &mut Vec<[f64; 4]>,
+    ) {
+        if node.widget == widget {
+            out.push(node.rect);
+        }
+        for child in &node.children {
+            rects_of_widget(child, widget, out);
+        }
     }
 
     /// Where the first widget `widget` whose words are `words` stands, in `node`.
@@ -1811,7 +2028,7 @@ mod tests {
                 VirtualListProps {
                     page_column: true,
                     unseen_from: unseen.map(|item| ResourceId(item.to_owned())),
-                    rows: transcript_messages(),
+                    rows: transcript_messages(|_| Vec::new()),
                     ..VirtualListProps::default()
                 },
             )
@@ -1822,19 +2039,21 @@ mod tests {
             rect_of(node, "ListRow", &format!("message {at}"))
                 .unwrap_or_else(|| panic!("the message {at} shows"))
         };
-        // The row the divider stands over keeps the column and the size it has without it: the
-        // divider adds its band over the row and moves nothing else.
+        // The row the band stands over keeps the column and the size it has without it: the
+        // day the reader left off at says it in the day's own band, and adds no band over it.
         let unread = message(&marked, 2);
         let alone = message(&plain, 2);
         assert_eq!(
-            [unread[0], unread[2], unread[3]],
-            [alone[0], alone[2], alone[3]],
-            "the message under the divider has the box it has without it: {unread:?} against \
+            unread, alone,
+            "the message under the band has the box it has without it: {unread:?} against \
              {alone:?}"
         );
+        // The line the reader has not seen still shows where reading starts, so it says so
+        // with a band the line alone does not have.
+        let opened = message(&marked, 3);
         assert!(
-            unread[1] > alone[1],
-            "the divider stands over the row, taking room of its own: {unread:?} against {alone:?}"
+            opened[1] > unread[1],
+            "the day the reader left off at stands over its line: {opened:?} against {unread:?}"
         );
         // Every message of one run starts on one line: the one under the divider stands on the
         // column of the messages around it, the one over it and the one under it alike.
@@ -1846,15 +2065,92 @@ mod tests {
                 unread[0], other[0]
             );
         }
-        // The two dividers of one conversation rule the same column: the day's over the third
-        // message, and the "New messages" one over it.
-        let day = rect_of_widget(&marked, "DayDivider").expect("the day's divider shows");
-        let new = rect_of_widget(&marked, "UnreadDivider").expect("the unread divider shows");
+        // The two dividers of one conversation are one component and rule the same column: the
+        // day's over the first message, and the one over the third, which opens a day at the
+        // first line the reader has not seen, so the two are one band saying both.
+        let mut dividers = Vec::new();
+        rects_of_widget(&marked, "SectionDivider", &mut dividers);
         assert_eq!(
-            [new[0], new[2]],
-            [day[0], day[2]],
-            "the two dividers end at the same edges: the day's {day:?}, the new messages' {new:?}"
+            dividers.len(),
+            2,
+            "a day's band and the band where reading starts again, never a day's stacked over \
+             it: {dividers:?}"
         );
+        for (edge, divider) in dividers.iter().enumerate() {
+            assert_eq!(
+                [divider[0], divider[2]],
+                [dividers[0][0], dividers[0][2]],
+                "divider {edge} ends where the first does: {dividers:?}"
+            );
+        }
+        // The band over the third message says the day and that reading starts there: one
+        // divider, in the accent, saying what the two would have said apart.
+        let mut said = Vec::new();
+        find_widget(&marked, "SectionDivider", &mut said);
+        let clock = ConversationClock::local();
+        let day = clock.day(1_790_090_000);
+        assert_eq!(
+            said,
+            vec![
+                clock.day_label(clock.day(1_790_000_000)),
+                crate::widget::conversation::band::day_with_unread(&clock.day_label(day)),
+            ],
+            "the day the reader left off at says the day and that it is where reading starts"
+        );
+    }
+
+    /// Who has read to a line shows on that line alone: each reader's face stands once, on the
+    /// message their reading ends at, and the author never beside their own words.
+    #[test]
+    fn a_readers_face_stands_once_on_the_line_they_read_to() {
+        let list = DescribedList::from_props(
+            "transcript",
+            VirtualListProps {
+                page_column: true,
+                rows: transcript_messages(|index| match index {
+                    // Mia read to the second message; the second message's own author read it
+                    // too, and never shows beside their own words.
+                    1 => vec![
+                        Person {
+                            identity: "person-0".to_owned(),
+                            name: "Mia".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-0"),
+                        },
+                        Person {
+                            identity: "person-1".to_owned(),
+                            name: "Writer 1".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-1"),
+                        },
+                    ],
+                    _ => Vec::new(),
+                }),
+                ..VirtualListProps::default()
+            },
+        );
+        let laid = laid_out(list);
+        let faces = |node: &crate::headless::InspectionNode, at: usize| {
+            let rows = node
+                .children
+                .iter()
+                .filter(|child| child.widget == "Page")
+                .collect::<Vec<_>>();
+            let mut found = Vec::new();
+            find_widget(rows[at], "Avatar", &mut found);
+            found
+        };
+        assert_eq!(
+            faces(&laid, 1),
+            vec!["Writer 1".to_owned(), "Mia".to_owned()],
+            "the line Mia read to shows her face beside its author's, once"
+        );
+        for at in [0, 2, 3] {
+            let shown = faces(&laid, at);
+            assert_eq!(
+                shown.len(),
+                1,
+                "message {at} shows its author's face alone: {shown:?}"
+            );
+        }
     }
 
     /// A page column's rows are read, not chosen: a press on a message gives it the keyboard
@@ -1908,6 +2204,75 @@ mod tests {
         press_row(&mut column, 1, left, 400.0);
         let list = column.list().expect("the list stands");
         assert_eq!(list.selection_len(), 1, "a column's rows are chosen");
+    }
+
+    /// The change a person has not seen is marked on the item, whether the item stands as a row
+    /// or as the page its row opened into: the page takes the row's place, so the mark goes with
+    /// the item rather than vanishing with the row.
+    #[test]
+    fn the_page_a_row_opens_into_carries_the_mark_of_the_change() {
+        fn rows_of(root: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+            if let Some(row) = root
+                .as_any()
+                .and_then(|widget| widget.downcast_ref::<ListRow>())
+                && let Some(change) = row.shown_change()
+            {
+                out.push(change.said.to_owned());
+            }
+            for child in root.children() {
+                rows_of(child, out);
+            }
+        }
+        let items: Vec<ListItemProps> = (0..3)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                item: Some(ResourceId(format!("task-{at}"))),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                detail: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("what row {at} is about"),
+                    secondary: Some("with the notes written about it".to_owned()),
+                    ..ListRowProps::default()
+                })),
+                change: (at == 1).then(|| ChangeMarkProps {
+                    by: Some(Person {
+                        identity: "person:bo".to_owned(),
+                        name: "Bo".to_owned(),
+                        hue: crate::tokens::PresenceHue::of_identity("person:bo"),
+                    }),
+                    said: Some("moved it to Today".to_owned()),
+                    ..ChangeMarkProps::default()
+                }),
+                ..ListItemProps::default()
+            })
+            .collect();
+        let list = DescribedList::from_props(
+            "list",
+            VirtualListProps {
+                open: Some(ResourceId("task-1".to_owned())),
+                rows: DescribedRows {
+                    held: Held::Given(Rc::new(items)),
+                    ..DescribedRows::default()
+                },
+                ..VirtualListProps::default()
+            },
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            list,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let mut marked = Vec::new();
+        rows_of(harness.root_widget(), &mut marked);
+        assert_eq!(
+            marked,
+            vec!["Bo moved it to Today".to_owned()],
+            "the page the row became carries the mark of the change, in its words"
+        );
     }
 
     /// A menu opened over a row that opens where it stands is about that row alone: choosing
@@ -2106,6 +2471,95 @@ mod tests {
         );
     }
 
+    /// A row the host has named but not rendered is on its way: the list keeps its slot, of the
+    /// height the rows around it take, with a placeholder there rather than a row of nothing.
+    #[test]
+    fn a_row_the_host_has_not_rendered_is_on_its_way() {
+        let rendered: SharedRows = Rc::new(RefCell::new(
+            ViewRows::new(&[("row-0", None), ("row-1", None)], 0.0, 0.0).withholding(&["row-1"]),
+        ));
+        let rows = DescribedRows {
+            held: Held::Rendered(rendered),
+            ..DescribedRows::default()
+        };
+        assert_eq!(rows.key_at(1).as_deref(), Some("row-1"));
+        assert!(
+            rows.row_state(0).ready().is_some(),
+            "the row the host rendered is there"
+        );
+        assert!(
+            rows.row_state(1).is_pending(),
+            "the row it has not rendered is on its way"
+        );
+    }
+
+    /// The rows standing in for items someone else removed are the list's own: the host that
+    /// renders the rows it shows, one at a time, has never rendered them and never will. A list
+    /// showing one row builds such a row beside the one it holds, struck, rather than leaving
+    /// its slot on its way.
+    #[test]
+    fn a_row_standing_in_for_a_removed_item_is_built_beside_the_hosts_rows() {
+        let props = |removed: Vec<ListItemProps>| VirtualListProps {
+            in_column: true,
+            rows: DescribedRows {
+                held: Held::Rendered(Rc::new(RefCell::new(ViewRows::new(
+                    &[("row-0", None)],
+                    0.0,
+                    0.0,
+                )))),
+                ..DescribedRows::default()
+            },
+            removed: RemovedRows(Rc::new(removed)),
+            ..VirtualListProps::default()
+        };
+        // The list shows the one row its host renders.
+        let mut list = DescribedList::from_props("list", props(Vec::new()));
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        assert_eq!(inner.mounted_len(), 1, "one row shows");
+        assert!(
+            inner.model().row_state(0).ready().is_some(),
+            "the row the host rendered is there"
+        );
+        // An item someone else removed comes among the rows: the list builds it where it
+        // stands, after the row it holds, without the host having rendered it.
+        let mut list = DescribedList::from_props(
+            "list",
+            props(vec![ListItemProps {
+                key: "row-gone".to_owned(),
+                removed: true,
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: "Book the dentist".to_owned(),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            }]),
+        );
+        let inner = list.list_mut().expect("the list stands");
+        lay_out(inner, 400.0);
+        assert_eq!(inner.model().len(), 2, "the model grew by the removed row");
+        assert!(
+            inner.model().row_state(1).ready().is_some(),
+            "a row the list holds itself is no row on its way"
+        );
+        assert_eq!(
+            inner.mounted_rows().collect::<Vec<_>>(),
+            [0, 1],
+            "both rows are built"
+        );
+        let semantics = inner.accessibility().expect("the list has a node");
+        let listed: Vec<Option<&str>> = semantics
+            .children
+            .iter()
+            .map(|row| row.name.as_deref())
+            .collect();
+        assert_eq!(
+            listed,
+            [Some("row-0's words"), Some("Book the dentist")],
+            "the removed item's row is built as a row, where it stands"
+        );
+    }
+
     /// A menu command that reports its choose to `queue` when run.
     fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
         let mut item = MenuItemProps {
@@ -2151,5 +2605,338 @@ mod tests {
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![command("Reopen", "control+enter", &queue)];
         assert_eq!(declared_shortcuts(&menu, &attached).len(), 1);
+    }
+
+    // --- an item opened where it stands ---------------------------------------------------------
+
+    /// One item of a list a test renders row by row: its key, and the item it stands under.
+    struct ViewItem {
+        key: String,
+        parent: Option<String>,
+    }
+
+    /// The items a test renders as the views an app builds: a list of a collection of any length
+    /// holds its rows that way, and each item's document leads its line out as a row does.
+    struct ViewRows {
+        items: Vec<ViewItem>,
+        /// The rows the host has named but not rendered: they are on their way.
+        withheld: Vec<String>,
+        /// The room a row's leading control takes, and the gap after it.
+        lead: f32,
+        gap: f32,
+    }
+
+    impl ViewRows {
+        fn new(items: &[(&str, Option<&str>)], lead: f32, gap: f32) -> Self {
+            Self {
+                items: items
+                    .iter()
+                    .map(|(key, parent)| ViewItem {
+                        key: (*key).to_owned(),
+                        parent: parent.map(str::to_owned),
+                    })
+                    .collect(),
+                withheld: Vec::new(),
+                lead,
+                gap,
+            }
+        }
+
+        /// The same rows, the host having rendered every one but `keys`: those are on their way.
+        fn withholding(mut self, keys: &[&str]) -> Self {
+            self.withheld = keys.iter().map(|key| (*key).to_owned()).collect();
+            self
+        }
+
+        /// The resource the item of the row `key` is.
+        fn item_of(key: &str) -> String {
+            key.replace("row-", "item-")
+        }
+    }
+
+    impl crate::component::RowSource for ViewRows {
+        fn len(&self) -> usize {
+            self.items.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<String> {
+            self.items.get(index).map(|item| item.key.clone())
+        }
+
+        fn index_of(&self, key: &str) -> Option<usize> {
+            self.items.iter().position(|item| item.key == key)
+        }
+
+        fn request_range(&mut self, _range: Range<usize>, _open: Option<String>) {}
+
+        fn rendered(&self, key: &str) -> bool {
+            !self.withheld.iter().any(|held| held == key)
+                && self.items.iter().any(|item| item.key == key)
+        }
+
+        fn read(
+            &mut self,
+            key: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<bool, String> {
+            if !self.rendered(key) {
+                return Ok(false);
+            }
+            let Some(item) = self.items.iter().find(|item| item.key == key) else {
+                return Ok(false);
+            };
+            read(&mut ViewItemSource {
+                item,
+                lead: self.lead,
+                gap: self.gap,
+            })?;
+            Ok(true)
+        }
+
+        fn key_presenting(&self, id: &str) -> Option<String> {
+            self.items
+                .iter()
+                .find(|item| ViewRows::item_of(&item.key) == id)
+                .map(|item| item.key.clone())
+        }
+
+        fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
+            Vec::new()
+        }
+
+        fn has_changes(&self) -> bool {
+            false
+        }
+    }
+
+    /// One item as the host renders it: its row, and the document it opens into.
+    struct ViewItemSource<'a> {
+        item: &'a ViewItem,
+        lead: f32,
+        gap: f32,
+    }
+
+    impl Source for ViewItemSource<'_> {
+        fn key(&self) -> &str {
+            &self.item.key
+        }
+
+        fn prop(&mut self, name: &str) -> Option<Value> {
+            match name {
+                "item" => Some(Value::Resource(ViewRows::item_of(&self.item.key))),
+                "parent" => self
+                    .item
+                    .parent
+                    .as_deref()
+                    .map(|parent| Value::Resource(ViewRows::item_of(parent))),
+                _ => None,
+            }
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, _name: &str) -> Option<BoundValue> {
+            None
+        }
+
+        fn children(&mut self, slot: &str) -> Vec<Element> {
+            match slot {
+                "detail" => vec![document(&self.item.key, self.lead, self.gap)],
+                _ => Vec::new(),
+            }
+        }
+
+        fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
+            match slot {
+                "row" => vec![Some(ListRowProps::NAME.to_owned())],
+                "detail" => vec![None],
+                _ => Vec::new(),
+            }
+        }
+
+        fn components(
+            &mut self,
+            slot: &str,
+            read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            if slot != "row" {
+                return Ok(0);
+            }
+            read(&mut ViewRowSource {
+                key: &self.item.key,
+            })?;
+            Ok(1)
+        }
+    }
+
+    /// The row of one item, as the app describes it: a list row led by its checkbox.
+    struct ViewRowSource<'a> {
+        key: &'a str,
+    }
+
+    impl Source for ViewRowSource<'_> {
+        fn key(&self) -> &str {
+            self.key
+        }
+
+        fn prop(&mut self, name: &str) -> Option<Value> {
+            match name {
+                "title" => Some(Value::Text(format!("{}'s words", self.key))),
+                _ => None,
+            }
+        }
+
+        fn event(&mut self, _name: &str) -> Event {
+            Event::None
+        }
+
+        fn binding(&mut self, name: &str) -> Option<BoundValue> {
+            (name == "checkbox").then(|| BoundValue::Bool(crate::component::Bound::default()))
+        }
+
+        fn children(&mut self, _slot: &str) -> Vec<Element> {
+            Vec::new()
+        }
+
+        fn components(
+            &mut self,
+            _slot: &str,
+            _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+        ) -> Result<usize, String> {
+            Ok(0)
+        }
+    }
+
+    /// What an item holds, shown where its row stands: the item's own line, and what is written
+    /// about it under that line. Its line leads with the room a row's leading control takes and
+    /// the gap after it, so its title stands where the rows beside it start theirs.
+    fn document(key: &str, lead: f32, gap: f32) -> Element {
+        Box::new(
+            Stack::stack()
+                .fill_width()
+                .gap(Rhythm::Related)
+                .with_id(format!("document-{key}"))
+                .push(Box::new(
+                    Row::row()
+                        .fill_width()
+                        .gap(Rhythm::None)
+                        .align(Align::Center)
+                        .push(Box::new(
+                            Spacer::fixed(lead).with_id(format!("leading-{key}")),
+                        ))
+                        .push(Box::new(Spacer::fixed(gap)))
+                        .push(Box::new(
+                            Text::new(&format!("{}'s words", key)).with_id(format!("title-{key}")),
+                        )),
+                ))
+                .push(Box::new(Text::new("what is written about it"))),
+        )
+    }
+
+    /// Where the widget `id` stands, in `node`.
+    fn rect_of_id(node: &crate::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
+        if node.test_id.as_deref() == Some(id) {
+            return Some(node.rect);
+        }
+        node.children.iter().find_map(|child| rect_of_id(child, id))
+    }
+
+    /// Where the row of the item `key` lays its own content out, as it published it.
+    fn row_grid(
+        node: &crate::headless::InspectionNode,
+        key: &str,
+    ) -> Option<crate::widget::RowLayout> {
+        let grid = match node.layout {
+            Some(crate::widget::LayoutInfo::Row(grid)) => Some(grid),
+            _ => None,
+        };
+        if let Some(grid) = grid
+            && node.test_id.as_deref().is_none_or(|id| id == key)
+        {
+            return Some(grid);
+        }
+        node.children.iter().find_map(|child| row_grid(child, key))
+    }
+
+    /// An item that opens where it stands is the item: the document stands in the row's content
+    /// box, so its leading control and its title stand on the column the rows at its depth stand
+    /// on, and only what the item holds grows.
+    #[test]
+    fn an_item_standing_open_keeps_the_column_of_the_rows_at_its_depth() {
+        // row-0 stands at the top with row-2 and row-3 under it, and row-1 beside it at the top:
+        // opening one row reads the column of the rows that stay closed at its depth.
+        let list = |open: &str, theme: &crate::theme::Theme| {
+            let rendered: SharedRows = Rc::new(RefCell::new(ViewRows::new(
+                &[
+                    ("row-0", None),
+                    ("row-2", Some("row-0")),
+                    ("row-3", Some("row-0")),
+                    ("row-1", None),
+                ],
+                theme.tokens.metrics.icon_control,
+                theme.tokens.spacing.s3,
+            )));
+            DescribedList::from_props(
+                "list",
+                VirtualListProps {
+                    tree: true,
+                    open: Some(ResourceId(ViewRows::item_of(open))),
+                    rows: DescribedRows {
+                        held: Held::Rendered(rendered),
+                        ..DescribedRows::default()
+                    },
+                    ..VirtualListProps::default()
+                },
+            )
+        };
+        // The step a tree indents by is the theme's, so the columns must line up wherever the
+        // type scale puts it.
+        let themes = [
+            crate::theme::Theme::dark(),
+            crate::theme::Theme::dark().with_text_scale(1.5),
+        ];
+        for (open, depth, beside) in [("row-0", 0, "row-1"), ("row-3", 1, "row-2")] {
+            for theme in themes.clone() {
+                let scaled = theme.text_scale != 1.0;
+                let node = laid_out_in(list(open, &theme), theme.clone());
+                let at = |id: &str| {
+                    rect_of_id(&node, id).unwrap_or_else(|| {
+                        panic!("the widget {id} shows with {open} standing open")
+                    })
+                };
+                let grid = row_grid(&node, beside)
+                    .unwrap_or_else(|| panic!("the row {beside} lays its content out"));
+                assert_eq!(
+                    grid.depth, depth,
+                    "the row {beside} stands as deep as the item the person opened"
+                );
+                let content = f64::from(grid.content_left);
+                let document = at(&format!("document-{open}"));
+                assert!(
+                    (document[0] - content).abs() < 0.5,
+                    "the item standing open starts its document at x {:.0}, where the row {beside} \
+                 starts its content at x {content:.0}{}",
+                    document[0],
+                    if scaled { " at text scale 1.5" } else { "" }
+                );
+                let leading = at(&format!("leading-{open}"));
+                assert!(
+                    (leading[0] - content).abs() < 0.5,
+                    "its leading control stands at x {:.0}, where the row {beside} stands its own at \
+                 x {content:.0}",
+                    leading[0]
+                );
+                let words = at(&format!("title-{open}"));
+                let said = f64::from(grid.text_x);
+                assert!(
+                    (words[0] - said).abs() < 0.5,
+                    "its title starts at x {:.0}, where the row {beside} starts its title at x \
+                 {said:.0}",
+                    words[0]
+                );
+            }
+        }
     }
 }

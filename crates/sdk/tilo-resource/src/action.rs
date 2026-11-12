@@ -171,6 +171,16 @@ impl ActionCx {
             .and_then(|invoker| invoker.appearance)
     }
 
+    /// The name the host that admitted an agent knows it by, as the envelope
+    /// pinned it; `None` for anyone else, and for an agent its host named not.
+    #[must_use]
+    pub fn agent_name(&self) -> Option<String> {
+        tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .filter(|invoker| invoker.kind == tilo_actions::ActorKind::Agent)
+            .and_then(|invoker| invoker.name)
+    }
+
     /// What kind of actor invoked the action (a person, an agent, a
     /// Shortcut), as the envelope pinned it.
     #[must_use]
@@ -200,17 +210,6 @@ impl ActionCx {
     /// This is not caller authority; use [`Self::author`] for that.
     pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
         self.invocation
-    }
-
-    /// The content store of the window applying the action, where the bytes
-    /// the record names by hash are kept: the one the host lent that window,
-    /// which carries them on the record's route. Content is not replayed —
-    /// a replica that applies the action reads the bytes through its own
-    /// window's store. `None` where no window applies it (a tool writing a
-    /// document directly).
-    #[must_use]
-    pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        crate::content::current()
     }
 }
 

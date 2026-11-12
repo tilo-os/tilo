@@ -64,11 +64,12 @@ Each check runs commands from this repository. Run them from the checkout on Lin
 | `sdk-policy`                                            | `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in `lint.yml`                                                                                                                                                        |
 | `sdk-linux`                                             | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp`                                                                                                   |
 | `sdk-web`                                               | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs`                                                                                                                                                                                   |
-| `sdk-web-size`                                          | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; then qualifies the release private image worker in headless Chromium.                                             |
+| `sdk-web-size`                                          | every head: `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`.                                                                                                       |
+| `sdk-web-qualify`                                       | stable, dispatch and idle: the same bundle, then qualifies the release private image worker in headless Chromium.                                                                                                                                                                                             |
 | `runtime-macos`                                         | `cargo check -p tilo-runtime --all-targets --locked`, on macOS                                                                                                                                                                                                                                                |
 | `sdk-macos`                                             | the `sdk-linux` check's commands with `--target macos`, on macOS                                                                                                                                                                                                                                              |
 | `apps-macos`                                            | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS                                                                                                                                                                          |
-| `real-fuse`                                             | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the check's other named tests                                                                                                                                                      |
+| `real-fuse`                                             | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test it integration_test:: -- --test-threads=1` and the check's other named tests                                                                                                                                                      |
 | `native-tier1`                                          | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices                                                                                                                                                                                                                           |
 | `render-counters`                                       | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
 | `perf-<group>`, `perf-scheduled` (nightly)              | `bash tools/ci/perf-scheduled.sh <group>`; `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md)                         |
@@ -86,8 +87,9 @@ publications build from.
 
 - `check.yml` runs after every push to `main`, one window of commits at a time.
   Its first job (`tools/ci/push_window.py`, through the Forgejo API) hands the
-  window out, deciding once and in seconds: a run skips its jobs as a clean
-  success when an older run holds the window (its commits and this one's are the
+  window out, deciding once and in seconds: a run skips its jobs, and its
+  `untested` job ends it as cancelled (never green, since it tested nothing),
+  when an older run holds the window (its commits and this one's are the
   same next window) or when a newer run holds it (these commits are its
   business), and otherwise takes the window and cancels the older runs that never
   started. The run that holds the window keeps it until it finishes, so one
@@ -102,10 +104,9 @@ publications build from.
   every push, before and independent of that window, so a break only the web
   build sees fails the head that introduced it. Its `wasm` job then adds the
   browser crates and web-capable examples the window selects.
-- `lint.yml` makes the same decision for the policy and lint gates: a whole-tree
-  lint at a later commit says everything an earlier one could, so a push skips
-  its gates while another run holds them and the first push after that run
-  finishes takes over.
+- `lint.yml` runs for every push: its format, commit-message and unused
+  dependency gates check exactly the commits the push added, so no push's run
+  stands in for another's.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the

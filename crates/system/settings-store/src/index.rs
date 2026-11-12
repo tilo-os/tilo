@@ -11,11 +11,53 @@
 //! their own language. A setting opens through its link,
 //! `settings://<page>#<setting>` ([`Setting::link`]): Settings opens the
 //! page, scrolls to the setting's control and puts the keyboard on it.
+//! A setting that can be changed where it stands is published as a resource
+//! of its own, named by [`PUBLISHED_PREFIX`]; [`setting_of_resource`] reads
+//! that name back, so the one list also says which setting an action the
+//! settings service publishes changes.
+
+/// The prefix of the resource a setting people look for by name is published under.
+pub const PUBLISHED_PREFIX: &str = "setting:";
+
+/// Between a setting's id and the name of one of its values, in the resource of that value.
+const OPTION_SEPARATOR: char = '=';
+
+/// The id of the setting the resource `resource` is published for: the setting itself
+/// (`setting:<id>`) or one of its choice's values (`setting:<id>=<value>`); `None` for another
+/// resource. A setting that is changed where it stands is an action of this resource, so what
+/// search offers beside the setting is the change itself, never a row opening Settings at it.
+#[must_use]
+pub fn setting_of_resource(resource: &str) -> Option<&str> {
+    let id = resource.strip_prefix(PUBLISHED_PREFIX)?;
+    Some(id.split_once(OPTION_SEPARATOR).map_or(id, |(id, _)| id))
+}
 
 /// One page of Settings, by the slug its links and its sidebar row use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
     pub slug: &'static str,
+}
+
+/// The pages Settings has on the web, by slug: those that read and change
+/// what the person keeps (their devices among it, as their record on their
+/// host lists them), not the hardware of a Tilo device, which a page in a
+/// browser has none of.
+pub const WEB_PAGES: &[&str] = &[
+    "appearance",
+    "accessibility",
+    "region_formats",
+    "keyboard_shortcuts",
+    "devices_access",
+    "billing",
+];
+
+impl Page {
+    /// Whether Settings has this page where this build runs: every page on
+    /// a Tilo device, on the web only [`WEB_PAGES`].
+    #[must_use]
+    pub fn here(self) -> bool {
+        !tilo_platform_caps::WEB || WEB_PAGES.contains(&self.slug)
+    }
 }
 
 /// One setting, findable by name.
@@ -333,6 +375,9 @@ pub const PAGES: &[Page] = &[
     },
     Page { slug: "printers" },
     Page { slug: "power" },
+    Page {
+        slug: "devices_access",
+    },
     Page { slug: "users" },
     Page { slug: "billing" },
     Page {

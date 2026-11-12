@@ -24,7 +24,7 @@ fn the_catalog_probe_answers_about_the_roots_it_searched() {
 }
 
 fn fixture() -> FontCatalog {
-    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
+    crate::font_catalog::fixture_catalog()
 }
 
 #[test]

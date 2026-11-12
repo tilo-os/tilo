@@ -329,13 +329,14 @@ fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), 
 /// stored by their variant now. Versions up to 3 kept a message's shared
 /// resource and the record it lives in as two fields, and its file in a
 /// third; the three are one list of attachments now
-/// ([`upgrade_attachments`]).
+/// ([`upgrade_attachments`]). Versions up to 4 kept how an agent planned its
+/// work beside it (`reasoning`); that is the run's own record, and it goes.
 ///
 /// # Errors
 /// When `from` is not a version a part was, or a stored value does not read
 /// as its new type.
 pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    if !(1..=3).contains(&from) {
+    if !(1..=4).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no chat part migration from {from}"
         )));
@@ -352,7 +353,7 @@ pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Resul
 /// its own id, by its own author, at its own time, oldest first. Version 1
 /// and 2 kept a [`Collection`] of messages with some values as JSON text;
 /// before the model, each channel kept a list of message maps.
-pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
+pub fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
     use ui::tilo_resource::read_key;
     let Ok(Some(map)) = map_at(doc, &ROOT, "messages") else {
@@ -425,7 +426,7 @@ pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, Strin
 /// [`upgrade_part`] of one message stored at `message`: each step leaves a
 /// value already stored as it reads where it is.
 fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
-    use crate::model::{AgentReasoning, AgentStepOutcome, AgentWorkState};
+    use crate::model::{AgentStepOutcome, AgentWorkState};
     use tilo_reference::StoredFile;
     retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
     retype_json::<Vec<Revision>>(doc, message, "history")?;
@@ -436,11 +437,11 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
     retype_variant_fields::<Option<StoredFile>>(doc, message, "attachment")?;
     upgrade_attachments(doc, message)?;
     if let Some(work) = map_at(doc, message, "work")? {
+        ui::tilo_resource::Slot::Key(&work, "reasoning").remove(doc)?;
         retype_json::<Option<Transition>>(doc, &work, "state")?;
         if let Some(transition) = map_at(doc, &work, "state")? {
             retype_variant_fields::<AgentWorkState>(doc, &transition, "state")?;
         }
-        retype_json::<Option<AgentReasoning>>(doc, &work, "reasoning")?;
         if let Some(stream) = map_at(doc, &work, "stream")? {
             retype_json::<Option<crate::agent_stream::AgentFinish>>(doc, &stream, "finish")?;
         }
@@ -961,13 +962,11 @@ impl Quote {
 /// An agent's record of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
-    /// Incremental provider output; independent of the agent's public rationale.
+    /// Incremental provider output.
     pub stream: Option<ProviderStream>,
     /// Where it is, and since when: one authored claim, never mixed with
     /// another's time.
     pub state: Option<Transition>,
-    /// How it decided, in the decider's words.
-    pub reasoning: Option<crate::model::AgentReasoning>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
     /// The run's working record of a failure, for whoever debugs it later: the
@@ -1075,12 +1074,6 @@ pub struct WorkUpdate {
     /// What it is about (`doing`).
     #[serde(default)]
     pub about: Option<String>,
-    /// Which path decided: `model` or `floor`.
-    #[serde(default)]
-    pub route: Option<String>,
-    /// The decider's account of why.
-    #[serde(default)]
-    pub why: Option<String>,
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,
@@ -1116,7 +1109,7 @@ pub(crate) fn prepare_file_post(
     let hash = tilo_actions::content_hash(address)
         .unwrap_or(address)
         .to_owned();
-    if !tilo_content::valid_hash(&hash) {
+    if !tilo_content::valid_reference(&hash) {
         return Err(format!(
             "{address:?} is not a content address: post what another step handed over"
         ));
@@ -1219,7 +1212,7 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
         }
         Attached::Image { name, blob, w, h } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
         }
@@ -1231,13 +1224,13 @@ pub(crate) fn valid_attached(attached: &tilo_reference::Attached) -> bool {
             size,
         } => {
             valid_name(name)
-                && tilo_content::valid_hash(blob)
+                && tilo_content::valid_reference(blob)
                 && bytes(*size)
                 && *w <= MAX_ATTACHMENT_DIMENSION
                 && *h <= MAX_ATTACHMENT_DIMENSION
         }
         Attached::File { name, blob, size } => {
-            valid_name(name) && tilo_content::valid_hash(blob) && bytes(*size)
+            valid_name(name) && tilo_content::valid_reference(blob) && bytes(*size)
         }
     }
 }
@@ -1340,30 +1333,6 @@ impl Chat {
         keys.sort();
         keys.dedup();
         Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{}", keys.join("|")))
-    }
-
-    /// The id of the channel that keeps the conversation with exactly
-    /// `participants` as a channel of its own: derived from the set, so every
-    /// device that makes it makes the same one, and spelled as a channel id
-    /// ([`given_channel_id`]) because it is named in item addresses and steps.
-    ///
-    /// A direct conversation is not a channel — its id names its participants
-    /// ([`Self::direct_id`]) and nothing is created for it. A conversation
-    /// that is kept, such as a person's with an agent (`docs/designs/\
-    /// app-language/shell.md` §8.1), is one: it is made once, on its first
-    /// message, and every device that derives this id meets the one made.
-    #[must_use]
-    pub fn conversation_channel_id(participants: impl IntoIterator<Item = Participant>) -> Id {
-        use std::hash::Hasher as _;
-        let mut keys: Vec<String> = participants.into_iter().map(|one| one.key()).collect();
-        keys.sort();
-        keys.dedup();
-        let mut hash = fnv::FnvHasher::default();
-        for key in &keys {
-            hash.write(key.as_bytes());
-            hash.write(&[0]);
-        }
-        Id::from_raw(format!("c_{:016x}", hash.finish()))
     }
 
     /// The participants the direct conversation `id` names, or none when
@@ -1585,14 +1554,23 @@ impl Chat {
 
     /// Name an agent.
     ///
-    /// The name every member shows for an agent task.
+    /// The name every member shows for an agent task, or for an agent by the
+    /// name the device that admitted it gave it: an agent names itself only
+    /// so.
     #[action(audience = "agents")]
-    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
-        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+    pub fn name_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        participant: String,
+        name: NonBlank,
+    ) -> Result<(), Refusal> {
+        let own = cx.author() == Some(participant.as_str())
+            && cx.agent_name().as_deref() == Some(name.as_str());
+        if !(participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX) || own)
             || name.len() > MAX_AGENT_NAME_BYTES
         {
             return Err(Refusal::new(
-                "only an agent task is named, with a short name",
+                "only an agent task, or an agent by its own name, is named, with a short name",
             ));
         }
         self.agent_names.insert(participant, name.into_string());

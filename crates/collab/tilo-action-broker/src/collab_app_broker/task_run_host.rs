@@ -36,15 +36,21 @@ use super::{
     TaskSubscription, mpsc,
 };
 
+mod asking;
+
 /// The route a task agent's connection is admitted on: the workspace agent
 /// service's, as a launched task agent joins.
-pub const TASK_AGENT_APP: &str = "so.tilo.agent";
+pub use tilo_actions::remote::task_programs::APP as TASK_AGENT_APP;
 
 /// How an invocation of this connection is read back.
 #[derive(Clone)]
 enum Started {
-    /// A child of the run: owned by the run.
-    Child { wire: u64, owner: InvocationOwner },
+    /// A child of the run: owned by the run, asked of `asked`.
+    Child {
+        wire: u64,
+        owner: InvocationOwner,
+        asked: Box<Asked>,
+    },
     /// A host step, admitted by the run and taken by the task agent.
     HostStep,
     /// A child the run is still admitting (an app it launches for it):
@@ -53,6 +59,17 @@ enum Started {
     /// A child the run refused, and why: what a caller that stopped
     /// waiting for the admission reads when it looks again.
     Refused(String),
+}
+
+/// What a child of the run was asked of: where its outcome is read back when the broker keeps it
+/// under an identity of its own (an application's launch, a host activation).
+#[derive(Clone)]
+struct Asked {
+    peer_id: u64,
+    provider: String,
+    resource: String,
+    action: String,
+    argument: Option<String>,
 }
 
 /// The run a host works in, as the broker delivered it.
@@ -269,7 +286,7 @@ impl TaskRunHost {
             .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
             .map_err(|reason| {
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
-                    ActionHostError::ConfirmationRequired
+                    ActionHostError::confirmation_required()
                 } else {
                     refused(reason)
                 }
@@ -503,12 +520,30 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.check(caller).ok()?;
         match self.started(id)? {
-            Started::Child { wire, owner } => {
-                let update = self.0.state.invocation_status_for_owner(wire, &owner)?;
-                Some(
-                    InvocationState::new(*id, update)
-                        .with_untrusted(self.0.state.untrusted_job(wire)),
-                )
+            Started::Child { wire, owner, asked } => {
+                if let Some(update) = self.0.state.invocation_status_for_owner(wire, &owner) {
+                    return Some(
+                        InvocationState::new(*id, update)
+                            .with_untrusted(self.0.state.untrusted_job(wire)),
+                    );
+                }
+                // An application's launch is kept under the activation's own identity, not the
+                // child's: read back as the run reads its children, as a launched agent does.
+                let (run, _) = self.pending_run().ok()?;
+                let caller = self.local_caller().ok()?;
+                let target = runtime_collab::TaskAction {
+                    peer_id: asked.peer_id,
+                    provider: &asked.provider,
+                    resource: &asked.resource,
+                    action: &asked.action,
+                    argument: asked.argument.as_deref(),
+                };
+                let (_, update) = self
+                    .0
+                    .state
+                    .native_task_observation(&run, *id, target, &caller)
+                    .ok()??;
+                Some(InvocationState::new(*id, update))
             }
             Started::HostStep => self.0.state.action_observe(&self.0.caller, id),
             Started::Starting => Some(InvocationState::new(
@@ -564,7 +599,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
             return Pending::ready(Err(error));
         }
         match self.started(id) {
-            Some(Started::Child { wire, owner }) => super::action_host::answered_when_durable(
+            Some(Started::Child { wire, owner, .. }) => super::action_host::answered_when_durable(
                 self.0
                     .state
                     .request_cancellation_for_owner(wire, &owner)
@@ -579,6 +614,38 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
             }
             None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
         }
+    }
+
+    /// Ask the run's person to confirm `request` on this host's sheet, where the run keeps its
+    /// own questions ([`crate::services::TrackerRuns::asks_on_host`]): the answer is the run's,
+    /// and the same request invoked again goes on with it ([`asking`]).
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+        if let Err(error) = self.check(caller) {
+            return Pending::ready(Err(error));
+        }
+        let runtime = match super::launchable::delivery_runtime() {
+            Ok(runtime) => runtime,
+            Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
+        };
+        let host = self.clone();
+        let request = request.clone();
+        let (complete, answer) = pending();
+        runtime.spawn(async move {
+            // A caller that stops waiting withdraws the question: the asking is dropped, and
+            // with it the sheet.
+            let asked = tokio::select! {
+                asked = host.ask_person(&request) => Some(asked),
+                () = complete.abandoned() => None,
+            };
+            if let Some(asked) = asked {
+                complete.complete(asked);
+            }
+        });
+        answer
     }
 
     /// Records outside their apps, read as steps of the run.
@@ -633,10 +700,17 @@ impl TaskRunHost {
             Err(error) => {
                 let error = error.to_string();
                 self.remember(request.invocation, Started::Refused(error.clone()));
+                let asks =
+                    crate::services::NativeTaskActionRequirement::awaits_confirmation(&error);
+                // A run with no issue to ask on asks its person on this host's sheet: its caller
+                // is told the step needs confirming, and asks through `confirm`.
+                if asks && self.asks_on_host() {
+                    return Err(ActionHostError::confirmation_required());
+                }
                 // The run pauses for its person: the question goes on its
                 // issue, as a launched agent puts it there, and the agent
                 // asks again with the same arguments once they answered.
-                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error)
+                if asks
                     && let Err(why) = self
                         .ask_on_issue(peer_id, request, argument.as_deref())
                         .await
@@ -658,6 +732,13 @@ impl TaskRunHost {
                     task: run.task_id.clone(),
                     epoch: run.native.epoch,
                 },
+                asked: Box::new(Asked {
+                    peer_id,
+                    provider: launch.to_owned(),
+                    resource: request.target.address.resource.clone(),
+                    action: request.target.address.action.clone(),
+                    argument: argument.clone(),
+                }),
             },
         );
         Ok(InvocationState::new(request.invocation, update).receipt())
@@ -732,22 +813,13 @@ impl TaskRunHost {
         request: &InvokeRequest,
         argument: Option<&str>,
     ) -> Result<(), String> {
-        let (app, offered) = self
+        let address = &request.target.address;
+        let (surface, offered) = self
             .0
             .state
-            .surfaces
-            .lock()
-            .map_err(|_| "task surface unavailable")?
-            .get(&peer_id)
-            .and_then(|surface| {
-                surface
-                    .action_projection(
-                        &request.target.address.resource,
-                        &request.target.address.action,
-                    )
-                    .map(|(surface, offered)| (surface.app_id, offered))
-            })
+            .offered_by(peer_id, &address.resource, &address.action)
             .ok_or("the action asked about is no longer published")?;
+        let app = surface.app_id;
         let arguments = arguments_of(argument)?;
         let draft = tilo_actions::Draft::render(
             &offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
@@ -779,6 +851,12 @@ impl TaskRunHost {
     ) -> Result<(), String> {
         let (run, _) = self.pending_run()?;
         let current = self.0.state.tracker_run_of(&run)?;
+        let on_host = self
+            .0
+            .state
+            .tracker_runs(self.workspace())
+            .filter(|tracker| tracker.asks_on_host(self.workspace(), &current))
+            .cloned();
         let arguments = arguments_of(argument)?;
         let digest = hex::encode(tilo_actions::draft::arguments_digest(&arguments));
         let Some(question) = current.question.filter(|question| {
@@ -788,6 +866,10 @@ impl TaskRunHost {
         }) else {
             return Ok(());
         };
+        // A question the host asked is spent where it is kept.
+        if let Some(tracker) = on_host {
+            return tracker.keep_question(self.workspace(), self.issue(), None);
+        }
         self.tracker_step(
             "settle-confirmation",
             &serde_json::json!({ "issue": issue_id(self.issue()), "id": question.id }),

@@ -47,7 +47,26 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "publisher.profile", label = "App Publisher")]
+impl Publisher {
+    /// What the record holds: the registry the key publishes to, and the namespaces claimed on
+    /// it.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "publisher.profile",
+    read_content = Publisher::read_document
+)]
 impl Publisher {}
 
 impl Publisher {
@@ -93,7 +112,7 @@ struct Notice {
 
 /// A catalog message.
 fn say(key: &str) -> String {
-    ui::i18n::I18nManager::format(key, &[])
+    crate::locales::CATALOG.t_args(key, &[])
 }
 
 impl Notice {
@@ -151,12 +170,12 @@ struct Pane {
 #[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
     /// Create publisher key.
-    #[effect(privileged)]
+    #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(attended, privileged)]
+    #[effect(attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
     /// Export the key to a file the person chooses.
     #[effect(job, attended, privileged)]
@@ -533,7 +552,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
                 .push(Box::new(Text::new("publisher-proof-places-help")));
             if places.is_empty() {
                 column = column.push(Box::new(
-                    Text::new("Name a domain or forge account to see where its proof goes.")
+                    Text::new(&crate::locales::CATALOG.t("publisher-proof-empty"))
                         .with_role(TextRole::Caption)
                         .dimmed(),
                 ));
@@ -541,7 +560,10 @@ fn proof_places_section() -> ModelView<Vec<String>> {
             }
             for ((index, place), number) in places.iter().enumerate().zip(1_usize..) {
                 column = column.push(value_group(
-                    &format!("Publish at {number}"),
+                    &crate::locales::CATALOG.t_args(
+                        "publisher-publish-at",
+                        &[("place", ui::i18n::ArgValue::Text(number.to_string()))],
+                    ),
                     place,
                     &format!("proof-place-{index}"),
                     None,
@@ -557,7 +579,7 @@ fn proof_places_section() -> ModelView<Vec<String>> {
 fn status_timeline(pane: &Pane) -> Element {
     if pane.history.is_empty() {
         return Box::new(
-            Text::new("No application status has been checked in this window yet.")
+            Text::new(&crate::locales::CATALOG.t("publisher-status-empty"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         );
@@ -567,7 +589,7 @@ fn status_timeline(pane: &Pane) -> Element {
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(
-            Text::new("Application status")
+            Text::new(&crate::locales::CATALOG.t("publisher-status-heading"))
                 .with_id("status-timeline-heading")
                 .with_role(TextRole::Heading),
         ));

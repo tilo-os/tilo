@@ -1,150 +1,5 @@
 use super::*;
 
-#[tokio::test]
-async fn encoded_backlog_stale_completion_cannot_finish_a_restarted_stream() {
-    let key = (42, 31);
-    let mut tasks = SurfaceFanoutTasks::new();
-    tasks.insert(key, (1, tokio::spawn(std::future::pending())));
-    let (_, old) = tasks.remove(&key).expect("old stream task");
-    old.abort();
-    let current = tokio::spawn(std::future::pending());
-    let current_abort = current.abort_handle();
-    tasks.insert(key, (2, current));
-    assert!(!finish_surface_fanout(&mut tasks, key, 1));
-    assert!(
-        tasks.contains_key(&key),
-        "old completion retains the new task"
-    );
-    assert!(finish_surface_fanout(&mut tasks, key, 2));
-    current_abort.abort();
-    assert!(tasks.is_empty());
-    assert!(!finish_surface_fanout(&mut tasks, key, 2));
-}
-
-#[test]
-fn encoded_backlog_accounts_for_retained_allocation_after_pop_and_refill() {
-    let mut backlog = SurfaceFrameBacklog::default();
-    for cycle in 0..4 {
-        for ts in 0..100 {
-            backlog.push(NeighbourMsg::SurfaceFrame {
-                surface: 31,
-                source_peer: 1,
-                ts,
-                encoded_h264: vec![0x41; 1024],
-                seq: ts,
-            });
-            let allocated = backlog
-                .frames
-                .capacity()
-                .saturating_mul(std::mem::size_of::<NeighbourMsg>())
-                .saturating_add(
-                    backlog
-                        .frames
-                        .iter()
-                        .map(|msg| match msg {
-                            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => {
-                                encoded_h264.capacity()
-                            }
-                            _ => 0,
-                        })
-                        .sum::<usize>(),
-                );
-            assert!(
-                allocated <= backlog.bytes && allocated <= MAX_SURFACE_FRAME_BYTES,
-                "cycle={cycle} accounted={} allocated={allocated}",
-                backlog.bytes
-            );
-        }
-        for _ in 0..75 {
-            assert!(backlog.pop().is_some());
-            let allocated = backlog
-                .frames
-                .capacity()
-                .saturating_mul(std::mem::size_of::<NeighbourMsg>())
-                .saturating_add(
-                    backlog
-                        .frames
-                        .iter()
-                        .map(|msg| match msg {
-                            NeighbourMsg::SurfaceFrame { encoded_h264, .. } => {
-                                encoded_h264.capacity()
-                            }
-                            _ => 0,
-                        })
-                        .sum::<usize>(),
-                );
-            assert!(allocated <= backlog.bytes && allocated <= MAX_SURFACE_FRAME_BYTES);
-        }
-    }
-}
-
-#[test]
-fn encoded_backlog_preserves_order_and_recovers_at_a_keyframe_after_loss() {
-    let frame = |ts, encoded_h264| NeighbourMsg::SurfaceFrame {
-        surface: 31,
-        source_peer: 1,
-        encoded_h264,
-        ts,
-        seq: ts,
-    };
-    let mut backlog = SurfaceFrameBacklog::default();
-    for ts in 1..4 {
-        backlog.push(frame(ts, vec![0, 0, 1, 0x41]));
-    }
-    for expected in 1..4 {
-        assert!(
-            matches!(backlog.pop(), Some(NeighbourMsg::SurfaceFrame { ts, .. }) if ts == expected)
-        );
-    }
-    assert_eq!(backlog.bytes, 0);
-    // Fill the same production byte budget, including queue storage.
-    let payload = vec![
-        0x41;
-        MAX_SURFACE_FRAME_BYTES
-            .saturating_sub(std::mem::size_of::<NeighbourMsg>().saturating_mul(4))
-    ];
-    backlog.push(frame(4, payload));
-    assert_eq!(backlog.bytes, MAX_SURFACE_FRAME_BYTES);
-    backlog.push(frame(5, vec![0, 0, 1, 0x41]));
-    assert!(backlog.frames.is_empty());
-    assert_eq!(backlog.bytes, 0);
-    assert!(backlog.awaiting_keyframe);
-    backlog.push(frame(6, vec![0, 0, 1, 0x41]));
-    assert!(backlog.pop().is_none(), "lost references cannot be used");
-    backlog.push(frame(7, vec![0, 0, 1, 0x65]));
-    assert!(matches!(
-        backlog.pop(),
-        Some(NeighbourMsg::SurfaceFrame { ts: 7, .. })
-    ));
-    assert!(!backlog.awaiting_keyframe);
-    // A failed send uses this same production recovery transition.
-    backlog.lose_references();
-    backlog.codec = Some(media::StreamCodec::Vp9);
-    assert!(
-        !backlog.admit(&frame(8, vec![0, 0, 1, 0x65])),
-        "H264 is not a VP9 keyframe"
-    );
-    assert!(backlog.admit(&frame(9, vec![0x82, 0x49, 0x83, 0x42])));
-    backlog.codec = None;
-    backlog.lose_references();
-    assert!(
-        !backlog.awaiting_keyframe,
-        "independent pictures need no keyframe"
-    );
-    backlog.push(frame(10, vec![0xff, 0xd8]));
-    backlog.push(frame(11, vec![0xff, 0xd8]));
-    assert!(matches!(
-        backlog.pop(),
-        Some(NeighbourMsg::SurfaceFrame { ts: 11, .. })
-    ));
-    assert!(
-        backlog.pop().is_none(),
-        "independent pictures keep newest only"
-    );
-}
-
-/// A dial wakes the relays; what a lone desktop does on every local
-/// change (join its own topic, publish to it) does not.
 #[test]
 fn only_a_remote_party_needs_this_device_reachable() {
     let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
@@ -455,6 +310,52 @@ fn fabric_action_from(event: &NetEvent, from: EndpointId, action: &[u8]) -> bool
             ..
         } if *peer == from && bytes == action
     )
+}
+
+/// Where the person's workspaces are hosted reaches their other device, once
+/// for each word that changed: the device the word is for enters each
+/// workspace at its host (`NeighbourMsg::PersonalHosts`), and a session that
+/// dropped it left a device copied from another without its hosts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_hears_where_the_persons_workspaces_are_hosted() {
+    let [a, mut b] = two(linked(46, 2).await);
+    let (a_id, root) = (a.id, a.root);
+    let hosts = |hint: u8| NeighbourMsg::PersonalHosts {
+        user_public_key: root,
+        hosts: vec![neighbour_wire::PersonalHost {
+            workspace: "00000000-0000-4000-8000-000000000001".into(),
+            hint: vec![hint],
+        }],
+    };
+    let heard = |hint: u8| {
+        move |event: &NetEvent| {
+            matches!(
+                event,
+                NetEvent::SiblingMsg {
+                    peer,
+                    msg: NeighbourMsg::PersonalHosts { hosts, .. },
+                    ..
+                } if *peer == a_id && hosts.first().is_some_and(|host| host.hint == [hint])
+            )
+        }
+    };
+    a.cmd
+        .send(NetCmd::PublishToSiblings { msg: hosts(1) })
+        .await
+        .unwrap();
+    wait_for_event("where the workspaces are hosted", &mut b.rx, heard(1)).await;
+    // The same word again is not news; the next one that differs is.
+    for hint in [1, 2] {
+        a.cmd
+            .send(NetCmd::PublishToSiblings { msg: hosts(hint) })
+            .await
+            .unwrap();
+    }
+    wait_for_event("the hosts that changed", &mut b.rx, |event| {
+        assert!(!heard(1)(event), "a repeated word is heard once");
+        heard(2)(event)
+    })
+    .await;
 }
 
 /// Connections `endpoint` holds open.
@@ -837,48 +738,6 @@ async fn two_devices_exchange_and_announce_identity_over_iroh() {
         )
         .await;
     }
-
-    let dedicated_before =
-        DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
-    pair[0]
-        .cmd
-        .send(NetCmd::Publish {
-            ws: 42,
-            msg: NeighbourMsg::SurfaceFrame {
-                surface: 7,
-                source_peer: crate::behaviour::peer_liveness_handle(&ids[0]),
-                encoded_h264: vec![0, 0, 0, 1, 0x65],
-                ts: 99,
-                seq: 0,
-            },
-        })
-        .await
-        .unwrap();
-    wait_for_event("A's window frame at B", &mut pair[1].rx, |event| {
-        matches!(
-            event,
-            NetEvent::Msg {
-                msg: NeighbourMsg::SurfaceFrame {
-                    surface: 7,
-                    ts: 99,
-                    ..
-                },
-                ..
-            }
-        )
-    })
-    .await;
-    tilo_test_env::within(
-        "surface frame should arrive through the dedicated QUIC ALPN",
-        async {
-            while DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
-                <= dedicated_before
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        },
-    )
-    .await;
 }
 
 /// What this actor's peers delivered to it so far, by kind.
@@ -975,73 +834,6 @@ async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idl
     reason = "each phase keeps one former test's body verbatim"
 )]
 async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
-    // Phase `dead_surface_viewer_does_not_stall_later_collaboration_messages`.
-    {
-        let [a, b, mut c] = three(linked(44, 3).await);
-        let (cmd_a, rx_c, c_id, root) = (&a.cmd, &mut c.rx, c.id, a.root);
-        let source_peer = crate::behaviour::peer_liveness_handle(&a.id);
-
-        // Leave A's authenticated membership evidence intact while making B's
-        // dedicated media address unreachable. A direct dial may consume the
-        // full media timeout, but it must happen outside the actor loop.
-        b.task.abort();
-        let _ = b.task.await;
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        // A dial to the dead viewer takes up to its 300 ms timeout. Inside
-        // the actor loop every attempt would wait it out; outside it, an
-        // attempt on a loaded runner is late only now and then. Each
-        // attempt names a new surface, so each dials the viewer anew.
-        let mut fastest = Duration::MAX;
-        for attempt in 0..5_u32 {
-            let started = Instant::now();
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SurfaceFrame {
-                        surface: 9 + u64::from(attempt),
-                        source_peer,
-                        encoded_h264: vec![0, 0, 0, 1, 0x65],
-                        ts: 1,
-                        seq: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            let probe = vec![0x7e, u8::try_from(attempt).unwrap()];
-            cmd_a
-                .send(NetCmd::PublishPersonalFabricTarget {
-                    user_public_key: root,
-                    target: c_id,
-                    payload: PersonalFabricPayload::Action(probe.clone()),
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within(
-                    "dead media viewer stalled the collaboration actor",
-                    rx_c.recv(),
-                )
-                .await
-                .unwrap();
-                if matches!(
-                    event,
-                    NetEvent::PersonalFabric {
-                        payload: PersonalFabricPayload::Action(ref bytes),
-                        ..
-                    } if *bytes == probe
-                ) {
-                    break;
-                }
-            }
-            fastest = fastest.min(started.elapsed());
-        }
-        assert!(
-            fastest < Duration::from_millis(250),
-            "every attempt waited for the dead viewer's dial: {fastest:?}"
-        );
-        a.task.abort();
-        c.task.abort();
-    }
     // Phase `personal_fabric_action_reaches_only_the_exact_target`.
     {
         let [a, mut b, mut c] = three(linked(44, 3).await);
@@ -1098,7 +890,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                         surface: 7,
                         event: vec![0x51, 0x4f, 0x53],
                     },
-                    route: WorkspaceControlRoute::Direct { target: b_id },
+                    target: b_id,
                 })
                 .await
                 .unwrap();
@@ -1341,48 +1133,54 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
     }
 }
 
+/// A window's control message from a viewer with no direct route to this device arrives through
+/// the workspace's host as a message for this device alone: it is taken as the viewer's, under
+/// the sender the host stamped, and never mistaken for a copy of an earlier one, since the same
+/// key pressed twice says the same bytes twice. What else the host could carry that way is not.
 #[test]
-fn a_held_streams_start_survives_its_frames_being_superseded() {
-    let frame = |ts, encoded_h264| NeighbourMsg::SurfaceFrame {
-        surface: 31,
-        source_peer: 1,
-        encoded_h264,
-        ts,
-        seq: ts,
+fn a_viewers_input_through_the_host_reaches_this_device_as_its_own() {
+    let viewer = iroh::SecretKey::from_bytes(&[0x37; 32]).public();
+    let input = NeighbourMsg::RemoteInput {
+        peer: crate::behaviour::peer_liveness_handle(&viewer),
+        surface: 7,
+        event: vec![1, 2, 3],
     };
-    let start = NeighbourMsg::SurfaceStreamStart {
-        surface: 31,
-        source_peer: 1,
-        width: 64,
-        height: 64,
-        codec: "h264".into(),
-        ts: 0,
-        sender_monotonic_ns_at_send: 0,
-        colorimetry: None,
-        hdr_static_metadata: None,
-        bit_depth: 0,
-        app_id: String::new(),
-        tab: 0,
+    let frame = postcard::to_allocvec(&input).expect("an input frame");
+    for _ in 0..2 {
+        match record_content_event(viewer.as_bytes(), &frame) {
+            Some(HostEvent::Message {
+                author,
+                fingerprint,
+                replayed: false,
+                msg: NeighbourMsg::RemoteInput { surface: 7, .. },
+            }) => {
+                assert_eq!(author, viewer, "the sender the host stamped");
+                assert_eq!(fingerprint, [0; 32], "input is never deduplicated");
+            }
+            _ => panic!("a viewer's input arrives through the host"),
+        }
+    }
+    let ask = NeighbourMsg::SurfaceViewRequest {
+        peer: 1,
+        room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+        views: Vec::new(),
+        decode: Vec::new(),
     };
-    let mut backlog = SurfaceFrameBacklog::default();
-    backlog.lose_references();
     assert!(
-        backlog.admit(&start),
-        "a stream's start waits for no keyframe"
+        record_content_event(
+            viewer.as_bytes(),
+            &postcard::to_allocvec(&ask).expect("an ask")
+        )
+        .is_some(),
+        "a viewer's ask to view arrives the same way"
     );
-    backlog.push(start);
-    backlog.push(frame(1, vec![0, 0, 1, 0x65]));
-    backlog.push(frame(2, vec![0, 0, 1, 0x41]));
-    // A newer keyframe supersedes the older chain, not the start.
-    backlog.push(frame(3, vec![0, 0, 1, 0x65]));
-    assert!(matches!(
-        backlog.pop(),
-        Some(NeighbourMsg::SurfaceStreamStart { .. })
-    ));
-    assert!(matches!(
-        backlog.pop(),
-        Some(NeighbourMsg::SurfaceFrame { ts: 3, .. })
-    ));
-    assert!(backlog.pop().is_none());
-    assert_eq!(backlog.bytes, 0);
+    let heartbeat = NeighbourMsg::Heartbeat { peer: 1, ts: 0 };
+    assert!(
+        record_content_event(
+            viewer.as_bytes(),
+            &postcard::to_allocvec(&heartbeat).expect("a heartbeat")
+        )
+        .is_none(),
+        "nothing but content and a window's control rides the device route"
+    );
 }

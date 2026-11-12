@@ -24,17 +24,19 @@
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
 //!   accepted at once and runs on the service's own thread; `Observe`
-//!   reports where it stands, and `Cancel` stops one that has not started.
+//!   reports where it stands, and `Cancel` stops one that has not started or
+//!   ends the shell command of one that runs ([`terminal`]).
 //!
-//! Document invocations serve the host user's own devices. Anyone else the
-//! workspace admits may only comment through them (actions on a `comments`
-//! field) and run the actions an app offers every member for themselves
-//! ([`tilo_actions::MEMBER_OWN_TAG`], linking their own account elsewhere),
-//! under their own current standing so the action's door decides: a
-//! commenter cannot publish document changes directly. Exact local
-//! View discovery also serves currently certified workspace readers, through the
-//! host's canonical Read policy; that grants no document invocation authority.
-//! Agents use their own mounts.
+//! Document invocations serve the host user's own devices as theirs. Anyone
+//! else the workspace admits, and an agent a person's own device handed its
+//! session to (the host's own person's included), is served within bounds
+//! ([`bounded`]): in a replica of their own on their current standing, an
+//! agent's bounded as every agent's is; what that replica offers is both
+//! what their listing shows and all the host runs for them; an action that
+//! asks first is put to the person; and nothing is saved that their standing
+//! does not let them write. Exact local View discovery also serves currently
+//! certified workspace readers, through the host's canonical Read policy;
+//! that grants no document invocation authority.
 //!
 //! The service joins each workspace as the host's own device ([`WorkspaceMember`], from
 //! the [`WorkspaceRecordsLink`] the host supplies): a member of the workspace's
@@ -46,38 +48,64 @@
 //! ([`WorkspaceRecordsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
+mod bounded;
+mod catalogue;
+mod catch_up;
+mod content;
 mod feedback;
+mod keys;
+mod ledger;
+mod link;
+mod listing;
+mod opened;
+mod placed;
+mod publish;
 mod reads;
+mod run_context;
+mod run_voice;
 mod terminal;
-pub use terminal::{ShellRan, TERMINAL_APP, WorkspaceShell};
+pub use content::MAX_PUT_BYTES;
+pub use link::{
+    FeedbackReviewer, ViewDocument, ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
+};
+pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use ed25519_dalek::SigningKey;
+use tilo_session_client::engine::RecordReading;
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
-use crate::host::{CatalogueFactory, HostEndpoint};
-use crate::participant::SharedDesktop;
-use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
+use crate::host::CatalogueFactory;
+use crate::participant::actions::{Outcome, door_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
+use crate::workspace_records::WorkspaceRecords;
+use catch_up::catch_up;
 use collab_types::DocumentMutation;
+use keys::{Keys, catalogue_keys};
+use ledger::Ledger;
+use publish::Unsaved;
+use run_context::{caller_context, said_run_title};
+use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
-    CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
-    provider_workspace, workspace_provider,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
+    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
+    CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
+    application_provider_record, pending, provider_workspace,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
 };
-use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::room_workspace_id;
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::RevocationList;
+use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 /// How long a comment the host files for someone may take to be saved
 /// before the action reports that it was not.
@@ -94,201 +122,6 @@ const JOIN_WAIT: Duration = Duration::from_secs(30);
 /// keys are on their way. A named record whose keys have not arrived by
 /// then is refused, never acted on half seen.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
-/// Invocations remembered for retries, status and history.
-const REMEMBERED: usize = 1024;
-
-/// How the service takes part in the host's workspaces: as the host's own
-/// device, a member of each workspace's channels like any other. It opens only
-/// what a workspace's participants admitted it to and seals everything it writes.
-#[derive(Clone)]
-pub struct WorkspaceMember {
-    /// The host's endpoint and certificate; the member is the host device.
-    pub endpoint: HostEndpoint,
-    /// The host device's key, which signs the member's changes.
-    pub key: SigningKey,
-    /// The runtime the member's sessions run on.
-    pub runtime: tokio::runtime::Handle,
-}
-
-/// Current governed read policy supplied by the authenticated host boundary.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ViewReadPolicy {
-    /// Governed workspace whose current policy authorized the exact source record.
-    pub workspace: String,
-    /// The certified caller's current standing in the workspace, including the
-    /// bound of a device that is not theirs.
-    pub standing: ui::permissions::Standing,
-    /// The workspace's current sandbox capabilities.
-    pub sandbox: Vec<collab_types::caps::CapOverride>,
-    /// Host time used to evaluate capability expiry.
-    pub unix_time: u64,
-}
-
-impl ViewReadPolicy {
-    pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
-        ui::permissions::PermissionContext::new(
-            ui::permissions::Actor::person(self.standing.person.clone())
-                .in_workspace(self.workspace.clone()),
-            self.sandbox.clone(),
-            self.standing.clone(),
-        )
-        .at_unix_time(self.unix_time)
-    }
-}
-
-/// An existing verified source snapshot for internal view discovery only.
-pub struct ViewDocument {
-    /// Replayed snapshot; never returned in the public metadata response.
-    pub bytes: Vec<u8>,
-    /// Content revision for catalogue freshness.
-    pub revision: String,
-}
-
-/// What the service needs of its host. Methods block; they are called from
-/// the service's own thread, never from the host's runtime.
-pub trait WorkspaceRecordsLink: Send + Sync {
-    /// The user root the host chains to: the only person served.
-    fn user_public_key(&self) -> [u8; 32];
-    /// How the service joins the host's workspaces.
-    fn member(&self) -> WorkspaceMember;
-    /// Current certified-device admission and exact record Read capability.
-    /// Absence denies; this never inherits document invocation authority.
-    fn view_read_policy(
-        &self,
-        _workspace: u64,
-        _caller: &Caller,
-        _app: &str,
-        _record: &str,
-    ) -> Option<ViewReadPolicy> {
-        None
-    }
-    /// Read an exact existing source using already-owned host keys. The host
-    /// must check current certified Read under its workspace lock before key access
-    /// and again before returning. Missing keys never cause enrollment.
-    fn view_document(
-        &self,
-        _workspace: u64,
-        _caller: &Caller,
-        _source: &DocumentRoute,
-    ) -> Result<ViewDocument, String> {
-        Err("existing view documents unavailable".into())
-    }
-    /// The content keys of `route`'s channel, when the host device itself
-    /// takes part in the channels of `route`'s workspace: it is then already the
-    /// channel's member, and the service, which joins as that device, can
-    /// only be handed the keys the host holds. `create` opens the channel of
-    /// a record the service is about to write for the first time.
-    ///
-    /// `None` when the host does not take part in the workspace's channels: the
-    /// service waits for a participant to admit it over the channel, like
-    /// any member.
-    /// `Some(Err)` when the host refused the hand-off or holds no such
-    /// channel. Called only on behalf of a caller the service serves.
-    fn host_keys(
-        &self,
-        _route: &DocumentRoute,
-        _create: bool,
-    ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
-        None
-    }
-    /// The listener-owned public locator; absence cannot mint a browser link.
-    fn view_locator(
-        &self,
-        _workspace: &str,
-        _provider: &str,
-    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
-        None
-    }
-    /// Whether the bot installed as `installation` in `workspace` may show
-    /// other names on what it writes. Absence refuses.
-    fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
-        false
-    }
-    /// Where the workspaces' Terminal sessions run their shells on this
-    /// host ([`WorkspaceShell`]). Absence leaves a session's `run` to the
-    /// device running the session.
-    fn shell(&self) -> Option<Arc<dyn WorkspaceShell>> {
-        None
-    }
-    /// The bytes `workspace`'s content store holds under `hash`, for an
-    /// avatar an appearance names. Absence refuses the appearance.
-    fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
-        None
-    }
-    /// The model the host looks over its reporters' reviews with, when it
-    /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
-    /// reporters' own devices.
-    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
-        None
-    }
-}
-
-/// A model the host lends its admitted reporters to look over a report's
-/// review: it is asked only the feedback review contract
-/// (`ui::feedback::model_review`) over the report's model view, which shows
-/// personal values only as placeholders, and only quotes from the texts
-/// asked about go back.
-pub trait FeedbackReviewer: Send + Sync {
-    /// What a review calls the model: the provider and model.
-    fn name(&self) -> String;
-    /// Ask the model `prompt` for `caller`, its answer held to the JSON
-    /// `schema` where the provider can, then call `done` with its
-    /// answer, from any thread. A host may refuse a caller who asks too
-    /// often.
-    fn review(
-        &self,
-        caller: &Caller,
-        prompt: String,
-        schema: serde_json::Value,
-        done: Box<dyn FnOnce(Result<String, String>) + Send>,
-    );
-}
-
-struct Entry {
-    caller: Caller,
-    request: InvokeRequest,
-    update: InvocationUpdate,
-    /// Where the invocation left its actor in the record it acted on.
-    left_at: Option<ActorPlace>,
-}
-
-#[derive(Default)]
-struct Ledger {
-    entries: HashMap<InvocationId, Entry>,
-    order: VecDeque<InvocationId>,
-    running: Option<InvocationId>,
-}
-
-impl Ledger {
-    fn insert(&mut self, caller: &Caller, request: InvokeRequest) {
-        while self.order.len() >= REMEMBERED {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
-        }
-        let invocation = request.invocation;
-        self.order.push_back(invocation);
-        self.entries.insert(
-            invocation,
-            Entry {
-                caller: caller.clone(),
-                request,
-                update: InvocationUpdate::Accepted { invocation },
-                left_at: None,
-            },
-        );
-    }
-
-    fn forget(&mut self, id: &InvocationId) {
-        self.entries.remove(id);
-        self.order.retain(|candidate| candidate != id);
-    }
-
-    fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
-        self.entries.get(id).filter(|entry| entry.caller == *caller)
-    }
-}
-
 enum Job {
     Feedback {
         workspace_id: u64,
@@ -309,6 +142,32 @@ enum Job {
     },
     /// A Terminal session's run that ended in the host's shell, to record.
     Ran(Box<terminal::Ended>),
+    /// A step of an upload into a workspace whose store the service has not
+    /// found yet.
+    Content {
+        workspace_id: u64,
+        caller: Caller,
+        step: tilo_actions::remote::ContentPutStep,
+        done: Completer<Result<tilo_actions::remote::ContentPutAnswer, ActionHostError>>,
+    },
+    /// A piece of content asked of a workspace whose store the service has
+    /// not found yet.
+    ContentGet {
+        workspace_id: u64,
+        caller: Caller,
+        content: String,
+        offset: u64,
+        length: u64,
+        done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
+    },
+    /// An agent's run connected to a workspace and has asked nothing yet:
+    /// it is present there, waiting ([`run_voice`]).
+    Arrived { workspace_id: u64, caller: Caller },
+    /// A workspace requests wait to be joined to changed: those it joined
+    /// run.
+    Joined(u64),
+    /// A workspace was deleted: the service lets go of all it holds of it.
+    Forget(u64),
 }
 
 impl Job {
@@ -318,6 +177,41 @@ impl Job {
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
+            Self::Arrived { .. } => "arrived",
+            Self::Content { .. } => "content",
+            Self::ContentGet { .. } => "content-get",
+            Self::Joined(_) => "joined",
+            Self::Forget(_) => "forget",
+        }
+    }
+
+    /// The workspace whose records the job reads or changes.
+    const fn workspace(&self) -> Option<u64> {
+        match self {
+            Self::Catalogue { workspace_id, .. }
+            | Self::Invoke { workspace_id, .. }
+            | Self::Content { workspace_id, .. }
+            | Self::ContentGet { workspace_id, .. }
+            | Self::Arrived { workspace_id, .. } => Some(*workspace_id),
+            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
+        }
+    }
+
+    /// What the job must have before it reads its workspace: what it is about
+    /// to read names what it waits for. An invocation is named here by its id
+    /// alone: the worker reads its request from the ledger
+    /// ([`Worker::keys`]).
+    fn keys(&self) -> Keys {
+        match self {
+            Self::Catalogue { query, .. } => catalogue_keys(query),
+            Self::Feedback { .. }
+            | Self::Invoke { .. }
+            | Self::Ran(_)
+            | Self::Content { .. }
+            | Self::ContentGet { .. }
+            | Self::Arrived { .. }
+            | Self::Joined(_)
+            | Self::Forget(_) => Keys::Joined,
         }
     }
 }
@@ -331,6 +225,20 @@ struct Shared {
     ledger: Mutex<Ledger>,
     link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
+    /// How the service joins workspaces, once its thread runs.
+    member: OnceLock<WorkspaceMember>,
+    /// Every workspace a request named, by id: joined as the request
+    /// arrives, while the service's one thread still answers others, so the
+    /// first requests of many fresh workspaces join side by side instead of
+    /// each waiting for the joins before it. `Some` until the thread takes
+    /// the membership over.
+    joins: Mutex<HashMap<u64, Option<Workspace>>>,
+    /// Each workspace's content store, once found.
+    stores: content::Stores,
+    /// The uploads callers have open.
+    puts: tilo_actions::remote::HostedContentPuts,
+    /// The answers people gave to invocations run for them.
+    witnesses: bounded::Witnesses,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -350,6 +258,11 @@ impl WorkspaceActions {
                 ledger: Mutex::new(Ledger::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
+                member: OnceLock::new(),
+                joins: Mutex::default(),
+                stores: Mutex::default(),
+                puts: tilo_actions::remote::HostedContentPuts::default(),
+                witnesses: bounded::Witnesses::default(),
             }),
             catalogue,
         }
@@ -372,31 +285,83 @@ impl WorkspaceActions {
         Ok(())
     }
 
+    /// The workspace `workspace_id` was deleted: the service lets go of all
+    /// it holds of it, its app workers' replicas included.
+    pub fn forget_workspace(&self, workspace_id: u64) {
+        if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
+            let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
+        }
+    }
+
+    /// `caller`'s session became an agent's run in `workspace_id`: the run is
+    /// present there from now on, waiting, before its first request, as the
+    /// host speaks for the runs it executes ([`run_voice`]). Nothing for a
+    /// caller in no run.
+    pub fn run_arrived(&self, workspace_id: u64, caller: &Caller) {
+        if caller.agent_run().is_none() {
+            return;
+        }
+        let _ = self.submit(Job::Arrived {
+            workspace_id,
+            caller: caller.clone(),
+        });
+    }
+
     /// Stop the service thread; later requests are refused as unavailable.
     pub fn shutdown(&self) {
         self.shared.jobs.lock_recover().take();
     }
 
+    /// Whether `caller` is the host's own person, or an agent one of their
+    /// devices handed its session to.
     fn authorized(&self, caller: &Caller) -> bool {
         let Some(link) = self.shared.link.get() else {
             return false;
         };
-        let owner = hex::encode(link.user_public_key());
-        matches!(caller.principal(), CallerPrincipal::Person(person) if *person == owner)
+        acts_for(caller, &hex::encode(link.user_public_key()))
     }
 
     /// Whether `caller` may ask the host to run `request` at all. Anyone the
     /// workspace admits may ask for a resource's link: it reads where the resource
     /// is shown and grants nothing, and the governed view lookup behind it
-    /// applies their own grant. Other people may comment on a record through
-    /// the host: the worker runs it under their own current standing, so the
-    /// action's door decides, and refuses anything else.
+    /// applies their own grant. Other people and their agents may act on a
+    /// record, or open a new one, through the host: the worker runs it under
+    /// their own current standing, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_record = record_of(&request.target.provider, "").is_some();
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
-        let member_request = on_record && matches!(caller.principal(), CallerPrincipal::Person(_));
+        let on_workspace = provider_workspace(&request.target.provider).is_some();
+        // Showing a record on the workspace's desk, as an agent's work opens
+        // what it changed in front of the people there.
+        let shows = application_provider(&request.target.provider).is_some()
+            && request.target.address.action == APPLICATION_OPEN_ACTION;
+        let member_request = (on_record || on_workspace || shows) && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
+    }
+
+    /// Start joining `workspace_id` unless the service has: the thread
+    /// waits only for what is still missing when it reaches the request.
+    /// Joining sends the subscription and returns; the session runs on the
+    /// member's runtime.
+    fn join_ahead(&self, workspace_id: u64) {
+        let Some(member) = self.shared.member.get() else {
+            return;
+        };
+        let mut joins = self.shared.joins.lock_recover();
+        if joins.contains_key(&workspace_id) {
+            return;
+        }
+        match Workspace::join(member, workspace_id, &self.shared) {
+            Ok(workspace) => {
+                joins.insert(workspace_id, Some(workspace));
+                drop(joins);
+            }
+            Err(error) => {
+                drop(joins);
+                tracing::debug!(%error, workspace_id, "workspace actions: a workspace was not joined ahead");
+            }
+        }
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -414,6 +379,9 @@ impl WorkspaceActions {
         reason = "a job the worker cannot take goes back to its sender whole"
     )]
     fn submit(&self, job: Job) -> Result<(), Job> {
+        if let Some(workspace_id) = job.workspace() {
+            self.join_ahead(workspace_id);
+        }
         let jobs = self.shared.jobs.lock_recover();
         match jobs.as_ref() {
             Some(sender) => sender
@@ -443,7 +411,11 @@ impl WorkspaceActions {
                     correlation,
                     result,
                 };
-                if query.view_resource.is_none() && !self.authorized(caller) {
+                // A person is answered by the service's own thread, which
+                // checks that the workspace admits them; nobody else is
+                // answered at all. The check runs there because asking the host
+                // blocks and this is the host's runtime.
+                if query.view_resource.is_none() && !speaks_for_a_member(caller) {
                     let empty = CataloguePage::from_rows("0".into(), Vec::new(), &query);
                     return Some(Pending::ready(respond(Ok(empty))));
                 }
@@ -459,51 +431,8 @@ impl WorkspaceActions {
                 }
                 answer.map(respond)
             }
-            RemoteActionMessage::Invoke(mut request) => {
-                // Answered at admission: a wait is ignored, as an older host
-                // would, and is no part of the remembered request.
-                request.wait_ms = None;
-                let invocation = request.invocation;
-                let receipt = |status| {
-                    Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
-                        invocation,
-                        status,
-                    }))
-                };
-                if !self.admits(caller, &request) {
-                    return Some(receipt(ReceiptStatus::Rejected {
-                        error: ActionHostError::UnknownAction,
-                    }));
-                }
-                {
-                    let mut ledger = self.ledger();
-                    if let Some(entry) = ledger.entries.get(&invocation) {
-                        if entry.caller != *caller || !entry.request.same_invocation(&request) {
-                            return Some(receipt(ReceiptStatus::Rejected {
-                                error: ActionHostError::InvocationConflict,
-                            }));
-                        }
-                        let state = InvocationState::new(invocation, entry.update.clone());
-                        return Some(receipt(state.receipt().status));
-                    }
-                    ledger.insert(caller, request);
-                }
-                let (done, answer) = pending();
-                let job = Job::Invoke {
-                    workspace_id,
-                    invocation,
-                    done,
-                };
-                if let Err(Job::Invoke { done, .. }) = self.submit(job) {
-                    self.ledger().forget(&invocation);
-                    done.complete(InvocationReceipt {
-                        invocation,
-                        status: ReceiptStatus::Rejected {
-                            error: unavailable(),
-                        },
-                    });
-                }
-                answer.map(RemoteActionMessage::Receipt)
+            RemoteActionMessage::Invoke(request) => {
+                self.invoke_request(workspace_id, caller, request)
             }
             RemoteActionMessage::Observe { invocation, .. } => {
                 let state = self.ledger().owned(caller, &invocation).map(|entry| {
@@ -518,19 +447,98 @@ impl WorkspaceActions {
                     result: self.cancel(caller, &invocation),
                 })
             }
+            RemoteActionMessage::ContentPutRequest { correlation, step } => {
+                self.content_put(workspace_id, caller, correlation, step)
+            }
+            RemoteActionMessage::ContentGetRequest {
+                correlation,
+                content,
+                offset,
+                length,
+            } => self.content_get(workspace_id, caller, correlation, (content, offset, length)),
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordRead { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::Confirm { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
+    }
+
+    /// Admit `request` from `caller` and run it on the service's thread,
+    /// answering its receipt.
+    fn invoke_request(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        mut request: InvokeRequest,
+    ) -> Pending<RemoteActionMessage> {
+        // Answered at admission: a wait is ignored, as an older host
+        // would, and is no part of the remembered request.
+        request.wait_ms = None;
+        let invocation = request.invocation;
+        let receipt = |status| {
+            Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status,
+            }))
+        };
+        if !self.admits(caller, &request) {
+            return receipt(ReceiptStatus::Rejected {
+                error: ActionHostError::UnknownAction,
+            });
+        }
+        {
+            let mut ledger = self.ledger();
+            if let Some(entry) = ledger.entries.get(&invocation) {
+                if entry.caller != *caller || !entry.request.same_invocation(&request) {
+                    return receipt(ReceiptStatus::Rejected {
+                        error: ActionHostError::InvocationConflict,
+                    });
+                }
+                let state = InvocationState::new(invocation, entry.update.clone());
+                return receipt(state.receipt().status);
+            }
+            if !ledger.insert(caller, request) {
+                return receipt(ReceiptStatus::Rejected {
+                    error: ActionHostError::Unavailable {
+                        reason: "the host is running as many actions as it keeps track of; \
+                                 ask again shortly"
+                            .into(),
+                    },
+                });
+            }
+        }
+        let (done, answer) = pending();
+        let job = Job::Invoke {
+            workspace_id,
+            invocation,
+            done,
+        };
+        if let Err(Job::Invoke { done, .. }) = self.submit(job) {
+            self.ledger().forget(&invocation);
+            done.complete(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::Unavailable {
+                        reason: "the host's workspace actions are not running".into(),
+                    },
+                },
+            });
+        }
+        answer.map(RemoteActionMessage::Receipt)
     }
 
     fn feedback_request(
@@ -571,9 +579,20 @@ impl WorkspaceActions {
                 reason: "the invocation has finished".into(),
             });
         }
+        // A run in the host's shell ends there, as on a Ctrl+C, and settles
+        // as cancelled once what it printed is recorded.
+        if let Some(stop) = &entry.stop {
+            stop.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         if running {
             return Err(ActionHostError::NotCancellable {
                 reason: "the action is already running".into(),
+            });
+        }
+        if entry.saving {
+            return Err(ActionHostError::NotCancellable {
+                reason: "the action ran; its change is being saved".into(),
             });
         }
         entry.update = InvocationUpdate::Cancelled {
@@ -605,7 +624,9 @@ impl HostActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         use tilo_relay_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
-            RemoteActionMessage::FeedbackRequest { .. } => false,
+            RemoteActionMessage::FeedbackRequest { .. }
+            | RemoteActionMessage::ContentPutRequest { .. }
+            | RemoteActionMessage::ContentGetRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -617,12 +638,18 @@ impl HostActions {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordRead { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::Confirm { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {
@@ -636,11 +663,12 @@ impl HostActions {
 /// One record held on the service thread, in its own app worker.
 struct Mounted {
     app: ConfinedReplica,
-    /// Digests of the bodies already merged into it.
-    seen: HashSet<[u8; 32]>,
+    /// The heads of its record merged into it last: what the next merge
+    /// takes only the changes after.
+    merged: Option<Vec<[u8; 32]>>,
     /// The records held beside it (the parts of a chain its app keeps), by
-    /// route, with the digests of their bodies already merged.
-    parts: HashMap<DocumentRoute, HashSet<[u8; 32]>>,
+    /// route, with the heads of each merged last.
+    parts: HashMap<DocumentRoute, Option<Vec<[u8; 32]>>>,
     used: u64,
 }
 
@@ -651,29 +679,87 @@ fn is_part(record: &str) -> bool {
     ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
-/// A record's whole document, from its changes in order.
-fn whole(changes: &[Change]) -> Result<Vec<u8>, String> {
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in changes {
-        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
-            .map_err(|error| error.to_string())?;
+/// How a person reads the record `record` of `app` in a message or a log: an
+/// app's own record of the workspace travels with no id
+/// ([`ui::record::RecordId::package_primary`]), so it is named for its app
+/// rather than left blank.
+fn named_record(app: &str, record: &str) -> String {
+    if record.is_empty() {
+        format!("{app}'s own record")
+    } else {
+        format!("{app} record {record}")
     }
-    Ok(doc.save())
 }
 
-/// One change of a record: a digest naming it, and its bytes.
-type Change = ([u8; 32], Vec<u8>);
+/// [`named_record`] of the record at `route`.
+pub(super) fn named(route: &DocumentRoute) -> String {
+    named_record(&route.app_id, &route.record)
+}
 
-#[derive(Default)]
+/// What running an action came to: its answer and where it left its actor.
+pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
+
+/// A record saved, and the heads it was saved at, sorted.
+type Saved = (Vec<u8>, Vec<[u8; 32]>);
+
+/// What a replica merges of a record, and the heads the record stands at
+/// once it has.
+type Update = (DocumentMutation, Vec<[u8; 32]>);
+
+/// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
     workspace: Option<String>,
-    /// Each record's changes in the order the member took them.
-    records: BTreeMap<DocumentRoute, Vec<Change>>,
-    /// When each record last changed, as a position in that order.
-    changed: HashMap<DocumentRoute, usize>,
-    /// The records open on the workspace's shared desktop.
-    on_desktop: HashSet<String>,
-    revision: usize,
+    /// Its records, those open on its shared desktop first, then the most
+    /// recently changed.
+    records: Vec<DocumentRoute>,
+    engine: Arc<tilo_session_client::engine::Engine>,
+    /// How many writes landed in it.
+    revision: u64,
+}
+
+impl WorkspaceState {
+    fn holds(&self, route: &DocumentRoute) -> bool {
+        self.records.contains(route)
+    }
+
+    /// What changed of the record at `route` since `held`, the heads a
+    /// replica merged last: only the changes after them where the record
+    /// holds them, the record whole where it does not (or where nothing was
+    /// merged yet), and nothing when it still stands there. With the heads
+    /// it stands at.
+    fn update(
+        &self,
+        route: &DocumentRoute,
+        held: Option<&[[u8; 32]]>,
+    ) -> Result<Option<Update>, String> {
+        Ok(
+            match self.engine.record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                held,
+            )? {
+                RecordReading::Captured { heads, bytes, .. } => {
+                    Some((DocumentMutation::Snapshot(bytes), heads))
+                }
+                RecordReading::Changes { heads, bytes, .. } => {
+                    Some((DocumentMutation::Incremental(bytes), heads))
+                }
+                RecordReading::Unchanged(_) | RecordReading::Pending => None,
+            },
+        )
+    }
+
+    /// The record at `route`, saved, with its heads.
+    fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
+        match self
+            .engine
+            .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
+        {
+            RecordReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
+            _ => Err(format!("the workspace holds no {} yet", named(route))),
+        }
+    }
 }
 
 /// What a request must have opened before it reads the workspace.
@@ -706,23 +792,28 @@ struct GaveUp {
 /// documents that arrived and open only once the member holds their keys, or
 /// has the surface they were written with and their workspace's governance.
 fn sealed_for(
-    routes: &BTreeMap<DocumentRoute, tilo_browser_peer::session::RouteStatus>,
+    routes: &BTreeSet<DocumentRoute>,
     workspace_id: u64,
     needs: Needs<'_>,
     gave_up: &GaveUp,
 ) -> Vec<DocumentRoute> {
     // A part of a chain is held beside a record of its app that keeps it:
-    // reading or acting on it needs that record open too.
+    // reading or acting on it needs that record open too, and any other
+    // part of the same chain, which the request's host sends beside it.
     let named = |route: &DocumentRoute, app_id: &str, record: &str| {
+        let same_chain = match (opened::chain_of(record), opened::chain_of(&route.record)) {
+            (Some(asked), Some(held)) => asked == held,
+            _ => false,
+        };
         route.app_id == app_id
-            && (route.record == record || (is_part(record) && !is_part(&route.record)))
+            && (route.record == record
+                || same_chain
+                || (is_part(record) && !is_part(&route.record)))
     };
     routes
         .iter()
-        .filter(|(route, status)| {
-            status.waiting() > 0
-                && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
-                    == Some(workspace_id)
+        .filter(|route| {
+            room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
                 && match needs {
                     Needs::Joined => false,
                     Needs::Workspace => !gave_up.listed,
@@ -732,89 +823,183 @@ fn sealed_for(
                     Needs::Act { app_id, record } => named(route, app_id, record),
                 }
         })
-        .map(|(route, _)| route.clone())
+        .cloned()
         .collect()
 }
 
 /// The service's membership of one workspace.
 struct Workspace {
-    peer: PeerHandle,
-    events: PeerEvents,
-    /// Signalled whenever the session's status or events change.
-    wake: Arc<(Mutex<bool>, Condvar)>,
+    peer: Link,
+    events: Events,
+    /// Set while requests wait for this workspace: its next change hands the
+    /// service's thread [`Job::Joined`], which looks at what waited again.
+    awaited: Arc<AtomicBool>,
     ready: bool,
+    /// The workspace sends its records only when a device opens them (its
+    /// `Ready`): what this member does not hold is a record it may still
+    /// be sent, never one the workspace lacks.
+    when_opened: bool,
+    /// The records this member asked the workspace's host for and that it
+    /// has not answered yet ([`Event::RecordOpened`]).
+    asked: HashSet<DocumentRoute>,
+    /// The records the host answered for, asked once: a chain's head arrives
+    /// on the route of the part it names, never its own, so asking until it
+    /// is held would ask without end.
+    answered: HashSet<DocumentRoute>,
+    /// Of those, the records the host answered it holds none of.
+    absent: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
-    /// Every change the member opened or wrote, in order.
-    log: Vec<(DocumentRoute, Change)>,
-    /// The shared desktop of the workspace the log names first, merged as its
-    /// changes arrive; they are admitted only through the isolate.
-    desktop: SharedDesktop,
+    /// Records whose writes landed in the session's replica that it cannot open yet: their
+    /// keys, surface or deciding governance have not arrived.
+    undecided: BTreeSet<DocumentRoute>,
+    /// The workspace's records in the session's replica, once a write to one
+    /// named the workspace.
+    records: Option<WorkspaceRecords>,
+    /// What the host says for the runs it executes here ([`run_voice`]).
+    runs: run_voice::Runs,
 }
 
 impl Workspace {
-    fn join(member: &WorkspaceMember, workspace_id: u64) -> Result<Self, String> {
+    fn join(
+        member: &WorkspaceMember,
+        workspace_id: u64,
+        shared: &Arc<Shared>,
+    ) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
-        let peer = PeerHandle::start(
+        let peer = tilo_session_client::start_session(
             PeerConfig {
                 host: member.endpoint.host.clone(),
                 cert: member.endpoint.host_cert.clone(),
                 host_cert: member.endpoint.host_cert.clone(),
                 revocations: RevocationList::new(),
+                entering: None,
             },
             Arc::new(member.key.clone()),
             Arc::new(MemoryPeerStore::default()),
         );
         let events = peer.events();
-        let wake = Arc::new((Mutex::new(false), Condvar::new()));
-        let signal = Arc::clone(&wake);
+        let awaited = Arc::new(AtomicBool::new(false));
+        let (waiting, service) = (Arc::clone(&awaited), Arc::downgrade(shared));
         peer.on_change(Arc::new(move || {
-            let (flag, condvar) = &*signal;
-            *flag.lock_recover() = true;
-            condvar.notify_all();
+            // Only the change that arrives while a request waits is worth the
+            // thread's turn: the workspace's other changes still reach it as
+            // documents.
+            if waiting.swap(false, Ordering::SeqCst)
+                && let Some(shared) = service.upgrade()
+                && let Some(jobs) = shared.jobs.lock_recover().as_ref()
+            {
+                let _ = jobs.send((Instant::now(), Job::Joined(workspace_id)));
+            }
         }));
-        peer.join(workspace_id)?;
+        peer.send(Cmd::Join(workspace_id))?;
         Ok(Self {
+            runs: run_voice::Runs::new(workspace_id, member.endpoint.host_cert.device_public_key),
             peer,
             events,
-            wake,
+            awaited,
             ready: false,
+            when_opened: false,
+            asked: HashSet::new(),
+            answered: HashSet::new(),
+            absent: HashSet::new(),
             gave_up: GaveUp::default(),
-            log: Vec::new(),
-            desktop: SharedDesktop::new(),
+            undecided: BTreeSet::new(),
+            records: None,
         })
     }
 
     fn pump(&mut self, workspace_id: u64) {
         for event in self.events.drain() {
             match event {
-                PeerEvent::Ready {
-                    workspace_id: ready,
+                Event::HostReady {
+                    ws: ready,
+                    records_when_opened,
+                    ..
                 } if ready == workspace_id => {
                     self.ready = true;
+                    self.when_opened = records_when_opened;
                 }
-                PeerEvent::Document(document) => {
-                    if tilo_relay_protocol::room_workspace_id(&document.route.cluster_id).ok()
-                        != Some(workspace_id)
-                    {
+                Event::RecordOpened {
+                    ws: opened,
+                    route: Some(route),
+                    frames,
+                    ..
+                } if opened == workspace_id => {
+                    tracing::debug!(
+                        app = %route.app_id,
+                        record = %route.record,
+                        frames,
+                        asked = self.asked.contains(&route),
+                        "workspace actions: the workspace answered for a record"
+                    );
+                    // The host sent all it holds of a record this member
+                    // asked for, and sends its changes from now on: none
+                    // means it holds none of it.
+                    if self.asked.remove(&route) {
+                        if frames == 0 {
+                            self.absent.insert(route.clone());
+                        }
+                        self.answered.insert(route);
+                    }
+                }
+                Event::Landed { route, .. } => {
+                    if room_workspace_id(&route.cluster_id).ok() != Some(workspace_id) {
                         continue;
                     }
-                    let Some(mutation) = document.mutation() else {
-                        continue;
+                    let engine = self.peer.engine();
+                    // Undecided: the replica holds the record and cannot read it yet. Keys that
+                    // arrived for a record it holds nothing of leave nothing undecided.
+                    // Asked without reading the record out, as a write lands for every post;
+                    // this device's own writes not taken in yet leave only a read to decide.
+                    let reads = engine
+                        .record_revision(&route.cluster_id, &route.app_id, &route.record)
+                        .and_then(|revision| match revision {
+                            Some(_) => Ok(true),
+                            None => engine
+                                .record(&route.cluster_id, &route.app_id, &route.record)
+                                .map(|read| read.is_some()),
+                        });
+                    let undecided = match reads {
+                        Ok(reads) => !reads,
+                        Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                            records.iter().any(|(app, record)| {
+                                *app == route.app_id && *record == route.record
+                            })
+                        }),
                     };
-                    let bytes = bytes_of(&mutation);
-                    let digest = change_digest(&document.author, &bytes);
-                    let workspace = self
-                        .log
-                        .first()
-                        .map_or(&document.route.cluster_id, |(first, _)| &first.cluster_id);
-                    if document.route == crate::participant::desktop_route(workspace) {
-                        self.desktop.receive(bytes.clone());
+                    if undecided {
+                        self.undecided.insert(route.clone());
+                    } else {
+                        self.undecided.remove(&route);
                     }
-                    self.log.push((document.route, (digest, bytes)));
+                    self.records
+                        .get_or_insert_with(|| {
+                            WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
+                        })
+                        .landed(&route);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The workspace as the session's replica holds it now.
+    fn state(&mut self) -> WorkspaceState {
+        let engine = Arc::clone(self.peer.engine());
+        match &mut self.records {
+            Some(records) => WorkspaceState {
+                workspace: Some(records.workspace().to_owned()),
+                records: records.people_first(),
+                engine,
+                revision: records.landings(),
+            },
+            None => WorkspaceState {
+                workspace: None,
+                records: Vec::new(),
+                engine,
+                revision: 0,
+            },
         }
     }
 
@@ -822,16 +1007,15 @@ impl Workspace {
     /// undecided documents: they open once what the documents wait for
     /// arrives.
     fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
-        sealed_for(
-            &self.peer.status().routes,
-            workspace_id,
-            needs,
-            &self.gave_up,
-        )
+        sealed_for(&self.undecided, workspace_id, needs, &self.gave_up)
     }
 
-    /// Join, then wait for the keys of what `needs` reads. Every wait is
-    /// woken by the session (a key arriving wakes it), never polled.
+    /// Take the keys of what `needs` reads in the joined workspace from the
+    /// host's records, and say what the workspace opened. A request reaches
+    /// here once its workspace is joined and what it reads opened, or once it
+    /// waited [`JOIN_WAIT`] or [`KEYS_WAIT`] for that in vain
+    /// ([`Worker::admit`]): nothing waits here, so one workspace's keys do not
+    /// hold the service's thread against the other workspaces' requests.
     ///
     /// A record to act on whose keys do not arrive within [`KEYS_WAIT`] is
     /// refused: nothing acts on a record seen only in part. A listing gives
@@ -843,21 +1027,15 @@ impl Workspace {
         needs: Needs<'_>,
         link: Option<&dyn WorkspaceRecordsLink>,
     ) -> Result<(), ActionHostError> {
-        let joined = Instant::now()
-            .checked_add(JOIN_WAIT)
-            .unwrap_or_else(Instant::now);
-        self.settle(workspace_id, joined, |workspace| workspace.ready);
+        self.pump(workspace_id);
         if !self.ready {
             return Err(ActionHostError::Unavailable {
                 reason: "the host has not joined the workspace yet".into(),
             });
         }
-        let keyed = Instant::now()
-            .checked_add(KEYS_WAIT)
-            .unwrap_or_else(Instant::now);
-        // Keys the host device holds are handed over as soon as a
-        // route needs them: the record acted on at once (fresh every time),
-        // and every route that arrives sealed while this waits.
+        // Keys the host device holds are handed over as soon as a route needs
+        // them: the record acted on at once (fresh every time), and every
+        // route that arrived sealed while the request waited.
         let mut handed = HashSet::new();
         if let Some(link) = link
             && let Needs::Act { app_id, record } = needs
@@ -870,31 +1048,22 @@ impl Workspace {
             };
             self.take_host_keys(vec![route], needs, link, &mut handed)?;
         }
-        loop {
-            self.settle(workspace_id, keyed, |workspace| {
-                let sealed = workspace.sealed(workspace_id, needs);
-                sealed.is_empty()
-                    || (link.is_some() && sealed.iter().any(|route| !handed.contains(route)))
-            });
-            let unhanded: Vec<DocumentRoute> = self
-                .sealed(workspace_id, needs)
-                .into_iter()
-                .filter(|route| !handed.contains(route))
-                .collect();
-            match link {
-                Some(link) if !unhanded.is_empty() => {
-                    self.take_host_keys(unhanded, needs, link, &mut handed)?;
-                }
-                _ => break,
-            }
+        let sealed: Vec<DocumentRoute> = self
+            .sealed(workspace_id, needs)
+            .into_iter()
+            .filter(|route| !handed.contains(route))
+            .collect();
+        if let Some(link) = link
+            && !sealed.is_empty()
+        {
+            self.take_host_keys(sealed, needs, link, &mut handed)?;
         }
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
+                let record = named_record(app_id, record);
                 Err(ActionHostError::Unavailable {
-                    reason: format!(
-                        "the host does not hold the keys to {app_id} record {record} yet"
-                    ),
+                    reason: format!("the host does not hold the keys to {record} yet"),
                 })
             }
             Needs::Workspace | Needs::Read { .. } => {
@@ -932,8 +1101,10 @@ impl Workspace {
                 None => {}
                 Some(Ok(keys)) => {
                     self.peer
-                        .install_channel_keys(route, keys)
-                        .map_err(|reason| ActionHostError::Unavailable { reason })?;
+                        .send(Cmd::InstallChannelKeys(route, keys))
+                        .map_err(|closed| ActionHostError::Unavailable {
+                            reason: closed.to_string(),
+                        })?;
                 }
                 Some(Err(reason)) => {
                     if let Needs::Act { app_id, record } = needs {
@@ -952,59 +1123,29 @@ impl Workspace {
     }
 
     /// The cluster id of the workspace `workspace_id` names, from what the member has
-    /// seen of it.
+    /// seen of it: its records, or, in a workspace with none yet, its governance.
     fn cluster_id(&self, workspace_id: u64) -> Option<String> {
-        let of_workspace = |route: &DocumentRoute| {
-            tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
-        };
-        if let Some((route, _)) = self.log.iter().find(|(route, _)| of_workspace(route)) {
-            return Some(route.cluster_id.clone());
+        if let Some(records) = &self.records {
+            return Some(records.workspace().to_owned());
         }
         self.peer
-            .status()
-            .routes
-            .into_keys()
-            .find(|route| of_workspace(route))
-            .map(|route| route.cluster_id)
-    }
-
-    /// Take the session's events until `settled`, or until `deadline`.
-    fn settle(&mut self, workspace_id: u64, deadline: Instant, settled: impl Fn(&Self) -> bool) {
-        loop {
-            {
-                let (flag, _) = &*self.wake;
-                *flag.lock_recover() = false;
-            }
-            self.pump(workspace_id);
-            if settled(self) {
-                // The session queues a change's events before the status
-                // that reports it: take what arrived since the pump above.
-                self.pump(workspace_id);
-                return;
-            }
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                return;
-            };
-            let (flag, condvar) = &*self.wake;
-            let guard = flag.lock_recover();
-            let _ = condvar
-                .wait_timeout_while(guard, left, |changed| !*changed)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+            .engine()
+            .workspaces()
+            .into_iter()
+            .map(|workspace| workspace.to_string())
+            .find(|workspace| room_workspace_id(workspace).ok() == Some(workspace_id))
     }
 }
 
-fn bytes_of(mutation: &DocumentMutation) -> Vec<u8> {
-    match mutation {
-        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes.clone(),
-    }
-}
-
-fn change_digest(author: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(author);
-    hasher.update(bytes);
-    *hasher.finalize().as_bytes()
+/// A request held off the service's thread until its workspace is ready for
+/// it: joined, and holding the keys of what the request reads.
+struct Waiting {
+    /// When it arrived: the wait it reports, and what its deadline is counted
+    /// from.
+    queued: Instant,
+    /// When it runs in any case, and says how far it got.
+    deadline: Instant,
+    job: Job,
 }
 
 struct Worker {
@@ -1014,14 +1155,60 @@ struct Worker {
     participant: String,
     workspaces: HashMap<u64, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
+    /// The replicas callers served within bounds act through ([`bounded`]).
+    bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
+    /// The routes whose channel this worker opened for the session, so a
+    /// record the host starts is sealed from its first change
+    /// ([`publish::Worker::commit`](publish)).
+    channels_opened: HashSet<DocumentRoute>,
+    /// Requests waiting for their workspace to be ready for them, oldest
+    /// first, by workspace: the thread answers others meanwhile.
+    joining: HashMap<u64, VecDeque<Waiting>>,
     clock: u64,
+    /// What the apps call the records the host changes, read in a confined
+    /// worker kept for the next ([`publish`]).
+    titles: crate::worker::ConfinedTitles,
+    /// The writes the job being served handed to the session, by workspace:
+    /// an invocation is answered done only once the host holds them
+    /// ([`publish::Worker::saving`]).
+    handed: HashMap<u64, Vec<publish::Written>>,
+}
+
+/// The door's answer for an action it has nothing by that address.
+fn unknown_action() -> Outcome {
+    Outcome::Rejected(ActionHostError::UnknownAction)
+}
+
+/// Whether the page a request names was listed before `current` moved on.
+fn stale_revision(revision: Option<&str>, current: &str) -> bool {
+    revision.is_some_and(|revision| revision != current)
+}
+
+/// Whether `caller` is `person`, or an agent a device of theirs handed its
+/// session to.
+fn acts_for(caller: &Caller, person: &str) -> bool {
+    match caller.principal() {
+        CallerPrincipal::Person(id) => id == person,
+        CallerPrincipal::Agent(_) => caller.delegating_person().is_some_and(|delegating| {
+            delegating.principal() == &CallerPrincipal::Person(person.to_owned())
+        }),
+        CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
+    }
 }
 
 /// What a held record publishes that its door runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
+}
+
+/// Whether a failure is this invocation's answer. One the caller may ask
+/// again is not: the same request under the same id runs it again rather
+/// than being handed the failure it already has, which is what a change the
+/// workspace took none of because the session it rode was replaced needs.
+fn settles(error: &ActionFailure) -> bool {
+    !error.retryable
 }
 
 /// The outcome of an action whose change could not be committed.
@@ -1034,61 +1221,302 @@ fn commit_failed(message: String, retryable: bool) -> Outcome {
     })
 }
 
-/// Everything `app` changed since the last take, each with its route: the
-/// held record's own (`None`: the holder's route) first, then each record
-/// held beside it on the route of the same app and workspace its id names.
+/// Everything `app` changed since the last take, each with the route it
+/// belongs to: the held record's own is `holder`'s, then each record held
+/// beside it on the route of the same app and workspace its id names. All
+/// or none: when the records beside cannot be taken, the record's own change
+/// is put back for the next take, never dropped with the failure.
 fn take_all(
     app: &ConfinedReplica,
     holder: &DocumentRoute,
-) -> Result<Vec<(Option<DocumentRoute>, DocumentMutation)>, crate::apps::AppError> {
-    let mut taken: Vec<(Option<DocumentRoute>, DocumentMutation)> = app
-        .take_mutation()?
+) -> Result<Vec<(DocumentRoute, DocumentMutation)>, crate::apps::AppError> {
+    let own = app.take_mutation()?;
+    let beside = match app.take_record_mutations() {
+        Ok(beside) => beside,
+        Err(error) => {
+            if let Some(own) = own {
+                app.put_back(own);
+            }
+            return Err(error);
+        }
+    };
+    let mut taken: Vec<(DocumentRoute, DocumentMutation)> = own
         .into_iter()
-        .map(|mutation| (None, mutation))
+        .map(|mutation| (holder.clone(), mutation))
         .collect();
-    taken.extend(
-        app.take_record_mutations()?
-            .into_iter()
-            .map(|(record, mutation)| {
-                let route = DocumentRoute {
-                    app_id: holder.app_id.clone(),
-                    cluster_id: holder.cluster_id.clone(),
-                    record: record.route().to_owned(),
-                };
-                (Some(route), mutation)
-            }),
-    );
+    taken.extend(beside.into_iter().map(|(record, mutation)| {
+        let route = DocumentRoute {
+            app_id: holder.app_id.clone(),
+            cluster_id: holder.cluster_id.clone(),
+            record: record.route().to_owned(),
+        };
+        (route, mutation)
+    }));
     Ok(taken)
 }
 
 impl Worker {
     fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+        let member = link.member();
+        let _ = shared.member.set(member.clone());
         Self {
             participant: hex::encode(link.user_public_key()),
-            member: link.member(),
+            member,
             catalogue,
             shared,
             workspaces: HashMap::new(),
             mounted: BTreeMap::new(),
+            bounded: BTreeMap::new(),
             beside: HashMap::new(),
+            channels_opened: HashSet::new(),
+            titles: crate::worker::ConfinedTitles::default(),
+            joining: HashMap::new(),
             clock: 0,
+            handed: HashMap::new(),
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
-        while let Ok((queued, job)) = jobs.recv() {
-            let started = Instant::now();
-            let kind = job.kind();
-            self.take(job);
-            let (waited, ran) = (started.duration_since(queued), started.elapsed());
-            if waited.max(ran) >= SLOW_JOB {
-                tracing::warn!(
-                    kind,
-                    waited_ms = waited.as_millis(),
-                    ran_ms = ran.as_millis(),
-                    "workspace actions: a request waited or ran long"
-                );
+        loop {
+            let due = match (self.joining_until(), run_voice::next_due(&self.workspaces)) {
+                (Some(joining), Some(voice)) => Some(joining.min(voice)),
+                (joining, voice) => joining.or(voice),
+            };
+            let next = match due {
+                Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
+                None => jobs
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            };
+            match next {
+                Ok((queued, job)) => {
+                    self.admit(queued, job);
+                    // Requests that keep coming never hold back a run's word:
+                    // the page forgets a member it has not heard from.
+                    if run_voice::next_due(&self.workspaces)
+                        .is_some_and(|due| due <= Instant::now())
+                    {
+                        self.tick_voices();
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.give_up_joining();
+                    self.tick_voices();
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Run `job`, or have it wait off this thread until its workspace is ready
+    /// for it: joined, and holding the keys of what it reads. A fresh
+    /// workspace's first requests wait for its join and keys while the thread
+    /// answers requests of workspaces already open, instead of every request
+    /// waiting for every join and every key before it. A workspace's requests
+    /// run in the order they came.
+    fn admit(&mut self, queued: Instant, job: Job) {
+        if let Some(workspace_id) = job.workspace() {
+            let keys = self.keys(&job);
+            // The workspace is in hand before the change is asked for below,
+            // so a change that lands in between still wakes this thread.
+            drop(self.membership(workspace_id));
+            if !self.ready(workspace_id, keys.needs()) {
+                self.hold(workspace_id, queued, job);
+                return;
+            }
+            self.stop_waiting_if_idle(workspace_id);
+        }
+        self.timed(queued, job);
+    }
+
+    /// What `job` waits for before it can read its workspace.
+    fn keys(&self, job: &Job) -> Keys {
+        match job {
+            Job::Invoke { invocation, .. } => self
+                .ledger()
+                .entries
+                .get(invocation)
+                .map_or(Keys::Joined, |entry| self.invoke_keys(&entry.request)),
+            other => other.keys(),
+        }
+    }
+
+    /// Hold `job` off the thread until `workspace_id`'s next change, and ask
+    /// the session to hand this thread that change. Past [`JOIN_WAIT`] for a
+    /// join and [`KEYS_WAIT`] for keys, the job runs anyway and says how far
+    /// it got: a join that never comes, or keys that never arrive, answer the
+    /// request rather than holding it for ever.
+    fn hold(&mut self, workspace_id: u64, queued: Instant, job: Job) {
+        let bound = if self.joined(workspace_id) {
+            KEYS_WAIT
+        } else {
+            JOIN_WAIT
+        };
+        let deadline = queued.checked_add(bound).unwrap_or(queued);
+        self.awaiting(workspace_id, true);
+        self.joining
+            .entry(workspace_id)
+            .or_default()
+            .push_back(Waiting {
+                queued,
+                deadline,
+                job,
+            });
+    }
+
+    /// Run the requests waiting for `workspace_id`, its change just arrived:
+    /// those that are ready run here, and those still waiting for keys are
+    /// held again with what they have waited so far.
+    fn resume(&mut self, workspace_id: u64) {
+        let Some(waiting) = self.joining.remove(&workspace_id) else {
+            return;
+        };
+        self.awaiting(workspace_id, true);
+        for Waiting {
+            queued,
+            deadline,
+            job,
+        } in waiting
+        {
+            let keys = self.keys(&job);
+            if job.workspace() == Some(workspace_id) && !self.ready(workspace_id, keys.needs()) {
+                self.joining
+                    .entry(workspace_id)
+                    .or_default()
+                    .push_back(Waiting {
+                        queued,
+                        deadline,
+                        job,
+                    });
+                continue;
+            }
+            self.timed(queued, job);
+        }
+        self.stop_waiting_if_idle(workspace_id);
+    }
+
+    /// Whether a request for `workspace_id` can run now: the workspace is
+    /// joined, or it could not be joined at all, which the request reports;
+    /// and what it reads has opened, or the host holds no keys to hand it.
+    fn ready(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+        if !self.joined(workspace_id) {
+            return false;
+        }
+        matches!(needs, Needs::Joined) || self.opened(workspace_id, needs)
+    }
+
+    /// Hand this device the host's keys for the records of `workspace_id`
+    /// `needs` reads that are still sealed, and say whether they opened. A
+    /// record keeps waiting until what the keys open arrives: the session's
+    /// next change wakes this thread to look again.
+    fn opened(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+        if self.membership(workspace_id).is_err() {
+            // Nothing is there to read: the request says so itself.
+            return true;
+        }
+        let Some(link) = self.shared.link.get().cloned() else {
+            return true;
+        };
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return true;
+        };
+        workspace.pump(workspace_id);
+        // A record the workspace did not replay is asked for here, and the
+        // host's answer is the change that wakes this thread to look again.
+        if workspace.ask(workspace_id, needs) {
+            return false;
+        }
+        let sealed = workspace.sealed(workspace_id, needs);
+        if sealed.is_empty() {
+            return true;
+        }
+        let mut handed = HashSet::new();
+        let handed_now = workspace
+            .take_host_keys(sealed, needs, link.as_ref(), &mut handed)
+            .is_ok();
+        // What the host holds no keys to is the request's to report.
+        handed_now && workspace.sealed(workspace_id, needs).is_empty()
+    }
+
+    /// Whether a request for `workspace_id` can run now: the workspace is
+    /// joined, or it could not be joined at all, which the request reports.
+    fn joined(&mut self, workspace_id: u64) -> bool {
+        match self.membership(workspace_id) {
+            Ok(workspace) => {
+                workspace.pump(workspace_id);
+                workspace.ready
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Ask the session to hand this thread `workspace_id`'s next change, or
+    /// stop asking once nothing waits for it.
+    fn awaiting(&self, workspace_id: u64, waiting: bool) {
+        if let Some(workspace) = self.workspaces.get(&workspace_id) {
+            workspace.awaited.store(waiting, Ordering::SeqCst);
+        }
+    }
+
+    /// Stop asking to be woken for `workspace_id` once nothing waits for it.
+    fn stop_waiting_if_idle(&self, workspace_id: u64) {
+        if !self.joining.contains_key(&workspace_id) {
+            self.awaiting(workspace_id, false);
+        }
+    }
+
+    /// When the request that waited longest runs in any case: a join gives up
+    /// later than keys do, and each request's own deadline counts from when it
+    /// arrived.
+    fn joining_until(&self) -> Option<Instant> {
+        self.joining
+            .values()
+            .filter_map(VecDeque::front)
+            .map(|waiting| waiting.deadline)
+            .min()
+    }
+
+    /// Say again what the runs this host speaks for owe by now
+    /// ([`run_voice::Runs::tick`]), each on its workspace's session.
+    fn tick_voices(&mut self) {
+        let now = tilo_session_client::presence::now_ms();
+        for workspace in self.workspaces.values_mut() {
+            workspace.runs.tick(&workspace.peer, now);
+        }
+    }
+
+    /// Run the requests that waited in vain for their workspace or its keys:
+    /// each says how far it got.
+    fn give_up_joining(&mut self) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        self.joining.retain(|_, waiting| {
+            while waiting
+                .front()
+                .is_some_and(|waiting| waiting.deadline <= now)
+            {
+                due.extend(waiting.pop_front());
+            }
+            !waiting.is_empty()
+        });
+        for Waiting { queued, job, .. } in due {
+            self.timed(queued, job);
+        }
+    }
+
+    /// Take `job`, queued at `queued`, logging one that waited or ran long.
+    fn timed(&mut self, queued: Instant, job: Job) {
+        let started = Instant::now();
+        let kind = job.kind();
+        self.take(job);
+        let (waited, ran) = (started.duration_since(queued), started.elapsed());
+        if waited.max(ran) >= SLOW_JOB {
+            tracing::warn!(
+                kind,
+                waited_ms = waited.as_millis(),
+                ran_ms = ran.as_millis(),
+                "workspace actions: a request waited or ran long"
+            );
         }
     }
 
@@ -1119,6 +1547,7 @@ impl Worker {
                     caller,
                     done,
                 } => {
+                    self.voice_catalogue(workspace_id, &caller, &query);
                     let result = if query.view_resource.is_some() {
                         self.view_catalogue_page(workspace_id, &caller, &query)
                     } else {
@@ -1132,27 +1561,94 @@ impl Worker {
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
                 Job::Ran(ended) => self.ran(&ended),
+                Job::Arrived {
+                    workspace_id,
+                    caller,
+                } => self.voice_arrived(workspace_id, &caller),
+                Job::Joined(workspace_id) => self.resume(workspace_id),
+                Job::Forget(workspace_id) => self.forget(workspace_id),
+                Job::Content {
+                    workspace_id,
+                    caller,
+                    step,
+                    done,
+                } => done.complete(self.content_put(workspace_id, &caller, step)),
+                Job::ContentGet {
+                    workspace_id,
+                    caller,
+                    content,
+                    offset,
+                    length,
+                    done,
+                } => done.complete(self.content_get(
+                    workspace_id,
+                    &caller,
+                    &content,
+                    (offset, length),
+                )),
             }
         }
+        // What a job that answers no invocation wrote (a run it records), or
+        // what a failed one wrote before it failed, is logged once saved.
+        self.watch_handed();
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.shared.ledger.lock_recover()
     }
 
+    /// Let go of everything held of `workspace_id`, deleted: its
+    /// membership, the records mounted and the replicas callers acted
+    /// through there, and its content store. Requests still waiting for it
+    /// run, and are told it is not there.
+    fn forget(&mut self, workspace_id: u64) {
+        let of =
+            |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
+        self.workspaces.remove(&workspace_id);
+        self.shared.joins.lock_recover().remove(&workspace_id);
+        self.shared.stores.lock_recover().remove(&workspace_id);
+        self.mounted.retain(|route, _| !of(route));
+        self.bounded.retain(|(route, _, _), _| !of(route));
+        self.beside.retain(|route, held| !of(route) && !of(held));
+        self.channels_opened.retain(|route| !of(route));
+        for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
+            self.timed(queued, job);
+        }
+    }
+
     /// The member's view of `workspace_id`, joining the workspace first and
     /// holding the keys of what `needs` reads, and every change the mounted
     /// records have not merged yet.
+    /// The service's membership of `workspace_id`: the one joined when its
+    /// first request arrived, or joined now.
+    fn membership(&mut self, workspace_id: u64) -> Result<&mut Workspace, ActionHostError> {
+        if !self.workspaces.contains_key(&workspace_id) {
+            let ahead = self
+                .shared
+                .joins
+                .lock_recover()
+                .insert(workspace_id, None)
+                .flatten();
+            let workspace = match ahead {
+                Some(workspace) => workspace,
+                None => Workspace::join(&self.member, workspace_id, &self.shared)
+                    .map_err(|reason| ActionHostError::Unavailable { reason })?,
+            };
+            self.workspaces.insert(workspace_id, workspace);
+        }
+        self.workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "the workspace was not joined".into(),
+            })
+    }
+
     fn refresh(
         &mut self,
         workspace_id: u64,
         needs: Needs<'_>,
     ) -> Result<WorkspaceState, ActionHostError> {
-        if !self.workspaces.contains_key(&workspace_id) {
-            let workspace = Workspace::join(&self.member, workspace_id)
-                .map_err(|reason| ActionHostError::Unavailable { reason })?;
-            self.workspaces.insert(workspace_id, workspace);
-        }
+        self.membership(workspace_id)?;
         let workspace =
             self.workspaces
                 .get_mut(&workspace_id)
@@ -1164,48 +1660,12 @@ impl Worker {
             needs,
             self.shared.link.get().map(|link| &**link),
         )?;
-        let mut state = WorkspaceState::default();
-        for (position, (route, change)) in workspace.log.iter().enumerate() {
-            state
-                .workspace
-                .get_or_insert_with(|| route.cluster_id.clone());
-            state.changed.insert(route.clone(), position);
-            state
-                .records
-                .entry(route.clone())
-                .or_default()
-                .push(change.clone());
-        }
-        state.revision = workspace.log.len();
-        state.on_desktop.clone_from(workspace.desktop.tabs());
+        let state = workspace.state();
         for (route, mounted) in &mut self.mounted {
-            if let Some(changes) = state.records.get(route) {
-                for (digest, bytes) in changes {
-                    if mounted.seen.insert(*digest)
-                        && let Err(error) = mounted
-                            .app
-                            .apply(&DocumentMutation::Incremental(bytes.clone()))
-                    {
-                        tracing::warn!(%error, "workspace actions: a change did not merge");
-                    }
-                }
-            }
-            for (part, seen) in &mut mounted.parts {
-                let (Some(changes), Ok(record)) =
-                    (state.records.get(part), reads::record_id(&part.record))
-                else {
-                    continue;
-                };
-                for (digest, bytes) in changes {
-                    if seen.insert(*digest)
-                        && let Err(error) = mounted
-                            .app
-                            .apply_record(&record, &DocumentMutation::Incremental(bytes.clone()))
-                    {
-                        tracing::warn!(%error, "workspace actions: a change to a part did not merge");
-                    }
-                }
-            }
+            catch_up(route, mounted, &state);
+        }
+        for ((route, _, _), held) in &mut self.bounded {
+            catch_up(route, &mut held.held, &state);
         }
         Ok(state)
     }
@@ -1247,15 +1707,11 @@ impl Worker {
             self.mount_own(&holder, state)?;
             return Ok(holder);
         }
-        let changes = state
-            .records
-            .get(route)
-            .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
+        let (bytes, heads) = state.document(route)?;
         let record = reads::record_id(&route.record)?;
-        let bytes = whole(changes)?;
         let holders: Vec<DocumentRoute> = state
             .records
-            .keys()
+            .iter()
             .filter(|held| {
                 held.app_id == route.app_id
                     && held.cluster_id == route.cluster_id
@@ -1277,10 +1733,7 @@ impl Worker {
                 .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
             {
                 Ok(()) => {
-                    mounted.parts.insert(
-                        route.clone(),
-                        changes.iter().map(|(digest, _)| *digest).collect(),
-                    );
+                    mounted.parts.insert(route.clone(), Some(heads));
                     self.beside.insert(route.clone(), holder.clone());
                     return Ok(holder);
                 }
@@ -1300,10 +1753,7 @@ impl Worker {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
-            let changes = state
-                .records
-                .get(route)
-                .ok_or_else(|| format!("the workspace has no record {}", route.record))?;
+            let (bytes, heads) = state.document(route)?;
             while self.mounted.len() >= MAX_MOUNTED {
                 let Some(oldest) = self
                     .mounted
@@ -1324,15 +1774,16 @@ impl Worker {
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
-                    changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                    changes: vec![bytes],
                 },
             )
             .map_err(|error| error.to_string())?;
+            let app = self.lend(app, &route.cluster_id);
             self.mounted.insert(
                 route.clone(),
                 Mounted {
                     app,
-                    seen: changes.iter().map(|(digest, _)| *digest).collect(),
+                    merged: Some(heads),
                     parts: HashMap::new(),
                     used: clock,
                 },
@@ -1348,21 +1799,58 @@ impl Worker {
 
     /// Records of the workspace an app of the catalogue opens: those on the
     /// shared desktop first, then the most recently changed.
-    fn records(&self, state: &WorkspaceState) -> Vec<DocumentRoute> {
-        let on_desktop = &state.on_desktop;
-        let mut routes: Vec<DocumentRoute> = state
-            .records
-            .keys()
-            .filter(|route| self.catalogue.get(&route.app_id).is_some())
-            .cloned()
-            .collect();
-        routes.sort_by_key(|route| {
-            (
-                !on_desktop.contains(&route.record),
-                std::cmp::Reverse(state.changed.get(route).copied().unwrap_or(0)),
-            )
-        });
+    /// The actions `route` lists: someone served within bounds is listed
+    /// what their own replica offers them, what the host runs for them and
+    /// nothing else; the owner, what the mounted record offers.
+    fn listed(
+        &mut self,
+        workspace_id: u64,
+        bounded: Option<&bounded::Bounded>,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, String> {
+        match bounded {
+            Some(who) => self
+                .bounded_actions(workspace_id, who, route, state)
+                .map_err(|error| error.to_string()),
+            None => self
+                .mount(route, state)
+                .map(|mounted| live_actions(&mounted.app)),
+        }
+    }
+
+    /// The records of `cluster_id` a listing shows: those this member's
+    /// replica holds, and those the workspace's host holds of an app the
+    /// catalogue has.
+    ///
+    /// A public workspace sends a device its records only when it opens one,
+    /// so the replica holds a handful of them: without the host's list, every
+    /// app there is installed and none running, and what a member's agent
+    /// names is not found. A record listed here that the replica has not been
+    /// sent is asked for when a request names it.
+    fn records(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+        let mut routes: Vec<DocumentRoute> = state.records.clone();
+        if let Some(held) = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.records(cluster_id))
+        {
+            for (app_id, record) in held {
+                let route = DocumentRoute {
+                    app_id,
+                    cluster_id: cluster_id.to_owned(),
+                    record,
+                };
+                if !routes.contains(&route) {
+                    routes.push(route);
+                }
+            }
+        }
         routes
+            .into_iter()
+            .filter(|route| self.catalogue.get(&route.app_id).is_some())
+            .collect()
     }
 
     fn view_catalogue_page(
@@ -1410,109 +1898,21 @@ impl Worker {
             })
             .collect();
         let mut page = CataloguePage::from_rows(source.revision, rows, query);
-        if !page.rows.is_empty() {
-            page.locator = link.view_locator(&fresh.workspace, provider);
-        }
+        // Where the record opens is the caller's to know once they may read
+        // it, views or not: a record's root links to the record alone.
+        page.locator = link.view_locator(&fresh.workspace, provider);
         Ok(page)
     }
 
-    fn catalogue_page(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        query: &CatalogueQuery,
-    ) -> Result<CataloguePage, ActionHostError> {
-        if let Some(provider) = query.provider.as_deref()
-            && let Some(page) =
-                self.registered_read_catalogue(workspace_id, caller, provider, query)
-        {
-            return Ok(page);
+    /// Whether `workspace` admits `caller`: the person whose device runs this
+    /// service, or a member the workspace's governance lets in. Answered here,
+    /// on the service's own thread, where asking the host blocks.
+    fn admits_member(&self, workspace: u64, caller: &Caller) -> bool {
+        if self.serves_as_owner(caller) {
+            return true;
         }
-        // A record named by its provider waits for its own keys; a listing
-        // waits for the workspace's once.
-        let named = query
-            .provider
-            .as_deref()
-            .and_then(|provider| record_of(provider, ""));
-        let needs = named
-            .as_ref()
-            .map_or(Needs::Workspace, |route| Needs::Read {
-                app_id: &route.app_id,
-                record: &route.record,
-            });
-        let state = self.refresh(workspace_id, needs)?;
-        let revision = state.revision.to_string();
-        let Some(cluster_id) = state.workspace.clone() else {
-            return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
-        };
-        let routes = self.records(&state);
-        let own_provider = workspace_provider(&cluster_id);
-        let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
-            Some(provider) if provider == own_provider => Vec::new(),
-            Some(provider) => {
-                let route = record_of(provider, &cluster_id)
-                    .filter(|route| routes.contains(route))
-                    .ok_or(ActionHostError::UnknownAction)?;
-                vec![route]
-            }
-            None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
-        };
-        let mut rows = Vec::new();
-        for route in &wanted {
-            let provider = record_provider(route);
-            let mut descriptors = match self.mount(route, &state) {
-                Ok(mounted) => live_actions(&mounted.app),
-                Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
-                    continue;
-                }
-            };
-            if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(mut read) = reads::CanonicalRead::prepare(
-                    &self.catalogue,
-                    link.as_ref(),
-                    workspace_id,
-                    caller,
-                    route,
-                )
-                && read
-                    .recheck(link.as_ref(), workspace_id, caller, route)
-                    .is_ok()
-            {
-                descriptors.extend(read.operations());
-            }
-            rows.extend(descriptors.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
-            }));
-        }
-        if query
-            .provider
-            .as_deref()
-            .is_none_or(|provider| provider == own_provider)
-        {
-            rows.extend(self.open_rows(&cluster_id));
-        }
-        let mut page = CataloguePage::from_rows(revision, rows, query);
-        if query.provider.is_none() {
-            page.providers = routes
-                .iter()
-                .map(|route| CatalogueProvider {
-                    provider: record_provider(route),
-                    app_id: route.app_id.clone(),
-                    workspace: cluster_id.clone(),
-                    record_id: route.record.clone(),
-                    browsable: true,
-                })
-                .chain(std::iter::once(CatalogueProvider {
-                    provider: own_provider,
-                    app_id: String::new(),
-                    workspace: cluster_id.clone(),
-                    record_id: String::new(),
-                    browsable: false,
-                }))
-                .collect();
-        }
-        Ok(page)
+        self.bounded(caller)
+            .is_some_and(|who| self.admits_bounded(workspace, &who))
     }
 
     fn registered_read_catalogue(
@@ -1555,74 +1955,127 @@ impl Worker {
         ))
     }
 
-    fn open_rows(&self, workspace: &str) -> Vec<CatalogueRow> {
-        self.catalogue
-            .iter()
-            .map(|definition| open_row(workspace, definition.app_id()))
-            .collect()
-    }
-
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
-        let (caller, request) = {
-            let mut ledger = self.ledger();
-            let Some(entry) = ledger.entries.get(&invocation) else {
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected {
-                        error: ActionHostError::UnknownInvocation,
-                    },
-                };
-            };
-            if entry.update.is_terminal() {
-                // Cancelled before it started.
-                return InvocationState::new(invocation, entry.update.clone()).receipt();
-            }
-            let caller = entry.caller.clone();
-            let request = entry.request.clone();
-            ledger.running = Some(invocation);
-            drop(ledger);
-            (caller, request)
+        let (caller, request) = match self.claim(invocation) {
+            Ok(claimed) => claimed,
+            Err(receipt) => return receipt,
         };
-        if let Some(receipt) = self.start_terminal_run(workspace_id, &caller, &request) {
-            let mut ledger = self.ledger();
-            ledger.running = None;
-            if matches!(receipt.status, ReceiptStatus::Rejected { .. }) {
-                ledger.forget(&invocation);
-            }
-            drop(ledger);
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&InteractionPhase::Applying, None),
+        );
+        if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
-        let outcome = self.perform(workspace_id, &caller, &request);
-        let target = &request.target;
-        match &outcome {
-            Ok(_) => {
-                tracing::info!(provider = %target.provider, resource = %target.address.resource,
-                action = %target.address.action, "workspace actions: succeeded");
-            }
-            Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
-                resource = %target.address.resource, action = %target.address.action,
-                code = %error.code, message = %error.message, "workspace actions: failed"),
-            Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
-                resource = %target.address.resource, action = %target.address.action,
-                code = error.code(), %error, "workspace actions: refused"),
+        let performed = self.perform(workspace_id, &caller, &request);
+        let (outcome, unsaved) = self.saved(workspace_id, performed);
+        let about = self
+            .ledger()
+            .entries
+            .get_mut(&invocation)
+            .and_then(|entry| entry.about.take());
+        if matches!(
+            outcome,
+            Err(Outcome::Rejected(
+                ActionHostError::ConfirmationRequired { .. }
+            ))
+        ) && let Some(about) = about
+            && let Some(receipt) = self.ask_person(workspace_id, &caller, &request, &about)
+        {
+            self.ledger().running = None;
+            return receipt;
         }
+        log_outcome(&request.target, &outcome);
+        let left = outcome
+            .as_ref()
+            .ok()
+            .and_then(|(_, left_at)| left_at.as_ref());
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&run_voice::ended_phase(&outcome), left),
+        );
+        self.settle(invocation, outcome, unsaved)
+    }
+
+    /// Mark `invocation` running, naming its caller and what it asked: a
+    /// receipt instead when it is unknown or already finished.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the receipt is the answer the caller records"
+    )]
+    fn claim(
+        &self,
+        invocation: InvocationId,
+    ) -> Result<(Caller, InvokeRequest), InvocationReceipt> {
+        let mut ledger = self.ledger();
+        let claimed = match ledger.entries.get(&invocation) {
+            None => Err(rejected(invocation, ActionHostError::UnknownInvocation)),
+            Some(entry) if entry.update.is_terminal() => {
+                // Cancelled before it started.
+                Err(InvocationState::new(invocation, entry.update.clone()).receipt())
+            }
+            Some(entry) => Ok((entry.caller.clone(), entry.request.clone())),
+        };
+        if claimed.is_ok() {
+            ledger.running = Some(invocation);
+        }
+        claimed
+    }
+
+    /// Record what `outcome` answered for `invocation` and answer it: done
+    /// once what it wrote is saved, or the failure or refusal it ended with.
+    fn settle(
+        &self,
+        invocation: InvocationId,
+        outcome: Performed,
+        unsaved: Option<Unsaved>,
+    ) -> InvocationReceipt {
+        let outcome = match (outcome, unsaved) {
+            (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
+            (outcome, _) => outcome,
+        };
         let mut ledger = self.ledger();
         ledger.running = None;
         let (update, left_at) = match outcome {
             Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
-            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
-            Err(Outcome::Rejected(error)) => {
+            Err(Outcome::Failed(error)) if !settles(&error) => {
+                // A failure the caller may ask again is not this
+                // invocation's answer: forgotten, the same request under the
+                // same id runs it again rather than being handed the failure
+                // it already has.
                 ledger.forget(&invocation);
                 return InvocationReceipt {
                     invocation,
-                    status: ReceiptStatus::Rejected { error },
+                    status: ReceiptStatus::Failed { error },
                 };
             }
+            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
+            // Answered accepted while the person was asked: it ends refused,
+            // and stays to say so.
+            Err(Outcome::Rejected(error))
+                if ledger
+                    .entries
+                    .get(&invocation)
+                    .is_some_and(|entry| entry.asked) =>
+            {
+                let error = ActionFailure {
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                };
+                (InvocationUpdate::Failed { invocation, error }, None)
+            }
+            Err(Outcome::Rejected(error)) => {
+                ledger.forget(&invocation);
+                return rejected(invocation, error);
+            }
         };
-        if let Some(entry) = ledger.entries.get_mut(&invocation) {
-            entry.update = update.clone();
-            entry.left_at = left_at;
-        }
+        ledger.answered(invocation, &update, left_at);
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
     }
@@ -1688,82 +2141,101 @@ impl Worker {
         let appearance = self
             .admit_appearance(workspace_id, caller, request)
             .map_err(Outcome::Rejected)?;
-        if let Some(output) = self
-            .try_registered_read(workspace_id, caller, request)
-            .map_err(|error| *error)?
-        {
-            return Ok((output, None));
-        }
         if let Some((named, app)) = application_provider(&request.target.provider) {
             return self
-                .show_on_desk(workspace_id, caller, named, app, &request.target)
+                .show_on_desk(workspace_id, caller, (named, app), request)
                 .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
-        // opening an app on a new record needs only the workspace.
-        let named = record_of(&request.target.provider, "");
-        let needs = named.as_ref().map_or(Needs::Joined, |route| Needs::Act {
-            app_id: &route.app_id,
-            record: &route.record,
-        });
+        // opening an app on a new record needs only the workspace, and on the
+        // record it keeps per workspace, the host's answer for that record
+        // ([`Self::invoke_keys`], which the service's thread admitted this
+        // request by).
+        let keys = self.invoke_keys(request);
         let state = self
-            .refresh(workspace_id, needs)
+            .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
-        if request
-            .revision
-            .as_ref()
-            .is_some_and(|revision| *revision != state.revision.to_string())
-        {
-            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
-        }
+        // A page names its source's revision: the workspace's, or a registered
+        // read's committed source (checked where that source is read, below).
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
+            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+                return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+            }
             return self
-                .open_asked(workspace_id, named, owner, target)
+                .open_asked(workspace_id, caller, named, target)
                 .map(|output| (output, None));
         }
-        let workspace = workspace.ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        let workspace = workspace.ok_or_else(unknown_action)?;
         let route = record_of(&target.provider, &workspace)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+            .ok_or_else(unknown_action)?;
         let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
-        let mounted = self
-            .mount(&route, &state)
-            .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let live = live_actions(&mounted.app);
+        // What the record publishes, its own door runs. What only its
+        // committed source publishes — a canonical read of it — is asked of
+        // that source, which reads the record and opens a worker for it: an
+        // action the record publishes never pays for that.
+        let holder = self.holder_of(&route);
+        let published_here = self.publishes(&holder, &target.address);
+        if !published_here
+            && let Some(output) = self
+                .try_registered_read(workspace_id, caller, request)
+                .map_err(|error| *error)?
+        {
+            return Ok((output, None));
+        }
+        if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+        }
+        let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+            // Sharing asks the record for everything it lists, which is what
+            // the link is chosen from.
+            // The kind of the resource the link names, from the action
+            // asked for, resolved by its address: never a survey of all the
+            // record publishes, which grows with everything it holds.
+            let kind = mounted
+                .app
+                .descriptor(&target.address)
+                .map(|descriptor| descriptor.resource_kind)
+                .ok_or_else(unknown_action)?;
+            let at = (&route, &state, kind);
             return self
-                .share_link(workspace_id, caller, &route, &live, target, arguments)
+                .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
         }
-        let descriptor = live
-            .iter()
-            .find(|descriptor| descriptor.address == target.address)
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        if !owner {
+            let who = self.bounded(caller).ok_or_else(unknown_action)?;
+            if appearance.is_some() {
+                return Err(unknown_action());
+            }
+            return self.perform_bounded(
+                workspace_id,
+                caller,
+                &who,
+                (request, &route, &state),
+                (target, arguments),
+            );
+        }
+        // The one action asked for, not the whole listing: a record of ten
+        // thousand items costs this what a record of ten does.
+        let descriptor = mounted
+            .app
+            .descriptor(&target.address)
+            .ok_or_else(unknown_action)?;
         let arguments = descriptor.bind_prompt_text(arguments);
+        let binding = bounded::WitnessBinding::of(workspace_id, caller, request);
         let confirmed = confirms(
             &descriptor.contract.confirmation,
             request.confirmation.as_ref(),
+            |token| self.shared.witnesses.take(token, &binding),
         );
-        if !owner {
-            if appearance.is_some() {
-                return Err(Outcome::Rejected(ActionHostError::UnknownAction));
-            }
-            let contract = descriptor.contract.clone();
-            let address = target.address.clone();
-            return self
-                .comment_as_member(
-                    workspace_id,
-                    caller,
-                    (&route, &state, &contract),
-                    (&address, &arguments, confirmed),
-                )
-                .map(|output| (output, None));
-        }
-        let context = caller_context(request);
+        let holder = self.holder_of(&route);
+        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
+        let context = caller_context(caller, request);
         let output = mounted
             .app
             .invoke_in(
@@ -1776,11 +2248,8 @@ impl Worker {
             .map_err(|error| door_outcome(&error))?;
         // Where the action left its actor, for the door that shows it
         // working: the text it wrote, the item it acted on.
-        let left_at = mounted.app.presence().map(|(anchor, head)| ActorPlace {
-            anchor: hex::encode(anchor.cursor),
-            head: hex::encode(head.cursor),
-        });
-        let taken = take_all(&mounted.app, &route)
+        let left_at = mounted.app.presence().map(bounded::placed);
+        let taken = take_all(&mounted.app, &holder)
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
@@ -1788,8 +2257,10 @@ impl Worker {
     }
 
     /// Open an app on a new record of the workspace `named`, as its
-    /// workspace's own action asks (`app.<app>#open`): only for the
-    /// workspace's owner, in the workspace the session is in.
+    /// workspace's own action asks (`app.<app>#open`), in the workspace the
+    /// session is in: for the host's own person as its owner, and for anyone
+    /// else, a member or an agent of anyone's, within their standing there
+    /// now.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1797,29 +2268,40 @@ impl Worker {
     fn open_asked(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         named: &str,
-        owner: bool,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Result<ActionOutput, Outcome> {
-        if !owner || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id) {
-            return Err(Outcome::Rejected(ActionHostError::UnknownAction));
+        if room_workspace_id(named).ok() != Some(workspace_id) {
+            return Err(unknown_action());
         }
+        let who = if self.serves_as_owner(caller) {
+            None
+        } else {
+            Some(self.bounded(caller).ok_or_else(unknown_action)?)
+        };
         let app = target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
-            .filter(|app| self.catalogue.get(app).is_some())
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?
+            // Its records have no window to show: starting the app is opening it.
+            .filter(|_| {
+                target.address.action == APPLICATION_OPEN_ACTION
+                    || target.address.action == APPLICATION_START_ACTION
+            })
+            .filter(|app| self.catalogue.has(app))
+            .ok_or_else(unknown_action)?
             .to_owned();
-        self.open_new(workspace_id, named, &app)
+        self.open_new(workspace_id, named, &app, who.as_ref())
     }
 
     /// Show the record an application's `open` names (its own record when it names none) as a
-    /// window on the workspace's shared desktop, opened by `caller`: what a device of the owner's
-    /// that draws no desk asks for the record it works in (an agent's `tilo mcp`), so every member
-    /// sees it open as they see a colleague's window, without anyone's view moving to it
-    /// ([`crate::desk`]). A record a window already shows is left where the people put it.
+    /// window on the workspace's shared desktop: what the device an agent acts through asks for
+    /// each record the agent makes or changes (`tilo mcp`, the front door), so every member sees
+    /// it open as they see a colleague's window, without anyone's view moving to it
+    /// ([`crate::desk`]). The window is the person's the caller acts for — the host's own, or a
+    /// member of the workspace — and names the agent run that opened it. A record a window
+    /// already shows is left where the people put it.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1828,20 +2310,36 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         caller: &Caller,
-        named: &str,
-        app: &str,
-        target: &tilo_actions::remote::RemoteActionTarget,
+        (named, app): (&str, &str),
+        request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
         let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return Err(unknown());
-        };
-        if !self.serves_as_owner(caller)
-            || target.address.action != APPLICATION_OPEN_ACTION
-            || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id)
+        let target = &request.target;
+        if target.address.action != APPLICATION_OPEN_ACTION
+            || room_workspace_id(named).ok() != Some(workspace_id)
         {
             return Err(unknown());
         }
+        let person = if self.acts_for_owner(caller) {
+            self.participant.clone()
+        } else {
+            self.bounded(caller)
+                .filter(|who| self.admits_bounded(workspace_id, who))
+                .ok_or_else(unknown)?
+                .person
+        };
+        let run = caller_context(caller, request)
+            .and_then(|context| context.group)
+            .filter(|group| {
+                group.kind == tilo_actions::context::AGENT_RUN_GROUP
+                    || group.kind == tilo_actions::context::TASK_RUN_GROUP
+            })
+            .map(|group| tilo_desktop_model::ownership::OpenedBy {
+                run: group.id,
+                // The agent, by its own name; the run, by the title it gave.
+                label: caller.agent_run().map_or(group.label, |run| run.label),
+                title: group.title.unwrap_or_default(),
+            });
         let title = self
             .catalogue
             .get(app)
@@ -1864,11 +2362,16 @@ impl Worker {
                 .unwrap_or_default()
                 .to_owned(),
         };
-        if !state.records.contains_key(&route) {
+        if !state.holds(&route) && !self.held_or_owed(workspace_id, &route)? {
             return Err(Outcome::Rejected(ActionHostError::Refused {
                 reason: format!("this workspace has no {app} record {}", route.record),
             }));
         }
+        let name = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.workspace_name(workspace_id));
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
@@ -1879,27 +2382,41 @@ impl Worker {
             record: &route.record,
             beside: None,
         };
-        let Some(change) = crate::desk::place_view(workspace.desktop.doc(), person, &view) else {
+        let held = workspace
+            .records
+            .as_ref()
+            .and_then(WorkspaceRecords::desktop);
+        let opener = crate::desk::Opener {
+            person: &person,
+            run,
+        };
+        let empty = automerge::AutoCommit::new();
+        let Some(change) = crate::desk::place_view(
+            held.as_ref().unwrap_or(&empty),
+            (named, name.as_deref()),
+            &opener,
+            &view,
+        ) else {
             return Ok(ActionOutput::default());
         };
-        workspace.desktop.receive(change.clone());
-        self.commit(workspace_id, &desk, &DocumentMutation::Incremental(change))
+        let mutation = crate::desk::desk_mutation(held.is_some(), change);
+        self.commit(workspace_id, &desk, &mutation)
             .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
     }
 
     /// Commit what the owner's action changed, each record on its own
-    /// route: a part it started is held beside the record it acted on.
-    /// The error is why a commit failed.
+    /// route: a part it started is held beside the record it acted on. The
+    /// action is done once the host holds them ([`Self::saving`]). The error
+    /// is why a commit failed.
     fn commit_taken(
         &mut self,
         workspace_id: u64,
         route: &DocumentRoute,
-        taken: Vec<(Option<DocumentRoute>, DocumentMutation)>,
+        taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
         for (changed, mutation) in taken {
-            let changed = changed.unwrap_or_else(|| holder.clone());
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
@@ -1913,127 +2430,11 @@ impl Worker {
         matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
     }
 
-    /// A comment `caller` makes on `route` through the host, or an action of
-    /// the record any member may ask for themselves
-    /// ([`tilo_actions::MEMBER_OWN_TAG`]: linking their own account
-    /// elsewhere): run in a worker of its own as `caller`, with the standing
-    /// the workspace's policy gives them now, so the action's door and its own
-    /// checks decide what they may do. Its answer goes to `caller` alone, in
-    /// the receipt. The host then
-    /// publishes the change like its own, keeps its held copy current and
-    /// answers only once the change is saved: the caller cannot retry it
-    /// themselves.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    fn comment_as_member(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        (route, state, contract): (
-            &DocumentRoute,
-            &WorkspaceState,
-            &tilo_actions::ActionContract,
-        ),
-        (address, arguments, confirmed): (
-            &tilo_actions::door::ActionAddress,
-            &serde_json::Map<String, serde_json::Value>,
-            bool,
-        ),
-    ) -> Result<ActionOutput, Outcome> {
-        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
-        let need = contract.need();
-        let comment = need.kind == ui::permissions::policy::ActionKind::Undoable
-            && need.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
-        let own = contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_actions::MEMBER_OWN_TAG);
-        if !comment && !own {
-            return Err(refused());
-        }
-        let CallerPrincipal::Person(person) = caller.principal() else {
-            return Err(refused());
-        };
-        let policy = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| {
-                link.view_read_policy(workspace_id, caller, &route.app_id, &route.record)
-            })
-            .filter(|policy| {
-                policy.workspace == route.cluster_id && policy.standing.person == *person
-            })
-            .ok_or_else(refused)?;
-        let unavailable =
-            |reason: String| Outcome::Rejected(ActionHostError::Unavailable { reason });
-        // A part is held beside the record of its app that keeps it, as the
-        // host's own mount holds it.
-        let holder = self.holder_of(route);
-        let held = state.records.get(&holder).ok_or_else(refused)?;
-        let replica = ConfinedReplica::open(
-            &self.catalogue,
-            &holder.app_id,
-            &holder.cluster_id,
-            person,
-            &crate::ReplicaActor::Member {
-                standing: policy.standing,
-                sandbox: policy.sandbox,
-                unix_time: policy.unix_time,
-            },
-            Seed::Existing {
-                record: reads::record_id(&holder.record).map_err(unavailable)?,
-                changes: held.iter().map(|(_, bytes)| bytes.clone()).collect(),
-            },
-        )
-        .map_err(|error| unavailable(error.to_string()))?;
-        if holder != *route {
-            let part = state.records.get(route).ok_or_else(refused)?;
-            replica
-                .apply_record(
-                    &reads::record_id(&route.record).map_err(unavailable)?,
-                    &DocumentMutation::Snapshot(whole(part).map_err(unavailable)?),
-                )
-                .map_err(|error| unavailable(error.to_string()))?;
-        }
-        let output = replica
-            .invoke(address, arguments, confirmed)
-            .map_err(|error| door_outcome(&error))?;
-        let taken = take_all(&replica, &holder).map_err(|error| {
-            Outcome::Failed(ActionFailure {
-                code: "commit_failed".into(),
-                message: error.to_string(),
-                details: None,
-                retryable: false,
-            })
-        })?;
-        for (changed, mutation) in taken {
-            let changed = changed.unwrap_or_else(|| holder.clone());
-            if let Some(mounted) = self.mounted.get(&holder) {
-                let merged = if changed == holder {
-                    mounted.app.apply(&mutation)
-                } else {
-                    reads::record_id(&changed.record)
-                        .map_err(crate::apps::AppError::Merge)
-                        .and_then(|record| mounted.app.apply_record(&record, &mutation))
-                };
-                if let Err(error) = merged {
-                    tracing::warn!(%error, "workspace actions: a member's change did not merge here");
-                }
-            }
-            self.commit_durably(workspace_id, &changed, &mutation)
-                .map_err(|reason| {
-                    Outcome::Failed(ActionFailure {
-                        code: "commit_failed".into(),
-                        message: reason,
-                        details: None,
-                        retryable: true,
-                    })
-                })?;
-        }
-        Ok(output)
+    /// Whether `caller` is the host's own person or an agent one of their
+    /// devices handed its session to: who may open records, show them on the
+    /// shared desk and run commands in the workspace's shell.
+    fn acts_for_owner(&self, caller: &Caller) -> bool {
+        acts_for(caller, &self.participant)
     }
 
     fn try_registered_read(
@@ -2106,6 +2507,9 @@ impl Worker {
         .map_err(|error| Box::new(door_outcome(&error)))
     }
 
+    /// A new record of `app` in `workspace`, created by the host's own person
+    /// as its owner, or by `who` on their standing there now: a genesis they
+    /// may not write is never saved, as no change of theirs is.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -2115,30 +2519,83 @@ impl Worker {
         workspace_id: u64,
         workspace: &str,
         app: &str,
+        who: Option<&bounded::Bounded>,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
-        let hosted = ConfinedReplica::open(
-            &self.catalogue,
-            app,
-            workspace,
-            &self.participant,
-            &crate::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .map_err(|error| refused(error.to_string()))?;
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_owned(),
-            record: hosted.wire_record().to_owned(),
+        let (creator, actor, permissions) = match who {
+            None => (self.participant.clone(), crate::ReplicaActor::Owner, None),
+            Some(who) => {
+                let policy = self
+                    .policy_for(workspace_id, who, workspace, None)
+                    .map_err(Outcome::Rejected)?;
+                let permissions =
+                    bounded::bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
+                if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable)
+                    != Answer::Allow
+                {
+                    return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                }
+                let actor = bounded::member_actor(&policy, who).map_err(Outcome::Rejected)?;
+                (who.person.clone(), actor, Some(permissions))
+            }
         };
+        let (route, genesis) = if self.catalogue.placed(app).is_some() {
+            self.placed_route(workspace_id, workspace, app)?
+        } else {
+            // An app that keeps one record per workspace opens that record: the
+            // one the workspace holds when it has it, founded only when its host
+            // answered it holds none.
+            if self
+                .catalogue
+                .get(app)
+                .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+            {
+                let route = DocumentRoute {
+                    app_id: app.to_owned(),
+                    cluster_id: workspace.to_owned(),
+                    record: String::new(),
+                };
+                if self.held_or_owed(workspace_id, &route)? {
+                    return Ok(ActionOutput {
+                        value: Some(serde_json::json!({
+                            "provider": record_provider(&route),
+                            "record": route.record,
+                        })),
+                        resources: Vec::new(),
+                    });
+                }
+            }
+            let hosted =
+                ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+                    .map_err(|error| refused(error.to_string()))?;
+            let hosted = self.lend(hosted, workspace);
+            let route = DocumentRoute {
+                app_id: app.to_owned(),
+                cluster_id: workspace.to_owned(),
+                record: hosted.wire_record().to_owned(),
+            };
+            let genesis = hosted
+                .take_mutation()
+                .map_err(|error| refused(error.to_string()))?;
+            (route, genesis)
+        };
+        if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
+            let unwritable =
+                bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
+                    .map_err(|reason| commit_failed(reason, false))?;
+            if !unwritable.is_empty() {
+                return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+            }
+        }
         // When the host device takes part in the workspace's channels, it opens a
         // new record's channel for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
-        if let Some(keys) = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.host_keys(&route, true))
+        if genesis.is_some()
+            && let Some(keys) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.host_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionHostError::Unavailable {
@@ -2149,13 +2606,10 @@ impl Worker {
                 .get(&workspace_id)
                 .ok_or_else(|| refused("the workspace was not joined".into()))?
                 .peer
-                .install_channel_keys(route.clone(), keys)
-                .map_err(refused)?;
+                .send(Cmd::InstallChannelKeys(route.clone(), keys))
+                .map_err(|closed| refused(closed.to_string()))?;
         }
-        if let Some(mutation) = hosted
-            .take_mutation()
-            .map_err(|error| refused(error.to_string()))?
-        {
+        if let Some(mutation) = genesis {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(refused)?;
         }
@@ -2167,80 +2621,28 @@ impl Worker {
             resources: Vec::new(),
         })
     }
-
-    /// Publish `mutation` as the member: sealed with the record's channel
-    /// keys, or held until a participant admits the member to it.
-    fn commit(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        let workspace = self
-            .workspaces
-            .get_mut(&workspace_id)
-            .ok_or("the workspace was not joined")?;
-        workspace.peer.publish(route.clone(), mutation)?;
-        let bytes = bytes_of(mutation);
-        let digest = change_digest(&self.member.endpoint.host_cert.device_public_key, &bytes);
-        workspace.log.push((route.clone(), (digest, bytes)));
-        if let Some(mounted) = self.mounted.get_mut(route) {
-            mounted.seen.insert(digest);
-        } else if let Some(holder) = self.beside.get(route)
-            && let Some(mounted) = self.mounted.get_mut(holder)
-        {
-            mounted
-                .parts
-                .entry(route.clone())
-                .or_default()
-                .insert(digest);
-        }
-        Ok(())
-    }
-
-    /// [`Self::commit`], done only once the host holds the change durably
-    /// (the session's barrier): handing it to the session, possibly to wait
-    /// for keys, is not a save.
-    fn commit_durably(
-        &mut self,
-        workspace_id: u64,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        self.commit(workspace_id, route, mutation)?;
-        let saved = self
-            .workspaces
-            .get(&workspace_id)
-            .ok_or("the workspace was not joined")?
-            .peer
-            .barrier()?;
-        match saved.recv_timeout(COMMIT_WAIT) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(reason)) => Err(format!("the host did not save the change: {reason}")),
-            Err(_) => Err("the host has not acknowledged saving the change".into()),
-        }
-    }
 }
 
 impl Worker {
     /// `share-link` on a record this host runs headless. An app's root mints
     /// it where the app runs; here no root runs, so the host mints the same
-    /// link from the resource's views as `caller` may read them now (the
-    /// governed lookup a link's page makes too), under the web entry the
-    /// host announces.
+    /// link from the resource's views as `caller` (a person: an agent asks as
+    /// the person it acts for) may read them now (the governed lookup a link's
+    /// page makes too), under the web entry the host announces.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
     fn share_link(
-        &self,
+        &mut self,
         workspace_id: u64,
         caller: &Caller,
-        route: &DocumentRoute,
-        live: &[tilo_actions::ActionDescriptor],
+        (route, state, kind): (&DocumentRoute, &WorkspaceState, String),
         target: &tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, Outcome> {
+        let asker = self.link_asker(workspace_id, caller, (route, state), target)?;
+        let caller = &asker;
         let failed = |message: String| {
             Outcome::Failed(ActionFailure {
                 code: "share_link".into(),
@@ -2250,14 +2652,30 @@ impl Worker {
             })
         };
         let resource = &target.address.resource;
-        // The record's own actions name the resource's kind; its views are
-        // attached where the app renders, which the lookup below runs.
-
-        let kind = live
+        // The resource's views are attached where the app renders, which the
+        // lookup below runs. A resource with none is a record's root: its
+        // link names the record.
+        // The record itself, opened at its primary view.
+        let opened = self.holder_of(route);
+        let root = self
+            .catalogue
+            .get(&route.app_id)
+            .is_some_and(|definition| definition.record_kind.as_str() == resource.as_str());
+        let plain = ["view", "start", "end"]
             .iter()
-            .find(|descriptor| descriptor.address.resource == *resource)
-            .map(|descriptor| descriptor.resource_kind.clone())
-            .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+            .all(|name| arguments.get(*name).is_none_or(serde_json::Value::is_null));
+        // The root of a part of a chain is the record it is held beside,
+        // whose link names that record: no view of it is looked up.
+        if root && plain {
+            let request = ui::tilo_resource::share::ShareRequest {
+                resource: resource.clone(),
+                kind,
+                views: Vec::new(),
+                invite: false,
+                args: arguments,
+            };
+            return self.record_link(workspace_id, caller, &opened, &request);
+        }
         let query = CatalogueQuery {
             provider: Some(record_provider(route)),
             view_resource: Some(tilo_actions::remote::ViewResourceQuery {
@@ -2300,7 +2718,6 @@ impl Worker {
         // A part of a chain opens with the record it is held beside: the
         // link's page mounts that record, whose window holds the part and
         // offers its items at the address asked for here.
-        let opened = self.holder_of(route);
         locator.provider = record_provider(&opened);
         let url = ui::framework::host_link(&request, &opened.app_id, &opened.record, &locator)
             .map_err(failed)?;
@@ -2311,21 +2728,74 @@ impl Worker {
     }
 }
 
-/// The arguments an invocation carries, as the door binds them.
-/// What a caller may say of its own invocation, which History keeps: the
-/// work it belongs to (an agent's run), what it is for, and the gesture it
-/// was part of. Who invoked it is the host's to say, from the session that
-/// carried it, and what it did the action's.
-fn caller_context(request: &InvokeRequest) -> Option<tilo_actions::ActionContext> {
-    let said = request.context.as_ref()?;
-    Some(tilo_actions::ActionContext {
-        group: said.group.clone(),
-        purpose: said.purpose.clone(),
-        gesture: said.gesture,
-        ..tilo_actions::ActionContext::default()
-    })
+impl Worker {
+    /// Who asks for a link on `caller`'s behalf: someone served within
+    /// bounds asks as the person they are or act for, and only for a link
+    /// their own replica offers them.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn link_asker(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        (route, state): (&DocumentRoute, &WorkspaceState),
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<Caller, Outcome> {
+        let Some(who) = self.bounded(caller) else {
+            return Ok(caller.clone());
+        };
+        let offered = self
+            .bounded_descriptor(workspace_id, &who, (route, state), &target.address)
+            .map_err(Outcome::Rejected)?;
+        if offered.is_some_and(|descriptor| descriptor.address == target.address) {
+            Ok(who.person_caller)
+        } else {
+            Err(Outcome::Rejected(ActionHostError::UnknownAction))
+        }
+    }
+
+    /// The link to the record at `route` itself, opened at its primary view:
+    /// none of its views is looked up, only that `caller` may read it now
+    /// and where it opens.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn record_link(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        route: &DocumentRoute,
+        request: &ui::tilo_resource::share::ShareRequest,
+    ) -> Result<ActionOutput, Outcome> {
+        let failed = |message: String| {
+            Outcome::Failed(ActionFailure {
+                code: "share_link".into(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        };
+        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let link = self.shared.link.get().ok_or_else(refused)?;
+        let policy = link
+            .view_read_policy(workspace_id, caller, &route.app_id, &route.record)
+            .ok_or_else(refused)?;
+        let locator = link
+            .view_locator(&policy.workspace, &record_provider(route))
+            .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
+        let url = ui::framework::host_link(request, &route.app_id, &route.record, &locator)
+            .map_err(failed)?;
+        Ok(ActionOutput {
+            value: Some(serde_json::json!({ "url": url })),
+            resources: Vec::new(),
+        })
+    }
 }
 
+/// The arguments an invocation carries, as the door binds them.
 fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
     match argument {
         InvokeArgument::None => serde_json::Map::new(),
@@ -2338,13 +2808,22 @@ fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_
     }
 }
 
-fn confirms(policy: &ConfirmationPolicy, given: Option<&Confirmation>) -> bool {
+/// Whether `given`, from the host's own person on their own device, confirms
+/// an action asking `policy`: their own word, the phrase it names, or a
+/// token naming their answer that the host issued for this very invocation
+/// (`witnessed` spends it).
+fn confirms(
+    policy: &ConfirmationPolicy,
+    given: Option<&Confirmation>,
+    witnessed: impl FnOnce(&str) -> bool,
+) -> bool {
     match (policy, given) {
+        (_, Some(Confirmation::Witnessed(token))) => witnessed(token),
         (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
             phrase == given
         }
-        (ConfirmationPolicy::Phrase { .. }, _) => false,
-        (_, confirmation) => confirmation.is_some(),
+        (ConfirmationPolicy::Phrase { .. }, _) | (_, None) => false,
+        (_, Some(Confirmation::Confirmed | Confirmation::Phrase(_))) => true,
     }
 }
 
@@ -2378,100 +2857,51 @@ fn exact_view_query(
     Ok((wanted, provider))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{GaveUp, Needs, sealed_for};
-    use std::collections::{BTreeMap, HashSet};
-    use tilo_browser_peer::session::RouteStatus;
-    use tilo_peer_state::document_frame::DocumentRoute;
-
-    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
-    const OTHER_WORKSPACE: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
-
-    fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
-        DocumentRoute {
-            app_id: app.into(),
-            cluster_id: workspace.into(),
-            record: record.into(),
+/// Whether `caller` speaks for someone a workspace may admit as a member: a
+/// person themselves, the agent a device of theirs handed its session to (an
+/// agent's grant), which every decision then holds to what an agent of
+/// theirs may do, or an agent device they certified, held to what the
+/// workspace grants that agent. The workspace's governance still decides
+/// whether it admits them.
+fn speaks_for_a_member(caller: &Caller) -> bool {
+    match caller.principal() {
+        CallerPrincipal::Person(_) => true,
+        CallerPrincipal::Agent(_) if caller.is_session_delegated() => {
+            caller.acting_for_person().is_some()
         }
-    }
-
-    fn sealed(awaiting: usize) -> RouteStatus {
-        RouteStatus {
-            awaiting_keys: awaiting,
-            ..RouteStatus::default()
+        CallerPrincipal::Agent(_) => {
+            caller.user_public_key().is_some() && caller.device_public_key().is_some()
         }
-    }
-
-    #[test]
-    fn a_request_waits_only_for_the_keys_of_what_it_reads() {
-        let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
-        let a = route(WORKSPACE, "so.tilo.sheets", "a");
-        let b = route(WORKSPACE, "so.tilo.sheets", "b");
-        let elsewhere = route(OTHER_WORKSPACE, "so.tilo.sheets", "a");
-        let mut routes = BTreeMap::new();
-        routes.insert(a, sealed(0));
-        routes.insert(b.clone(), sealed(3));
-        routes.insert(elsewhere, sealed(1));
-        let act = |record| Needs::Act {
-            app_id: "so.tilo.sheets",
-            record,
-        };
-        let read = |record| Needs::Read {
-            app_id: "so.tilo.sheets",
-            record,
-        };
-        let fresh = GaveUp::default();
-
-        assert!(
-            sealed_for(&routes, workspace, act("a"), &fresh).is_empty(),
-            "another record's missing keys never hold back this one"
-        );
-        assert!(sealed_for(&routes, workspace, read("a"), &fresh).is_empty());
-        assert_eq!(
-            sealed_for(&routes, workspace, act("b"), &fresh),
-            std::slice::from_ref(&b)
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, read("b"), &fresh),
-            std::slice::from_ref(&b)
-        );
-        assert!(
-            sealed_for(
-                &routes,
-                workspace,
-                Needs::Act {
-                    app_id: "so.tilo.slides",
-                    record: "b"
-                },
-                &fresh
-            )
-            .is_empty(),
-            "a record is named by its app and id together"
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, Needs::Workspace, &fresh),
-            std::slice::from_ref(&b),
-            "the first listing waits for this workspace's sealed records only"
-        );
-        assert!(sealed_for(&routes, workspace, Needs::Joined, &fresh).is_empty());
-
-        let waited = GaveUp {
-            listed: true,
-            records: HashSet::from([b.clone()]),
-        };
-        assert!(
-            sealed_for(&routes, workspace, Needs::Workspace, &waited).is_empty(),
-            "later listings wait for nothing"
-        );
-        assert!(
-            sealed_for(&routes, workspace, read("b"), &waited).is_empty(),
-            "a listing waits for the same missing keys once"
-        );
-        assert_eq!(
-            sealed_for(&routes, workspace, act("b"), &waited),
-            [b],
-            "acting on a record always waits for its keys"
-        );
+        _ => false,
     }
 }
+
+/// The receipt of an invocation the host turns away outright, with why.
+fn rejected(invocation: InvocationId, error: ActionHostError) -> InvocationReceipt {
+    InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Rejected { error },
+    }
+}
+
+/// Log how the action `target` names ended: succeeded, failed or refused.
+fn log_outcome(
+    target: &tilo_actions::remote::RemoteActionTarget,
+    outcome: &Result<(ActionOutput, Option<tilo_actions::remote::ActorPlace>), Outcome>,
+) {
+    match outcome {
+        Ok(_) => {
+            tracing::info!(provider = %target.provider, resource = %target.address.resource,
+            action = %target.address.action, "workspace actions: succeeded");
+        }
+        Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
+            resource = %target.address.resource, action = %target.address.action,
+            code = %error.code, message = %error.message, "workspace actions: failed"),
+        Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
+            resource = %target.address.resource, action = %target.address.action,
+            code = error.code(), %error, "workspace actions: refused"),
+    }
+}
+
+#[cfg(test)]
+mod tests;

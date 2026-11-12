@@ -32,6 +32,7 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
 
@@ -48,6 +49,24 @@ pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
 pub const INSTANCE_VERB: &[u8] = b"instance";
+
+/// The verb of the person's formats and language, as the session hands them to a host whose
+/// instances are already running: which clock their dates and times read by, or which language
+/// their windows read in, changed in Settings. The request is the [`Locale`], JSON; the door
+/// carries no descriptor with it.
+pub const LOCALE_VERB: &[u8] = b"locale";
+
+/// The person's region formats and language, as the session hands them to a host whose instances
+/// are already running ([`LOCALE_VERB`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Locale {
+    /// The clock and the date style their dates and times read by.
+    pub formats: RegionFormats,
+    /// The language their windows read in (`de-DE`), as [`InstanceRequest::language`] names it;
+    /// empty where the session names none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+}
 
 /// The verb of a task handed to a task's host.
 pub const TASK_VERB: &[u8] = b"task";
@@ -105,6 +124,34 @@ pub struct InstanceRequest {
     /// then the change's own id, never a window's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applies_change: bool,
+    /// The person's formats (`locale` in their settings): the clock a time of day reads by and the
+    /// style a date does, for what the instance writes in a sentence (`t.clock()`, a change's
+    /// before and after) and its window shows. A host without them answers a 24-hour clock.
+    #[serde(default)]
+    pub formats: RegionFormats,
+    /// The person's language (`de-DE`), the one their windows read in: the choice in their
+    /// settings, else the locale their device runs in, as their session resolved it. Each window
+    /// speaks it where its package ships it, and the package's source language otherwise
+    /// (`tilo_history::window_language`), so the host resolves every word the window paints in the
+    /// window's language rather than in its own process's. A session that names none (`""`) lets
+    /// the host's own environment speak.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
+    /// The record the window was asked to open, by its id, when its launch named one: the
+    /// instance opens only the record its route names (the workspace's, or the person's own), so
+    /// a window asked for another is refused rather than shown that one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+    /// The item the window opens on, by its anchor (a search hit's, an agent's `open`, the
+    /// conversation a send landed in): the instance shows it as its `open` would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
+    /// The tilolang apps installed here, by id, each with the id its records are kept under: a
+    /// package the app uses that is one of them is another app, whose records the instance reads
+    /// from that app's own record and whose changes it asks of that app's door. A package it uses
+    /// that is not installed as an app keeps its records in the app's own.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub installed: std::collections::BTreeMap<String, String>,
 }
 
 /// An action to run against a record at its origin, as the broker admitted it.
@@ -144,6 +191,11 @@ pub struct TaskRequest {
     /// ([`InstanceRequest::records_under`]).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub records_under: std::collections::BTreeMap<String, String>,
+    /// The apps whose records the session changes itself, the packages it runs: a program's
+    /// change of one goes to its record. A change of any other app is the app's own action,
+    /// invoked where the app runs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub changed_at_record: std::collections::BTreeSet<String>,
 }
 
 /// The descriptors a task arrives with, in the order the door carries them.
@@ -161,6 +213,9 @@ pub struct TaskFds {
 pub enum Handed {
     Instance(InstanceRequest, InstanceFds),
     Task(TaskRequest, TaskFds),
+    /// The person's formats and language, which their instances' clock and dates read by, and
+    /// their windows read in, from now on.
+    Locale(Locale),
 }
 
 const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
@@ -455,6 +510,30 @@ pub fn send_instance(
     }
 }
 
+/// Say on the host behind `door` that the person's formats or language changed: the clock and the
+/// date style their instances write in a sentence, and the language their windows read in, from
+/// now on.
+///
+/// # Errors
+/// The socket's error, a request that does not encode, or [`io::ErrorKind::Unsupported`] off
+/// Linux.
+pub fn send_locale(door: &Descriptor, locale: &Locale) -> io::Result<()> {
+    let encoded = serde_json::to_vec(locale).map_err(io::Error::other)?;
+    if encoded.len() > MAX_MESSAGE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        crate::door::send(door.as_fd(), &[LOCALE_VERB, &encoded], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
 /// Hand the host behind `door` the task `request`: its program connection and the apps its
 /// programs are compiled against.
 ///
@@ -492,7 +571,7 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
     match receive(door)? {
         None => Ok(None),
         Some(Handed::Instance(request, fds)) => Ok(Some((request, fds))),
-        Some(Handed::Task(..)) => Err(io::Error::new(
+        Some(Handed::Task(..) | Handed::Locale(..)) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "the door carried something other than an instance",
         )),
@@ -533,6 +612,14 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 return Err(invalid("apps over the door's limit"));
             }
             return Ok(Some(Handed::Task(request, TaskFds { program, apps })));
+        }
+        if verb == LOCALE_VERB {
+            let locale: Locale = serde_json::from_slice(request)
+                .map_err(|_| invalid("formats that do not decode"))?;
+            if !fds.is_empty() {
+                return Err(invalid("formats carrying a connection"));
+            }
+            return Ok(Some(Handed::Locale(locale)));
         }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
@@ -667,6 +754,14 @@ mod tests {
             module_len: 12,
             records_under: Some("so.tilo.lang.older-notes".into()),
             applies_change: true,
+            formats: RegionFormats {
+                time: tilo_formats::TimeStyle::H12,
+                ..RegionFormats::default()
+            },
+            language: "de-DE".into(),
+            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
+            reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
+            installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
         };
         let fds = InstanceFds {
             broker: connection(),
@@ -694,6 +789,34 @@ mod tests {
         assert!(
             receive_instance(&host).unwrap().is_none(),
             "closed door ends"
+        );
+    }
+
+    #[test]
+    fn the_persons_formats_cross_the_door_between_instances() {
+        let (shell, host) = pair().unwrap();
+        let locale = Locale {
+            formats: RegionFormats {
+                date: tilo_formats::DateStyle::Iso,
+                time: tilo_formats::TimeStyle::H12,
+                ..RegionFormats::default()
+            },
+            language: "de-DE".into(),
+        };
+        send_locale(&shell, &locale).unwrap();
+        assert_eq!(
+            receive(&host).unwrap().map(|handed| match handed {
+                Handed::Locale(locale) => locale,
+                other => panic!("a locale message arrives as one: {other:?}"),
+            }),
+            Some(locale.clone()),
+            "the person's clock, date style and language reach the host as they set them"
+        );
+        // Said again while a host waits on an instance: it arrives as formats, never as one.
+        send_locale(&shell, &locale).unwrap();
+        assert!(
+            receive_instance(&host).is_err(),
+            "a host waiting on an instance does not take formats for one"
         );
     }
 
@@ -737,6 +860,7 @@ mod tests {
             person: Some("ada".into()),
             apps_len: 3,
             records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+            changed_at_record: ["so.tilo.shell".into()].into(),
         };
         let fds = TaskFds {
             program: connection(),

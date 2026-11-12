@@ -19,6 +19,7 @@
 //!
 //! [`ListRow`]: crate::widget::ListRow
 
+use crate::widget::DrawChild;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -87,6 +88,13 @@ struct HeaderMetrics {
     count_pad: f64,
     /// The action's label inset: the bleed its lift takes past the edge.
     action_pad: f64,
+}
+
+/// How far below the top of `rect` the header's own box stands: room the box holds past the
+/// header's height is the finger's, and stands over the header's line, never between it and
+/// what it heads.
+fn foot(rect: Rect, header_h: f64) -> f64 {
+    (rect.height() - header_h).max(0.0)
 }
 
 impl HeaderMetrics {
@@ -284,6 +292,21 @@ pub fn band_height(theme: &Theme) -> f64 {
     m.height(line)
 }
 
+/// The number a heading shows beside its words, when the number is worth reading: a heading of
+/// one row saying "1" restates the row standing under it, so it draws no count; two or more say
+/// how many, and a run the surface cut short says how many it left out even when that is one.
+/// `shown` is how many of them the heading stands over, `total` how many the surface holds
+/// where it holds more than it shows. `None` leaves the heading to its name alone.
+///
+/// What a heading counts, it counts as left to do: a list asks how many of the rows under it
+/// are still to do, so a row just finished takes its number down with it even while its row
+/// stands struck through ([`crate::widget::ListModel::done`]).
+#[must_use]
+pub fn heading_count(shown: usize, total: Option<usize>) -> Option<usize> {
+    let total = total.unwrap_or(shown);
+    (total > 1 || total > shown).then_some(total)
+}
+
 /// An immediate-mode section header for a painted host, with the retained
 /// [`SectionHeader`]'s geometry: the title on the content edge, the count
 /// after it, the action's label on the trailing edge, one fixed height.
@@ -333,10 +356,11 @@ impl<'a> SectionHeaderFace<'a> {
     }
 
     /// How many items the header stands over, as a quiet number on the trailing edge, in the
-    /// column the rows' facts end on: a group's heading in a list says its count there.
+    /// column the rows' facts end on: a group's heading in a list says its count there, where
+    /// the count says something the rows do not ([`heading_count`]).
     #[must_use]
-    pub fn trailing_count(mut self, count: usize) -> Self {
-        self.trailing_count = Some(count);
+    pub fn trailing_count(mut self, count: Option<usize>) -> Self {
+        self.trailing_count = count;
         self
     }
 
@@ -412,7 +436,7 @@ impl<'a> SectionHeaderFace<'a> {
         let width = self.action_width(text, theme);
         let line = f64::from(theme.text(self.level.role()).line_height_px());
         let height = m.height(line);
-        let cy = rect.y0 + height / 2.0;
+        let cy = rect.y0 + foot(rect, height) + height / 2.0;
         Some(Rect::new(
             rect.x1 + m.action_pad - width,
             cy - m.control / 2.0,
@@ -432,9 +456,14 @@ impl<'a> SectionHeaderFace<'a> {
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
         let header_h = m.height(first_line);
-        let cy = rect.y0 + header_h / 2.0;
+        // Room past the header's own height is the finger's, where the box that holds it grew
+        // for a touch: it stands over the line, so a heading keeps its line the same distance
+        // from what it heads however tall the band a finger needs is.
+        let own = header_h.max(f64::from(title_h));
+        let down = foot(rect, own);
+        let cy = rect.y0 + down + header_h / 2.0;
         let top = if f64::from(title_h) > header_h {
-            rect.y0
+            rect.y0 + down
         } else {
             cy - f64::from(title_h) / 2.0
         };
@@ -1511,7 +1540,7 @@ impl Widget for Section {
                 .as_deref()
                 .and_then(|shifts| shifts.get(index).copied())
                 .unwrap_or(0.0);
-            child.draw(
+            child.draw_child(
                 scene,
                 transform * Affine::translate((0.0, dy)),
                 text,
@@ -1761,6 +1790,8 @@ pub struct StatusLine {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1776,6 +1807,7 @@ impl StatusLine {
     fn with(status: OwnedStatus, text: impl Into<String>) -> Self {
         Self {
             dirty: true,
+            layout_dirty: true,
             status,
             text: text.into(),
             rect: Rect::ZERO,
@@ -1813,6 +1845,7 @@ impl StatusLine {
     /// Replace the sentence (a live count).
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.text = text.into();
     }
 
@@ -1901,7 +1934,7 @@ impl Widget for StatusLine {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -1943,11 +1976,6 @@ impl Widget for StatusLine {
         crate::widget::Widget::mark_children_drawn(self);
     }
 
-    /// What it says decides the room it takes.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-
     fn name(&self) -> &'static str {
         "StatusLine"
     }
@@ -1976,6 +2004,8 @@ pub struct ObjectHeader {
     metrics: Option<ObjectMetrics>,
     /// What it says changed since the last frame drew it.
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 enum ObjectLead {
@@ -2018,12 +2048,14 @@ impl ObjectHeader {
             rect: Rect::ZERO,
             metrics: None,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
     /// Another name, line under it and kind of thing before them, where the header stands.
     fn set_object(&mut self, title: String, caption: Option<String>, lead: Option<ObjectLead>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.title = title;
         self.caption = caption;
         self.lead = lead;
@@ -2136,7 +2168,7 @@ impl Widget for ObjectHeader {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -2205,11 +2237,6 @@ impl Widget for ObjectHeader {
     }
 
     crate::redraw_flag!();
-
-    /// What it says decides the room it takes.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
 
     fn name(&self) -> &'static str {
         "ObjectHeader"

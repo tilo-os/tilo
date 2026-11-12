@@ -306,7 +306,6 @@ frame_trace=$flight_dir/frame-trace.csv
 { : >"$frame_trace" && chmod 0600 "$frame_trace"; } 2>/dev/null || true
 TILO_FRAME_TRACE=$frame_trace
 export TILO_FRAME_TRACE
-export TILO_PAINT_STATS=1
 export TILO_LOOP_TIMING=1
 flight_pipe=$session_runtime/flight-record-$$.pipe
 rm -f -- "$flight_pipe"

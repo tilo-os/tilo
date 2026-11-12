@@ -69,7 +69,7 @@ impl TestGovernor {
     /// A fresh workspace, governor and host, each under new keys.
     #[must_use]
     pub fn new() -> Self {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let person = SigningKey::from_bytes(&random());
         let governor_key = SigningKey::from_bytes(&random());
         let governor = certificate(&person, &governor_key, "Governor");
@@ -155,7 +155,7 @@ impl TestGovernor {
         {
             return Err("interactive fixture custody cannot govern this workspace".into());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let workspace_id =
             tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| error.to_string())?;
         let mut peer = StatePeer::new(
@@ -612,7 +612,7 @@ mod empty_interactive_tests {
             .peer()
             .clone()
             .publication_mut()
-            .durable_bootstrap_messages(&key, std::time::SystemTime::now(), 20)
+            .durable_bootstrap_messages(&key, tilo_clock::wall(), 20)
             .unwrap();
         for message in messages {
             governor
@@ -678,7 +678,7 @@ mod empty_interactive_tests {
             )
             .unwrap(),
         );
-        let expiry = super::ns(std::time::SystemTime::now())
+        let expiry = super::ns(tilo_clock::wall())
             .checked_add(60_000_000_000)
             .unwrap();
         let invitation = governor.issue(

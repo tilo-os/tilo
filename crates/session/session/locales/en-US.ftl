@@ -85,15 +85,16 @@ desk-not-opened-old-unreadable-detail = { $path } is your desk from the version 
 desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
 desk-window-did-not-open = { $app } started but did not open a window
+desk-window-waits-for-host = { $app } is waiting for { $host } to take this device in
 
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
 ## dropped.
-desk-place-not-read = Its saved window could not be read, so it is not here. Close this tab when you are done with it; the app opens again next time you sign in.
-
 ## The "Always allow" answers this computer kept for the agents at its door,
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
+send-to-agent-unnamed = Agent
+send-to-resource = Send to
 agent-bindings-lost-title = { $agent } is asked again
 agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
 agent-bindings-unreadable-title = Your answers about agents could not be read
@@ -191,6 +192,7 @@ session-displays-close-sheet = Put the display sheet away
 session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
+session-quick-settings = Quick Settings
 session-devices = Devices
 session-devices-press = Press one of the person's devices
 session-bluetooth-app = Bluetooth
@@ -217,11 +219,14 @@ session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-open = Open the notification
-session-notifications-hand-to-agent = Hand the notification to an agent
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
 notification-from-device-only = From { $device }
+## A notification a program sent from a terminal, with no app this device
+## knows behind it: the person reads where it came from, never a bare
+## command name.
+notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.
@@ -271,6 +276,7 @@ device-wake-failed-body = No wake-up signal could be sent on its network.
 ## window they are over.
 people-pointer-where = { $who } is in { $where }
 
+
 ## What the status cluster says of the machine in a line, for a reader
 ## that hears it rather than sees its glyphs.
 status-battery = Battery { $percent }%
@@ -315,17 +321,11 @@ session-desk-stop-agent = Stop
 session-people = People
 
 ## What a person's private conversations are called, and the one action they offer.
-session-messages = Private messages
-session-messages-send = Send a private message
-
 ## What the lock screen is called while it is up.
 session-lock-screen = Lock screen
 
 ## What an agent's programs are, as the action door offers them: a task agent
 ## writes one program at a time as a step of its task's run.
-task-programs-resource = Task programs
-task-programs-run = Run a program
-task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
 
 ## What the person's own devices answered when one of them asked to be
 ## unlocked after a reboot, as their activity history lists it: the package
@@ -361,6 +361,8 @@ window-move-bringing-edits = The window comes back with what was written after i
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity
 profile-action-pair-device = Pair another device
+profile-action-connect-agent = Connect an agent or computer
+profile-action-devices-access = Devices and access
 profile-name-not-saved = Your name was not saved
 
 ## A capture, while the capture studio's bar is down: the card the floating
@@ -392,9 +394,6 @@ capture-target-region = An area of the desktop
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistant
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistant
 
 desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown
@@ -405,3 +404,76 @@ desk-style-failed-body = { $style } could not be shown, so the desk shows Strips
 turn-question-title = Let the agent { $action }
 turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.
 turn-question-detail-here = { $action }, as shown. It runs once, for this step only.
+
+## Someone mentioned the person in a record of the workspace.
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
+mention-notice-open = Open
+
+## What a call says it wants a device for, when the call asks the person
+## to allow its camera, microphone or screen.
+call-microphone-reason = to be heard in the call
+call-camera-reason = to be seen in the call
+call-screen-reason = to share this screen in the call
+
+## What the window names
+session-resource-keyboard = On-screen keyboard
+session-resource-diagnostics = Session diagnostics
+session-resource-window-menu = Window menu
+session-resource-surfaces = Surfaces
+session-resource-keyboard-focus = Keyboard focus
+
+## Actions
+
+so-tilo-session-desk-switch-workspace = Switch to workspace
+so-tilo-session-desk-invitations = List invitations
+so-tilo-session-desk-issue-invitation = Make an invitation link
+so-tilo-session-desk-show-invite = Invite people
+so-tilo-session-desk-cancel-invitation = Cancel invitation
+so-tilo-session-desk-show-surface = Show or hide a panel
+so-tilo-session-desk-close-surface = Close panel
+so-tilo-session-desk-clear-notices = Clear notifications
+so-tilo-session-desk-dismiss-notice = Dismiss notification
+so-tilo-session-desk-act-on-notice = Answer notification
+so-tilo-session-desk-walk-switcher = Switch windows
+so-tilo-session-desk-select-switcher = Choose window in switcher
+so-tilo-session-desk-commit-switcher = Go to chosen window
+
+## Actions
+
+so-tilo-session-clipboard-clear = Clear the history
+so-tilo-session-clipboard-copy = Copy text
+so-tilo-session-clipboard-paste = Paste a copy
+so-tilo-session-clipboard-paste-files = Paste files
+so-tilo-session-clipboard-pin = Pin the copy
+so-tilo-session-clipboard-remove = Remove a copy from the history
+so-tilo-session-devices-hand-off = Hand off an accessory
+so-tilo-session-devices-press = Press one of the person's devices
+so-tilo-session-displays-brightness-down = Dimmer
+so-tilo-session-displays-brightness-up = Brighter
+so-tilo-session-displays-close-sheet = Close the display sheet
+so-tilo-session-displays-next-mode = Next arrangement
+so-tilo-session-displays-open-sheet = Open the display sheet
+so-tilo-session-displays-set-brightness = Set the brightness
+so-tilo-session-displays-set-display-brightness = Set one display's brightness
+so-tilo-session-displays-set-mode = Use this arrangement
+so-tilo-session-keyboard-set-visible = Show the keyboard
+so-tilo-session-keyboard-type = Type text
+so-tilo-session-notifications-act = Choose an action
+so-tilo-session-notifications-clear = Clear all
+so-tilo-session-notifications-dismiss = Dismiss
+so-tilo-session-notifications-open = Open
+so-tilo-session-notifications-set-quiet = Hold banners back
+so-tilo-session-notifications-undo-clear = Bring back the cleared notifications
+so-tilo-session-quick-settings-hide-control = Remove a control
+so-tilo-session-quick-settings-move-control = Move a control
+so-tilo-session-quick-settings-reset-controls = Reset the panel
+so-tilo-session-quick-settings-show-control = Add a control
+so-tilo-session-send-to-send = Send to
+so-tilo-desktop-overlays-close = Close a surface
+so-tilo-desktop-overlays-open = Open a surface
+so-tilo-desktop-window-menu-choose = Choose a row
+so-tilo-desktop-window-menu-close = Close the window menu
+so-tilo-desktop-window-menu-open = Open the window menu

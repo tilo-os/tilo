@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
+mod calls;
 mod causal;
 mod job;
 mod window;
@@ -38,13 +39,13 @@ use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
 };
 use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
+use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 use ui_core::portal::{
     ContentsOutcome, DestinationOutcome, PickRequest, PickedContents, PortalOutcome,
     SaveDestination, SaveOutcome,
 };
-use ui_core::{Arrival, WakeHandle};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -65,7 +66,7 @@ fn attach_approved_check_reporter(
                 }
                 ui_core::invocation_scope::ApprovedCheckReportObservation::Disabled { .. } => {
                     progress.report(
-                        ui_core::i18n::I18nManager::lookup_plain("approved-check-reports-disabled"),
+                        ui_core::i18n::widget_text("approved-check-reports-disabled"),
                         None,
                         None,
                     );
@@ -878,59 +879,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             )?
         };
         Ok(move |progress: Progress| attach_approved_check_reporter(checked, progress))
-    }
-
-    /// Call another resource's published action, as part of this effect,
-    /// then `then` with what it answered (or why it did not go ahead) on the
-    /// UI thread.
-    ///
-    /// The host decides the call as this effect's caller: when it delivered
-    /// this invocation for someone (a person at its palette, an agent,
-    /// another member), the call continues it and is theirs, with their
-    /// grants, in the other resource's history and their undo there. The
-    /// person at this device acting here asks as this app, which needs the
-    /// workspace's grant to it (or their answer). What the effect then
-    /// submits to its own resource continues it the same way, so the whole
-    /// composition is the caller's, each part recorded once where it
-    /// changed something.
-    ///
-    /// ```ignore
-    /// let note = Call::on("so.tilo.notes", None, &notebook, "create-page")
-    ///     .with(json!({ "title": title }));
-    /// Ok(cx.call(&note, move |_, created, cx| {
-    ///     let created = created?;
-    ///     cx.submit(Tracker::LINK.with(..));
-    ///     cx.when_landed(|_, _, _| Ok(Effected::done()))
-    /// }))
-    /// ```
-    pub fn call(
-        &mut self,
-        call: &super::Call,
-        then: impl FnOnce(&mut H, Result<ActionOutput, String>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let action = call.action().to_owned();
-        let answer = self.env.dispatch.call_published(self.inv.delivered, call);
-        let mut answer = Some(answer);
-        self.wait_on(
-            move || match answer.take() {
-                Some(Ok(called)) => {
-                    if let Some(outcome) = called_outcome(&called, &action) {
-                        return Ok(outcome);
-                    }
-                    answer = Some(Ok(called));
-                    Err(TryRecvError::Empty)
-                }
-                Some(Err(refused)) => Ok(Err(refused)),
-                None => Err(TryRecvError::Disconnected),
-            },
-            move |host, outcome, cx| {
-                then(
-                    host,
-                    outcome.unwrap_or_else(|| Err("the call was dropped unanswered".into())),
-                    cx,
-                )
-            },
-        )
     }
 
     /// Wakes the app from another thread, to draw what a worker changed.
@@ -1807,30 +1755,6 @@ impl Drop for ActingFor {
     }
 }
 
-/// What `called`, a call of another resource's `action`, came to once it
-/// ended: its output, or why it did not go ahead. `None` while it runs.
-fn called_outcome(
-    called: &ui_core::InvocationCall,
-    action: &str,
-) -> Option<Result<ActionOutput, String>> {
-    called.with(|arrival| match arrival {
-        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
-        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
-            Some(Err(format!("{action}: {}", error.message)))
-        }
-        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
-            Some(Err(format!("{action} was cancelled")))
-        }
-        Arrival::Failed(error) => Some(Err(format!("{action}: {error}"))),
-        Arrival::Pending { .. }
-        | Arrival::Ready(
-            InvocationUpdate::Accepted { .. }
-            | InvocationUpdate::Progress { .. }
-            | InvocationUpdate::Item { .. },
-        ) => None,
-    })
-}
-
 /// An effect's failure told only by its message.
 fn failure(message: String) -> ActionFailure {
     ActionFailure {
@@ -2210,6 +2134,14 @@ struct Published {
     alive: Weak<()>,
     operation: &'static str,
     specs: Box<dyn Fn() -> Vec<ActionSpec>>,
+    /// What the vocabulary declares, independent of any view: what its
+    /// surface publishes of it. Only the headless host, which writes the
+    /// surface, reads it.
+    #[allow(
+        dead_code,
+        reason = "read where the native headless host writes the surface; a page's build has none"
+    )]
+    rows: fn() -> Vec<tilo_resource::effect::EffectRow>,
 }
 
 /// A view's effect handler, type-erased for the root.
@@ -2682,6 +2614,7 @@ impl<R: Resource> Effects<R> {
             alive,
             operation: E::OPERATION,
             specs: Box::new(specs),
+            rows: E::rows,
         });
     }
 
@@ -2804,6 +2737,17 @@ impl<R: Resource> Effects<R> {
     #[inline(never)]
     pub(crate) fn specs(&self) -> Vec<ActionSpec> {
         self.inner.borrow_mut().specs()
+    }
+
+    /// What every published vocabulary declares, whether or not a view of it
+    /// is showing: what its surface publishes.
+    #[allow(
+        dead_code,
+        reason = "read where the native headless host writes the surface; a page's build has none"
+    )]
+    #[inline(never)]
+    pub(crate) fn rows(&self) -> Vec<tilo_resource::effect::EffectRow> {
+        self.inner.borrow_mut().rows()
     }
 
     /// Answer `op` with the view handler of its vocabulary.
@@ -2929,6 +2873,18 @@ impl Inner {
         self.published
             .iter()
             .flat_map(|entry| (entry.specs)())
+            .collect()
+    }
+
+    #[allow(
+        dead_code,
+        reason = "read where the native headless host writes the surface; a page's build has none"
+    )]
+    fn rows(&mut self) -> Vec<tilo_resource::effect::EffectRow> {
+        self.prune();
+        self.published
+            .iter()
+            .flat_map(|entry| (entry.rows)())
             .collect()
     }
 

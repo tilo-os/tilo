@@ -33,6 +33,7 @@ use taffy::prelude::*;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -969,7 +970,7 @@ fn run_bench_scroll(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
             let mut scene = Scene::new();
-            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             widget.mark_drawn();
         }
 
@@ -1031,7 +1032,7 @@ fn run_bench_scroll(
                 f64::from(w),
                 f64::from(h),
             ));
-            widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             presence.pop_viewport(prev);
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());

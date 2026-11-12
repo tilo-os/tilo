@@ -12,14 +12,17 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
+use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_compositor::clipboard_history::{
     History, PASSWORD_MANAGER_HINT_MIME, Pulled, SECRET_MIME, TEXT_MIME, kept_mime,
 };
 use tilo_compositor::{Compositor, OutputConfig, Selection, StackPolicy};
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_data_device, wl_data_device::WlDataDevice,
     wl_data_device_manager::WlDataDeviceManager, wl_data_offer, wl_data_offer::WlDataOffer,
@@ -209,6 +212,27 @@ fn setup() -> (Compositor, TestClient) {
     (compositor, client)
 }
 
+/// A surface of the session's own that holds the keyboard, as the desk's search does.
+struct Typed;
+
+impl SurfaceHost for Typed {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn wants_keyboard(&self) -> bool {
+        true
+    }
+}
+
 #[test]
 fn only_a_trusted_client_is_offered_the_selection_data_control() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
@@ -255,6 +279,12 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
     let (mut compositor, mut client) = setup();
     let before = compositor.selection_changes(Selection::Clipboard);
 
+    // The desk's search takes the keys before the app's copy reaches the compositor: the copy,
+    // made while the app had them, is still taken.
+    compositor.add_host(Rc::new(RefCell::new(Typed)));
+    compositor
+        .dispatch(Duration::from_millis(2))
+        .expect("dispatch");
     client.copy(&[TEXT_MIME], b"copied in the editor");
     pump(&mut compositor, &mut client, |compositor, _| {
         compositor.selection_changes(Selection::Clipboard) != before

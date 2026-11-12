@@ -13,50 +13,12 @@
 
 use std::sync::Arc;
 
-use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
+    CommitFuture, CommitOperation, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
 };
 
-/// What the session holding the native owner answers for its commits.
-pub trait OwnerCustody: Send + Sync + 'static {
-    /// Whether `workspace`'s app records are documents the owner commits:
-    /// a workspace held here whose host takes part in no channels.
-    fn commits_documents(&self, workspace: WorkspaceId) -> bool;
-    /// Whether `workspace`'s replica is projected here, its records committed
-    /// documents or sealed channels: a workspace held here, with its
-    /// governance.
-    fn projects_room(&self, workspace: WorkspaceId) -> bool;
-    /// The owner if it is open, never waiting: `unavailable` when there is
-    /// none.
-    fn opened_owner(&self, unavailable: &str) -> Result<NativeWorkspaceOwner, String>;
-    /// The owner, waiting for its open: for a commit's blocking thread.
-    fn resolve_owner(&self) -> Result<NativeWorkspaceOwner, String>;
-    /// Whether this device still holds custody of `workspace` in `owner`, as
-    /// its current identity for the workspace says.
-    ///
-    /// # Errors
-    /// Why this device may not commit to `workspace` now.
-    fn check_custody(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-    ) -> Result<(), String>;
-    /// The key this device signs its own changes of `workspace` with.
-    ///
-    /// # Errors
-    /// This device holds no custody of `workspace`, or has no key.
-    fn signing_key(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-    ) -> Result<SigningKey, String>;
-    /// Send the owner's outgoing custody of `workspace` to its peers soon:
-    /// what was just committed leaves this device. Queued, never awaited.
-    fn schedule_publication(&self, workspace: WorkspaceId);
-}
+pub use tilo_broker_core::custody::OwnerCustody;
 
 /// The broker's owner commits, through `custody`.
 #[derive(Clone)]
@@ -123,10 +85,47 @@ impl OwnerCommitService for NativeOwnerCommits {
             .opened_owner("native durable owner unavailable")?
             .health()
     }
+    /// An effect's receipt; a document write commits through
+    /// [`Self::commit_local_document`].
+    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        match &request.operation {
+            CommitOperation::EffectReceipt { .. } => {}
+            CommitOperation::Document { .. } => {
+                let committed = self.commit_local_document(request, None);
+                return Box::pin(async move { Ok(committed.await?.1) });
+            }
+            _ => {
+                return Box::pin(std::future::ready(Err(
+                    "unsupported native owner commit family".into(),
+                )));
+            }
+        }
+        let custody = Arc::clone(&self.custody);
+        let writes = self.writes.clone();
+        Box::pin(writes.run(move || {
+            let owner = custody
+                .resolve_owner()
+                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
+            let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
+            // A receipt is this device's own, recorded in its person's slice
+            // of the workspace and published as its own change.
+            custody.check_custody(&owner, room)?;
+            let receipt = owner.commit_effect_receipt(&request, tilo_clock::wall())?;
+            custody.schedule_publication(room);
+            Ok(receipt)
+        }))
+    }
     /// A document write is admitted by the owner as it is, whole record or
     /// change: a record `workspace` does not hold yet is founded by the
     /// write itself, sealed, never by one this device publishes ahead of it.
-    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+    /// The owner drafts it again past its record's floor when the device's
+    /// several local writers signed out of the order its turns take them,
+    /// for this device's key to sign.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        _record_kind: Option<String>,
+    ) -> LocalDocumentFuture {
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();
         let changes = self.changes.clone();
@@ -135,33 +134,23 @@ impl OwnerCommitService for NativeOwnerCommits {
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
-            let now = std::time::SystemTime::now();
-            if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
-                custody.check_custody(&owner, room)?;
-                let record = match &request.operation {
-                    CommitOperation::Document { app, record, .. } => {
-                        Some((request.workspace.clone(), app.clone(), record.clone()))
-                    }
-                    _ => None,
-                };
-                let receipt = owner.commit_document(request, now)?;
-                // What search holds of the record is read again from what it
-                // now holds.
-                if let (Some(changes), Some((workspace, app, record))) = (&changes, record) {
-                    changes.changed(&workspace, &app, &record);
-                }
-                // What the owner committed leaves for the workspace's peers
-                // from its custody, the one copy every write goes through.
-                custody.schedule_publication(room);
-                return Ok(receipt);
+            let signer = custody.signer(&owner, room)?;
+            // The commit runs whole on this blocking thread, waiting here for the custody's
+            // signatures.
+            let (committed, receipt) = tokio::runtime::Handle::current().block_on(
+                owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall()),
+            )?;
+            // What search holds of the record is read again from what it now
+            // holds.
+            if let (Some(changes), CommitOperation::Document { app, record, .. }) =
+                (&changes, &committed.operation)
+            {
+                changes.changed(&committed.workspace, app, record);
             }
-            // A receipt is this device's own, recorded in its person's slice
-            // of the workspace with its own key and published as its own
-            // change.
-            let key = custody.signing_key(&owner, room)?;
-            let receipt = owner.commit_effect_receipt(&request, &key, now)?;
+            // What the owner committed leaves for the workspace's peers from
+            // its custody, the one copy every write goes through.
             custody.schedule_publication(room);
-            Ok(receipt)
+            Ok((committed, receipt))
         }))
     }
 }

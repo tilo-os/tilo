@@ -5,127 +5,127 @@ kind = "calendar.calendar"
 label = "Calendar"
 version = 1
 fields = [
-  { path = "projects", type = "Keyed<Project>", stored = "keyed" },
-  { path = "projects.*.id", type = "Id", readonly = true },
-  { path = "projects.*.name", type = "String", label = true },
-  { path = "projects.*.color", type = "Palette" },
-  { path = "projects.*.order", type = "u32" },
-  { path = "events", type = "Keyed<Event>", stored = "keyed" },
-  { path = "events.*.id", type = "Id", readonly = true },
-  { path = "events.*.title", type = "String", label = true },
-  { path = "events.*.start", type = "NaiveDateTime" },
-  { path = "events.*.end", type = "NaiveDateTime" },
+  { path = "projects", type = { collection = { named = "Project" } }, stored = "keyed" },
+  { path = "projects.*.id", type = "text", readonly = true },
+  { path = "projects.*.name", type = "text", label = true },
+  { path = "projects.*.color", type = { named = "Palette" } },
+  { path = "projects.*.order", type = "int" },
+  { path = "events", type = { collection = { named = "Event" } }, stored = "keyed" },
+  { path = "events.*.id", type = "text", readonly = true },
+  { path = "events.*.title", type = "text", label = true },
+  { path = "events.*.start", type = "time" },
+  { path = "events.*.end", type = "time" },
   { path = "events.*.end_later_fold", type = "bool" },
   { path = "events.*.all_day", type = "bool" },
-  { path = "events.*.location", type = "String" },
-  { path = "events.*.color", type = "Palette" },
-  { path = "events.*.recurrence", type = "Recurrence" },
-  { path = "events.*.recurrence_interval", type = "u32" },
-  { path = "events.*.recurrence_until", type = "Option<NaiveDate>" },
-  { path = "events.*.recurrence_count", type = "Option<u32>" },
-  { path = "events.*.recurrence_exdates", type = "Set<NaiveDate>" },
-  { path = "events.*.occurrence_overrides", type = "Keyed<OccurrenceOverride>", stored = "keyed" },
-  { path = "events.*.occurrence_overrides.*.original_date", type = "NaiveDate", readonly = true },
-  { path = "events.*.occurrence_overrides.*.original_time", type = "Option<NaiveTime>", readonly = true },
+  { path = "events.*.location", type = "text" },
+  { path = "events.*.color", type = { named = "Palette" } },
+  { path = "events.*.recurrence", type = { named = "Repeat" } },
+  { path = "events.*.recurrence_interval", type = "int" },
+  { path = "events.*.recurrence_until", type = { option = "date" } },
+  { path = "events.*.recurrence_count", type = { option = "int" } },
+  { path = "events.*.recurrence_exdates", type = { set = "date" } },
+  { path = "events.*.occurrence_overrides", type = { collection = { named = "OccurrenceOverride" } }, stored = "keyed" },
+  { path = "events.*.occurrence_overrides.*.original_date", type = "date", readonly = true },
+  { path = "events.*.occurrence_overrides.*.original_time", type = { option = "text" }, readonly = true },
   { path = "events.*.occurrence_overrides.*.cancelled", type = "bool" },
-  { path = "events.*.occurrence_overrides.*.start", type = "Option<NaiveDateTime>" },
-  { path = "events.*.occurrence_overrides.*.end", type = "Option<NaiveDateTime>" },
+  { path = "events.*.occurrence_overrides.*.start", type = { option = "time" } },
+  { path = "events.*.occurrence_overrides.*.end", type = { option = "time" } },
   { path = "events.*.occurrence_overrides.*.end_later_fold", type = "bool" },
-  { path = "events.*.occurrence_overrides.*.title", type = "Option<String>" },
-  { path = "events.*.occurrence_overrides.*.location", type = "Option<String>" },
-  { path = "events.*.timezone", type = "String" },
-  { path = "events.*.organizer", type = "Option<Id>" },
-  { path = "events.*.attendees", type = "Keyed<Attendee>", stored = "keyed" },
-  { path = "events.*.attendees.*.id", type = "Id", readonly = true },
-  { path = "events.*.attendees.*.name", type = "String" },
-  { path = "events.*.attendees.*.email", type = "String", label = true },
-  { path = "events.*.attendees.*.status", type = "InviteStatus" },
-  { path = "events.*.reminder_min", type = "Option<i64>" },
-  { path = "events.*.project", type = "Option<Id>" },
-  { path = "events.*.calendar_id", type = "Option<String>" },
-  { path = "tasks", type = "Keyed<Task>", stored = "keyed" },
-  { path = "tasks.*.id", type = "Id", readonly = true },
-  { path = "tasks.*.title", type = "String", label = true },
+  { path = "events.*.occurrence_overrides.*.title", type = { option = "text" } },
+  { path = "events.*.occurrence_overrides.*.location", type = { option = "text" } },
+  { path = "events.*.timezone", type = "text" },
+  { path = "events.*.organizer", type = { option = "text" } },
+  { path = "events.*.attendees", type = { collection = { named = "Attendee" } }, stored = "keyed" },
+  { path = "events.*.attendees.*.id", type = "text", readonly = true },
+  { path = "events.*.attendees.*.name", type = "text" },
+  { path = "events.*.attendees.*.email", type = "text", label = true },
+  { path = "events.*.attendees.*.status", type = { named = "InviteStatus" } },
+  { path = "events.*.reminder_min", type = { option = "int" } },
+  { path = "events.*.project", type = { option = "text" } },
+  { path = "events.*.calendar_id", type = { option = "text" } },
+  { path = "tasks", type = { collection = { named = "Task" } }, stored = "keyed" },
+  { path = "tasks.*.id", type = "text", readonly = true },
+  { path = "tasks.*.title", type = "text", label = true },
   { path = "tasks.*.done", type = "bool" },
-  { path = "tasks.*.due", type = "Option<NaiveDate>" },
-  { path = "tasks.*.priority", type = "Priority" },
-  { path = "tasks.*.project", type = "Option<Id>" },
-  { path = "tasks.*.parent", type = "Option<Id>", readonly = true },
-  { path = "notes", type = "BTreeMap<String, RichText>" },
-  { path = "remote", type = "BTreeMap<String, RemoteCopy>", readonly = true },
-  { path = "sync_tokens", type = "BTreeMap<String, String>", readonly = true },
-  { path = "uploads", type = "Outbox<Upload>", unit = true },
-  { path = "deletes", type = "Outbox<Removal>", unit = true },
+  { path = "tasks.*.due", type = { option = "date" } },
+  { path = "tasks.*.priority", type = { named = "Priority" } },
+  { path = "tasks.*.project", type = { option = "text" } },
+  { path = "tasks.*.parent", type = { option = "text" }, readonly = true },
+  { path = "notes", type = { map = "rich_text" } },
+  { path = "remote", type = { map = { named = "RemoteCopy" } }, readonly = true },
+  { path = "sync_tokens", type = { map = "text" }, readonly = true },
+  { path = "uploads", type = { outbox = { named = "Upload" } }, unit = true },
+  { path = "deletes", type = { outbox = { named = "Removal" } }, unit = true },
 ]
 
 [[resources.verbs]]
 id = "new-event"
 kind = "undoable"
 params = [
-  { name = "event", required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
 ]
 
 [[resources.verbs]]
 id = "new-task"
 kind = "outside"
 params = [
-  { name = "task", required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
+  { name = "task", type = { named = "TaskData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
 ]
 
 [[resources.verbs]]
 id = "new-project"
 kind = "outside"
 params = [
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
 id = "delete-event"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string" } },
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reschedule"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string" } },
-  { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
-  { name = "end", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
+  { name = "start", type = "time", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+  { name = "end", type = "time", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
 ]
 
 [[resources.verbs]]
 id = "set-start"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string" } },
-  { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
+  { name = "start", type = "time", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
 ]
 
 [[resources.verbs]]
 id = "move-to-calendar"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string" } },
-  { name = "calendar", required = false, schema = { type = ["string", "null"] } },
-  { name = "color", required = true, schema = { type = "string", enum = ["indigo", "emerald", "amber", "red", "blue", "violet", "slate"] } },
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
+  { name = "calendar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "color", type = { named = "Palette" }, required = true, schema = { type = "string", enum = ["indigo", "emerald", "amber", "red", "blue", "violet", "slate"] } },
 ]
 
 [[resources.verbs]]
 id = "invite"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string" } },
-  { name = "email", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "event", type = "text", required = true, schema = { type = "string" } },
+  { name = "email", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "delete-task"
 kind = "outside"
 params = [
-  { name = "task", required = true, schema = { type = "string" } },
+  { name = "task", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -133,62 +133,271 @@ id = "delete-project"
 destructive = true
 kind = "outside"
 params = [
-  { name = "project", required = true, schema = { type = "string" } },
+  { name = "project", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "import-items"
 kind = "outside"
 params = [
-  { name = "events", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } } },
-  { name = "tasks", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } } },
+  { name = "events", type = { list = { named = "EventData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } } },
+  { name = "tasks", type = { list = { named = "TaskData" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } } },
 ]
 
 [[resources.verbs]]
 id = "adopt-remote-event"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
-  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+  { name = "event", type = { named = "EventData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
+  { name = "at", type = { named = "RemoteAt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
 ]
 
 [[resources.verbs]]
 id = "adopt-remote-task"
 kind = "outside"
 params = [
-  { name = "task", required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
-  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+  { name = "task", type = { named = "TaskData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { done = { type = "boolean" }, due = { type = "string" }, id = { type = "string" }, parent = { type = "string" }, priority = { type = "integer", maximum = 255, minimum = 0 }, project = { type = "string" }, title = { type = "string" } } } },
+  { name = "at", type = { named = "RemoteAt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
 ]
 
 [[resources.verbs]]
 id = "drop-remote-item"
 kind = "outside"
 params = [
-  { name = "item", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "item", type = "text", required = true, schema = { type = "string", format = "uuid" } },
 ]
 
 [[resources.verbs]]
 id = "server-applied"
 kind = "outside"
 params = [
-  { name = "event", required = true, schema = { type = "string", format = "uuid" } },
-  { name = "at", required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
-  { name = "holds", required = true, schema = { type = "string" } },
+  { name = "event", type = "text", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "at", type = { named = "RemoteAt" }, required = true, schema = { type = "object", additionalProperties = false, properties = { calendar = { type = "string" }, etag = { type = ["string", "null"] }, href = { type = "string" } }, required = ["calendar", "href"] } },
+  { name = "holds", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "server-removed"
 kind = "outside"
 params = [
-  { name = "item", required = true, schema = { type = "string", format = "uuid" } },
+  { name = "item", type = "text", required = true, schema = { type = "string", format = "uuid" } },
 ]
 
 [[resources.verbs]]
 id = "pulled"
 kind = "outside"
 params = [
-  { name = "calendar", required = true, schema = { type = "string" } },
-  { name = "token", required = true, schema = { type = "string" } },
+  { name = "calendar", type = "text", required = true, schema = { type = "string" } },
+  { name = "token", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "export-ics-content"
+kind = "read"
+params = [
+  { name = "event", type = { option = "text" }, required = false },
+]
+
+[[resources.types]]
+name = "Attendee"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "email", type = "text" },
+  { name = "status", type = { named = "InviteStatus" } },
+]
+
+[[resources.types]]
+name = "AttendeeData"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "email", type = "text" },
+  { name = "status", type = "text" },
+]
+
+[[resources.types]]
+name = "Event"
+fields = [
+  { name = "id", type = "text" },
+  { name = "title", type = "text" },
+  { name = "start", type = "time" },
+  { name = "end", type = "time" },
+  { name = "end_later_fold", type = "bool" },
+  { name = "all_day", type = "bool" },
+  { name = "location", type = "text" },
+  { name = "color", type = { named = "Palette" } },
+  { name = "recurrence", type = { named = "Repeat" } },
+  { name = "recurrence_interval", type = "int" },
+  { name = "recurrence_until", type = { option = "date" } },
+  { name = "recurrence_count", type = { option = "int" } },
+  { name = "recurrence_exdates", type = { set = "date" } },
+  { name = "occurrence_overrides", type = { collection = { named = "OccurrenceOverride" } } },
+  { name = "timezone", type = "text" },
+  { name = "organizer", type = { option = "text" } },
+  { name = "attendees", type = { collection = { named = "Attendee" } } },
+  { name = "reminder_min", type = { option = "int" } },
+  { name = "project", type = { option = "text" } },
+  { name = "calendar_id", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "EventData"
+fields = [
+  { name = "id", type = "text" },
+  { name = "title", type = "text" },
+  { name = "start", type = "text" },
+  { name = "end", type = "text" },
+  { name = "end_later_fold", type = "bool" },
+  { name = "all_day", type = "bool" },
+  { name = "location", type = "text" },
+  { name = "color", type = "int" },
+  { name = "rrule", type = "text" },
+  { name = "recurrence_interval", type = "int" },
+  { name = "recurrence_until", type = "text" },
+  { name = "recurrence_count", type = "int" },
+  { name = "recurrence_exdates", type = { list = "text" } },
+  { name = "occurrence_overrides", type = { list = { named = "OccurrenceOverrideData" } } },
+  { name = "timezone", type = "text" },
+  { name = "organizer", type = "text" },
+  { name = "attendees", type = { list = { named = "AttendeeData" } } },
+  { name = "reminder", type = "int" },
+  { name = "project", type = "text" },
+  { name = "calendar_id", type = "text" },
+]
+
+[[resources.types]]
+name = "InviteStatus"
+cases = [
+  { name = "needs_action" },
+  { name = "accepted" },
+  { name = "tentative" },
+  { name = "declined" },
+]
+
+[[resources.types]]
+name = "OccurrenceOverride"
+fields = [
+  { name = "original_date", type = "date" },
+  { name = "original_time", type = { option = "text" } },
+  { name = "cancelled", type = "bool" },
+  { name = "start", type = { option = "time" } },
+  { name = "end", type = { option = "time" } },
+  { name = "end_later_fold", type = "bool" },
+  { name = "title", type = { option = "text" } },
+  { name = "location", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "OccurrenceOverrideData"
+fields = [
+  { name = "original_date", type = "text" },
+  { name = "original_time", type = "text" },
+  { name = "cancelled", type = "bool" },
+  { name = "start", type = "text" },
+  { name = "end", type = "text" },
+  { name = "end_later_fold", type = "bool" },
+  { name = "title", type = "text" },
+  { name = "location", type = "text" },
+]
+
+[[resources.types]]
+name = "Palette"
+cases = [
+  { name = "indigo" },
+  { name = "emerald" },
+  { name = "amber" },
+  { name = "red" },
+  { name = "blue" },
+  { name = "violet" },
+  { name = "slate" },
+]
+
+[[resources.types]]
+name = "Priority"
+cases = [
+  { name = "none" },
+  { name = "low" },
+  { name = "medium" },
+  { name = "high" },
+]
+
+[[resources.types]]
+name = "Project"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "color", type = { named = "Palette" } },
+  { name = "order", type = "int" },
+]
+
+[[resources.types]]
+name = "RemoteAt"
+fields = [
+  { name = "calendar", type = "text" },
+  { name = "href", type = "text" },
+  { name = "etag", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "RemoteCopy"
+fields = [
+  { name = "calendar", type = "text" },
+  { name = "href", type = "text" },
+  { name = "etag", type = { option = "text" } },
+  { name = "holds", type = "text" },
+  { name = "task", type = "bool" },
+]
+
+[[resources.types]]
+name = "Removal"
+fields = [
+  { name = "item", type = "text" },
+  { name = "calendar", type = "text" },
+  { name = "href", type = "text" },
+  { name = "etag", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "Repeat"
+cases = [
+  { name = "none" },
+  { name = "daily" },
+  { name = "weekdays" },
+  { name = "weekly" },
+  { name = "monthly" },
+  { name = "yearly" },
+]
+
+[[resources.types]]
+name = "Task"
+fields = [
+  { name = "id", type = "text" },
+  { name = "title", type = "text" },
+  { name = "done", type = "bool" },
+  { name = "due", type = { option = "date" } },
+  { name = "priority", type = { named = "Priority" } },
+  { name = "project", type = { option = "text" } },
+  { name = "parent", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "TaskData"
+fields = [
+  { name = "id", type = "text" },
+  { name = "title", type = "text" },
+  { name = "done", type = "bool" },
+  { name = "due", type = "text" },
+  { name = "priority", type = "int" },
+  { name = "project", type = "text" },
+  { name = "parent", type = "text" },
+]
+
+[[resources.types]]
+name = "Upload"
+fields = [
+  { name = "event", type = "text" },
+  { name = "calendar", type = "text" },
 ]
 
 [[resources]]
@@ -197,78 +406,58 @@ label = "Accounts"
 version = 2
 person = true
 fields = [
-  { path = "accounts", type = "Collection<PersonAccount>", stored = "collection" },
-  { path = "accounts.*.type_id", type = "String" },
-  { path = "accounts.*.display_name", type = "String" },
-  { path = "accounts.*.config", type = "serde_json::Value" },
+  { path = "accounts", type = { collection = { named = "PersonAccount" } }, stored = "collection" },
+  { path = "accounts.*.type_id", type = "text" },
+  { path = "accounts.*.display_name", type = "text" },
+  { path = "accounts.*.config", type = "any" },
   { path = "accounts.*.enabled", type = "bool" },
-  { path = "accounts.*.tint", type = "u8" },
-  { path = "active", type = "BTreeMap<String, String>" },
+  { path = "accounts.*.tint", type = "int" },
+  { path = "active", type = { map = "text" } },
 ]
 
 [[resources.verbs]]
 id = "publish-browser-identity"
 kind = "undoable"
 params = [
-  { name = "root", required = true, schema = { type = "string" } },
-  { name = "origin", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "root", type = "text", required = true, schema = { type = "string" } },
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "save-account"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "type_id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "type_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = "text", required = true, schema = { type = "string" } },
   { name = "config", required = true, schema = {} },
-  { name = "enabled", required = true, schema = { type = "boolean" } },
-  { name = "tint", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "publish-signal-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "aci", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "publish-sms-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "publish-whatsapp-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "jid", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "tint", type = "int", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "remove-account"
 kind = "undoable"
 params = [
-  { name = "account", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-active-account"
 kind = "undoable"
 params = [
-  { name = "account", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "PersonAccount"
+fields = [
+  { name = "type_id", type = "text" },
+  { name = "display_name", type = "text" },
+  { name = "config", type = "any" },
+  { name = "enabled", type = "bool" },
+  { name = "tint", type = "int" },
 ]
 
 [[resources]]
@@ -277,17 +466,17 @@ label = "Contact identities"
 version = 2
 person = true
 fields = [
-  { path = "people", type = "Collection<Person>", stored = "collection" },
-  { path = "people.*.label", type = "String" },
+  { path = "people", type = { collection = { named = "Person" } }, stored = "collection" },
+  { path = "people.*.label", type = "text" },
   { path = "people.*.removed", type = "bool" },
-  { path = "people.*.phones", type = "Vec<String>" },
-  { path = "people.*.emails", type = "Vec<String>" },
-  { path = "people.*.photo", type = "String" },
-  { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
-  { path = "people.*.endpoints.*.service", type = "String" },
-  { path = "people.*.endpoints.*.recipient", type = "String" },
-  { path = "people.*.endpoints.*.scope", type = "String" },
-  { path = "people.*.endpoints.*.revision", type = "String" },
+  { path = "people.*.phones", type = { list = "text" } },
+  { path = "people.*.emails", type = { list = "text" } },
+  { path = "people.*.photo", type = "text" },
+  { path = "people.*.endpoints", type = { collection = { named = "Endpoint" } }, stored = "collection" },
+  { path = "people.*.endpoints.*.service", type = "text" },
+  { path = "people.*.endpoints.*.recipient", type = "text" },
+  { path = "people.*.endpoints.*.scope", type = "text" },
+  { path = "people.*.endpoints.*.revision", type = "text" },
   { path = "people.*.endpoints.*.removed", type = "bool" },
 ]
 
@@ -295,15 +484,15 @@ fields = [
 id = "project-contact"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "label", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "label", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-contact"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -311,10 +500,10 @@ id = "confirm-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -322,12 +511,12 @@ id = "confirm-account"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
-  { name = "revision", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "scope", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
+  { name = "revision", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -335,11 +524,11 @@ id = "replace-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "previous", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "previous", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -347,37 +536,37 @@ id = "replace-account"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "previous", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
-  { name = "service", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "recipient", required = true, schema = { type = "string" } },
-  { name = "revision", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "previous", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "scope", type = "text", required = true, schema = { type = "string" } },
+  { name = "recipient", type = "text", required = true, schema = { type = "string" } },
+  { name = "revision", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "project-phones"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "phones", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "phones", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "project-emails"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "emails", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "emails", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
 id = "project-contacts"
 kind = "undoable"
 params = [
-  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
-  { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "people", type = { list = { named = "Projected" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "removed", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources.verbs]]
@@ -385,7 +574,38 @@ id = "forget-endpoint"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "endpoint", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Endpoint"
+fields = [
+  { name = "service", type = "text" },
+  { name = "recipient", type = "text" },
+  { name = "scope", type = "text" },
+  { name = "revision", type = "text" },
+  { name = "removed", type = "bool" },
+]
+
+[[resources.types]]
+name = "Person"
+fields = [
+  { name = "label", type = "text" },
+  { name = "removed", type = "bool" },
+  { name = "phones", type = { list = "text" } },
+  { name = "emails", type = { list = "text" } },
+  { name = "photo", type = "text" },
+  { name = "endpoints", type = { collection = { named = "Endpoint" } } },
+]
+
+[[resources.types]]
+name = "Projected"
+fields = [
+  { name = "person", type = "text" },
+  { name = "label", type = "text" },
+  { name = "phones", type = { list = "text" } },
+  { name = "emails", type = { list = "text" } },
+  { name = "photo", type = "text" },
 ]
 

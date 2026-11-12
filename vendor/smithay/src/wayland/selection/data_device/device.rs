@@ -115,9 +115,9 @@ where
                 }
                 debug!(serial = ?serial, client = ?client, "denying drag from client without implicit grab");
             }
-            wl_data_device::Request::SetSelection { source, .. } => {
+            wl_data_device::Request::SetSelection { source, serial } => {
                 let seat_data = match seat.get_keyboard() {
-                    Some(keyboard) if keyboard.client_of_object_has_focus(&resource.id()) => seat
+                    Some(keyboard) if keyboard.client_of_object_may_set_selection(&resource.id(), Serial::from(serial)) => seat
                         .user_data()
                         .get::<RefCell<SeatData<D::SelectionUserData>>>()
                         .unwrap(),

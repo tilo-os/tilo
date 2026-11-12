@@ -1,5 +1,6 @@
 //! Independent, bounded catalogue reads on the worker's existing host connection.
 
+use crate::resource::CATALOG;
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
@@ -67,7 +68,7 @@ impl Read {
     }
 
     fn timed_out(&self) -> Response {
-        let error = ui::i18n!("store-source-timeout");
+        let error = CATALOG.t("store-source-timeout");
         match self {
             Self::Status(_) => Response::Status(Err(error)),
             Self::Repositories(_) => Response::Repositories(Err(error)),
@@ -264,7 +265,7 @@ impl Refresh {
                 break;
             };
             if ui::time::now() >= self.deadline {
-                self.errors.push((0, ui::i18n!("store-source-timeout")));
+                self.errors.push((0, CATALOG.t("store-source-timeout")));
                 continue;
             }
             let read = match source {
@@ -607,11 +608,18 @@ fn timed_out(detail: String) -> CatalogueError {
 /// unreachable repository.
 fn native_error(name: &str, error: &CatalogueError) -> String {
     match error.refusal() {
-        Some(Refusal::Expired) => ui::i18n!("store-repository-expired", "name" => name.to_owned()),
-        Some(Refusal::SystemUpdateNeeded) => {
-            ui::i18n!("store-system-update-needed", "name" => name.to_owned())
-        }
-        Some(Refusal::TimedOut) => ui::i18n!("store-repository-timeout", "name" => name.to_owned()),
+        Some(Refusal::Expired) => CATALOG.t_args(
+            "store-repository-expired",
+            &[("name", name.to_owned().into())],
+        ),
+        Some(Refusal::SystemUpdateNeeded) => CATALOG.t_args(
+            "store-system-update-needed",
+            &[("name", name.to_owned().into())],
+        ),
+        Some(Refusal::TimedOut) => CATALOG.t_args(
+            "store-repository-timeout",
+            &[("name", name.to_owned().into())],
+        ),
         Some(Refusal::DeviceRepositoryStale) | None => format!("Could not load {name}: {error}"),
     }
 }
@@ -868,7 +876,7 @@ mod tests {
     /// the RPC's internals.
     #[test]
     fn a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         let (mut state, mut refresh) = refresh_with_bundled_mail();
         refresh.apply(
             &mut state,
@@ -889,7 +897,7 @@ mod tests {
             .as_deref()
             .expect("reported, not silent");
         // The fixture has no host connection, which reports its own line.
-        let says = ui::i18n::I18nManager::format(
+        let says = crate::resource::CATALOG.t_args(
             "store-system-update-needed",
             &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
         );
@@ -910,7 +918,7 @@ mod tests {
     /// and a failure whose text merely mentions a refusal is not one.
     #[test]
     fn a_refusal_reads_the_same_whatever_its_detail_says() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         let state_after = |error: CatalogueError| {
             let (mut state, mut refresh) = refresh_with_bundled_mail();
             refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
@@ -949,10 +957,8 @@ mod tests {
         assert!(expired.is_empty());
         let error = error.unwrap();
         for refused in ["store-system-update-needed", "store-repository-expired"] {
-            let says = ui::i18n::I18nManager::format(
-                refused,
-                &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
-            );
+            let says = crate::resource::CATALOG
+                .t_args(refused, &[("name", ui::i18n::ArgValue::Text(MAIN.into()))]);
             assert!(!error.lines().any(|line| line == says), "{error}");
         }
     }
@@ -983,7 +989,7 @@ mod tests {
     /// the Store's pending read gets the refusal, and the same state follows.
     #[test]
     fn a_refusal_crosses_the_wire_typed_whatever_its_detail_says() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         let mut seen = Vec::new();
         for detail in [
             "",

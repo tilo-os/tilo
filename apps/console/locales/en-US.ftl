@@ -5,9 +5,6 @@ console-place-workspaces = Workspaces
 console-place-connect = Connect
 console-place-usage = Usage
 
-console-you = You
-console-agent-for = { $agent } for { $person }
-
 console-filter-agent = Agent
 console-filter-workspace = Workspace
 console-every-agent = Every agent
@@ -25,6 +22,12 @@ console-run-actions = { $count ->
     [one] 1 action
    *[other] { $count } actions
 }
+console-run-changes = { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+console-run-started-by-you = Started by you
+console-run-started-by = Started by { $name }
 
 console-run = Agent run
 console-run-copy-link = Copy link
@@ -68,9 +71,9 @@ console-client-other = Any MCP client
 console-client-every-run = Every { $client } run
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
-console-grants-empty-message = Run one of the lines above where your agent runs, then let it in.
 console-reach-account = Every workspace, and may make new ones
 console-reach-workspace = Only { $workspace }
+console-grant-browser-pages = Browser pages
 console-grant-running = { $count ->
     [one] Working now
    *[other] { $count } runs working now

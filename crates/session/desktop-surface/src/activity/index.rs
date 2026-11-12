@@ -6,13 +6,13 @@
 //! document beside each change; a bare [`HistoryEntryId`] is only unique
 //! inside one Automerge graph and is therefore not safe as a workspace key.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash};
+use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
-use ui::history_source::{AuthorDirectory, HistorySource};
+use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
@@ -78,6 +78,31 @@ impl DetachedRecordHistory {
             id: self.checkout.id.clone(),
             kind: self.checkout.kind.clone(),
         }
+    }
+
+    /// Whether `entry` is one of this record's steps.
+    ///
+    /// One document may hold several apps' records: the workspace record the session keeps holds
+    /// a root per package it runs, and each app's record is admitted as one of its own, all over
+    /// that same document. Such a record's kind (`tl.<app>.<Type>`) says whose steps are its own;
+    /// every other record is a document of one app's, and every step in it is that record's.
+    fn holds(&self, entry: &HistoryEntry) -> bool {
+        let Some(app) = self
+            .checkout
+            .kind
+            .as_str()
+            .strip_prefix("tl.")
+            .and_then(|kind| kind.rsplit_once('.'))
+            .map(|(app, _)| app)
+        else {
+            return true;
+        };
+        let of_app = format!("tl.{app}.");
+        entry
+            .context
+            .as_ref()
+            .and_then(|context| context.resource.as_ref())
+            .is_some_and(|resource| resource.kind.starts_with(&of_app))
     }
 }
 
@@ -265,6 +290,9 @@ pub struct WorkspaceHistoryIndex {
     coverage: FeedCoverage,
     query: Option<WorkspaceHistoryQuery>,
     document_heads: BTreeMap<String, Vec<ChangeHash>>,
+    /// What each record's history read of its document, by origin: a refresh reads only the
+    /// changes made since, however large the record grew.
+    logs: HashMap<String, HistoryLog>,
 }
 
 impl Default for WorkspaceHistoryIndex {
@@ -289,6 +317,7 @@ impl WorkspaceHistoryIndex {
             coverage: FeedCoverage::default(),
             query: None,
             document_heads: BTreeMap::new(),
+            logs: HashMap::new(),
         }
     }
 
@@ -306,6 +335,12 @@ impl WorkspaceHistoryIndex {
 
     pub fn coverage(&self) -> &FeedCoverage {
         &self.coverage
+    }
+
+    /// How many changes of the records' documents this index has read, across every refresh: a
+    /// refresh reads the changes made since the last one, however long a record's history is.
+    pub fn changes_read(&self) -> usize {
+        self.logs.values().map(HistoryLog::changes_read).sum()
     }
 
     /// Retain only names whose whole positional span belongs to one document. Until named-range
@@ -349,13 +384,14 @@ impl WorkspaceHistoryIndex {
     }
 
     /// Replaces the entire admitted multi-owner input atomically. Never borrows a live store
-    /// mutably or closes a producer transaction.
+    /// mutably or closes a producer transaction: a record whose document has an edit pending is
+    /// left as it was.
     pub fn refresh_detached(
         &mut self,
         tree: &mut impl ActivityTree,
         query: WorkspaceHistoryQuery,
         tree_rows: &[HistoryEntry],
-        records: &[DetachedRecordHistory],
+        records: &mut [DetachedRecordHistory],
     ) -> bool {
         let limit = query.bounded_limit();
         let mut by_id = BTreeMap::new();
@@ -369,34 +405,34 @@ impl WorkspaceHistoryIndex {
             insert_rows(&mut by_id, &HistoryOrigin::DesktopTree, tree_rows.to_vec());
             documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
         }
-        let mut ordered = records.iter().collect::<Vec<_>>();
+        let mut ordered = records.iter_mut().collect::<Vec<_>>();
         ordered.compact_sort_by_key(|record| record.origin());
+        let mut logs = HashMap::with_capacity(ordered.len().min(MAX_INDEXED_RECORDS));
         for (i, record) in ordered.into_iter().enumerate() {
             if i >= MAX_INDEXED_RECORDS {
                 coverage.capped_records = coverage.capped_records.saturating_add(1);
                 continue;
             }
-            let Some(mut doc) = record
-                .document
-                .as_ref()
-                .filter(|doc| doc.pending_ops() == 0)
-                .cloned()
-            else {
-                coverage.unavailable_records.push(record.checkout.clone());
-                // Keep the last settled rendering while this admitted owner is busy, but never
-                // carry rows from an owner absent from the new admission. Unavailable documents
-                // cannot establish seen heads.
-                for row in self
-                    .entries
-                    .iter()
-                    .filter(|row| row.id.origin == record.origin())
-                {
-                    by_id.insert(row.id.clone(), row.clone());
-                }
-                continue;
-            };
             let origin = record.origin();
-            documents.insert(origin.key(), doc.get_heads());
+            let doc = match record.document.as_mut() {
+                Some(doc) if doc.pending_ops() == 0 => doc,
+                _ => {
+                    coverage.unavailable_records.push(record.checkout.clone());
+                    // Keep the last settled rendering while this admitted owner is busy, but never
+                    // carry rows from an owner absent from the new admission. Unavailable
+                    // documents cannot establish seen heads.
+                    for row in self.entries.iter().filter(|row| row.id.origin == origin) {
+                        by_id.insert(row.id.clone(), row.clone());
+                    }
+                    if let Some(log) = self.logs.remove(&origin.key()) {
+                        logs.insert(origin.key(), log);
+                    }
+                    continue;
+                }
+            };
+            let key = origin.key();
+            documents.insert(key.clone(), doc.get_heads());
+            let mut log = self.logs.remove(&key).unwrap_or_default();
             // What people did: a record's genesis names no one.
             let rows = described(
                 HistorySource::new()
@@ -404,12 +440,18 @@ impl WorkspaceHistoryIndex {
                     .with_artifact_kind(artifact_kind(&record.checkout.kind))
                     .with_max_entries(limit)
                     .without_record_genesis()
-                    .entries(&mut doc),
-                &doc,
+                    .entries_since(doc, &mut log),
+                doc,
             );
+            logs.insert(key, log);
+            let rows = rows
+                .into_iter()
+                .filter(|entry| record.holds(entry))
+                .collect::<Vec<_>>();
             insert_rows(&mut by_id, &origin, rows);
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
+        self.logs = logs;
         let mut entries = by_id.into_values().collect::<Vec<_>>();
         entries.compact_sort_by(|a, b| {
             a.entry
@@ -450,15 +492,20 @@ impl WorkspaceHistoryIndex {
             if heads.is_empty() {
                 continue;
             }
+            // Read in place: only which changes came after, never the document copied or its
+            // changes rebuilt.
             let doc = if key == "workspace-tree" {
-                Some(tree.document().clone())
+                Some(tree.document())
             } else {
                 records
                     .iter()
                     .find(|r| r.origin().key() == *key)
-                    .and_then(|r| r.document.clone())
+                    .and_then(|r| r.document.as_ref())
             };
-            let Some(mut doc) = doc.filter(|d| d.pending_ops() == 0) else {
+            let Some(doc) = doc
+                .filter(|d| d.pending_ops() == 0)
+                .map(AutoCommit::committed_document)
+            else {
                 continue;
             };
             if !doc.get_missing_deps(&heads).is_empty() {
@@ -466,9 +513,9 @@ impl WorkspaceHistoryIndex {
             }
             after.insert(
                 key.clone(),
-                doc.get_changes(&heads)
+                doc.get_changes_meta(&heads)
                     .iter()
-                    .map(|c| ui::history_source::entry_id_from_hash(&c.hash().to_string()))
+                    .map(|meta| ui::history_source::entry_id_from_hash(&meta.hash.to_string()))
                     .collect(),
             );
         }

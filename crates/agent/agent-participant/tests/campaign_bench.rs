@@ -31,20 +31,6 @@
     reason = "a benchmark harness: a broken scenario or host is the failure it reports"
 )]
 
-#[path = "harness/hosted.rs"]
-mod hosted;
-#[path = "harness/page.rs"]
-mod page;
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
-mod support;
-
-// Agents hold each record in a confined app worker (this binary, started
-// again), whose changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,9 +50,9 @@ use tilo_relay_protocol::agents::{
 };
 use tilo_user_identity::DeviceCapabilities;
 
-use hosted::{Hosted, Laptop, Options, Unlisted};
-use page::Page;
-use support::{Device, WORKSPACE, enrol};
+use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
+use crate::harness::page::Page;
+use crate::support::{Device, WORKSPACE, enrol};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -79,7 +65,7 @@ const JOIN: &str = "[]";
 
 /// The host, offering every app a scenario drives.
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
-    hosted::start(
+    crate::harness::hosted::start(
         root,
         host,
         state,
@@ -802,7 +788,7 @@ async fn campaign_bench() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let confirming = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop, &confirming);
     eprintln!("bench: host started for scenario {}", scenario.id);

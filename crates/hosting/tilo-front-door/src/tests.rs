@@ -1,166 +1,17 @@
-//! The door end to end, in process: an agent discovers how to authorize,
+//! The door's own flows in process: an agent discovers how to authorize,
 //! registers, sends the person to their Tilo (which these tests play: it
 //! signs the challenge with a device of the person and certifies the
-//! grant's key with their root), redeems the code with its PKCE verifier,
-//! and acts in workspaces served by a real `tilo-runtime` HTTP MCP endpoint
-//! on loopback, which checks the grant's key itself. The directory here is
-//! in memory; `hosts_tests` runs the same flow against a real host.
+//! grant's key with their root), and redeems the code with its PKCE
+//! verifier. What a grant then does in workspaces is the relay's, which
+//! `tilo-agent-participant`'s `front_door` test drives through the door.
 
 use super::*;
-use directory::{BoxFuture, DirectoryError, Host, Route, Workspace};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_actions::remote::{Caller, TestHost};
-use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, RevocationList, SignInProof};
+use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, SignInProof};
 
 pub(crate) const ISSUER: &str = "https://door.test";
 pub(crate) const WEB_ENTRY: &str = "https://tilo.test";
 pub(crate) const REDIRECT: &str = "http://127.0.0.1:33418/callback";
 pub(crate) const VERIFIER: &str = "a-verifier-of-at-least-forty-three-characters-0123456789";
-
-/// A person's runtime: one `tilo-runtime` HTTP endpoint on loopback serving
-/// every workspace, behind the door's token, checking grants under the
-/// person's root and revocations.
-pub(crate) struct Runtime {
-    pub base: String,
-    pub token: String,
-    pub host: Arc<TestHost>,
-    pub revoked: Arc<Mutex<RevocationList>>,
-    /// The invitations the runtime was asked to join with.
-    pub joined: Arc<Mutex<Vec<(String, String)>>>,
-}
-
-impl Runtime {
-    pub(crate) fn route(&self) -> Route {
-        Route {
-            base: self.base.clone(),
-            token: self.token.clone(),
-        }
-    }
-}
-
-pub(crate) use crate::runtime_support::runtime;
-
-/// One workspace as the tests set it up: (person, workspace).
-type HostedWorkspace = (String, Workspace);
-
-/// A host's workspaces as the tests set them up, and each person's runtime.
-#[derive(Default)]
-struct Hosted {
-    workspaces: Mutex<Vec<HostedWorkspace>>,
-    runtimes: tokio::sync::Mutex<HashMap<String, Arc<Runtime>>>,
-    revoked: Mutex<RevocationList>,
-    /// Workspaces the host may still make before it refuses (a quota).
-    quota: AtomicUsize,
-}
-
-impl Hosted {
-    async fn runtime_of(&self, person: &str) -> Arc<Runtime> {
-        let mut runtimes = self.runtimes.lock().await;
-        if let Some(found) = runtimes.get(person) {
-            return Arc::clone(found);
-        }
-        let root: [u8; 32] = hex::decode(person).unwrap().try_into().unwrap();
-        let made = Arc::new(runtime(root).await);
-        runtimes.insert(person.to_owned(), Arc::clone(&made));
-        made
-    }
-
-    async fn add(&self, person: &str, name: &str) -> Workspace {
-        self.runtime_of(person).await;
-        let workspace = Workspace {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_owned(),
-            host: "eu1.tilo.test".to_owned(),
-        };
-        lock(&self.workspaces).push((person.to_owned(), workspace.clone()));
-        workspace
-    }
-
-    /// What the person's runtime was asked, by the workspace each caller
-    /// acted in.
-    async fn callers_of(&self, person: &str) -> Vec<Caller> {
-        self.runtime_of(person).await.host.callers()
-    }
-}
-
-impl Directory for Hosted {
-    fn workspaces<'a>(
-        &'a self,
-        grant: &'a GrantKey,
-    ) -> BoxFuture<'a, Result<Vec<Workspace>, DirectoryError>> {
-        Box::pin(async move {
-            let person = grant.person();
-            Ok(lock(&self.workspaces)
-                .iter()
-                .filter(|(owner, workspace)| {
-                    *owner == person && grant.scope().reaches(&workspace.id)
-                })
-                .map(|(_, workspace)| workspace.clone())
-                .collect())
-        })
-    }
-
-    fn hosts<'a>(
-        &'a self,
-        _grant: &'a GrantKey,
-    ) -> BoxFuture<'a, Result<Vec<Host>, DirectoryError>> {
-        Box::pin(async {
-            Ok(vec![Host {
-                name: "eu1.tilo.test".into(),
-                default: true,
-            }])
-        })
-    }
-
-    fn create<'a>(
-        &'a self,
-        grant: &'a GrantKey,
-        name: &'a str,
-        _host: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<Workspace, DirectoryError>> {
-        Box::pin(async move {
-            if !grant.scope().makes_workspaces() {
-                return Err(DirectoryError::Refused("not this grant's to make".into()));
-            }
-            if self
-                .quota
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                    left.checked_sub(1)
-                })
-                .is_err()
-            {
-                return Err(DirectoryError::Refused(
-                    "the workspace quota is used up".into(),
-                ));
-            }
-            Ok(self.add(&grant.person(), name).await)
-        })
-    }
-
-    fn revocations<'a>(
-        &'a self,
-        _grant: &'a GrantKey,
-    ) -> BoxFuture<'a, Result<RevocationList, DirectoryError>> {
-        Box::pin(async move { Ok(lock(&self.revoked).clone()) })
-    }
-
-    fn route<'a>(
-        &'a self,
-        grant: &'a GrantKey,
-        workspace: &'a str,
-    ) -> BoxFuture<'a, Result<Route, DirectoryError>> {
-        Box::pin(async move {
-            let person = grant.person();
-            let has = lock(&self.workspaces).iter().any(|(owner, candidate)| {
-                *owner == person && candidate.id == workspace && grant.scope().reaches(workspace)
-            });
-            if !has {
-                return Err(DirectoryError::NotFound);
-            }
-            Ok(self.runtime_of(&person).await.route())
-        })
-    }
-}
 
 /// How a test's stand-in for the person's Tilo certifies a grant's key.
 type Certify<'a> = Box<dyn Fn(&Asked) -> DeviceCert + 'a>;
@@ -179,7 +30,11 @@ pub(crate) struct Asked {
     pub challenge: [u8; 32],
     pub key: [u8; 32],
     pub scope: AgentScope,
-    pub expires_ms: u64,
+    /// `None` for a server key that lasts until revoked.
+    pub expires_ms: Option<u64>,
+    pub server_key: bool,
+    /// The link lets the key operate web pages in Browser.
+    pub browser_pages: bool,
     pub client: String,
 }
 
@@ -200,7 +55,16 @@ impl Asked {
                 .try_into()
                 .unwrap(),
             scope: AgentScope::parse(&asked["grant_scope"]).unwrap(),
-            expires_ms: asked["grant_expires"].parse().unwrap(),
+            expires_ms: match asked["grant_expires"].as_str() {
+                "never" => None,
+                ms => Some(ms.parse().unwrap()),
+            },
+            server_key: match asked.get("grant_kind").map(String::as_str) {
+                None => false,
+                Some("server_key") => true,
+                Some(other) => panic!("no grant kind {other}"),
+            },
+            browser_pages: asked.contains_key("grant_pages"),
             client: asked["client"].clone(),
         }
     }
@@ -228,17 +92,39 @@ impl Person {
         hex::encode(self.root.verifying_key().to_bytes())
     }
 
-    /// The person's Tilo certifying the grant's key as asked, but expiring
-    /// at `expires_ms`.
-    pub(crate) fn certify(&self, asked: &Asked, scope: AgentScope, expires_ms: u64) -> DeviceCert {
+    /// The person's Tilo certifying the grant's key as asked, but reaching
+    /// `scope` and expiring at `expires_ms`.
+    pub(crate) fn certify(
+        &self,
+        asked: &Asked,
+        scope: AgentScope,
+        expires_ms: Option<u64>,
+    ) -> DeviceCert {
+        let capabilities = if asked.server_key {
+            DeviceCapabilities::server_key_grant()
+        } else {
+            DeviceCapabilities::agent_grant(scope)
+        }
+        .with_browser_pages(asked.browser_pages);
+        self.certify_as(asked, capabilities, expires_ms)
+    }
+
+    /// The person's Tilo certifying the grant's key with `capabilities`,
+    /// expiring at `expires_ms`.
+    pub(crate) fn certify_as(
+        &self,
+        asked: &Asked,
+        capabilities: DeviceCapabilities,
+        expires_ms: Option<u64>,
+    ) -> DeviceCert {
         let now = tilo_clock::unix_now_ms();
         let mut cert = DeviceCert {
             user_public_key: self.root.verifying_key().to_bytes(),
             device_public_key: asked.key,
             device_label: format!("{} via door.test", asked.client),
-            capabilities: DeviceCapabilities::agent_grant(scope),
+            capabilities,
             issued_at_ns: now.saturating_sub(1_000).saturating_mul(1_000_000),
-            expires_at_ns: Some(expires_ms.saturating_mul(1_000_000)),
+            expires_at_ns: expires_ms.map(|ms| ms.saturating_mul(1_000_000)),
             signature: [0; 64],
             issuer: None,
         };
@@ -263,14 +149,15 @@ pub(crate) fn answer_form(asked: &Asked, proof: &SignInProof, cert: &DeviceCert)
         .finish()
 }
 
-fn door(hosted: &Arc<Hosted>) -> Arc<Door> {
+fn door() -> Arc<Door> {
     Door::new(
         &Config {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
+            // Nothing here reaches a workspace, so nothing dials it.
+            relay: "https://relay.tilo.test".into(),
         },
         Store::in_memory(),
-        Arc::clone(hosted) as Arc<dyn Directory>,
     )
     .unwrap()
 }
@@ -431,18 +318,6 @@ pub(crate) async fn redeem(door: &Arc<Door>, client: &str, code: &str, verifier:
     .await
 }
 
-/// The whole flow: an access token for `resource`.
-pub(crate) async fn connect(door: &Arc<Door>, person: &Person, resource: &str) -> String {
-    let client = register(door).await;
-    let (code, _) = approve(door, &client, person, resource).await;
-    let reply = redeem(door, &client, &code, VERIFIER).await;
-    assert_eq!(reply.status(), StatusCode::OK);
-    json_body(reply).await["access_token"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
 /// An MCP request with `token`, on `path`, in `session`.
 pub(crate) async fn mcp(
     door: &Arc<Door>,
@@ -469,89 +344,9 @@ pub(crate) async fn mcp(
     .await
 }
 
-pub(crate) async fn initialize(door: &Arc<Door>, path: &str, token: &str) -> (String, Value) {
-    let reply = mcp(
-        door,
-        path,
-        token,
-        None,
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "protocolVersion":"2025-06-18","capabilities":{},
-            "clientInfo":{"name":"claude-code","version":"2"}}}),
-    )
-    .await;
-    assert_eq!(reply.status(), StatusCode::OK);
-    let session = reply.headers()[SESSION_HEADER].to_str().unwrap().to_owned();
-    (session, json_body(reply).await)
-}
-
-pub(crate) async fn call(
-    door: &Arc<Door>,
-    path: &str,
-    token: &str,
-    session: &str,
-    name: &str,
-    arguments: Value,
-) -> Value {
-    let reply = mcp(
-        door,
-        path,
-        token,
-        Some(session),
-        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
-    )
-    .await;
-    assert_eq!(reply.status(), StatusCode::OK);
-    let content_type = reply.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let bytes = body(reply).await;
-    if content_type == "text/event-stream" {
-        // The reply is the stream's last message.
-        let text = String::from_utf8(bytes).unwrap();
-        let last = text
-            .lines()
-            .filter_map(|line| line.strip_prefix("data: "))
-            .next_back()
-            .unwrap();
-        return serde_json::from_str(last).unwrap();
-    }
-    serde_json::from_slice(&bytes).unwrap()
-}
-
-pub(crate) async fn tool_names(
-    door: &Arc<Door>,
-    path: &str,
-    token: &str,
-    session: &str,
-) -> Vec<String> {
-    let reply = mcp(
-        door,
-        path,
-        token,
-        Some(session),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
-    )
-    .await;
-    json_body(reply).await["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_owned())
-        .collect()
-}
-
-/// Whether any of `callers` acted in `workspace`.
-fn acted_in(callers: &[Caller], workspace: &str) -> bool {
-    callers
-        .iter()
-        .any(|caller| caller.workspace() == Some(workspace))
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_discovers_the_authorization_server_from_its_first_refusal() {
-    let door = door(&Arc::default());
+    let door = door();
     for (path, metadata) in [
         ("/", format!("{ISSUER}{}", oauth::PROTECTED_RESOURCE_PATH)),
         (
@@ -628,7 +423,7 @@ async fn an_agent_discovers_the_authorization_server_from_its_first_refusal() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn registration_admits_only_public_clients_with_safe_redirects() {
-    let door = door(&Arc::default());
+    let door = door();
     for (body, ok) in [
         (json!({"redirect_uris":["http://localhost:4000/cb"]}), true),
         (
@@ -680,10 +475,8 @@ async fn registration_admits_only_public_clients_with_safe_redirects() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_code_needs_its_verifier_and_is_spent_once() {
-    let hosted = Arc::new(Hosted::default());
     let alice = Person::new(1);
-    hosted.add(&alice.id(), "Studio").await;
-    let door = door(&hosted);
+    let door = door();
     let client = register(&door).await;
     let (code, _) = approve(&door, &client, &alice, ISSUER).await;
     let wrong = "another-verifier-of-at-least-forty-three-characters-xyz";
@@ -749,33 +542,10 @@ async fn the_code_needs_its_verifier_and_is_spent_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_revoked_device_signs_nobody_in() {
-    let hosted = Arc::new(Hosted::default());
-    let alice = Person::new(1);
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: alice.root.verifying_key().to_bytes(),
-        revoked_device_public_key: alice.device.verifying_key().to_bytes(),
-        revoked_at_ns: 2,
-        reason: tilo_user_identity::RevocationReason::Stolen,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &alice.root).unwrap();
-    lock(&hosted.revoked).insert(entry).unwrap();
-    let door = door(&hosted);
-    let client = register(&door).await;
-    let asked = authorize(&door, &client, ISSUER).await;
-    let reply = answer(&door, &alice.allow(&asked)).await;
-    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
-    assert!(reply.headers().get(header::SET_COOKIE).is_none());
-    assert!(door.store.grants_of(&alice.id()).is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
-    let hosted = Arc::new(Hosted::default());
     let alice = Person::new(1);
     let mallory = Person::new(3);
-    let door = door(&hosted);
+    let door = door();
     let client = register(&door).await;
 
     // The person declines in their Tilo: the agent hears so.
@@ -805,6 +575,8 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
                     key: [7; 32],
                     scope: asked.scope,
                     expires_ms: asked.expires_ms,
+                    server_key: asked.server_key,
+                    browser_pages: asked.browser_pages,
                     client: asked.client.clone(),
                 };
                 alice.certify(&other, asked.scope, asked.expires_ms)
@@ -863,11 +635,10 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
         door.store.grants_of(&person.id())[0].clone()
     }
 
-    let hosted = Arc::new(Hosted::default());
     let alice = Person::new(1);
-    let studio = hosted.add(&alice.id(), "Studio").await;
-    let garden = hosted.add(&alice.id(), "Garden").await;
-    let door = door(&hosted);
+    let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
+    let garden = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
+    let door = door();
     let client = register(&door).await;
     let proof = |asked: &Asked| {
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap()
@@ -876,30 +647,21 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
     // that workspace's, not the agent's request.
     let asked = authorize(&door, &client, ISSUER).await;
     assert_eq!(asked.scope, AgentScope::AllWorkspaces);
-    let narrowed = AgentScope::parse(&studio.id).unwrap();
+    let narrowed = AgentScope::parse(studio).unwrap();
     let cert = alice.certify(&asked, narrowed, asked.expires_ms);
     let grant = granted(&door, &client, &alice, asked, cert).await;
-    assert_eq!(grant.scope, store::Scope::Workspace(studio.id.clone()));
+    assert_eq!(grant.scope, store::Scope::Workspace(studio.to_owned()));
     assert_eq!(grant.key().unwrap().scope(), narrowed);
-
-    // A workspace of the person's own that the host does not hold is not one
-    // a grant may be narrowed to.
-    let asked = authorize(&door, &client, ISSUER).await;
-    let nowhere = AgentScope::parse("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa").unwrap();
-    let cert = alice.certify(&asked, nowhere, asked.expires_ms);
-    let reply = answer(&door, &answer_form(&asked, &proof(&asked), &cert)).await;
-    assert_eq!(returned(&reply)["error"], "invalid_target");
-    assert_eq!(door.store.grants_of(&alice.id()).len(), 1);
 
     // Asked for one workspace, the door takes that one and nothing else: not
     // all of them, and not another.
-    let pinned = format!("{ISSUER}/w/{}", garden.id);
+    let pinned = format!("{ISSUER}/w/{garden}");
     for (why, scope) in [
         ("all of them", AgentScope::AllWorkspaces),
-        ("another workspace", AgentScope::parse(&studio.id).unwrap()),
+        ("another workspace", AgentScope::parse(studio).unwrap()),
     ] {
         let asked = authorize(&door, &client, &pinned).await;
-        assert_eq!(asked.scope, AgentScope::parse(&garden.id).unwrap());
+        assert_eq!(asked.scope, AgentScope::parse(garden).unwrap());
         let cert = alice.certify(&asked, scope, asked.expires_ms);
         let reply = answer(&door, &answer_form(&asked, &proof(&asked), &cert)).await;
         assert_eq!(reply.status(), StatusCode::FORBIDDEN, "{why}");
@@ -907,32 +669,29 @@ async fn the_person_may_narrow_a_grant_to_one_workspace_and_never_widen_it() {
     let asked = authorize(&door, &client, &pinned).await;
     let cert = alice.certify(&asked, asked.scope, asked.expires_ms);
     let grant = granted(&door, &client, &alice, asked, cert).await;
-    assert_eq!(grant.scope, store::Scope::Workspace(garden.id));
+    assert_eq!(grant.scope, store::Scope::Workspace(garden.to_owned()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_grant_past_its_certificate_issues_no_token() {
-    let hosted = Arc::new(Hosted::default());
     let alice = Person::new(1);
-    hosted.add(&alice.id(), "Studio").await;
-    let door = door(&hosted);
+    let door = door();
     let client = register(&door).await;
     let asked = authorize(&door, &client, ISSUER).await;
     let proof =
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
     let soon = tilo_clock::unix_now_ms() + 1_500;
-    let cert = alice.certify(&asked, asked.scope, soon);
+    let cert = alice.certify(&asked, asked.scope, Some(soon));
     let code = returned(&answer(&door, &answer_form(&asked, &proof, &cert)).await)["code"].clone();
     let tokens = json_body(redeem(&door, &client, &code, VERIFIER).await).await;
     let access = tokens["access_token"].as_str().unwrap().to_owned();
-    let (session, _) = initialize(&door, "/", &access).await;
     tokio::time::sleep(std::time::Duration::from_millis(1_600)).await;
     let reply = mcp(
         &door,
         "/",
         &access,
-        Some(&session),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        None,
+        json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}),
     )
     .await;
     assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
@@ -955,268 +714,263 @@ async fn a_grant_past_its_certificate_issues_no_token() {
     assert_eq!(renewed["error"], "invalid_grant");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pinned_session_never_reaches_another_workspace() {
-    let hosted = Arc::new(Hosted::default());
-    let alice = Person::new(1);
-    let studio = hosted.add(&alice.id(), "Studio").await;
-    let garden = hosted.add(&alice.id(), "Garden").await;
-    let door = door(&hosted);
-    let pinned_path = format!("/w/{}", studio.id);
-    let token = connect(&door, &alice, &format!("{ISSUER}{pinned_path}")).await;
+/// Ask the door for a key as a terminal does, with `body`: the poll secret,
+/// and what the door asked the person's Tilo.
+async fn ask_for_key(door: &Arc<Door>, body: &Value) -> (String, Asked) {
+    let reply = door
+        .dispatch(
+            &Method::POST,
+            keys::NEW_PATH,
+            "",
+            &hyper::HeaderMap::new(),
+            body.to_string().as_bytes(),
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::CREATED);
+    let asked = json_body(reply).await;
+    let approve = asked["approve_url"].as_str().unwrap();
+    let reply = door
+        .dispatch(
+            &Method::GET,
+            approve.strip_prefix(ISSUER).unwrap(),
+            "",
+            &hyper::HeaderMap::new(),
+            b"",
+        )
+        .await;
+    (
+        asked["poll"].as_str().unwrap().to_owned(),
+        Asked::of(&location(&reply)),
+    )
+}
 
-    // At another workspace's address the grant does not hold.
-    let elsewhere = format!("/w/{}", garden.id);
-    let reply = mcp(&door, &elsewhere, &token, None, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}})).await;
-    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
-    assert!(
-        reply.headers()[header::WWW_AUTHENTICATE]
-            .to_str()
-            .unwrap()
-            .contains("insufficient_scope")
-    );
-
-    // At its own, it is the workspace's own endpoint, with no account tools.
-    let (session, answer) = initialize(&door, &pinned_path, &token).await;
-    assert!(answer["result"]["serverInfo"].is_object(), "{answer}");
-    let tools = tool_names(&door, &pinned_path, &token, &session).await;
-    assert!(
-        tools.iter().any(|tool| tool == "tilo_list_apps"),
-        "{tools:?}"
-    );
-    assert!(
-        !tools
-            .iter()
-            .any(|tool| tool == session::LIST_WORKSPACES || tool == session::CREATE_WORKSPACE)
-    );
-    let refused = call(
-        &door,
-        &pinned_path,
-        &token,
-        &session,
-        session::LIST_WORKSPACES,
-        json!({}),
-    )
-    .await;
-    assert!(
-        refused["error"].is_object() || refused["result"]["isError"] == true,
-        "{refused}"
-    );
-    let listed = call(
-        &door,
-        &pinned_path,
-        &token,
-        &session,
-        "tilo_list_apps",
-        json!({}),
-    )
-    .await;
-    assert!(listed.get("result").is_some(), "{listed}");
-    assert!(acted_in(&hosted.callers_of(&alice.id()).await, &studio.id));
-    // Naming the other workspace reaches nothing there: the call goes to
-    // its own workspace's endpoint, which knows no other.
-    call(
-        &door,
-        &pinned_path,
-        &token,
-        &session,
-        "tilo_list_apps",
-        json!({"workspace": garden.id}),
-    )
-    .await;
-    assert!(!acted_in(&hosted.callers_of(&alice.id()).await, &garden.id));
-    // The same grant at the door's root is still pinned.
-    let (root_session, _) = initialize(&door, "/", &token).await;
-    let tools = tool_names(&door, "/", &token, &root_session).await;
-    assert!(!tools.iter().any(|tool| tool == session::LIST_WORKSPACES));
-    assert!(!acted_in(&hosted.callers_of(&alice.id()).await, &garden.id));
+/// What polling for a key answers: its status and body.
+async fn poll_key(door: &Arc<Door>, poll: &str) -> (StatusCode, Value) {
+    let reply = door
+        .dispatch(
+            &Method::POST,
+            keys::POLL_PATH,
+            "",
+            &hyper::HeaderMap::new(),
+            json!({ "poll": poll }).to_string().as_bytes(),
+        )
+        .await;
+    (reply.status(), json_body(reply).await)
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_account_session_creates_a_workspace_and_acts_in_it() {
-    let hosted = Arc::new(Hosted::default());
-    hosted.quota.store(1, Ordering::SeqCst);
+async fn a_key_operates_web_pages_in_browser_unless_its_person_says_no() {
     let alice = Person::new(1);
-    let bob = Person::new(2);
-    let bobs = hosted.add(&bob.id(), "Bob's").await;
-    let door = door(&hosted);
-    let token = connect(&door, &alice, ISSUER).await;
-    let (session, answer) = initialize(&door, "/", &token).await;
+    let door = door();
+
+    // Made with no answer: the certificate its person approves lets it
+    // operate web pages, and the key the door keeps says so.
+    let (poll, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    assert!(asked.browser_pages);
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    let grant = door
+        .store
+        .access(&token, tilo_clock::unix_now_ms())
+        .unwrap();
+    assert!(
+        grant.key().unwrap().cert().capabilities.browser_pages,
+        "the certificate his person signed carries it"
+    );
+    assert!(grant.browser_pages);
     assert_eq!(
-        answer["result"]["capabilities"]["tools"]["listChanged"],
-        true
+        account::grant_row(&grant)["browser_pages"],
+        serde_json::json!(true)
     );
 
-    // No workspace yet: only the account's own tools.
-    let tools = tool_names(&door, "/", &token, &session).await;
-    assert_eq!(tools, [session::LIST_WORKSPACES, session::CREATE_WORKSPACE]);
-    let listed = call(
-        &door,
-        "/",
-        &token,
-        &session,
-        session::LIST_WORKSPACES,
-        json!({}),
-    )
-    .await;
-    assert_eq!(
-        listed["result"]["structuredContent"]["workspaces"],
-        json!([])
+    // Said no: neither the certificate nor the key operates a page.
+    let (poll, asked) =
+        ask_for_key(&door, &json!({"name": "Reader", "browser_pages": false})).await;
+    assert!(!asked.browser_pages, "the person is not asked to allow it");
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
     );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    let grant = door
+        .store
+        .access(&token, tilo_clock::unix_now_ms())
+        .unwrap();
+    assert!(!grant.key().unwrap().cert().capabilities.browser_pages);
+    assert!(!grant.browser_pages);
+}
 
-    let created = call(
-        &door,
-        "/",
-        &token,
-        &session,
-        session::CREATE_WORKSPACE,
-        json!({"name":"Studio"}),
-    )
-    .await;
-    assert_eq!(created["result"]["isError"], false, "{created}");
-    let studio = created["result"]["structuredContent"]["workspace"]["id"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
+    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+    let alice = Person::new(1);
+    let door = door();
+    let now = tilo_clock::unix_now_ms();
+
+    // A key reaching all workspaces is a server key, asked for until revoked.
+    let (poll, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    assert!(asked.server_key);
+    assert_eq!(
+        (asked.scope, asked.expires_ms),
+        (AgentScope::AllWorkspaces, None)
+    );
+    assert!(
+        asked.browser_pages,
+        "a key made with no answer operates web pages in Browser"
+    );
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    assert!(polled["expires_at_ms"].is_null(), "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("tilo_sk_"));
+    // Shown once: the poll answers it no more.
+    assert_eq!(poll_key(&door, &poll).await.0, StatusCode::NOT_FOUND);
+
+    // Still a key long past the bound of an agent's grant.
+    let later = now + 400 * DAY_MS;
+    let grant = door
+        .store
+        .access(&token, later)
+        .expect("a server key lasts");
+    assert_eq!(grant.last_used_ms, Some(later));
+    let device = hex::encode(alice.device.verifying_key().to_bytes());
+    let approved_on = format!("Laptop ({})", device.get(..8).unwrap());
+    assert_eq!(grant.created_by.as_deref(), Some(approved_on.as_str()));
+    let row = account::grant_row(&door.store.grants_of(&alice.id())[0]);
+    assert_eq!(row["last_used_at_ms"], later);
+    assert_eq!(row["created_by"], approved_on.as_str());
+    assert!(row["expires_at_ms"].is_null());
+    let page = pages::grants(&door.store.grants_of(&alice.id()), "csrf");
+    assert!(
+        page.contains(&format!("Last used {}", pages::date(later))),
+        "{page}"
+    );
+    assert!(page.contains("approved on Laptop"), "{page}");
+    assert!(page.contains("lasts until revoked"), "{page}");
+    // What a person reads of the scope: on the key's row, and the box the
+    // next key is made with.
+    assert!(page.contains("operates web pages in Browser"), "{page}");
+    assert!(page.contains("name=\"browser_pages\""), "{page}");
+    assert!(
+        page.contains("The key opens, fills in and clicks the page without asking you"),
+        "{page}"
+    );
+    assert!(
+        pages::key_created(&grant, "tilo_sk_secret")
+            .contains("It operates web pages in Browser; submitting a page still asks you."),
+        "the key shown once says what it may do"
+    );
+    assert!(page.contains(&format!("action=\"/grants/{}/revoke\"", grant.id)));
+    // Revoking it ends it.
+    assert!(door.revoke_grant(&alice.id(), &grant.id).await.unwrap());
+    // A revoked key is told so, and when, not that it never was a key.
+    assert!(matches!(
+        door.store.access(&token, now),
+        Err(store::Denied::Revoked { at_ms: Some(_) })
+    ));
+    assert!(matches!(
+        door.store.access("tilo_sk_never", now),
+        Err(store::Denied::Unknown)
+    ));
+
+    // The person may choose when it expires.
+    let (poll, asked) =
+        ask_for_key(&door, &json!({"name": "Nightly job", "expires_in": 3_600})).await;
+    assert!(asked.server_key);
+    let expires = asked.expires_ms.unwrap();
+    assert!(
+        (now + 3_600_000..now + 3_700_000).contains(&expires),
+        "{expires}"
+    );
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let token = poll_key(&door, &poll).await.1["key"]
         .as_str()
         .unwrap()
         .to_owned();
-    // The host refuses past its quota, and says why.
-    let refused = call(
-        &door,
-        "/",
-        &token,
-        &session,
-        session::CREATE_WORKSPACE,
-        json!({"name":"More"}),
-    )
-    .await;
-    assert_eq!(refused["result"]["isError"], true);
-    assert!(
-        refused["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("quota")
-    );
-
-    // Its tools changed: the workspace's own, each naming the workspace.
-    let reply = mcp(
-        &door,
-        "/",
-        &token,
-        Some(&session),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}),
-    )
-    .await;
-    let tools = json_body(reply).await["result"]["tools"].clone();
-    let ls = tools
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["name"] == "tilo_list_apps")
-        .unwrap();
-    assert_eq!(
-        ls["inputSchema"]["required"][0],
-        session::WORKSPACE_ARGUMENT
-    );
-
-    let missing = call(&door, "/", &token, &session, "tilo_list_apps", json!({})).await;
-    assert_eq!(missing["error"]["code"], -32602);
-    let acted = call(
-        &door,
-        "/",
-        &token,
-        &session,
-        "tilo_list_apps",
-        json!({"workspace": studio}),
-    )
-    .await;
-    assert!(acted.get("result").is_some(), "{acted}");
-    assert!(acted_in(&hosted.callers_of(&alice.id()).await, &studio));
-
-    // Someone else's workspace is no workspace of hers.
-    let foreign = call(
-        &door,
-        "/",
-        &token,
-        &session,
-        "tilo_list_apps",
-        json!({"workspace": bobs.id}),
-    )
-    .await;
-    assert_eq!(foreign["error"]["message"], "no such workspace");
-    assert!(hosted.callers_of(&bob.id()).await.is_empty());
+    assert!(door.store.access(&token, expires - 1).is_ok());
+    assert!(matches!(
+        door.store.access(&token, expires),
+        Err(store::Denied::Expired { at_ms: Some(at) }) if at == expires
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn each_session_is_its_own_numbered_run_and_revoking_ends_them() {
-    let hosted = Arc::new(Hosted::default());
+async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_one() {
+    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
     let alice = Person::new(1);
-    let studio = hosted.add(&alice.id(), "Studio").await;
-    let door = door(&hosted);
-    let token = connect(&door, &alice, &format!("{ISSUER}/w/{}", studio.id)).await;
-    let (first, _) = initialize(&door, "/", &token).await;
-    let (second, _) = initialize(&door, "/", &token).await;
-    assert_ne!(first, second);
-    let labels: Vec<String> = lock(&door.sessions)
-        .values()
-        .map(|session| session.label.clone())
-        .collect();
-    let mut labels = labels;
-    labels.sort();
-    assert_eq!(labels, ["Claude Code #1", "Claude Code #2"]);
-    // Each run is a session of its own at the workspace's endpoint.
-    call(&door, "/", &token, &first, "tilo_list_apps", json!({})).await;
-    call(&door, "/", &token, &second, "tilo_list_apps", json!({})).await;
-    assert!(acted_in(&hosted.callers_of(&alice.id()).await, &studio.id));
+    let door = door();
+    let now = tilo_clock::unix_now_ms();
 
-    let grant = door.store.grants_of(&alice.id())[0].id.clone();
-    assert!(
-        !door.revoke_grant(&bob_id(), &grant).await.unwrap(),
-        "only its person revokes a grant"
+    // A key for one workspace is no server key and stays bounded.
+    let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
+    let (_, asked) = ask_for_key(&door, &json!({"name": "Jane", "workspace": studio})).await;
+    assert!(!asked.server_key);
+    assert!(asked.expires_ms.unwrap() <= now + 90 * DAY_MS);
+    for body in [
+        json!({"name": "Jane", "workspace": studio, "expires_in": 100 * 24 * 60 * 60}),
+        json!({"name": "Visa backend", "expires_in": 0}),
+        json!({"name": "Visa backend", "expires_in": "soon"}),
+    ] {
+        let reply = door
+            .dispatch(
+                &Method::POST,
+                keys::NEW_PATH,
+                "",
+                &hyper::HeaderMap::new(),
+                body.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(reply.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // A server key is what the key flow asked for, and nothing else is.
+    let (_, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    let plain = alice.certify_as(
+        &asked,
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        Some(now + DAY_MS),
     );
-    assert!(door.revoke_grant(&alice.id(), &grant).await.unwrap());
-    assert_eq!(door.session_count(), 0);
-    let reply = mcp(
-        &door,
-        "/",
-        &token,
-        Some(&first),
-        json!({"jsonrpc":"2.0","id":9,"method":"tools/list"}),
-    )
-    .await;
-    assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
+    let proof =
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
+    let reply = answer(&door, &answer_form(&asked, &proof, &plain)).await;
+    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
+    let client = register(&door).await;
+    let asked = authorize(&door, &client, ISSUER).await;
+    assert!(!asked.server_key);
+    let lasting = alice.certify_as(&asked, DeviceCapabilities::server_key_grant(), None);
+    let proof =
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
+    let reply = answer(&door, &answer_form(&asked, &proof, &lasting)).await;
+    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_runtime_refuses_a_grant_its_person_revoked() {
-    let hosted = Arc::new(Hosted::default());
-    let alice = Person::new(1);
-    let studio = hosted.add(&alice.id(), "Studio").await;
-    let door = door(&hosted);
-    let path = format!("/w/{}", studio.id);
-    let token = connect(&door, &alice, &format!("{ISSUER}{path}")).await;
-    let (session, _) = initialize(&door, &path, &token).await;
-    let listed = call(&door, &path, &token, &session, "tilo_list_apps", json!({})).await;
-    assert!(listed.get("result").is_some(), "{listed}");
-
-    // Alice removes the grant's key from her devices, and her runtime hears
-    // of it as it hears of any revocation of hers: it drops the session and
-    // opens no other for that key.
-    let key = door.store.grants_of(&alice.id())[0].key().unwrap();
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: alice.root.verifying_key().to_bytes(),
-        revoked_device_public_key: key.cert().device_public_key,
-        revoked_at_ns: tilo_clock::unix_now_ns(),
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &alice.root).unwrap();
-    let runtime = hosted.runtime_of(&alice.id()).await;
-    lock(&runtime.revoked).insert(entry).unwrap();
-    let refused = call(&door, &path, &token, &session, "tilo_list_apps", json!({})).await;
-    assert!(refused["error"].is_object(), "{refused}");
-}
-
-fn bob_id() -> String {
-    Person::new(2).id()
+#[test]
+fn a_date_reads_as_its_utc_day_and_minute() {
+    assert_eq!(pages::date(0), "1970-01-01 00:00 UTC");
+    assert_eq!(pages::date(1_762_696_980_000), "2025-11-09 14:03 UTC");
+    assert_eq!(pages::date(951_782_400_000), "2000-02-29 00:00 UTC");
 }
 
 #[test]
@@ -1252,4 +1006,116 @@ fn the_run_is_named_for_the_person() {
         "claude-code #3"
     );
     assert_eq!(session::run_label("", &json!({}), 2), "Agent #2");
+}
+
+/// A site on loopback whose every page answers `status`, counting asks.
+async fn site_answering(status: &'static str) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&asked);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request).await;
+            let reply =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            let _ = stream.write_all(reply.as_bytes()).await;
+        }
+    });
+    (origin, asked)
+}
+
+fn door_in_front_of(site: &str) -> Arc<Door> {
+    Door::new(
+        &Config {
+            issuer: ISSUER.into(),
+            web_entry: site.into(),
+            relay: "https://relay.tilo.test".into(),
+        },
+        Store::in_memory(),
+    )
+    .unwrap()
+}
+
+async fn health(door: &Arc<Door>) -> Value {
+    let reply = door
+        .dispatch(&Method::GET, "/health", "", &hyper::HeaderMap::new(), b"")
+        .await;
+    assert_eq!(
+        reply.status(),
+        StatusCode::OK,
+        "the door answers for itself"
+    );
+    serde_json::from_slice(&body(reply).await).unwrap()
+}
+
+/// A site deployed without the sign-in page every approval lands on shows
+/// on the door's health, and the door asks the site again only after a
+/// while, however often it is probed.
+#[tokio::test]
+async fn health_says_when_the_site_serves_no_sign_in_page() {
+    let (missing, asked) = site_answering("404 Not Found").await;
+    let door = door_in_front_of(&missing);
+    let answered = health(&door).await;
+    assert_eq!(answered["ok"], true);
+    assert_eq!(
+        answered["sign_in"],
+        format!("{missing}/sign-in answers 404 Not Found")
+    );
+    health(&door).await;
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "probes within a minute reuse what the site answered"
+    );
+
+    let (served, _) = site_answering("200 OK").await;
+    assert_eq!(
+        health(&door_in_front_of(&served)).await["sign_in"],
+        "served"
+    );
+}
+
+/// A relay busy with the person's changes ran nothing: the door answers it
+/// typed as `rate_limited`, with the wait the relay said, never as a refusal
+/// the caller must act on.
+#[test]
+fn a_busy_relay_answers_rate_limited_with_its_wait() {
+    let busy = tilo_actions::remote::ActionHostError::Unavailable {
+        reason: format!(
+            "{}: {}",
+            tilo_relay_protocol::refusal::BACKPRESSURE,
+            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
+        ),
+    };
+    let relay = relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&busy));
+    assert_eq!(
+        relay,
+        relay::RelayError::RateLimited {
+            retry_after_ms: 480
+        }
+    );
+    let answered = account::answer(true, "account/workspaces#create", account::refused(&relay));
+    let error = &answered["structuredContent"]["error"];
+    assert_eq!(error["code"], "rate_limited", "{answered}");
+    assert_eq!(error["retry_after_ms"], 480, "{answered}");
+    assert_eq!(answered["isError"], true);
+}
+
+/// Where the site keeps no invitation, the link carries the invitation's
+/// text after a route that names the relay, as the site's own workspace
+/// links do, so following it reaches the workspace's host.
+#[tokio::test]
+async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
+    let (site, _) = site_answering("404 Not Found").await;
+    let door = door_in_front_of(&site);
+    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+    let link = door.invitation_link(workspace, b"signed", u64::MAX).await;
+    assert!(
+        link.starts_with(&format!("{site}/#/@relay.tilo.test/w/{workspace}?invite=")),
+        "{link}"
+    );
 }

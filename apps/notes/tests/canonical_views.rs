@@ -60,10 +60,13 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let revision_before = revision(&f, &checkout);
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
         let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
+        // A window presented again shows the record's title and gives the
+        // keyboard back to the note's body: a title edit is the person's own
+        // gesture, never one a presentation restores for them.
         a.expect(
             &SemanticExpectation::named("note_title")
                 .value("Latest Launch")
-                .focused(true),
+                .focused(false),
         )
         .unwrap();
         b.expect(&SemanticExpectation::named("note_title").value("Projects"))
@@ -136,14 +139,17 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
             let captured = app.capture_application_view().unwrap().unwrap();
             let local: notes::local_view::NotesLocalViewV1 =
                 serde_json::from_slice(&captured.payload).unwrap();
-            assert_eq!(serde_json::to_value(local.focus).unwrap(), focus);
+            // A saved title edit stands for the note being written: the body
+            // is what the window gives back, and all it saves.
+            let restored = if focus == "Title" { "Editor" } else { focus };
+            assert_eq!(serde_json::to_value(local.focus).unwrap(), restored);
             assert_eq!(
                 app.main_panel_mut().editor().is_focused(),
-                focus == "Editor"
+                restored == "Editor"
             );
-            assert_eq!(
-                app.main_panel_mut().title_is_editing_for_test(),
-                focus == "Title"
+            assert!(
+                !app.main_panel_mut().title_is_editing_for_test(),
+                "{focus}: a presentation never opens the title"
             );
         }
         assert_eq!(fingerprint(&f, &checkout), before);

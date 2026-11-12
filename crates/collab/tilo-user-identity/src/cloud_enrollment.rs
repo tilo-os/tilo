@@ -6,12 +6,6 @@ use crate::DeviceCapabilities;
 pub fn host_capabilities() -> DeviceCapabilities {
     DeviceCapabilities {
         can_own_workspaces: true,
-        can_admit_devices: false,
-        can_act_as_host: true,
-        can_read_all_workspaces: true,
-        foreign: false,
-        can_administer_devices: false,
-        agent: None,
-        stand_in: false,
+        ..DeviceCapabilities::host()
     }
 }

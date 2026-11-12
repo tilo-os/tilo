@@ -39,6 +39,8 @@ pub struct Keyer {
     end: fn(&mut Scene),
     skip: fn(),
     painted: fn((usize, &'static str)) -> Option<u64>,
+    field: fn(&mut crate::text_render::TextRenderer, &FieldText<'_>),
+    picture: fn(),
 }
 
 /// The keying code: the one way to it.
@@ -52,6 +54,8 @@ pub fn keyer() -> Keyer {
         end: end_keys,
         skip: skip_keys,
         painted: painted_of,
+        field: field_keys,
+        picture: picture_keys,
     }
 }
 
@@ -75,10 +79,15 @@ fn installed() -> Option<Keyer> {
 /// One key open on the stack of widgets being drawn.
 struct Open {
     key: u64,
-    /// How many children have been keyed under it so far, for a child drawn
-    /// without an index of its own.
+    /// The next free slot for a child drawn without an index of its own.
     children: usize,
+    /// Where this widget's children's claimed slots start in [`USED`].
+    used_from: usize,
 }
+
+/// A slot a child took under a parent in a frame, and the key it made
+/// ([`SLOTS`]).
+type SlotEntry = (usize, u64);
 
 /// A scroll region a keyed widget drew this frame ([`Widget::primary_vertical_scroll`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -112,8 +121,15 @@ impl DrawnScroll {
 thread_local! {
     static KEYER: std::cell::Cell<Option<Keyer>> = const { std::cell::Cell::new(None) };
     static OPEN: RefCell<Vec<Open>> = const { RefCell::new(Vec::new()) };
+    /// The slots the open widgets' children claimed this frame, as one stack
+    /// of ranges matching [`OPEN`]: a parent's are those from its `used_from`
+    /// on, and its children's follow.
+    static USED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// The widgets at the root of the frame keyed so far.
-    static ROOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// By the scene they draw into and their type: a widget drawn at the
+    /// root of another scene (a measuring pass, a drag's picture), or one
+    /// of another type, does not renumber the frame's own.
+    static ROOTS: RefCell<HashMap<(usize, &'static str), usize>> = RefCell::new(HashMap::new());
     /// The scroll regions keyed widgets drew, by key: kept across frames,
     /// since a frame that replays a cached subtree draws no widget in it
     /// again ([`retain_shown`]).
@@ -121,6 +137,107 @@ thread_local! {
     /// The key each widget drew under, by address and type, kept the same
     /// way.
     static DRAWN: RefCell<HashMap<(usize, &'static str), u64>> = RefCell::new(HashMap::new());
+    /// The slot each child took under its parent last frame, by the parent's
+    /// key and the child's identity ([`claim_slot`]), kept the same way.
+    static SLOTS: RefCell<HashMap<(u64, (usize, &'static str)), SlotEntry>> =
+        RefCell::new(HashMap::new());
+    /// The single-line fields keyed widgets left to the host, by key, kept
+    /// the same way.
+    static FIELDS: RefCell<HashMap<u64, DrawnField>> = RefCell::new(HashMap::new());
+    /// The keys of the widgets that drew themselves as pictures, kept the
+    /// same way.
+    static PICTURES: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+}
+
+/// Say that the widget being drawn is a picture: a chart, a drawing, a map,
+/// a video frame. A host that shows the scene as elements shows it as one
+/// image rather than an element per shape; its text stays text over it.
+pub fn picture() {
+    if let Some(keyer) = installed() {
+        (keyer.picture)();
+    }
+}
+
+fn picture_keys() {
+    if let Some(key) = OPEN.with_borrow(|open| open.last().map(|open| open.key)) {
+        PICTURES.with_borrow_mut(|pictures| pictures.insert(key));
+    }
+}
+
+/// The keys of the widgets the last frame showed that drew themselves as
+/// pictures ([`picture`], [`retain_shown`]).
+#[must_use]
+pub fn drawn_pictures() -> HashSet<u64> {
+    PICTURES.with_borrow(Clone::clone)
+}
+
+/// The line of a single-line text field, as the field would set it
+/// ([`native_field`]).
+pub struct FieldText<'a> {
+    pub style: &'a crate::text_render::TextStyle,
+    /// Where the field's line starts (its top left), scrolled to its start.
+    pub origin: Affine,
+    /// The part of the field its text may show in, in scene coordinates.
+    pub area: Rect,
+    pub color: vello::peniko::Color,
+}
+
+/// A single-line text field a keyed widget left to the host this frame: the
+/// host shows the field itself (a page's `<input>`) where the widget would
+/// have drawn its text, caret and selection.
+#[derive(Clone, Debug)]
+pub struct DrawnField {
+    /// The key of the field's widget.
+    pub key: u64,
+    /// Where its text shows, in scene coordinates.
+    pub area: Rect,
+    /// Where its line starts, on its baseline, in scene coordinates.
+    pub baseline: vello::kurbo::Point,
+    /// The face, its size in scene pixels and its variation coordinates.
+    pub font: vello::peniko::FontData,
+    pub size: f32,
+    pub coords: Vec<vello::NormalizedCoord>,
+    pub color: vello::peniko::Color,
+}
+
+/// Whether the host shows single-line text fields itself, as a page shows
+/// its own `<input>`: then the field the innermost keyed widget is draws its
+/// chrome and placeholder but not its text, caret or selection, and the
+/// host is told how the text would have been set. Only a host that keys
+/// widgets does.
+pub fn native_field(text: &mut crate::text_render::TextRenderer, field: &FieldText<'_>) -> bool {
+    let Some(keyer) = installed() else {
+        return false;
+    };
+    (keyer.field)(text, field);
+    true
+}
+
+fn field_keys(text: &mut crate::text_render::TextRenderer, field: &FieldText<'_>) {
+    let Some(key) = OPEN.with_borrow(|open| open.last().map(|open| open.key)) else {
+        return;
+    };
+    let Some(face) = text.line_face(field.style) else {
+        return;
+    };
+    let scale = field.origin.determinant().abs().sqrt();
+    let drawn = DrawnField {
+        key,
+        area: field.area,
+        baseline: field.origin * vello::kurbo::Point::new(0.0, f64::from(face.baseline)),
+        font: face.font,
+        size: (f64::from(face.size) * scale) as f32,
+        coords: face.coords,
+        color: field.color,
+    };
+    FIELDS.with_borrow_mut(|fields| fields.insert(key, drawn));
+}
+
+/// The fields the widgets the last frame showed left to the host
+/// ([`native_field`], [`retain_shown`]).
+#[must_use]
+pub fn drawn_fields() -> Vec<DrawnField> {
+    FIELDS.with_borrow(|fields| fields.values().cloned().collect())
 }
 
 /// Start keying a frame: root widgets count from the first again. A host
@@ -132,8 +249,9 @@ pub fn begin_frame() {
 }
 
 fn begin_frame_keys() {
-    ROOTS.with(|roots| roots.set(0));
+    ROOTS.with_borrow_mut(HashMap::clear);
     OPEN.with_borrow_mut(Vec::clear);
+    USED.with_borrow_mut(Vec::clear);
 }
 
 /// Forget the scroll regions and widgets whose keys `scene` (a whole frame)
@@ -151,6 +269,11 @@ pub fn retain_shown(scene: &Scene) {
         .collect();
     SCROLLS.with_borrow_mut(|scrolls| scrolls.retain(|key, _| shown.contains(key)));
     DRAWN.with_borrow_mut(|drawn| drawn.retain(|_, key| shown.contains(key)));
+    // A child this frame did not draw is one a parent skipped: the slot it
+    // had says nothing about where its siblings go now.
+    SLOTS.with_borrow_mut(|slots| slots.retain(|_, (_, key)| shown.contains(key)));
+    FIELDS.with_borrow_mut(|fields| fields.retain(|key, _| shown.contains(key)));
+    PICTURES.with_borrow_mut(|pictures| pictures.retain(|key| shown.contains(key)));
 }
 
 /// The key `widget`'s draws carried in the frame keyed last, as the page
@@ -236,25 +359,86 @@ struct Described<'a> {
     region: Option<crate::widget::PrimaryScrollRegion>,
 }
 
+/// Whether `slot` is one of `used`, which is nearly always ascending: a
+/// container passes its children's places in order, so a slot past the last
+/// is free without looking.
+fn taken(used: &[usize], slot: usize) -> bool {
+    used.last().is_some_and(|&last| slot <= last) && used.contains(&slot)
+}
+
+/// The slot a child takes under the parent `parent`, whose children have
+/// claimed `used[from..]` so far and whose next free slot is `next`.
+///
+/// A container that knows a child's place among its children says it
+/// (`index`); one that does not gets a place that stays put anyway: the slot
+/// the child had under the same parent last frame when that slot is still
+/// free, else the first free slot from `next` on. So a container that leaves
+/// a child undrawn without saying so — a list showing one page of its rows, a
+/// panel hiding a section — does not renumber the children after it, and the
+/// elements the page keeps for them, with their selection and focus, stay.
+fn claim_slot(
+    parent: u64,
+    index: Option<usize>,
+    identity: (usize, &'static str),
+    used: &mut Vec<usize>,
+    from: usize,
+    next: &mut usize,
+) -> usize {
+    let remembered = index.or_else(|| {
+        SLOTS
+            .with_borrow(|slots| slots.get(&(parent, identity)).map(|entry| entry.0))
+            .filter(|slot| !taken(&used[from..], *slot))
+    });
+    let slot = remembered.unwrap_or_else(|| {
+        let mut slot = *next;
+        while taken(&used[from..], slot) {
+            slot = slot.saturating_add(1);
+        }
+        slot
+    });
+    *next = (*next).max(slot.saturating_add(1));
+    used.push(slot);
+    slot
+}
+
 fn begin_described(
     scene: &mut Scene,
     widget: &Described<'_>,
     index: Option<usize>,
     transform: Affine,
 ) {
+    let scene_id = std::ptr::from_ref(&*scene) as usize;
+    // A scene that holds no key yet starts its roots' count again: one
+    // drawn into, reset and drawn into again in a frame (a layout that
+    // settled on the second pass) numbers its roots as once.
+    let fresh = scene.encoding().resources.marks.is_empty();
     let (key, ancestors) = OPEN.with_borrow_mut(|open| {
-        let (parent, slot) = match open.last_mut() {
-            Some(parent) => {
-                let slot = index.unwrap_or(parent.children);
-                parent.children = slot.saturating_add(1);
+        let (parent, slot) = USED.with_borrow_mut(|used| {
+            if let Some(parent) = open.last_mut() {
+                let from = parent.used_from;
+                let slot = claim_slot(
+                    parent.key,
+                    index,
+                    widget.identity,
+                    used,
+                    from,
+                    &mut parent.children,
+                );
                 (parent.key, slot)
+            } else {
+                // The root of the frame is the parent of what draws first; a
+                // widget drawn into another scene, or one of another type,
+                // counts as a root of its own.
+                ROOTS.with_borrow_mut(|roots| {
+                    if fresh {
+                        roots.retain(|(drawn_into, _), _| *drawn_into != scene_id);
+                    }
+                    let count = roots.entry((scene_id, widget.identity.1)).or_default();
+                    let slot = claim_slot(0, index, widget.identity, used, 0, count);
+                    (0, slot)
+                })
             }
-            None => ROOTS.with(|roots| {
-                let slot = index.unwrap_or(roots.get());
-                roots.set(slot.saturating_add(1));
-                (0, slot)
-            }),
-        };
+        });
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         parent.hash(&mut hasher);
         if let Some(id) = widget.test_id {
@@ -264,13 +448,24 @@ fn begin_described(
             widget.identity.1.hash(&mut hasher);
         }
         let key = hasher.finish();
+        SLOTS.with_borrow_mut(|slots| {
+            slots.insert((parent, widget.identity), (slot, key));
+        });
         let ancestors: Vec<u64> = open.iter().map(|open| open.key).collect();
-        open.push(Open { key, children: 0 });
+        let used_from = USED.with_borrow(Vec::len);
+        open.push(Open {
+            key,
+            children: 0,
+            used_from,
+        });
         (key, ancestors)
     });
     DRAWN.with_borrow_mut(|drawn| {
         drawn.insert(widget.identity, key);
     });
+    // A field or picture drawn again says again what it is.
+    FIELDS.with_borrow_mut(|fields| fields.remove(&key));
+    PICTURES.with_borrow_mut(|pictures| pictures.remove(&key));
     let rect = widget.rect;
     let origin = transform * Affine::translate((rect.x0, rect.y0));
     if let Some(region) = &widget.region {
@@ -316,9 +511,11 @@ pub fn skip_widget() {
 }
 
 fn skip_keys() {
-    OPEN.with_borrow_mut(|open| match open.last_mut() {
-        Some(parent) => parent.children = parent.children.saturating_add(1),
-        None => ROOTS.with(|roots| roots.set(roots.get().saturating_add(1))),
+    // A root left undrawn renumbers nothing: roots count by type.
+    OPEN.with_borrow_mut(|open| {
+        if let Some(parent) = open.last_mut() {
+            parent.children = parent.children.saturating_add(1);
+        }
     });
 }
 
@@ -333,7 +530,9 @@ pub fn end_widget(scene: &mut Scene, begun: Begun) {
 
 fn end_keys(scene: &mut Scene) {
     OPEN.with_borrow_mut(|open| {
-        open.pop();
+        if let Some(closed) = open.pop() {
+            USED.with_borrow_mut(|used| used.truncate(closed.used_from));
+        }
     });
     scene.encoding_mut().encode_mark(MarkKind::End);
 }
@@ -363,7 +562,14 @@ pub fn begin_item(scene: &mut Scene, key: u64, origin: Affine) -> Begun {
 }
 
 fn begin_item_keys(scene: &mut Scene, key: u64, origin: Affine) {
-    OPEN.with_borrow_mut(|open| open.push(Open { key, children: 0 }));
+    let used_from = USED.with_borrow(Vec::len);
+    OPEN.with_borrow_mut(|open| {
+        open.push(Open {
+            key,
+            children: 0,
+            used_from,
+        });
+    });
     mark(scene, key, origin);
 }
 

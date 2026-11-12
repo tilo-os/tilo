@@ -149,7 +149,9 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .map(|a| a.iter().map(addr_from_parsed).collect())
         .unwrap_or_default();
 
-    let subject = parsed.subject().unwrap_or("(no subject)").to_string();
+    // The subject as the message carries it; a window resolves the words for
+    // a message with none.
+    let subject = parsed.subject().unwrap_or_default().to_string();
     let body = parsed
         .body_text(0)
         .map(std::borrow::Cow::into_owned)

@@ -8,6 +8,7 @@
 //! the window shell's (`shell.rs`).
 
 use super::page_part::PagePart;
+use ui::widget::DrawChild;
 
 mod accessible;
 mod now_playing;
@@ -24,6 +25,7 @@ use accessible::{
 };
 pub(super) use now_playing::NowPlaying;
 pub(super) use query_view::SearchView;
+use ui::i18n::ArgValue;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -36,6 +38,7 @@ use ui::widget::Continuable;
 /// A track's row: its title and the line under it. Real rows and the rows
 /// on their way take its geometry.
 pub(crate) const TRACK_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
+use crate::i18n::CATALOG;
 use ui::widget::data_table::DataTableFace;
 use ui::widget::{
     ArrivalFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
@@ -868,22 +871,22 @@ impl Widget for Music {
         let player_status = if let Some(error) = &self.playback_error {
             error.clone()
         } else if self.active_resolve_request.is_some() {
-            "Loading audio source".to_string()
+            CATALOG.t("music-a11y-loading-source")
         } else if self.pb.playing && !self.audio.is_playing_real() {
-            "Waiting for audio output".to_string()
+            CATALOG.t("music-a11y-waiting-output")
         } else {
-            "Playback controls".to_string()
+            CATALOG.t("music-a11y-playback-controls")
         };
         let player = AccessNode::new(Role::Group)
             .with_hashed_key("player")
-            .with_name("Music player")
+            .with_name(crate::i18n::t("music-a11y-player"))
             .with_value(format!("{current}; volume {}%", self.pb.volume))
             .with_description(player_status)
             .with_state(AccessState::new().busy(self.active_resolve_request.is_some()));
         let search = AccessNode::new(Role::Button)
             .with_hashed_key("search")
-            .with_name("Search music")
-            .with_description("Search songs, albums, artists and playlists")
+            .with_name(crate::i18n::t("music-a11y-search"))
+            .with_description(crate::i18n::t("music-a11y-search-description"))
             .with_action_target("music.open-search");
 
         let mut page_content = Vec::new();
@@ -917,50 +920,51 @@ impl Widget for Music {
                 page_content.push(
                     AccessNode::new(Role::Group)
                         .with_hashed_key("home-empty")
-                        .with_name(super::HOME_EMPTY_TITLE)
-                        .with_description(super::HOME_EMPTY_MESSAGE)
+                        .with_name(crate::i18n::t(super::HOME_EMPTY_TITLE))
+                        .with_description(crate::i18n::t(super::HOME_EMPTY_MESSAGE))
                         .with_children(vec![
                             AccessNode::new(Role::Button)
-                                .with_name(super::HOME_EMPTY_ACTION)
-                                .with_description("Choose where your music comes from")
+                                .with_name(crate::i18n::t(super::HOME_EMPTY_ACTION))
+                                .with_description(crate::i18n::t("music-a11y-choose-source"))
                                 .with_action_target("music.connect-source"),
                         ]),
                 );
             } else {
                 let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
+                let message = crate::i18n::t(message);
                 let search = offers_search.then(|| {
                     AccessNode::new(Role::Button)
-                        .with_name("Search music")
-                        .with_description("Search for a song, album, or artist")
+                        .with_name(crate::i18n::t("music-a11y-search"))
+                        .with_description(crate::i18n::t("music-a11y-search-description-simple"))
                         .with_action_target("music.open-search")
                 });
                 page_content.push(
                     AccessNode::new(Role::Group)
                         .with_hashed_key("library-empty")
-                        .with_name("Empty music library")
+                        .with_name(crate::i18n::t("music-a11y-empty"))
                         .with_description(message)
                         .with_children(search.into_iter().collect()),
                 );
             }
         }
         let page_name = match &self.view {
-            View::Home => "Home".to_string(),
+            View::Home => CATALOG.t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
-            View::Songs => "Songs".to_string(),
-            View::Albums => "Albums".to_string(),
-            View::Artists => "Artists".to_string(),
-            View::Playlists => "Playlists".to_string(),
-            View::Downloads => "Downloads".to_string(),
-            View::Liked => "Liked songs".to_string(),
-            View::Browse => "Browse".to_string(),
-            View::Queue => "Queue".to_string(),
-            View::Lyrics => "Lyrics".to_string(),
-            View::NowPlaying => "Now playing".to_string(),
-            View::Search => "Search".to_string(),
+            View::Songs => CATALOG.t("music-view-songs"),
+            View::Albums => CATALOG.t("music-view-albums"),
+            View::Artists => CATALOG.t("music-view-artists"),
+            View::Playlists => CATALOG.t("music-view-playlists"),
+            View::Downloads => CATALOG.t("music-view-downloads"),
+            View::Liked => CATALOG.t("music-view-liked"),
+            View::Browse => CATALOG.t("music-view-browse"),
+            View::Queue => CATALOG.t("music-view-queue"),
+            View::Lyrics => CATALOG.t("music-view-lyrics"),
+            View::NowPlaying => CATALOG.t("music-view-now-playing"),
+            View::Search => CATALOG.t("music-view-search"),
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
-                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
+                .map_or_else(|| CATALOG.t("music-view-search"), |kept| kept.name.clone()),
             View::Album(id) => self.album_pages.get(id).map_or_else(
                 || self.lib.album_title(id).to_string(),
                 |page| page.title.clone(),
@@ -979,7 +983,7 @@ impl Widget for Music {
                         .find(|playlist| playlist.id == *id)
                         .map(|playlist| playlist.name.clone())
                 })
-                .unwrap_or_else(|| "Playlist".to_string()),
+                .unwrap_or_else(|| CATALOG.t("music-view-playlist-fallback")),
         };
 
         let mut list_items = Vec::new();
@@ -1185,7 +1189,10 @@ impl Widget for Music {
                             AccessNode::new(Role::ListItem)
                                 .with_hashed_key(format!("genre:{genre}"))
                                 .with_name(genre)
-                                .with_description(format!("Search for {genre}"))
+                                .with_description(CATALOG.t_args(
+                                    "music-a11y-search-genre",
+                                    &[("genre", ArgValue::Text((*genre).to_owned()))],
+                                ))
                                 .with_position(index + 1, total)
                         }),
                 );
@@ -1228,8 +1235,8 @@ impl Widget for Music {
         let children = vec![search, page, player];
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Music")
-                .with_description("Music library and playback controls")
+                .with_name(crate::i18n::t("music-title"))
+                .with_description(crate::i18n::t("music-a11y-description"))
                 .with_children(children),
         )
     }
@@ -1363,8 +1370,8 @@ impl Widget for Music {
         true
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_at(self.mouse)
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip_at(self.mouse).map(Into::into)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1380,7 +1387,9 @@ impl Widget for Music {
             || self.live_search_pending.is_some()
             || self.search.needs_frame()
             || self.search.highlight.is_some()
-            || self.now_playing.in_flight(ui::time::now())
+            // Asked while a frame lays out: the frame's motions read at its
+            // instant, never at the clock ([`ui::motion::frame_now`]).
+            || self.now_playing.in_flight(ui::motion::frame_now())
             || self.page.rows_moving()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
@@ -1404,10 +1413,10 @@ impl Widget for Music {
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
             .chain(self.toast.deadline())
-            .chain(self.search.next_placeholder_step(ui::time::now()))
+            .chain(self.search.next_placeholder_step(ui::motion::frame_now()))
             // What is on its way from the catalogue steps on at its
             // deadlines; its answer wakes the window itself.
-            .chain(self.arriving_step_at(ui::time::now()))
+            .chain(self.arriving_step_at(ui::motion::frame_now()))
             .chain(
                 self.children()
                     .into_iter()
@@ -2323,7 +2332,7 @@ impl Music {
         self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
-        self.follow_now_playing(ctx.theme, ui::time::now());
+        self.follow_now_playing(ctx.theme, ui::motion::frame_now());
 
         // Body first so chrome draws on top (and chrome hits win). The window
         // ground is the framework's; nothing here fills it.
@@ -2395,23 +2404,23 @@ impl Music {
     /// playlist shown.
     pub(super) fn view_title(&self) -> String {
         match &self.view {
-            View::Home => "Home".into(),
+            View::Home => crate::i18n::t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
-            View::Songs => "Songs".into(),
-            View::Albums => "Albums".into(),
-            View::Artists => "Artists".into(),
-            View::Playlists => "Playlists".into(),
-            View::Downloads => "Downloads".into(),
-            View::Liked => "Liked songs".into(),
-            View::Browse => "Browse".into(),
-            View::Queue => "Queue".into(),
-            View::Lyrics => "Lyrics".into(),
-            View::NowPlaying => "Now playing".into(),
-            View::Search => "Search".into(),
+            View::Songs => crate::i18n::t("music-view-songs"),
+            View::Albums => crate::i18n::t("music-view-albums"),
+            View::Artists => crate::i18n::t("music-view-artists"),
+            View::Playlists => crate::i18n::t("music-view-playlists"),
+            View::Downloads => crate::i18n::t("music-view-downloads"),
+            View::Liked => crate::i18n::t("music-view-liked"),
+            View::Browse => crate::i18n::t("music-view-browse"),
+            View::Queue => crate::i18n::t("music-view-queue"),
+            View::Lyrics => crate::i18n::t("music-view-lyrics"),
+            View::NowPlaying => crate::i18n::t("music-view-now-playing"),
+            View::Search => crate::i18n::t("music-view-search"),
             View::Kept(id) => self
                 .kept_views()
                 .get(id)
-                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
+                .map_or_else(|| CATALOG.t("music-view-search"), |kept| kept.name.clone()),
             View::Album(id) => self
                 .album_pages
                 .get(id)
@@ -2421,12 +2430,13 @@ impl Music {
                 .get(id)
                 .map(|p| p.name.clone())
                 .or_else(|| self.lib.artist(id).map(|a| a.name.clone()))
-                .unwrap_or_else(|| "Artist".to_string()),
+                .unwrap_or_else(|| crate::i18n::t("music-kind-artist")),
             View::Playlist(id) => self
-                .lib
-                .playlist(id)
-                .map(|p| p.name.clone())
-                .unwrap_or_default(),
+                .playlist_pages
+                .get(id)
+                .map(|page| page.title.clone())
+                .or_else(|| self.lib.playlist(id).map(|p| p.name.clone()))
+                .unwrap_or_else(|| crate::i18n::t("music-view-playlist")),
         }
     }
 
@@ -2449,7 +2459,7 @@ impl Music {
                     .map(|tk| tk.id.clone())
                     .collect();
                 if ids.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No songs yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-songs"));
                 }
                 let rows = self.gather_tracks(&ids);
                 let y = y + look.section;
@@ -2458,14 +2468,14 @@ impl Music {
             View::Albums => {
                 let albums = self.gather_albums(None);
                 if albums.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No albums yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-albums"));
                 }
                 self.draw_album_grid(ctx, look, body, y + look.gutter, &albums)
             }
             View::Artists => {
                 let artists = self.gather_artists();
                 if artists.is_empty() {
-                    return self.empty_library_page(ctx, body, y, "No artists yet");
+                    return self.empty_library_page(ctx, body, y, &CATALOG.t("music-no-artists"));
                 }
                 self.draw_artist_grid(ctx, look, body, y + look.gutter, &artists)
             }
@@ -2617,7 +2627,7 @@ impl Music {
                 Rect::ZERO
             });
             if button.get_rect().area() > 0.0 {
-                button.draw(
+                button.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text,
@@ -2660,7 +2670,7 @@ impl Music {
                     f64::from(size.height),
                 ),
             ));
-            button.draw(
+            button.draw_child(
                 ctx.scene,
                 ctx.transform,
                 ctx.text,
@@ -2751,11 +2761,14 @@ impl Music {
             && !self.catalogue_connected
             && super::ONLINE_CATALOGUE
         {
+            let title = crate::i18n::t(super::HOME_EMPTY_TITLE);
+            let message = crate::i18n::t(super::HOME_EMPTY_MESSAGE);
+            let action_label = crate::i18n::t(super::HOME_EMPTY_ACTION);
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
-                message: Some(super::HOME_EMPTY_MESSAGE),
-                action_label: Some(super::HOME_EMPTY_ACTION),
-                ..EmptyStateContent::new(super::HOME_EMPTY_TITLE)
+                message: Some(&message),
+                action_label: Some(&action_label),
+                ..EmptyStateContent::new(&title)
             };
             let action = Action::SpotifyEffect(crate::actions::MusicEffect::Sources);
             return self.empty_page(ctx, body, y, &content, Some(action));
@@ -2765,9 +2778,10 @@ impl Music {
         if self.lib.playlists.is_empty() && self.lib.albums.is_empty() && self.lib.tracks.is_empty()
         {
             let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
+            let message = crate::i18n::t(message);
             let content = EmptyStateContent {
                 icon: Some(Icon::Music),
-                message: Some(message),
+                message: Some(&message),
                 action_label: offers_search.then_some("Search music"),
                 ..EmptyStateContent::new("Your music starts here")
             };
@@ -3899,8 +3913,21 @@ impl Music {
     /// An honest error for a live detail page whose fetch failed (offline,
     /// geo-block, network error), with a way home: a deep link can open a
     /// page with no Back history to return to.
+    /// What a detail page shows, named in the window's language.
+    fn kind_name(kind: &str) -> String {
+        match kind {
+            "album" => CATALOG.t("music-kind-album"),
+            "artist" => CATALOG.t("music-kind-artist"),
+            "playlist" => CATALOG.t("music-kind-playlist"),
+            other => other.to_owned(),
+        }
+    }
+
     fn draw_detail_error(&mut self, ctx: &mut PaintCtx<'_>, body: Rect, y: f64, kind: &str) -> f64 {
-        let title = format!("Couldn’t load this {kind}");
+        let title = CATALOG.t_args(
+            "music-detail-load-failed",
+            &[("kind", ArgValue::Text(Self::kind_name(kind)))],
+        );
         let content = EmptyStateContent {
             icon: Some(Icon::WifiOff),
             message: Some("Check your connection and try again."),

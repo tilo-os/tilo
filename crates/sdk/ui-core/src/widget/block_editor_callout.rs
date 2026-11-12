@@ -8,6 +8,7 @@
 //! warning `Warning`, a caution `Danger`; something important has no status
 //! hue of its own and takes the neutral wash.
 
+use crate::i18n::widget_text;
 use vello::kurbo::Rect;
 
 use crate::icons::Icon;
@@ -16,6 +17,7 @@ use crate::tokens::colors::WashStrength;
 use crate::widget::{Tone, Widget};
 
 use super::{Block, BlockDrawCtx};
+use crate::widget::DrawChild;
 
 /// The five alerts GitHub-flavoured Markdown defines, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,7 +78,7 @@ impl CalloutKind {
     /// The name a person reads on the callout and in the slash menu.
     #[must_use]
     pub fn label(self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             Self::Note => "block-callout-note",
             Self::Tip => "block-callout-tip",
             Self::Important => "block-callout-important",
@@ -180,7 +182,7 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
     inked.tokens.colors.text_primary = wash.ink;
     inked.text_dim = wash.ink_dim;
     inked.tokens.colors.text_dim = wash.ink_dim;
-    b.line.draw(
+    b.line.draw_child(
         ctx.scene,
         ctx.transform,
         ctx.text_renderer,

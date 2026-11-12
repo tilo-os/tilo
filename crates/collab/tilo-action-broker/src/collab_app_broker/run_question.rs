@@ -23,7 +23,7 @@
 use crate::BrokerError;
 use std::sync::Arc;
 
-use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+use tilo_action_policy::agent_answers::answer_grant;
 use tilo_action_policy::{Answer, Grant, Subject};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
 
@@ -32,7 +32,9 @@ use super::action_host::ConnectionActionHost;
 use crate::app_actions::{
     AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
-use crate::services::{TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun};
+use crate::services::{
+    TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun, issue_answer_scope,
+};
 
 /// The tracker's verb a person answers a run's question with.
 const ANSWER: &str = "answer-confirmation";
@@ -96,7 +98,7 @@ impl AppBrokerState {
         })
     }
 
-    fn consent_prompter(&self) -> Option<Arc<dyn AppActionConsentPrompter>> {
+    pub(super) fn consent_prompter(&self) -> Option<Arc<dyn AppActionConsentPrompter>> {
         self.app_action_consent
             .read()
             .ok()
@@ -106,7 +108,7 @@ impl AppBrokerState {
     /// What `issue`'s going run, started by `person` in `workspace`, asks them,
     /// as the sheet puts it, and the grant "Allow for the issue" records
     /// where they may give it.
-    fn run_question_for(
+    pub(super) fn run_question_for(
         &self,
         workspace: &str,
         person: &str,
@@ -118,6 +120,12 @@ impl AppBrokerState {
             .ok()?
             .into_iter()
             .find(|run| run.issue == issue && run.active && run.starter == person)?;
+        // A run that keeps its own answers (an agent door connection's) takes its person's
+        // "allow always" itself, for as long as it goes; any other is granted in the workspace's
+        // record, where its person may grant.
+        let keeps_answers = self
+            .tracker_runs(workspace)
+            .is_some_and(|tracker| tracker.asks_on_host(workspace, &run));
         let question = run
             .question
             .filter(|question| question.answer == TrackerAnswer::Waiting)?;
@@ -134,11 +142,12 @@ impl AppBrokerState {
                 })
                 .flatten()
         });
-        let may_grant = self
-            .services
-            .app_action_grants
-            .as_ref()
-            .is_some_and(|grants| grants.may_grant(workspace, person));
+        let may_grant = keeps_answers
+            || self
+                .services
+                .app_action_grants
+                .as_ref()
+                .is_some_and(|grants| grants.may_grant(workspace, person));
         let grant = asked
             .as_ref()
             .filter(|action| may_grant && !action.contract.need().privileged)
@@ -463,23 +472,4 @@ pub(super) fn serve_answered(
 
 fn dropped() -> BrokerError {
     BrokerError::failed("the action host dropped the request".into())
-}
-
-/// Where "Allow for the issue" answers, given for an action `action` on a
-/// resource of `kind` in `app`: every action of its kind (reading, changes,
-/// outside effects) on that kind of resource in that app, for the issue's
-/// runs, so a run reading page after page is asked once. An action whose
-/// contract asks for confirmation is answered alone: only an answer for that
-/// very action lifts its confirmation (`agent_answers::held_to_contract`),
-/// so a wider one would leave it asking every time.
-pub(crate) fn issue_answer_scope(
-    app: &str,
-    (kind, action): (&str, &str),
-    consequential: bool,
-) -> AnswerScope {
-    if consequential {
-        AnswerScope::action(app, kind, action)
-    } else {
-        AnswerScope::kind(app, kind)
-    }
 }

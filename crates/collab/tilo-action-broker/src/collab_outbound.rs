@@ -132,6 +132,29 @@ impl PeerPublisher {
         Ok(receipt)
     }
 
+    /// Commits a document write of this device through the installed durable
+    /// owner, with the resource kind its app named for the record: the write
+    /// as the record took it and its receipt, for the caller to check
+    /// ([`tilo_peer_state::owner_commit::OwnerCommitReceipt::validate_local_document`]).
+    pub async fn commit_owner_document(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> Result<
+        (
+            tilo_peer_state::owner_commit::OwnerCommitRequest,
+            tilo_peer_state::owner_commit::OwnerCommitReceipt,
+        ),
+        String,
+    > {
+        let owner = self
+            .owner_commit
+            .as_ref()
+            .ok_or("durable owner commit unsupported")?;
+        owner.health()?;
+        owner.commit_local_document(request, record_kind).await
+    }
+
     /// A publisher with nowhere to publish. Every call is a no-op,
     /// announced once.
     pub fn disabled() -> Arc<Self> {
@@ -378,7 +401,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([1; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         )
     }

@@ -80,6 +80,8 @@ impl TabItemProps {
                 .map(crate::widget::AppKind::App),
             icon: None,
             attention: self.attention,
+            named: false,
+            app_name: None,
         }
     }
 

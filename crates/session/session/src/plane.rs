@@ -21,17 +21,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
 use tilo_action_broker::NativePeerBrokerConfig;
-use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
-use tilo_action_broker::services::TrackerRuns;
 use tilo_action_broker::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, ContentStoreServices,
-    DisplayControlServices, DriveServices, Granted, HostServices, HostStepServices,
-    PublishedResources, Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest,
-    ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices, WifiContinuityServices,
-    WorkspaceAuthority, WorkspaceAuthorityHandle, WorkspaceMemberships,
+    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
+    DriveServices, Granted, HostServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WifiContinuityServices, WorkspaceMemberships,
 };
+use tilo_actions::DoorError;
+use tilo_broker_core::services::TrackerRuns;
+use tilo_broker_core::services::{
+    ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+};
+use tilo_broker_core::steps::HostStepServices;
+use tilo_channels::ChannelKeyProvider;
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
@@ -132,7 +136,7 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
-                    let _ = reply.send(receipt(services, &resource, &action, &arguments));
+                    answer(services, &resource, &action, &arguments, reply);
                 }
             }
         }
@@ -263,7 +267,7 @@ impl PublishedResources for Link {
 /// Settings route commands them: Settings asks for a snapshot, creates,
 /// edits and calibrates a group, and follows their changes, and the speaker
 /// service answers from the fabric the loop pumps.
-struct FabricSpeakers(tilo_device_fabric::link::SharedLink);
+struct FabricSpeakers(crate::platform::fabric::SharedLink);
 
 impl SpeakerServices for FabricSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
@@ -328,13 +332,13 @@ pub struct Hosted {
     pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
-    pub agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
+    pub agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
-    pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
+    pub own_device: Option<std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>>,
     /// This device's workspaces, whose owner is the canonical copy of what
     /// the apps record in them: an app's write in a workspace the owner
     /// commits is committed there before anyone hears of it, and leaves for
@@ -359,7 +363,7 @@ pub struct Hosted {
     pub lists: Lists,
     /// The session's tools service, while it serves one: what Files' waits
     /// for its drive and app lists' changes are answered from.
-    pub tools: Option<crate::mount::tools::Handle>,
+    pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
     /// session's door runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
@@ -409,7 +413,7 @@ pub fn serve(
     socket: PathBuf,
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
@@ -473,7 +477,7 @@ pub(crate) fn owner_publisher(
     records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
     let records = records.map(|records| {
-        records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+        records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
     });
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
@@ -485,35 +489,75 @@ pub(crate) fn owner_publisher(
     })
 }
 
-/// A saved shortcut change on its way to the desk, answered once the session's
-/// loop applied it: the desk belongs to the loop, and the broker asks from its
-/// own thread.
-pub struct StoreRequest {
-    pub workspace: String,
-    /// The person the broker admitted the change for.
-    pub actor: String,
-    pub change: tilo_automation::ShortcutChange,
-    pub done: tokio::sync::oneshot::Sender<Result<(), String>>,
-}
-
-/// The workspace's shortcuts as the broker keeps and runs them: what a person
-/// saves through the action door lands on the desk the loop shows, and a run
-/// executes on `runtime`.
+/// The workspace's shortcuts as the broker keeps and runs them: a shortcut a
+/// person saves is one of its workspace's settings, and a run executes on
+/// `runtime`.
 pub struct ShortcutLibrary {
     runtime: tokio::runtime::Handle,
-    changes: tokio::sync::mpsc::UnboundedSender<StoreRequest>,
+    /// The workspaces this device's records are held in: where a saved shortcut
+    /// is written. A session that holds none saves none.
+    engine: Option<std::sync::Arc<crate::engine::Engine>>,
 }
 
 impl ShortcutLibrary {
-    /// A library whose runs execute on `runtime`, handing what a person saves
-    /// to the loop through the channel it comes with.
+    /// A library whose runs execute on `runtime`, saving into the workspaces of
+    /// `engine`.
     #[must_use]
     pub fn new(
         runtime: tokio::runtime::Handle,
-    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<StoreRequest>) {
-        let (changes, saved) = tokio::sync::mpsc::unbounded_channel();
-        (Self { runtime, changes }, saved)
+        engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    ) -> Self {
+        Self { runtime, engine }
     }
+}
+
+/// Store `request`'s change in its workspace: signed as the saver's own device
+/// ([`tilo_peer_state::workspace::sign_saved_shortcut`]), then written into the
+/// workspace's document as one of its settings. Every device of the workspace
+/// admits the write by the same rule, and reads the shortcut back from the
+/// document.
+async fn save_shortcut(
+    engine: std::sync::Arc<crate::engine::Engine>,
+    request: ShortcutLibraryRequest,
+) -> Result<(), String> {
+    let (key, device) = tilo_identity_host::broker::trusted_current_device(&request.workspace)
+        .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
+    if request.actor != hex::encode(device.user_public_key) {
+        return Err("a shortcut is saved from its saver's own device".into());
+    }
+    let change = match &request.change {
+        tilo_automation::ShortcutChange::Save(shortcut) => {
+            let mut shortcut = shortcut.as_ref().clone();
+            // A trigger this device cannot watch would be saved into a shortcut
+            // that never runs: the person is told now.
+            for trigger in &shortcut.triggers {
+                crate::automation::triggers::validate_trigger(trigger)?;
+            }
+            tilo_peer_state::workspace::sign_saved_shortcut(
+                &request.workspace,
+                &mut shortcut,
+                &device,
+                &key,
+            )?;
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut))
+        }
+        delete @ tilo_automation::ShortcutChange::Delete(_) => delete.clone(),
+    };
+    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        workspace: request.workspace,
+        operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+            invocation: uuid::Uuid::new_v4(),
+            caller: device,
+            command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
+            ),
+        },
+    };
+    engine
+        .owner()
+        .commit_workspace_membership_command(request, &key, std::time::SystemTime::now())
+        .await
+        .map(drop)
 }
 
 impl ShortcutLibraryServices for ShortcutLibrary {
@@ -522,18 +566,15 @@ impl ShortcutLibraryServices for ShortcutLibrary {
     }
 
     fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore {
-        let changes = self.changes.clone();
+        let Some(engine) = self.engine.clone() else {
+            return Box::pin(std::future::ready(Err(
+                "this session keeps no shortcuts".to_owned()
+            )));
+        };
+        let runtime = self.runtime.clone();
         Box::pin(async move {
-            let (done, applied) = tokio::sync::oneshot::channel();
-            changes
-                .send(StoreRequest {
-                    workspace: request.workspace,
-                    actor: request.actor,
-                    change: request.change,
-                    done,
-                })
-                .map_err(|_| "this session keeps no shortcuts".to_owned())?;
-            applied
+            runtime
+                .spawn(save_shortcut(engine, request))
                 .await
                 .map_err(|_| "this session stopped before it saved the shortcut".to_owned())?
         })
@@ -554,10 +595,22 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
     /// Counts the desk's publications, so a reader that only cares whether
-    /// the desk changed since it last looked asks one atomic.
-    generation: std::sync::atomic::AtomicU64,
+    /// the desk changed since it last looked asks one number, and one that
+    /// waits for a change hears it ([`Self::until`]).
+    generation: tokio::sync::watch::Sender<u64>,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
+    /// The person at this device, and the ids they went by before it had an identity: a workspace
+    /// whose governance names them by one of those is theirs, and what the broker decides in it is
+    /// as theirs.
+    names: Names,
+}
+
+/// Who the person at this device is, as the broker's decisions name them.
+#[derive(Clone, Default)]
+pub struct Names {
+    pub person: String,
+    pub earlier: Vec<String>,
 }
 
 impl DeskAuthority {
@@ -570,26 +623,67 @@ impl DeskAuthority {
         tree: tilo_desktop_model::DesktopTree,
         revocations: crate::engine::Revocations,
         journal: Option<std::path::PathBuf>,
+        names: Names,
     ) -> Self {
+        let mut tree = tree;
+        claim_earlier_owners(&mut tree, &names);
         Self {
             tree: Mutex::new(tree),
-            generation: std::sync::atomic::AtomicU64::new(0),
+            generation: tokio::sync::watch::Sender::new(0),
             revocations,
             journal,
+            names,
         }
     }
 
-    /// The desk as the loop shows it now, for the broker's next decision.
-    pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
+    /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
+    /// it holds on the announcement rather than on a clock.
+    pub fn publish(&self, mut tree: tilo_desktop_model::DesktopTree) {
+        claim_earlier_owners(&mut tree, &self.names);
         *self.tree.lock_recover() = tree;
         self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tilo_identity_host::policy_change::announce();
+    }
+
+    /// Wait until the desk, as the loop publishes it, satisfies `held`: a
+    /// change written where the loop takes it from, such as a workspace's
+    /// governance, is in force for the broker from then on.
+    pub async fn until(&self, held: impl Fn(&tilo_desktop_model::DesktopTree) -> bool) {
+        let mut published = self.generation.subscribe();
+        while !self.holds(&held) {
+            if published.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn holds(&self, held: &impl Fn(&tilo_desktop_model::DesktopTree) -> bool) -> bool {
+        held(&self.tree.lock_recover())
     }
 
     /// How many times the desk was published; equal values mean the desk
     /// did not change between the two reads.
     pub fn generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::Acquire)
+        *self.generation.borrow()
+    }
+}
+
+/// A workspace whose governance names the person by an id they went by before this device had an
+/// identity is theirs as the person they are now: the desk claims it ([`crate::Shared`]'s
+/// `own_workspaces`) and so does the copy the broker decides against, in the same moment, so their
+/// own action in it is never refused for the id their own workspace was founded under.
+fn claim_earlier_owners(tree: &mut tilo_desktop_model::DesktopTree, names: &Names) {
+    if names.earlier.is_empty() {
+        return;
+    }
+    for workspace in &mut tree.workspaces {
+        if workspace
+            .owner()
+            .is_some_and(|owner| names.earlier.iter().any(|earlier| earlier == owner))
+        {
+            workspace.set_owner(names.person.clone());
+        }
     }
 }
 
@@ -626,8 +720,8 @@ impl WorkspaceAuthority for DeskAuthority {
     /// make is refused elsewhere.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::workspace_in(&tree, workspace)?;
-        Some((self.revocations)(workspace).unwrap_or_default())
+        tilo_broker_core::services::workspace_in(&tree, workspace)?;
+        Some(self.revocations.of(workspace).unwrap_or_default())
     }
 
     /// Where the broker keeps what it admitted on this device's behalf: a
@@ -638,6 +732,21 @@ impl WorkspaceAuthority for DeskAuthority {
     /// this beside the rest of it.
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.journal.clone()
+    }
+
+    /// Every write the broker's checks read here is announced: the desk on [`Self::publish`],
+    /// the workspaces' governance by their owner, the device fleet and identity registry by
+    /// their stores, and an agent's run ending by its door.
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
+
+    /// What each app installed here is called, as this session's app lists last read it: what
+    /// the windows it serves name another app's changes by.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        crate::app_icons::app_lists()
+            .map(|lists| lists.named.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -654,12 +763,6 @@ impl WorkspaceMemberships for SessionMemberships {
     fn requires_workspace(&self, workspace: &str) -> bool {
         tilo_desktop_model::WorkspaceId::parse(workspace)
             .is_some_and(|room| self.engine.holds(room))
-    }
-
-    /// The engine keeps no checkpoints of a workspace's records: its owner
-    /// commits them, and a member's changes travel as the changes they are.
-    fn keeps_checkpoints(&self, _workspace: &str) -> bool {
-        false
     }
 
     /// An app opening in `workspace` is let author there when this device's
@@ -695,12 +798,123 @@ impl WorkspaceMemberships for SessionMemberships {
         let engine = std::sync::Arc::clone(&self.engine);
         Box::pin(async move {
             let identity = engine.identity();
-            engine.owner().commit_workspace_membership_command(
-                request,
-                &identity.device_signing_key,
-                std::time::SystemTime::now(),
-            )
+            engine
+                .owner()
+                .commit_workspace_membership_command(
+                    request,
+                    identity.signer.as_ref(),
+                    std::time::SystemTime::now(),
+                )
+                .await
         })
+    }
+}
+
+/// The grants a person gives an app for another app's action, written into
+/// the workspace's governance by this session's engine, as every other change
+/// of its people is: signed with this device's key and admitted by every
+/// device of the workspace. A grant is in force once the desk the broker
+/// decides against carries it.
+pub(crate) struct SessionGrants {
+    engine: std::sync::Arc<crate::engine::Engine>,
+    desk: std::sync::Arc<DeskAuthority>,
+}
+
+impl SessionGrants {
+    pub(crate) const fn new(
+        engine: std::sync::Arc<crate::engine::Engine>,
+        desk: std::sync::Arc<DeskAuthority>,
+    ) -> Self {
+        Self { engine, desk }
+    }
+
+    /// Write `change` into `workspace`'s governance as this device.
+    fn commit(
+        &self,
+        workspace: &str,
+        change: tilo_action_policy::Change,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        let engine = std::sync::Arc::clone(&self.engine);
+        let request = OwnerCommitRequest {
+            workspace: workspace.to_owned(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: engine.identity().device_cert.clone(),
+                command:
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                        change,
+                    },
+            },
+        };
+        Box::pin(async move {
+            let identity = engine.identity();
+            engine
+                .owner()
+                .commit_workspace_membership_command(
+                    request,
+                    identity.signer.as_ref(),
+                    std::time::SystemTime::now(),
+                )
+                .await
+        })
+    }
+
+    /// Whether the desk the broker decides against shows `grant` in
+    /// `workspace`.
+    fn shown(
+        tree: &tilo_desktop_model::DesktopTree,
+        workspace: &str,
+        grant: &tilo_action_policy::GrantId,
+    ) -> bool {
+        tilo_broker_core::services::workspace_in(tree, workspace)
+            .is_some_and(|held| held.policy.grants.iter().any(|kept| &kept.id == grant))
+    }
+}
+
+impl tilo_action_broker::services::AppActionGrants for SessionGrants {
+    /// The person at this device grants where its engine holds the
+    /// workspace's governance and the workspace lets this device administer it.
+    fn may_grant(&self, workspace: &str, person: &str) -> bool {
+        let names = &self.desk.names;
+        (names.person == person || names.earlier.iter().any(|earlier| earlier == person))
+            && tilo_desktop_model::WorkspaceId::parse(workspace)
+                .is_some_and(|id| self.engine.holds(id))
+            && self.engine.administers(workspace)
+    }
+
+    fn record(
+        &self,
+        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        grant: tilo_action_policy::Grant,
+        _answer: tilo_action_broker::app_actions::AppActionConsent,
+    ) -> tilo_action_broker::services::GrantRecording {
+        let workspace = request.workspace.clone();
+        let id = grant.id.clone();
+        let committed = self.commit(&workspace, tilo_action_policy::Change::Grant(grant));
+        let desk = std::sync::Arc::clone(&self.desk);
+        Box::pin(async move {
+            committed.await?;
+            desk.until(|tree| Self::shown(tree, &workspace, &id)).await;
+            Ok(id.as_str().to_owned())
+        })
+    }
+
+    fn revoke(&self, workspace: &str, grant: &str) {
+        let committed = self.commit(
+            workspace,
+            tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant)),
+        );
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(grant, "no runtime to take back a grant given once on");
+            return;
+        };
+        let grant = grant.to_owned();
+        runtime.spawn(async move {
+            if let Err(error) = committed.await {
+                tracing::warn!(grant, %error, "a grant given once could not be taken back");
+            }
+        });
     }
 }
 
@@ -710,7 +924,7 @@ impl WorkspaceMemberships for SessionMemberships {
 fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
@@ -737,7 +951,7 @@ fn host_services(
 fn seams(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
-    fabric: Option<tilo_device_fabric::link::SharedLink>,
+    fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
@@ -774,6 +988,7 @@ fn seams(
     // The desk decides who may administer a workspace's identity, and the
     // fabric is where pairing reaches the person's other devices.
     let desk_authority = std::sync::Arc::clone(&desk);
+    let grants_desk = std::sync::Arc::clone(&desk);
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
@@ -810,35 +1025,39 @@ fn seams(
                 std::sync::Arc::clone(engine),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
+    // The hosts of the workspaces placed away from this device: where the person's actions on
+    // those workspaces go, where their workspace list is kept, and where the devices of that
+    // record are read back from.
+    let hosting = engine.as_ref().and_then(|engine| {
+        crate::hosted_workspaces::HostedWorkspaces::service(
+            Some(engine),
+            tilo_rt::app().handle().clone(),
+        )
+    });
     Seams {
         // No approved-check runner is installed with this session: a check a
         // project's app asks for has nothing to run it.
         approved_checks: Seam::unserved(
             "no project's approved check runs here: this session installs no check service",
         ),
-        // Resources an app asks to look at are published by the app that
-        // holds them and reached through the action door's own catalogue; the
-        // session reads none of them on an app's behalf.
-        resource_views: Seam::unserved(
-            "an app reads another app's resources through the action door's catalogue, over \
-             the holding app's own route",
-        ),
-        // A record is held on the collaboration plane of the app that owns
-        // it, in everyone's copy at once; the session keeps no documents of
-        // its own to read one from.
-        committed_documents: Seam::unserved(
-            "records are read and changed on the collaboration plane each app holds, \
-             not through this session's documents",
-        ),
+        // This device's own copy of each workspace's records: an app's Open of a record the
+        // workspace holds, and an agent's task read, are answered from it, sealed writes opened
+        // with the record channel's keys.
+        committed_documents: crate::seams::document_reads(engine.as_ref()),
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: Seam::when(native_media.map(|media| {
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
         })),
-        audio_output: Seam::unserved(
-            "the sound service publishes its outputs as a resource of its own",
-        ),
+        // An app's sound plays on this device's output, rendered here: a hosted app has no socket
+        // and no mixer of its own.
+        #[cfg(target_os = "linux")]
+        audio_output: Seam::served(std::sync::Arc::new(
+            crate::audio_output::AppAudioOutput::new(),
+        )),
+        #[cfg(not(target_os = "linux"))]
+        audio_output: Seam::unserved("this host plays no app audio itself"),
         workspace_memberships: Seam::when(memberships),
         // What people ask this session's agents to do: a turn a person's
         // message in a conversation started. A run is the broker's to
@@ -855,7 +1074,7 @@ fn seams(
         // time — rather than an app or a peer asking for it.
         local_person: Seam::served(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
-                as std::sync::Arc<dyn tilo_action_broker::services::LocalPersonServices>,
+                as std::sync::Arc<dyn tilo_broker_core::services::LocalPersonServices>,
         ),
         // A record's own origin is its app's collaboration plane route, and a
         // task's change reaches it as the app's action; the session applies
@@ -900,7 +1119,7 @@ fn seams(
         // The records' content in that index, read from the records
         // themselves: a change to a workspace's record is indexed here.
         record_index_changes: Seam::when(records.map(|records| {
-            records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+            records as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
         })),
         // Content a record references is kept on this device beside the
         // workspace's records, and asked of the workspace's other devices.
@@ -964,10 +1183,15 @@ fn seams(
         // A grant for an app to take another app's action is kept in a
         // workspace's own record, which this session's engine commits; the
         // host records none of them for the door to ask.
-        app_action_grants: Seam::unserved(
-            "an app's grant for another app's actions is recorded in the workspace's own \
-             governance, which no app reaches here",
-        ),
+        // A grant the person gives an app for another app's action, on the
+        // sheet that asked them, is recorded in the workspace's own
+        // governance, which this session's engine writes.
+        app_action_grants: Seam::when(engine.clone().map(|engine| {
+            std::sync::Arc::new(SessionGrants::new(
+                engine,
+                std::sync::Arc::clone(&grants_desk),
+            )) as std::sync::Arc<dyn tilo_action_broker::services::AppActionGrants>
+        })),
         launchable_catalogue: Seam::when(launchable_catalogue),
         record_content: Seam::when(record_content.map(|content| content.route())),
         // This session's channel keys, when it holds workspaces: a route's keys
@@ -980,13 +1204,25 @@ fn seams(
         // An app's action on another of the person's own devices is carried
         // there by the collaboration plane.
         own_device: Seam::when(own_device),
-        workspace_nodes: Seam::unserved(
-            "a node's workspace is reached through the desk's own sharing, not by an app",
-        ),
+        // A node of a workspace's tree, as an app asks about it: a share, its end, or what the
+        // person may do there, decided by the workspace's own governance.
+        workspace_nodes: Seam::when(crate::workspace_nodes::WorkspaceNodes::service(
+            engine.as_ref(),
+        )),
         // The person's own records, kept in their store as well as in this
         // desktop: what an app writes of its own scope reaches their other
         // devices, and what those wrote reaches the app here.
         personal: Seam::when(personal),
+        // A workspace placed on a host has its records changed there: the
+        // person's actions on them are sent to the host, which decides and
+        // runs them, and the change reaches the windows here by sync. The
+        // person's list is kept there too, and the devices of it read back
+        // from the host that keeps it, so Settings lists the same devices on
+        // every device of theirs.
+        hosted_workspaces: Seam::when(hosting.clone().map(|hosting| {
+            std::sync::Arc::new(hosting)
+                as std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>
+        })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted
@@ -1003,6 +1239,8 @@ fn seams(
                     std::sync::Arc::new(crate::identity_admin::BrokerDoor {
                         desk: desk_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
+                        hosting,
+                        engine: engine.clone(),
                     }),
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,
@@ -1033,33 +1271,64 @@ fn encoded(value: &serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap_or_default()
 }
 
-/// What invoking one of the services' actions answered.
-fn receipt(services: &mut Services, resource: &str, action: &str, arguments: &[u8]) -> Receipt {
+/// Answer `reply` with what invoking one of the services' actions answered: at once, or when the
+/// async work it started lands.
+fn answer(
+    services: &mut Services,
+    resource: &str,
+    action: &str,
+    arguments: &[u8],
+    reply: oneshot::Sender<Receipt>,
+) {
     let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(arguments) {
         Ok(arguments) => arguments,
         Err(error) => {
-            return Receipt::Refused {
+            let _ = reply.send(Receipt::Refused {
                 code: "invalid_arguments".into(),
                 message: format!("the arguments are not a JSON object: {error}"),
-            };
+            });
+            return;
         }
     };
-    match services.invoke(resource, action, &arguments) {
-        Some(Ok(Started::Done(output))) => match serde_json::to_vec(&output) {
+    let done = match services.invoke(resource, action, &arguments) {
+        Some(Ok(Started::Done(output))) => Ok(output),
+        Some(Ok(Started::Accepted)) => {
+            let _ = reply.send(Receipt::Accepted);
+            return;
+        }
+        Some(Ok(Started::Later(later))) => {
+            later.then(move |landed| {
+                let _ = reply.send(receipt(landed.unwrap_or_else(|| {
+                    Err(DoorError::Failed("the action's work was given up".into()))
+                })));
+            });
+            return;
+        }
+        Some(Err(error)) => Err(error),
+        None => {
+            let _ = reply.send(Receipt::Refused {
+                code: "unknown_action".into(),
+                message: format!("this session publishes no `{resource}` resource"),
+            });
+            return;
+        }
+    };
+    let _ = reply.send(receipt(done));
+}
+
+/// What an action that finished answered, as the wire carries it.
+fn receipt(done: Result<tilo_actions::ActionOutput, DoorError>) -> Receipt {
+    match done {
+        Ok(output) => match serde_json::to_vec(&output) {
             Ok(output) => Receipt::Done(output),
             Err(error) => Receipt::Refused {
                 code: "failed".into(),
                 message: format!("the action's output does not encode: {error}"),
             },
         },
-        Some(Ok(Started::Accepted)) => Receipt::Accepted,
-        Some(Err(error)) => Receipt::Refused {
+        Err(error) => Receipt::Refused {
             code: error.code().to_owned(),
             message: error.to_string(),
-        },
-        None => Receipt::Refused {
-            code: "unknown_action".into(),
-            message: format!("this session publishes no `{resource}` resource"),
         },
     }
 }
@@ -1145,6 +1414,16 @@ impl Plane {
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
         self.broker.fanout.app_broker()
     }
+
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, while the broker reaches them: where a page of a hosted window
+    /// asks the host holding it about a departure it holds for the person.
+    pub(crate) fn hosted_workspaces(
+        &self,
+    ) -> Option<std::sync::Arc<dyn tilo_action_broker::services::HostedWorkspaces>> {
+        self.action_broker()
+            .and_then(|broker| broker.hosted_workspaces())
+    }
 }
 
 /// Whether the shortcut catalogue the services hand an app on this machine names every
@@ -1185,14 +1464,14 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
-    use tilo_device_fabric::speaker_group::{
+    use crate::platform::fabric::{
         AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
     };
-    use tilo_device_fabric::{
+    use crate::platform::fabric::{
         DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
         FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
     };
+    use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
 
     /// This laptop's device fabric, with the one output it publishes.
     struct Fabric {
@@ -1240,7 +1519,7 @@ mod tests {
                         }],
                         ..SpeakerFabricState::default()
                     },
-                    unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+                    unlock: crate::platform::fabric::UnlockFabricState::default(),
                 })
                 .expect("the snapshot is valid");
             Self { local, converged }
@@ -1258,14 +1537,6 @@ mod tests {
 
         fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
             Some((self.local.clone(), "This laptop".into()))
-        }
-
-        fn send_personal_fabric_action(
-            &self,
-            _: &DeviceId,
-            _: PersonalFabricAction,
-        ) -> Result<[u8; 16], String> {
-            Err("no transport in a test".into())
         }
 
         fn try_send_personal_fabric_action(
@@ -1288,7 +1559,7 @@ mod tests {
         ))
     }
 
-    fn services(fabric: Option<tilo_device_fabric::link::SharedLink>) -> HostServices {
+    fn services(fabric: Option<crate::platform::fabric::SharedLink>) -> HostServices {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
         host_services(
@@ -1318,6 +1589,7 @@ mod tests {
                 tilo_desktop_model::DesktopTree::default(),
                 crate::engine::revocations_of(None),
                 None,
+                Names::default(),
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
@@ -1357,9 +1629,7 @@ mod tests {
                 .build()
                 .expect("a runtime for shortcut runs")
         });
-        let (library, saved) = ShortcutLibrary::new(runtime.handle().clone());
-        drop(saved);
-        std::sync::Arc::new(library)
+        std::sync::Arc::new(ShortcutLibrary::new(runtime.handle().clone(), None))
     }
 
     /// An app publishes what it holds through the broker, and the index the
@@ -1574,6 +1844,56 @@ mod tests {
         }
     }
 
+    /// A session that holds workspaces reads an app's record outside the app, from this device's
+    /// own copy; one that holds none reads only on the app's own channel.
+    #[test]
+    fn a_session_that_holds_workspaces_reads_a_record_outside_its_app() {
+        let wake: Wake = std::sync::Arc::new(|| ());
+        let services = |engine| {
+            let mut hosted = hosted(None);
+            hosted.engine = engine;
+            host_services(
+                Link::new(std::sync::Arc::clone(&wake)),
+                std::sync::Arc::new(Launches::default()),
+                None,
+                hosted,
+                None,
+                None,
+            )
+            .committed_documents
+            .is_some()
+        };
+        assert!(
+            !services(None),
+            "a session that holds no workspace reads a record only on the app's own channel"
+        );
+        let state = tempfile::tempdir().expect("a state directory");
+        let engine = std::sync::Arc::new(
+            crate::engine::Engine::open(
+                held_identity(),
+                Some(state.path()),
+                std::iter::empty(),
+                crate::platform::custody::of_this_desk(),
+            )
+            .expect("this device's engine opens"),
+        );
+        assert!(
+            services(Some(engine)),
+            "this device's copy of the workspace's records is what an app's Open reads"
+        );
+    }
+
+    /// A device of a person, certified for their root, that holds workspaces.
+    fn held_identity() -> tilo_identity_host::custody::HostIdentity {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
+        let cert = tilo_peer_state::owner::testing::member_certificate(
+            &ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]),
+            &key,
+            "Laptop",
+        );
+        tilo_identity_host::custody::HostIdentity::kept(cert, key)
+    }
+
     /// Every seam the broker offers is decided here: served, served where
     /// this run has what it carries, or not served with the reason it was
     /// left out. Every seam a shipped app's sources call is served, or named
@@ -1743,7 +2063,7 @@ mod tests {
     /// that declared nothing.
     #[test]
     fn an_apps_declared_access_is_what_this_device_read() {
-        use tilo_action_broker::app_actions::AppActionAccess;
+        use tilo_broker_core::access::AppActionAccess;
 
         let mut lists = crate::lists::AppLists::default();
         lists.declared.insert(

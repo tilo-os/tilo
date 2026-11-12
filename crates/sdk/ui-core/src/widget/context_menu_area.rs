@@ -18,6 +18,7 @@ use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// One row of a context menu: what it shows, and what choosing it does.
 pub struct MenuEntry {
@@ -340,6 +341,23 @@ enum Opening {
     Item,
 }
 
+/// The children an area stands over its content, in the order a route reaches them: the open
+/// menu, then the emoji picker an emoji bar opened over it. Written once — the read-only list,
+/// the walk and the list handed out to change all expand it — so a child a route reaches by its
+/// index is the child the walk found, however the list is asked for.
+macro_rules! over_content {
+    ($area:ident $(, $mut:tt)?) => {{
+        let mut over: Vec<&$($mut)? (dyn Widget + '_)> = Vec::new();
+        if $area.menu.is_open() {
+            over.push(&$($mut)? $area.menu);
+        }
+        if let Some((picker, _)) = &$($mut)? $area.picker {
+            over.push(picker);
+        }
+        over
+    }};
+}
+
 #[crate::component::not_a_component(part, "what the `ui.ContextMenu` attachment wraps its view in")]
 pub struct ContextMenuArea {
     content: Element,
@@ -355,8 +373,6 @@ pub struct ContextMenuArea {
     /// ran, so what the command asked of it (a rename beginning) happens
     /// at once rather than at the pointer's next move.
     moved: Option<WindowEvent>,
-    /// The entry pressed with the pointer, run when the button comes up.
-    pending: Option<usize>,
     viewport: Option<Rect>,
     /// The open menu's emoji bars' ways to the emoji picker.
     more: Vec<(Rc<std::cell::Cell<bool>>, crate::component::Event)>,
@@ -393,7 +409,6 @@ impl ContextMenuArea {
             presses: Vec::new(),
             cursor: Point::ZERO,
             moved: None,
-            pending: None,
             viewport: None,
             more: Vec::new(),
             picker: None,
@@ -450,6 +465,9 @@ impl ContextMenuArea {
                 self.presses.push(entry.press);
                 self.more.extend(entry.more);
             }
+            // The entries' commands are the area's: it keeps them beside the menu so a choice
+            // runs whether the menu still stands, and a row a tool names is reported to it.
+            menu.rows_are_the_owners();
         }
         // A right-click inside what is selected in the content is about the
         // selection, so a question typed into the menu is; elsewhere the app
@@ -668,12 +686,17 @@ impl super::Decorator for ContextMenuArea {
         self.content.as_mut()
     }
 
-    // The area answers operations itself, so one addressed to a row of its
-    // open menu reaches the menu even when the content answers its own.
-    // Every other capability is the content's.
+    // The area answers operations and controls itself, so one addressed to a
+    // row of its open menu reaches the menu even when the content answers its
+    // own, and a row chosen from it hands over its action after the menu
+    // closed. Every other capability is the content's.
     fn provide<'a>(&'a self, request: &mut super::capability::Request<'a, '_>) {
         if request.wants::<dyn super::ResourceOperations>() {
             request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
             return;
         }
         self.content.provide(request);
@@ -682,6 +705,10 @@ impl super::Decorator for ContextMenuArea {
     fn provide_mut<'a>(&'a mut self, request: &mut super::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn super::ResourceOperations>() {
             request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
             return;
         }
         self.content.provide_mut(request);
@@ -706,26 +733,6 @@ impl super::Decorator for ContextMenuArea {
             *ctx.handled = true;
             return;
         }
-        // A row pressed with the pointer runs when the button comes up,
-        // and that release is the menu's: what the command started (a
-        // rename's field) never sees half a click.
-        if let Some(index) = self.pending {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    ..
-                }
-            ) {
-                self.pending = None;
-                self.run(index, ctx);
-                *ctx.handled = true;
-                return;
-            }
-            if matches!(event, WindowEvent::MouseInput { .. }) {
-                self.pending = None;
-            }
-        }
         if !self.menu.is_open() && self.menu.send_to_alone_open() {
             self.menu.handle_event(event, ctx);
             if *ctx.handled {
@@ -736,19 +743,11 @@ impl super::Decorator for ContextMenuArea {
             // The menu itself tells the host's replay of the still opening
             // pointer from a real move, so the keyboard keeps its row.
             self.menu.handle_event(event, ctx);
+            // The menu reports a row as chosen when the press that took it comes up (or the
+            // key that chose it lands): it stays open, and its own press, until then.
             if let Some(index) = self.menu.take_selection() {
                 self.menu.close();
-                if matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        ..
-                    }
-                ) {
-                    self.pending = Some(index);
-                } else {
-                    self.run(index, ctx);
-                }
+                self.run(index, ctx);
                 *ctx.handled = true;
             }
             if self.menu.is_open() || *ctx.handled {
@@ -806,10 +805,7 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_showing()
-            || self.pending.is_some()
-            || self.picker.is_some()
-            || self.content.wants_pointer_capture()
+        self.menu.is_showing() || self.picker.is_some() || self.content.wants_pointer_capture()
     }
 
     // The menu is a child only while it is open, so it hears the host's
@@ -897,27 +893,22 @@ impl super::Decorator for ContextMenuArea {
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {
-            picker.draw(scene, transform, text_renderer, theme, presence);
+            picker.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
     // An open menu is part of the tree, so assistive technology and
-    // inspection see it.
+    // inspection see it, and so is the picker an emoji bar opened over it.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children = self.content.children();
-        if self.menu.is_open() {
-            children.push(&self.menu);
-        }
-        if let Some((picker, _)) = &self.picker {
-            children.push(picker);
-        }
+        children.extend(over_content!(self));
         children
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         self.content.for_each_child(visitor);
-        if self.menu.is_open() {
-            visitor(&self.menu);
+        for child in over_content!(self) {
+            visitor(child);
         }
     }
 
@@ -928,12 +919,16 @@ impl super::Decorator for ContextMenuArea {
         true
     }
 
+    /// The open menu is placed by the area itself, over the content, where the window's layout
+    /// gives it no node: an assistive technology and an agent reach its rows through the
+    /// content's node, as a person reaches them by pointer.
+    fn lays_out_child(&self, child_index: usize) -> bool {
+        self.menu.is_open() && child_index == self.content.children().len()
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let open = self.menu.is_open();
         let mut children = self.content.children_mut();
-        if open {
-            children.push(&mut self.menu);
-        }
+        children.extend(over_content!(self, mut));
         children
     }
 }
@@ -1095,7 +1090,84 @@ mod tests {
         assert!(!area.is_open());
     }
 
+    /// A row an assistive technology or an agent names is the entry the area runs, not a command
+    /// the menu runs and nobody hears: the menu declines it, the press the caller makes where the
+    /// row is drawn takes it, and the entry runs once.
+    #[test]
+    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut area, chosen, _) = opening_menu();
+        let mut doc = automerge::AutoCommit::new();
+        let target = crate::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
+        assert!(
+            !crate::a11y_child_route::perform(
+                &mut area,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the menu runs none of the owner's rows"
+        );
+        assert_eq!(chosen.get(), 0, "nothing ran while the menu stood");
+        assert!(area.is_open(), "the row waits for the press it asks for");
+        let Some(row) = area.menu().item_rect(1) else {
+            panic!("the second action must have a hit target");
+        };
+        crate::testing::dispatch(&mut area, &moved(row.center()));
+        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_press());
+        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_release());
+        assert_eq!(chosen.get(), 2, "the press runs the entry it stands on");
+        assert!(!area.is_open(), "the menu closed on it");
+    }
+
     type Chosen = Rc<std::cell::RefCell<Vec<&'static str>>>;
+
+    /// The picker an emoji bar opened stands over the menu, so it is one of the children a
+    /// route reaches by index — in the list the walk reads and in the one an action is
+    /// dispatched through, at the same place.
+    #[test]
+    fn the_emoji_picker_over_the_menu_is_a_child_a_route_reaches() {
+        let (mut area, _, _) = opening_menu();
+        let mut picker = crate::widget::EmojiPicker::framed();
+        picker.open_at(None, Rect::new(0.0, 0.0, 400.0, 400.0), &Theme::dark());
+        let place = picker.rect();
+        area.picker = Some((picker, crate::component::Event::None));
+        let picker_at = area
+            .picker
+            .as_ref()
+            .map(|(picker, _)| std::ptr::from_ref(picker).cast::<()>());
+
+        let listed: Vec<*const ()> = area
+            .children()
+            .into_iter()
+            .map(|child| std::ptr::from_ref(child).cast::<()>())
+            .collect();
+        let mut walked: Vec<*const ()> = Vec::new();
+        area.for_each_child(&mut |child| walked.push(std::ptr::from_ref(child).cast::<()>()));
+        let handed: Vec<*const ()> = area
+            .children_mut()
+            .into_iter()
+            .map(|child| std::ptr::from_ref(&*child).cast::<()>())
+            .collect();
+        assert_eq!(
+            listed, walked,
+            "the walk visits the children the list names"
+        );
+        assert_eq!(
+            listed, handed,
+            "children_mut hands out the children the walk found, so an action a route addresses \
+             reaches the child it was walked to"
+        );
+        assert_eq!(listed.last().copied(), picker_at, "the picker stands last");
+        let index = listed.len() - 1;
+        assert_eq!(
+            crate::a11y_child_route::rect(&area, &crate::a11y_child_route::encode(&[index], None)),
+            Some(place),
+            "the index names the picker, where it stands over the menu"
+        );
+    }
 
     /// Content that a right-click changes, as a canvas picking the mark
     /// under it does: the next frame rebuilds the tree.

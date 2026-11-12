@@ -16,6 +16,7 @@ pub use drm::tablet::TabletConfig;
 pub use drm::{DisplayConfig, DrmBackend};
 pub use headless::HeadlessBackend;
 pub use nested::{HostWindow, NestedBackend, NestedConfig};
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// What a backend does for the compositor.
 pub trait Backend {
@@ -161,8 +162,8 @@ pub trait Backend {
         &mut self,
         _state: &mut State,
         _region: (usize, usize),
-        _request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        _request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         Ok(None)
     }
 

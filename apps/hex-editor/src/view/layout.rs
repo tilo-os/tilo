@@ -30,8 +30,9 @@ const GAP_SCALE: (f64, f64) = (0.5, 2.0);
 /// Bytes between the extra group gaps of the hex columns.
 pub(super) const GROUP: usize = 8;
 
-/// Labels of the endianness strip, in segment order (see [`Endian`]).
-pub(super) const ENDIAN_LABELS: [&str; 2] = ["Little endian", "Big endian"];
+/// Catalogue messages naming the endianness strip, in segment order (see
+/// [`Endian`]).
+pub(super) const ENDIAN_MESSAGES: [&str; 2] = ["hex-editor-little-endian", "hex-editor-big-endian"];
 
 /// Segment index of an endianness in the strip.
 pub(super) fn endian_index(endian: Endian) -> usize {

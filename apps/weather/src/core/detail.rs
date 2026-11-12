@@ -50,13 +50,13 @@ impl Core {
     /// that 24 readings exist behind a picture it cannot enter.
     pub fn detail_accessibility(&self, rect: Rect) -> AccessNode {
         let node = AccessNode::new(Role::Group)
-            .with_name("Forecast")
+            .with_name(crate::i18n::t("weather-forecast"))
             .with_bounds(rect);
         let Some(location) = self.model.selected_location() else {
             return node.with_description(if self.model.locations.is_empty() {
-                "No places yet. Add a place to see its forecast."
+                crate::i18n::t("weather-no-places")
             } else {
-                "Choose a saved place to see its forecast."
+                crate::i18n::t("weather-choose-place")
             });
         };
         let snapshot = self.model.snapshot_for(location.id);
@@ -64,7 +64,7 @@ impl Core {
             freshness::updated(snapshot.fetched_at, ui::clock::local_now().naive_local())
         });
         let detail = snapshot.map_or_else(
-            || "Current conditions are loading.".to_string(),
+            || crate::i18n::t("weather-loading"),
             |snapshot| {
                 let temp = snapshot
                     .temp_in(snapshot.current.temperature, self.units)
@@ -93,8 +93,8 @@ impl Core {
         if let Some(hit) = self.retry_rect {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(RETRY)
-                    .with_description("Fetch the forecast again")
+                    .with_name(crate::i18n::t(RETRY))
+                    .with_description(crate::i18n::t("weather-refresh"))
                     .with_hashed_key(RETRY_KEY)
                     .with_bounds(hit),
             );
@@ -114,14 +114,14 @@ impl Core {
                 );
             }
             children.push(group(
-                "Current conditions",
+                &crate::i18n::t("weather-now-conditions"),
                 reading_tiles(snapshot, self.units, true),
             ));
             children.push(hours_group(snapshot, self.units));
             children.push(days_group(snapshot, self.units));
         }
         if let Some(aq) = self.model.selected_air_quality().filter(|aq| aq.has_any()) {
-            children.push(group("Air quality", air_tiles(aq)));
+            children.push(group(&crate::i18n::t("weather-air-quality"), air_tiles(aq)));
         }
         node.with_name(format!("{} forecast", location.name))
             .with_description(detail)
@@ -224,7 +224,7 @@ impl Core {
                 return;
             }
             ctx.text_role(
-                "Loading the forecast",
+                &t("weather-loading-forecast"),
                 TextRole::Body,
                 ctx.theme.text_dim,
                 Point::new(x, y),
@@ -585,8 +585,8 @@ struct Notice {
     height: f64,
 }
 
-/// The label of the action that fetches the forecast again.
-const RETRY: &str = "Retry";
+/// The catalogue message naming the action that fetches the forecast again.
+const RETRY: &str = "weather-retry";
 
 /// The Retry action's key among the forecast's accessible children.
 pub const RETRY_KEY: &str = "weather.retry";
@@ -599,26 +599,28 @@ pub const DAYS_KEY: &str = "weather.days";
 
 impl Notice {
     fn new(ctx: &mut PaintCtx<'_>, kind: ForecastNotice, width: f64) -> Self {
-        let height = Banner::height(&Self::content_for(kind), width, ctx.text, ctx.theme);
+        let retry = crate::i18n::t(RETRY);
+        let height = Banner::height(&Self::content_for(kind, &retry), width, ctx.text, ctx.theme);
         Self { kind, height }
     }
 
-    fn content_for(kind: ForecastNotice) -> BannerContent<'static> {
+    fn content_for(kind: ForecastNotice, retry: &str) -> BannerContent<'_> {
         match kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
-                    .with_message(Some("Check your connection and try again."))
-                    .action(RETRY)
+                    .with_message(Some(crate::i18n::t("weather-notice-retry-message")))
+                    .action(retry)
             }
             ForecastNotice::Offline => BannerContent::new(BannerKind::Warning, "You're offline")
-                .with_message(Some("This is the last forecast saved on this device.")),
+                .with_message(Some(crate::i18n::t("weather-notice-offline-message"))),
         }
     }
 
     /// Paint the banner into `r`. Returns where its Retry action takes a
     /// pointer, when it offers one.
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, pointer: Point) -> Option<Rect> {
-        Banner::paint(ctx, r, &Self::content_for(self.kind), pointer).action
+        let retry = crate::i18n::t(RETRY);
+        Banner::paint(ctx, r, &Self::content_for(self.kind, &retry), pointer).action
     }
 }
 
@@ -1474,7 +1476,7 @@ impl Air {
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, lead: f64) {
-        section_heading(ctx, "Air quality", r.origin());
+        section_heading(ctx, &t("weather-air-quality"), r.origin());
         match &self.tiles {
             Some(tiles) => tiles.paint(ctx, r),
             None => ctx.text_role(

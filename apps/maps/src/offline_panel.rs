@@ -28,6 +28,7 @@ use crate::geo;
 use crate::model::DownloadedRegion;
 use crate::net::RegionHit;
 use crate::tiles::{DownloadProgress, GeoBounds, TileLayer};
+use ui::widget::DrawChild;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 
@@ -737,8 +738,12 @@ impl OfflinePanel {
                     transform,
                     text,
                     &ink,
-                    &ButtonFace::icon_only(trash, Icon::Trash2, "Remove downloaded area")
-                        .hovered(trash.contains(frame.pointer)),
+                    &ButtonFace::icon_only(
+                        trash,
+                        Icon::Trash2,
+                        &crate::CATALOG.t("maps-offline-delete-area"),
+                    )
+                    .hovered(trash.contains(frame.pointer)),
                 );
                 self.targets
                     .push((trash, OfflineAction::DeleteRegion(region.id.clone())));
@@ -800,7 +805,7 @@ impl OfflinePanel {
         self.field_rect = Some(field);
         self.input.apply_layout_external(field);
         self.input
-            .draw(scene, transform, text, ink, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
         y += control_h + s2;
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         let hint = match &self.pick {
@@ -833,7 +838,7 @@ impl OfflinePanel {
         self.levels_rect = Some(levels);
         self.levels.apply_layout_external(levels);
         self.levels
-            .draw(scene, transform, text, ink, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
         y += control_h + s2;
 
         // The estimate, or the running download.
@@ -856,7 +861,7 @@ impl OfflinePanel {
             self.progress_bar
                 .apply_layout_external(Rect::new(left, y, right, y + s2));
             self.progress_bar
-                .draw(scene, transform, text, ink, &PresenceCtx::empty());
+                .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
             y += s2;
         }
         y

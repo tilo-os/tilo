@@ -41,10 +41,14 @@ for package in openssl native-tls aws-lc-rs aws-lc-sys; do
   esac
 done
 
+# The hosted guest is the tenant's own Linux, not Tilo's OS: its compilers come
+# with OpenSSL's headers (Fedora's openssl-devel, Debian's libssl-dev before)
+# so the crates and packages a tenant builds find them.
 manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
+  | grep -Ev '^.*/os/Containerfile\.hosted-guest:[0-9]+:[[:space:]]+openssl-devel \\$' \
   | grep -Ev '^.*/os/Containerfile:[0-9]+:RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \\$' \
   | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
@@ -302,9 +306,10 @@ done
 
 relay_container="$repo/os/containers/tilo-relay/Containerfile"
 relay_entrypoint="$repo/os/containers/tilo-relay/tilo-home-peer"
+relay_binaries="$repo/tools/ci/publish/server-binaries.sh"
 if grep -Fq 'openssl-libs coreutils dnf5' "$relay_container" \
   && grep -Fq -- "-name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl" "$relay_container" \
-  && grep -Fq '/build/os/scripts/verify-elf-hardening.sh /out' "$relay_container" \
+  && grep -Fq 'bash os/scripts/verify-elf-hardening.sh "$out"' "$relay_binaries" \
   && grep -Fq '#!/usr/bin/busybox sh' "$relay_entrypoint"; then
   ok 'standalone relay verifies its ELFs, strips OpenSSL/package-manager, and uses static BusyBox'
 else

@@ -76,6 +76,9 @@ const CARD_TRANSPORT_GAP: f64 = 12.0;
 const CARD_ROW_GAP: f64 = 10.0;
 /// A header control: the collapse and the close, square.
 const CARD_HEADER_CONTROL: f64 = 24.0;
+/// How far the field round a caret reaches above and below it: the box a person types in stands
+/// this much proud of the line they type on, and no card covers any of it.
+const FIELD_REACH: f64 = 16.0;
 
 /// Which corner of the work area the cards dock in. It is the person's choice
 /// on this device, never shared.
@@ -115,6 +118,9 @@ pub struct Placement {
     pub banners: Option<Rect>,
     /// The band the hardware readout stands in, while it is up.
     pub readout: Option<Rect>,
+    /// The caret of the field the person types into, when it stands outside every card: the
+    /// cards keep clear of the line it is on.
+    pub caret: Option<Rect>,
 }
 
 /// One activity the layer holds, and where the person left it when they
@@ -569,14 +575,17 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     {
         top = top.max(banners.y1 + CARD_GAP);
     }
-    // The readout is momentary feedback: the cards step around its band.
-    if let Some(readout) = placement.readout
-        && overlaps_lane(&lane, readout)
-    {
-        if readout.center().y > work.center().y {
-            bottom = bottom.min(readout.y0 - CARD_GAP);
+    // The readout is momentary feedback, and the field the person types in is what they look at:
+    // the cards step around both, above a band in the lower half and below one in the upper.
+    let field = placement.caret.map(|caret| caret.inflate(0.0, FIELD_REACH));
+    for band in [placement.readout, field].into_iter().flatten() {
+        if !overlaps_lane(&lane, band) {
+            continue;
+        }
+        if band.center().y > work.center().y {
+            bottom = bottom.min(band.y0 - CARD_GAP);
         } else {
-            top = top.max(readout.y1 + CARD_GAP);
+            top = top.max(band.y1 + CARD_GAP);
         }
     }
     Column { x, top, bottom }
@@ -594,10 +603,19 @@ fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
     let width = (work.width() - 2.0 * EDGE_INSET).max(0.0);
     let height = card_extent(work, card).height;
     let below_bar = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
-    let top = placement
-        .banners
-        .filter(|banners| banners.y1 + CARD_GAP > below_bar && banners.y0 < below_bar + height)
-        .map_or(below_bar, |banners| banners.y1 + CARD_GAP);
+    // It drops below a banner, and below the field the person types in when that stands where
+    // it would land.
+    let field = placement.caret.map(|caret| caret.inflate(0.0, FIELD_REACH));
+    let top = [placement.banners, field]
+        .into_iter()
+        .flatten()
+        .fold(below_bar, |top, band| {
+            if band.y1 + CARD_GAP > top && band.y0 < top + height {
+                band.y1 + CARD_GAP
+            } else {
+                top
+            }
+        });
     // A card taller than what is left starts from the top and goes no lower
     // than the work area's bottom inset.
     let y = clamp_axis(top, height, below_bar, work.y1 - EDGE_INSET, height);

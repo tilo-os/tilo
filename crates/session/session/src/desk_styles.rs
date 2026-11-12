@@ -12,42 +12,78 @@
 //! the desk's `styles` (`session.desk_style`), which the person's switch and the Desk page of
 //! Settings list.
 
+use std::collections::BTreeSet;
+
+use tilo_session_core::shell::DeskStyleReading;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::runtime::meta::{Meta, Ty};
 
 /// The origin of the arrangement's type: a view of a type holding it is a desk style.
 const ARRANGEMENT_ORIGIN: &str = "session.arrangement";
 
-/// A cheap reading of the store that moves when a package is installed or taken away: the
-/// registry file's length and modification time. A store that reads the same is not read again,
-/// so a frame with nothing installed costs one `stat`.
+/// What the person's package store's registry says now.
+///
+/// Read on every frame, so this is the cheap reading that decides whether the store has to be
+/// read again: the registry file's length and modification time move when a package is installed
+/// or taken away, and a store that reads the same is not read again — a frame with nothing
+/// installed costs one `stat`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Registry {
+    /// The registry as it stands.
+    Reads(String),
+    /// The store holds no registry file yet: nothing was ever installed from it. That is how
+    /// every device starts, and a store that holds nothing is not a failure to report.
+    Absent,
+    /// The registry is there and does not read: why, for the one line the log says of it.
+    Unreadable(String),
+}
+
+/// [`Registry`] as the person's store stands now.
 #[must_use]
-pub fn fingerprint(catalog: &package_store::Catalog) -> String {
-    let path = catalog.user().registry();
-    match std::fs::metadata(&path) {
+pub fn registry(catalog: &package_store::Catalog) -> Registry {
+    match std::fs::metadata(catalog.user().registry()) {
         Ok(meta) => {
             let modified = meta
                 .modified()
                 .ok()
                 .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |since| since.as_nanos());
-            format!("{}:{modified}", meta.len())
+            Registry::Reads(format!("{}:{modified}", meta.len()))
         }
-        // A store with no registry file yet holds no packages: the empty fingerprint makes the
-        // next frame read it again rather than cache an empty list.
-        Err(error) => {
-            tracing::warn!(%error, "the app store's registry does not read; its styles wait");
-            String::new()
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Registry::Absent,
+        Err(error) => Registry::Unreadable(error.to_string()),
+    }
+}
+
+/// What the log has to say about the store now, given what it said last: `None` while it says the
+/// same thing. The store is read on every frame, so the same failure is news only when it starts,
+/// and the frame that finds the store reading again is the one that says so.
+#[must_use]
+pub fn news(former: Option<&Registry>, now: &Registry) -> Option<News> {
+    if former == Some(now) {
+        return None;
+    }
+    match now {
+        Registry::Unreadable(why) => Some(News::Unreadable(why.clone())),
+        Registry::Reads(_) | Registry::Absent => {
+            matches!(former, Some(Registry::Unreadable(_))).then_some(News::ReadsAgain)
         }
     }
+}
+
+/// What changed about the store since the last frame, as the log says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum News {
+    /// The registry does not read any more, and why.
+    Unreadable(String),
+    /// The registry reads again after a frame that found it would not.
+    ReadsAgain,
 }
 
 /// The styles the shell's own package offers — the four that ship — from the packages the shell
 /// runs, whether they came from the store or this build's fallback copy (`shell.md` §6). The
 /// switch always offers them, so a device with no store still shows a desk.
-pub fn of_shell(
-    packages: &[tilolang_tilo::tilolang::Compiled],
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyleReading> {
     let metas: Vec<(String, Meta)> = packages
         .iter()
         .map(|package| (package.meta.app.clone(), package.meta.clone()))
@@ -64,9 +100,7 @@ pub fn of_shell(
 /// reads is one whose views are declared, and the shell's runtime finds them by the type they
 /// take. `false` for one whose payload does not read, so the switch can say so without the
 /// style drawing anything.
-pub fn installed(
-    catalog: &package_store::Catalog,
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyleReading> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
@@ -109,7 +143,7 @@ pub fn installed(
 pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
     // The shell's own package is what the part runs, never one it loads beside itself: the
     // store holds it, and sending it here would load a second copy.
-    if app == tilo_surface_host::shell_part::SHELL_APP {
+    if app == tilo_session_core::shell::SHELL_APP {
         return None;
     }
     let catalog = package_store::Catalog::from_env().ok()?;
@@ -122,8 +156,8 @@ pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
 
 /// One app whose module did not read: a style the switch says it cannot load, named by the
 /// package, so a person who installed it sees why rather than seeing nothing.
-fn unreadable(package: &str) -> tilo_surface_host::shell_part::DeskStyleReading {
-    tilo_surface_host::shell_part::DeskStyleReading {
+fn unreadable(package: &str) -> DeskStyleReading {
+    DeskStyleReading {
         style: format!("{package}:"),
         package: package.to_owned(),
         name: String::new(),
@@ -138,11 +172,7 @@ fn unreadable(package: &str) -> tilo_surface_host::shell_part::DeskStyleReading 
 /// declared once, by the package that owns it (`so.tilo.shell`); another package's style names
 /// it as `shell.Arrangement`, so `modules` is read to know which names hold the arrangement,
 /// never a list in code (`shell.md` §6).
-fn styles_of(
-    package: &str,
-    meta: &Meta,
-    modules: &[(String, Meta)],
-) -> Vec<tilo_surface_host::shell_part::DeskStyleReading> {
+fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<DeskStyleReading> {
     // The arrangement type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
     // app and name, whether the style writes `Arrangement` (the declaring package) or
@@ -164,14 +194,13 @@ fn styles_of(
     // The arrangement type's default view is the screen layer the shell draws a style *through*
     // (`desk_view`): offering it as a style would have it draw itself. Its `show` picks the
     // style, so it is the dispatch, never one of the choices.
-    let defaults: std::collections::BTreeSet<&str> = meta
+    let defaults: BTreeSet<&str> = meta
         .types
         .iter()
         .filter(|t| t.origin.as_deref() == Some(ARRANGEMENT_ORIGIN))
         .filter_map(|t| meta.default_view(&t.id))
         .collect();
-    let rows: std::collections::BTreeSet<&str> =
-        meta.row_views.iter().map(|r| r.view.as_str()).collect();
+    let rows: BTreeSet<&str> = meta.row_views.iter().map(|r| r.view.as_str()).collect();
     meta.views
         .iter()
         // A row draws one item, not the arrangement whole; a presented view is a hidden view
@@ -193,7 +222,7 @@ fn styles_of(
                         .any(|(app, name)| app == &key.app && name == &key.name)
             ))
         })
-        .map(|v| tilo_surface_host::shell_part::DeskStyleReading {
+        .map(|v| DeskStyleReading {
             style: format!("{package}:{}", v.name),
             package: package.to_owned(),
             name: v.name.clone(),
@@ -242,6 +271,38 @@ mod tests {
             "anchors": [],
             "reaches": []
         })
+    }
+
+    #[test]
+    fn a_store_that_did_not_change_says_nothing_and_a_change_is_said_each_way() {
+        let absent = Registry::Absent;
+        let reads = Registry::Reads("12:34".to_owned());
+        let broken = Registry::Unreadable("permission denied".to_owned());
+        // A frame that finds the store as the frame before it did says nothing: the store is read
+        // on every frame, and a line repeated that often is not news.
+        assert_eq!(
+            news(None, &absent),
+            None,
+            "nothing installed is not a failure"
+        );
+        assert_eq!(news(Some(&absent), &absent), None);
+        assert_eq!(news(Some(&reads), &reads), None);
+        assert_eq!(news(Some(&broken), &broken), None);
+        // The frame that finds the store broken says so, and how; the one that finds it reading
+        // again says that.
+        assert_eq!(
+            news(Some(&absent), &broken),
+            Some(News::Unreadable("permission denied".to_owned()))
+        );
+        assert_eq!(
+            news(Some(&broken), &absent),
+            Some(News::ReadsAgain),
+            "a store whose registry was taken away reads again"
+        );
+        assert_eq!(news(Some(&broken), &reads), Some(News::ReadsAgain));
+        // A store that moved while it was readable is no news: its styles are read again, and
+        // nothing about reading it changed.
+        assert_eq!(news(Some(&reads), &absent), None);
     }
 
     #[test]

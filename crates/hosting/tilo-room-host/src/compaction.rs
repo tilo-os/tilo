@@ -54,7 +54,14 @@ use tilo_lock::MutexRecover as _;
 /// Tail size past which a channel is compacted: this many entries, or
 /// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a
 /// large document is not reloaded for every few changes.
-pub const COMPACT_TAIL_ENTRIES: usize = 256;
+///
+/// A device that opens the record is sent the snapshot and the tail, and takes
+/// in each write of the tail on its own: admitting it, opening it when sealed,
+/// applying its changes. A chat a newcomer opens (a few hundred posts and
+/// everyone's introduction, each a write) cost a page seconds of that, against
+/// a fraction of a second for one snapshot; folding again after a few dozen
+/// writes costs the host one load and save of the record each time.
+pub const COMPACT_TAIL_ENTRIES: usize = 32;
 /// See [`COMPACT_TAIL_ENTRIES`].
 pub const COMPACT_TAIL_BYTES: usize = 1024 * 1024;
 /// Largest channel (saved bytes) the host folds itself. A loaded document
@@ -63,7 +70,11 @@ pub const MAX_COMPACTED_BYTES: usize = 16 * 1024 * 1024;
 /// A burst of edits is compacted once it ends, not reloaded during it.
 pub const QUIET: Duration = Duration::from_secs(2);
 /// Growth since the last look that makes a channel worth looking at.
-const CHECK_ENTRIES: usize = 64;
+const CHECK_ENTRIES: usize = COMPACT_TAIL_ENTRIES;
+/// Growth within one burst of writes past which a channel is compacted
+/// before the burst ends: a burst this long would otherwise keep growing a
+/// tail every newcomer is sent.
+const BURST_ENTRIES: usize = 1024;
 const CHECK_BYTES: usize = 512 * 1024;
 /// How long a member has to answer a request before another may be asked.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -353,7 +364,7 @@ impl Compactor {
             let entry = growth.entry((workspace_id, channel)).or_default();
             entry.entries = entry.entries.saturating_add(1);
             entry.bytes = entry.bytes.saturating_add(len);
-            entry.last = Some(Instant::now());
+            entry.last = Some(tilo_clock::now());
             let due = entry.entries >= CHECK_ENTRIES || entry.bytes >= CHECK_BYTES;
             let schedule = due && !entry.scheduled;
             entry.scheduled |= schedule;
@@ -377,7 +388,7 @@ impl Compactor {
                     (
                         growth.admitting == 0
                             && growth.last.is_none_or(|last| last.elapsed() >= QUIET),
-                        growth.entries >= COMPACT_TAIL_ENTRIES.saturating_mul(4)
+                        growth.entries >= BURST_ENTRIES
                             || growth.bytes >= COMPACT_TAIL_BYTES.saturating_mul(4),
                     )
                 });
@@ -477,7 +488,7 @@ impl Compactor {
             self.0
                 .folding
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let held = Instant::now();
+            let held = tilo_clock::now();
             while held.elapsed() < *lock(&self.0.hold) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -537,26 +548,37 @@ impl Compactor {
                         .ok()
                         .map(|plaintext| plaintext.to_vec())
                 };
-                Ok::<_, crate::store::StoreError>(
-                    plan_opening(
-                        &entries,
-                        &mut signatures,
-                        &HashSet::new(),
-                        min_tail,
-                        (Some(&open), resealing),
-                        |route, snapshot| {
-                            sealed_document_frames(
-                                &*payloads,
-                                (&key, &keys),
-                                workspace_id,
-                                route,
-                                snapshot,
-                            )
-                            .ok()
-                        },
-                    )
-                    .1,
+                // Signed once the fold is known: as one sealed compaction of exactly the
+                // writes it removes where it can be, else as the snapshot's own writes.
+                let planned = plan_opening(
+                    &entries,
+                    &mut signatures,
+                    &HashSet::new(),
+                    min_tail,
+                    (Some(&open), resealing),
+                    |_, _| Some(Vec::new()),
                 )
+                .1;
+                Ok::<_, crate::store::StoreError>(planned.and_then(|(folded, _)| {
+                    let frames = sealed_compaction_frames(
+                        &*payloads,
+                        (&key, &keys),
+                        workspace_id,
+                        &entries,
+                        &folded,
+                    )
+                    .or_else(|| {
+                        sealed_document_frames(
+                            &*payloads,
+                            (&key, &keys),
+                            workspace_id,
+                            &folded.route,
+                            &folded.snapshot,
+                        )
+                        .ok()
+                    })?;
+                    Some((folded, frames))
+                }))
             });
             (signatures, planned)
         })
@@ -692,7 +714,7 @@ impl Compactor {
         // it. The request overtakes deliveries still queued for a member or
         // left on disk while it lags, so a member that took them all is asked
         // first; after CATCH_UP any open one is.
-        let asked = Instant::now();
+        let asked = tilo_clock::now();
         let (device, tx) = loop {
             let runtime = workspace.lock().await;
             let open: Vec<_> = candidates
@@ -741,7 +763,7 @@ impl Compactor {
                 workspace_id,
                 channel,
                 device,
-                sent: Instant::now(),
+                sent: tilo_clock::now(),
             },
         );
         // The next request for this workspace goes to someone else first.
@@ -1306,6 +1328,106 @@ fn sealed_document_frames(
     snapshot: &[u8],
 ) -> Result<Vec<Vec<u8>>, String> {
     frames_of(payloads, (key, Some(keys)), workspace_id, route, snapshot)
+}
+
+/// `folded`, a fold of a sealed channel's `entries` as one of its participants, as one sealed
+/// compaction write ([`collab_types::SealedCompaction`]): the snapshot sealed under the channel's
+/// key, naming exactly the writes it removes, each author's up to the highest. A device that
+/// opens the record is sent it and the writes since, and takes it as the record whole: what it
+/// covers is not sent again (the workspace's link keeps every write, and would otherwise hand
+/// each one over beside it), and the device admits and opens one write instead of hundreds. A
+/// device that holds the writes already takes it in place of exactly those. `None` where it
+/// cannot name them so: an entry it does not read, a write in the clear, a write it keeps whose
+/// author's later one it removes, or a snapshot larger than one frame; the snapshot is then
+/// written as the fold's own writes ([`sealed_document_frames`]).
+fn sealed_compaction_frames(
+    payloads: &dyn ShellPayloads,
+    (key, keys): (
+        &ed25519_dalek::SigningKey,
+        &channel_crypto::ChannelContentKeys,
+    ),
+    workspace_id: u64,
+    entries: &[ChannelEntry],
+    folded: &Folded,
+) -> Option<Vec<Vec<u8>>> {
+    use ed25519_dalek::Signer as _;
+    let removed: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
+    let (mut superseded, mut kept) = (Vec::new(), Vec::new());
+    for entry in entries {
+        let (route, op) = payloads.open_document(&entry.body)?;
+        if route != folded.route {
+            return None;
+        }
+        if removed.contains(&entry.digest) {
+            superseded.push(*op);
+        } else {
+            kept.push(*op);
+        }
+    }
+    if superseded.is_empty() || superseded.iter().any(|op| op.encryption.is_none()) {
+        return None;
+    }
+    let mut floors: HashMap<collab_types::Ed25519PublicKey, u64> = HashMap::new();
+    for op in &superseded {
+        let floor = floors.entry(op.author).or_default();
+        *floor = (*floor).max(op.seq);
+    }
+    // A reader takes every write of a covered author up to its floor as in the snapshot.
+    if kept
+        .iter()
+        .any(|op| floors.get(&op.author).is_some_and(|floor| op.seq <= *floor))
+    {
+        return None;
+    }
+    let payload = DocumentMutation::Snapshot(folded.snapshot.clone())
+        .encode()
+        .ok()?;
+    if payload.len() > collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES {
+        return None;
+    }
+    let route = &folded.route;
+    let artifact =
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+    let (metadata, ciphertext) = keys
+        .seal_content(
+            artifact,
+            collab_types::ContentRetention::Checkpoint,
+            &payload,
+        )
+        .ok()?;
+    let compaction = collab_types::SealedCompaction::new(&superseded, ciphertext)
+        .ok()?
+        .encode()
+        .ok()?;
+    let author = key.verifying_key().to_bytes();
+    let now_ns = tilo_clock::unix_now_ns();
+    let timestamp = std::time::UNIX_EPOCH
+        .checked_add(Duration::from_nanos(now_ns))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+        compaction,
+        artifact,
+        collab_types::Ed25519PublicKey::from_bytes(author),
+        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+        collab_types::OpKind::Compaction,
+        timestamp,
+        now_ns,
+        metadata,
+    );
+    let signing = op.signing_bytes().ok()?;
+    op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
+    let body = payloads.document_body(&author, route, op).ok()?;
+    let channel =
+        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let frame = crate::transport::encode(&Envelope::Delta {
+        workspace_id,
+        author_device_public_key: author,
+        authored_at_ns: now_ns,
+        delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
+        signature: [0; 64],
+    })
+    .ok()?;
+    Some(vec![frame])
 }
 
 fn frames_of(

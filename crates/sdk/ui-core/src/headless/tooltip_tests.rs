@@ -22,8 +22,10 @@ impl Widget for Pane {
 
     crate::rect_geometry!();
 
-    fn tooltip(&self) -> Option<&str> {
-        Some("Groceries and the whole week's list")
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(std::borrow::Cow::Borrowed(
+            "Groceries and the whole week's list",
+        ))
     }
 
     fn name(&self) -> &'static str {

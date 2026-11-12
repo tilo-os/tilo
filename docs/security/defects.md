@@ -470,7 +470,7 @@ guarantee is that the group key rotates on *every* membership change; removal is
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
 
-Historically `channel-crypto` was a **dev-dependency** of `shell`, so MLS was
+Historically `channel-crypto` was a **dev-dependency** of the session, so MLS was
 compiled only for tests and absent from application endpoints.
 
 **Library defect resolved; production integration remains open.**
@@ -488,13 +488,13 @@ route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
 atomic OpenMLS state, signed revision-bound governance frames, a durable
 targeted Welcome/commit/removal journal, partial-failure rollback, and a
-snapshot-acknowledged plaintext gate. The shell now has a broker-internal,
+snapshot-acknowledged plaintext gate. The session now has a broker-internal,
 handle-only workspace authority transaction with idempotency and crash recovery
 tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
 file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
 `crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
-`crates/session/session/src/channels/vault.rs`). Its document
+`crates/session/client/src/channels/vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
@@ -569,10 +569,12 @@ answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
 `crates/session/compositor/src/idle.rs`); the resume edge resets idle state. The compositor
 defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
 documented opt-out for idle locking only. Unit coverage pins the sleep-edge mapping and secure
-default. `crates/session/session/tests/session_lock_e2e.rs`, a module of the shell's `it` test
-target, drives idle lock plus failed and successful unlock through the live loop, but it is
-`#[ignore]`d because it needs a display, so default CI does not run it
-(`cargo test -p shell --test it session_lock_e2e:: -- --ignored`).
+default. `locking_requires_authentication_to_clear` in `crates/session/compositor/src/idle.rs`
+covers the idle, requested and resumed lock transitions, and
+`the_policy_is_the_idle_timer_the_session_runs_on` in `crates/session/session/tests/power.rs`
+covers the policy the live session runs on; the lock screen's own keyboard, a refused
+control-socket snapshot and a touch unlock need a display, so that journey runs in the VM
+acceptance suite (W21) and not in default CI.
 
 ---
 
@@ -641,16 +643,14 @@ as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/tilo-relay/Containerfile:74` (now around `:149`; **still floating** on current
-  source) builds its runtime stage `FROM quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
-  so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
-  `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
-  whole point is to be small is not the fix. A digest against quay.io expires the same way the
-  bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
-  written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
-  fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
-  fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `tools/ci/publish/relay-build.sh` passes alongside `BASE_REF`.
+- `os/containers/tilo-relay/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
+  a floating tag — it never breaks, it just silently changes, so the relay image was not
+  reproducible across time. **Closed:** the runtime stage of every server image that ships
+  without a bootc base (the relay, the front door, the VM host, the agent host) is pinned by
+  digest from `registry.fedoraproject.org`, which keeps the digests quay.io prunes — the same pin
+  the Lounge and the browser runtime already carry, so a pin there keeps resolving and no mirrored
+  copy is needed. `BASE_REF` stays the bootc base: the runtime's minimal base is a second, separately
+  pinned base instead of a reuse of a ~1 GB image with a kernel in it.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. (**Closed by removal:** the browser moved from WPE to a Chromium engine and the
@@ -709,9 +709,9 @@ catching, ever begins. All three guards were inert in exactly the configuration 
 
 The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
 (`crates/session/session/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
-adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
+adapter isn't fatal to the session — the compositor's real backend surfaces its own adapter error
 later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
-adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
+adapter enumeration fails the session aborts before it ever reaches the backend that was supposed to
 report the problem. The dev build degrades; the shipped build does not. The other two are the
 test-control snapshot writer and the headless backend's renderer init, both documented as
 never-panicking and neither of which was.
@@ -806,7 +806,7 @@ the fold is the older path.
 
 **Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
 `peer_liveness_handle`, never reaches an authority decision, and has one derivation shared by the
-actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
+actor and the session instead of two copies of `DefaultHasher` — whose output std does not promise
 across Rust releases, so two peers on different toolchains would have stopped recognising each
 other's publishes. Held by
 `crates/session/session/src/network/identity.rs::tests::identity_store_keys_entries_per_peer_and_rejects_invalid_ones`
@@ -834,7 +834,8 @@ The write goes through an atomic write-with-mode, closing the TOCTOU window. The
 ## P2-3 — Revocation is modelled but undeliverable
 
 `crates/collab/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
-correct before/after-cutoff semantics (tested at `crates/session/session/src/network/identity.rs:364-406`), but
+correct before/after-cutoff semantics (tested at
+`crates/collab/tilo-user-identity/src/revocation.rs::tests::revocations_verify_only_untampered_and_from_the_root`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
 **Resolved.** Each workspace heartbeat now starts with an `IdentityHello` carrying the sender's
@@ -843,10 +844,12 @@ key, certificate, every revocation signature, expiry, and revocation status befo
 production collaboration message; a later revocation removes the peer immediately. Revocation
 also withdraws this machine's exported filesystem authority and stops the app identity broker
 from signing locally. Held by
-`shell::network::tests::redeemed_invites_grant_exactly_their_signed_role_and_name`
-(phase `exact_invite_redeems_as_editor_and_revocation_removes_trust`),
-`shell::state::identity_fs_tests::filesystem_export_maps_verified_people_and_per_workspace_membership`,
-and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned_and_signing_requires_the_exact_capability`.
+`crates/collab/tilo-peer-state/src/state/personal.rs::a_revoked_device_writes_nothing_after_its_revocation`
+(a heartbeat's hello is what admits a device, and its revocation removes it),
+`crates/collab/tilo-peer-state/src/direct.rs::a_revocation_refuses_only_the_device_its_own_root_certified`,
+`crates/collab/tilo-peer-state/src/admission_tests.rs::a_banned_person_cannot_redeem_an_invitation_until_unbanned`,
+and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned` with
+`::privileged_moderation_signing_requires_the_selected_trusted_device`.
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
@@ -1038,7 +1041,7 @@ stores it is the custodian of (`accounts/`, with their vault), and, read-only, `
 selector, device fleets), the trust and revocation lists, the app registries, the session's
 settings records and anything added to the root later stay out. Settings lists, activates,
 removes and protects identities, lists and revokes devices and removes home servers through the
-host's `tilo.identity` actions (`shell::identity_admin`), which sign with the root key on the
+host's `tilo.identity` actions (`tilo_session::identity_admin`), which sign with the root key on the
 host. Held by
 `workspace_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. A
 read-only file bind holds the inode it found, so the Permissions pane shows the workspace tree as of the

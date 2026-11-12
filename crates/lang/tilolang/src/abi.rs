@@ -42,6 +42,7 @@ imports! {
     StrConcat = "str_concat" ([H, H] -> [H]);
     StrEq = "str_eq" ([H, H] -> [I32]);
     StrLen = "str_len" ([H] -> [I64]);
+    StrWords = "str_words" ([H] -> [I64]);
     IntToStr = "int_to_str" ([I64] -> [H]);
     StrToInt = "str_to_int" ([H] -> [H]);
     FloatToStr = "float_to_str" ([F64] -> [H]);
@@ -131,6 +132,10 @@ imports! {
     CollEmpty = "coll_empty" ([H] -> [I32]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);
+    // A map held as a value (`let names: Map<Text> = Map<Text>()`), filled while the code runs.
+    MapNew = "map_new" ([] -> [H]);
+    MapPutValue = "map_put_value" ([H, H, H] -> []);
+    MapRemoveValue = "map_remove_value" ([H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
     MapRemove = "map_remove" ([H, H, H] -> []);
     MapSetAdd = "map_set_add" ([H, H, H, H] -> []);
@@ -242,7 +247,7 @@ imports! {
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);
     Members = "members" ([H] -> [H]);
-    Speakers = "speakers" ([H] -> [H]);
+    Speakers = "speakers" ([H, I64] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
@@ -251,6 +256,7 @@ imports! {
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
     FirstUnseen = "first_unseen" ([H, H, H] -> [H]);
+    SeenBy = "seen_by" ([H, H] -> [H]);
     Mentions = "mentions" ([H, H, H] -> [I64]);
     Steps = "steps" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
@@ -265,15 +271,26 @@ imports! {
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
+    // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link
+    // to a page of the bundle read as the reference to it. The arguments are the text, the
+    // pages by the address each stands at, the folder the page is written in, and the app the
+    // references name.
+    RichFromMarkdown = "rich_from_markdown" ([H, H, H, H] -> [H]);
+    // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links`
+    // written as the link to the page it stands at, from the folder the page is written in.
+    RichMarkdown = "rich_markdown" ([H, H, H] -> [H]);
+    RichEmbed = "rich_embed" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
     Today = "today" ([] -> [H]);
-    // The day a moment falls on and the time of day it is, both for the person; a day moved by
-    // days; how far two days or two moments are apart; a part of a day, its weekday and the
-    // day its week starts on; and a day or a moment a text names, read at a moment.
+    // The day a moment falls on and the time of day it is, both for the person, the time of day
+    // as a clock reads it in the style they chose; a day moved by days; how far two days or two
+    // moments are apart; a part of a day, its weekday and the day its week starts on; and a day
+    // or a moment a text names, read at a moment.
     TimeDay = "time_day" ([H] -> [H]);
     TimeOfDay = "time_of_day" ([H] -> [I64]);
+    TimeClock = "time_clock" ([H] -> [H]);
     DayShift = "day_shift" ([H, I64, I32] -> [H]);
     TimeSpan = "time_span" ([H, H] -> [I64]);
     DayPart = "day_part" ([H, I32] -> [I64]);
@@ -293,8 +310,27 @@ imports! {
     UiActions = "ui_actions" ([H, H, H] -> []);
     UiAction = "ui_action" ([H, H, H] -> []);
 
+    // A file: its name, media type or `tilo-blob://` address (by the part asked), its size in
+    // bytes, its content read as text (a `Result`), and the chooser a control runs.
+    FilePart = "file_part" ([H, I32] -> [H]);
+    FileSize = "file_size" ([H] -> [I64]);
+    FileText = "file_text" ([H] -> [H]);
+    FileFiles = "file_files" ([H] -> [H]);
+    // A file an action makes of what it holds: the text, the bytes, or the content an address
+    // names, as a file called by its name; and an archive of the files it holds, each under its
+    // own name.
+    FileOfText = "file_of_text" ([H, H] -> [H]);
+    FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
+    FileAt = "file_at" ([H, H] -> [H]);
+    FileZip = "file_zip" ([H, H] -> [H]);
+    ActChoose = "act_choose" ([H, H] -> [H]);
+    ActSave = "act_save" ([H, H] -> [H]);
+
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);
+    // Whether the row the view is running for stands open into its document: what a slot that
+    // holds the document is built under.
+    RowOpen = "row_open" ([] -> [I32]);
 
     Abort = "abort" ([H] -> []);
 }

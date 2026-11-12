@@ -93,14 +93,13 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
         assert!(outcome.changed && outcome.rejected == 0);
     }
     assert_eq!(replica.rows(), governor.rows());
-    assert_eq!(
-        crate::workspace::POLICY_READS.with(std::cell::Cell::get),
-        1,
+    // Taking in the governance may have read it already.
+    assert!(
+        crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
         "capabilities are decoded once for the governance state, not per message"
     );
-    assert_eq!(
-        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get),
-        identities,
+    assert!(
+        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get) <= identities,
         "each identity row is decoded once for the governance state, not per message"
     );
 }
@@ -204,4 +203,274 @@ fn sync_resp_decodes_each_receipt_once() {
         "effect receipt is immutable"
     );
     assert_eq!(replica.core.receipts, before);
+}
+
+/// A device certified by its own person's root, both keys derived from `n`.
+fn person_device(n: usize) -> (SigningKey, DeviceCert) {
+    let seed = |kind: u8| {
+        let mut bytes = [kind; 32];
+        bytes[..8].copy_from_slice(&u64::try_from(n).unwrap().to_le_bytes());
+        bytes
+    };
+    let root = SigningKey::from_bytes(&seed(0x40));
+    let key = SigningKey::from_bytes(&seed(0x80));
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("device-{n}"),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    (key, cert)
+}
+
+/// Workspace `workspace` of `people` editors and its owner, whose grants keep the first
+/// person from `named` records: the governed peer, and the people's devices.
+fn crowded_workspace(
+    workspace: &str,
+    people: usize,
+    named: usize,
+    now: SystemTime,
+) -> (StatePeer, Vec<DeviceCert>) {
+    let (owner_key, owner) = person_device(people);
+    let people: Vec<DeviceCert> = (0..people).map(|n| person_device(n).1).collect();
+    let roster: Vec<DeviceCert> = std::iter::once(owner.clone())
+        .chain(people.iter().cloned())
+        .collect();
+    let mut doc =
+        crate::workspace::candidate(None, &seed_workspace(workspace, &owner, &roster).unwrap())
+            .unwrap();
+    let members = doc.get(ROOT, "members").unwrap().unwrap().1;
+    for cert in &people {
+        doc.put(
+            &members,
+            hex::encode(cert.user_public_key).as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Editor).unwrap()),
+        )
+        .unwrap();
+    }
+    let hidden = hex::encode(people[0].user_public_key);
+    let grants = doc.get(ROOT, "grants").unwrap().unwrap().1;
+    for n in 0..named {
+        let grant = Grant::new(
+            format!("hidden-{n}"),
+            Subject::person(hidden.as_str()),
+            collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Deny,
+            Subject::person(hex::encode(owner.user_public_key)),
+        );
+        doc.put(
+            &grants,
+            grant.id.as_str(),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
+        )
+        .unwrap();
+    }
+    let workspace_changes = doc
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let mut peer = StatePeer::new(workspace, owner, roster, RevocationList::new(), now).unwrap();
+    peer.install_seed(
+        SeedState {
+            workspace_changes,
+            documents: vec![],
+        },
+        &owner_key,
+        now,
+    )
+    .unwrap();
+    (peer, people)
+}
+
+/// A page in a workspace of hundreds of people, whose grants name many
+/// records, asks who reads a channel for every frame the channel takes in
+/// (thousands while it arrives). Each answer builds the workspace's policy a
+/// fixed number of times and verifies no certificate again: before, it built
+/// the policy once per member device per named record and verified every
+/// member's certificate, which held a page's only thread for minutes before it
+/// was admitted to such a workspace.
+#[test]
+fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records() {
+    const PEOPLE: usize = 300;
+    const FRAMES: usize = 10;
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
+    // The first person may not read any of the 20 records the grants name.
+    let (peer, people) = crowded_workspace(WORKSPACE, PEOPLE, 20, now);
+
+    let named = collab_types::document_channel_id("so.tilo.chat", WORKSPACE, "tab:0");
+    let scope = collab_types::workspace_scope(WORKSPACE);
+    let readers = |channel| {
+        peer.governance()
+            .channel_readers(now, channel, None)
+            .unwrap()
+            .unwrap()
+    };
+    let everyone = readers(scope);
+    assert_eq!(
+        everyone.len(),
+        PEOPLE + 1,
+        "every member device reads the workspace"
+    );
+    let record = readers(named);
+    assert_eq!(
+        record.len(),
+        PEOPLE,
+        "a Read Deny keeps one person's device out"
+    );
+    assert!(!record.contains(&people[0].device_public_key));
+    // A person's own record is read by that person's device alone.
+    let drafts = collab_types::ChannelRoute::new(
+        "so.tilo.chat",
+        collab_types::member_record_id(&hex::encode(people[1].user_public_key), "chat.drafts")
+            .as_str(),
+    );
+    let own = || {
+        peer.governance()
+            .channel_readers(now, drafts.channel(WORKSPACE), Some(&drafts))
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(own(), BTreeSet::from([people[1].device_public_key]));
+
+    crate::cached_document::WORKSPACE_POLICIES.with(|count| count.set(0));
+    crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
+    for _ in 0..FRAMES {
+        assert_eq!(readers(named), record);
+        assert_eq!(readers(scope), everyone);
+        assert_eq!(own().len(), 1);
+    }
+    assert!(
+        crate::cached_document::WORKSPACE_POLICIES.with(std::cell::Cell::get) <= 5 * FRAMES,
+        "the policy is built a fixed number of times per question, not per device or record"
+    );
+    assert_eq!(
+        crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
+        0,
+        "each member's certificate is verified once for the governance state"
+    );
+}
+
+/// What a newcomer's page does with a workspace's governance before it shows
+/// the desktop: take in the governance its host replays, list the members and
+/// their devices, decide who reads the workspace's channels, and keep the
+/// replica with its security basis. Each row is decoded and its certificate
+/// checked once for all of these, and the whole-governance reads and replays
+/// are as many among 300 people as among 30.
+#[test]
+fn a_newcomer_reads_each_members_identity_once_however_many_people() {
+    // A workspace of its own: what was read of a workspace's last states is
+    // remembered for the whole process, and other tests reading theirs at the
+    // same time under the same name would make this one read it again.
+    const CROWDED: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let work = |people: usize| {
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2000))
+            .unwrap();
+        let (governor, _) = crowded_workspace(CROWDED, people, 0, now);
+        let owner = governor
+            .core
+            .certificates
+            .values()
+            .find(|cert| cert.user_public_key == governor.core.owner)
+            .unwrap()
+            .as_ref()
+            .clone();
+        let (_, newcomer) = person_device(people + 1);
+        let mut page = StatePeer::from_join(
+            CROWDED,
+            owner.clone(),
+            vec![owner.clone(), newcomer],
+            &[],
+            now,
+        )
+        .unwrap();
+        let message = governor.workspace_message();
+        let _ = crate::governance_work::take();
+        page.receive_from_report(
+            TransportOrigin::RelayDelta(owner.device_public_key),
+            message,
+            now,
+        )
+        .unwrap();
+        page.governance().governed_members(now).unwrap();
+        let access = page.governance().governed_access(now).unwrap();
+        assert_eq!(
+            access.member_devices.len(),
+            people + 1,
+            "every member's device"
+        );
+        page.governance()
+            .channel_readers(now, collab_types::workspace_scope(CROWDED), None)
+            .unwrap();
+        page.security_basis().unwrap().unwrap();
+        page.durable().unwrap();
+        crate::governance_work::take()
+    };
+    let (few, many) = (work(30), work(300));
+    for (people, work) in [(30_u64, few), (300, many)] {
+        assert_eq!(
+            work.identities_decoded,
+            people + 1,
+            "{people} people: each identity row is decoded once: {work:?}"
+        );
+        assert!(
+            work.signatures_verified <= people + 2,
+            "{people} people: each member's certificate is checked once: {work:?}"
+        );
+    }
+    assert_eq!(
+        (few.governance_reads, few.replays),
+        (many.governance_reads, many.replays),
+        "the governance is read as often among 300 people as among 30"
+    );
+}
+
+/// A replica publishes itself after every write it keeps, and each
+/// publication compares its security basis with the last one's: the basis
+/// reads every member's row, and a record's write leaves the governance as it
+/// was. Copies of the replica holding the same governance work it out once,
+/// however many writes come; governance that changes is worked out again.
+#[test]
+fn a_records_writes_leave_the_security_basis_worked_out_once() {
+    const MESSAGES: usize = 10;
+    let (mut governor, mut replica, a, now) = governor_and_replica(MESSAGES);
+    let source = a.verifying_key().to_bytes();
+    let messages = governor
+        .publication_mut()
+        .signed_snapshots(&a, now)
+        .unwrap();
+    replica
+        .receive(source, governor.workspace_message(), now)
+        .unwrap();
+    let _ = crate::governance_work::take();
+    let basis = replica.security_basis().unwrap().unwrap();
+    for message in messages {
+        // As an owner publishes: a copy takes the write in and is compared
+        // with the replica before it.
+        let mut published = replica.clone();
+        let outcome = published.receive(source, message, now).unwrap();
+        assert!(outcome.changed && outcome.rejected == 0);
+        assert_eq!(published.security_basis().unwrap().unwrap(), basis);
+        assert_eq!(replica.security_basis().unwrap().unwrap(), basis);
+        replica = published;
+    }
+    assert_eq!(
+        crate::governance_work::take().security_bases,
+        1,
+        "the basis is worked out once for one governance state"
+    );
+    // Governance that changes is a new state, whose basis is worked out anew.
+    let receipts = publish_receipts(&mut governor, &[("invocation-0", b"{}")]);
+    replica.receive(source, receipts, now).unwrap();
+    replica.security_basis().unwrap().unwrap();
+    assert_eq!(crate::governance_work::take().security_bases, 1);
 }

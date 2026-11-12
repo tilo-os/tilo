@@ -43,11 +43,11 @@ fn the_keyboard_types_in_the_persons_layout() {
 /// A hosted surface with the keyboard on it, in `layout` , recording the keys it types.
 fn typing_field(compositor: &mut Compositor, layout: &KeyboardLayout) -> Rc<RefCell<HostLog>> {
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     log.borrow_mut().wants_keyboard = true;
     compositor.set_keyboard_layout(layout);
     log

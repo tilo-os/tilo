@@ -32,6 +32,27 @@ pub enum LaunchPlace {
     Beside,
 }
 
+/// The launch a host's windows read as opening `app` on its record `record` (the record's route):
+/// `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]). What a link to a record, an app asking for
+/// another's record, and a search row of a record this workspace holds all open, so a record
+/// already in a window comes forward rather than opening twice.
+pub const RECORD_LAUNCH: &str = "record:";
+
+/// The launch that opens `app` on its record `record` .
+#[must_use]
+pub fn record_launch(app: &str, record: &str) -> String {
+    format!("{RECORD_LAUNCH}{app}:{record}")
+}
+
+/// The app and record a [`record_launch`] names, or `None` for a plain launch.
+#[must_use]
+pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
+    launch
+        .strip_prefix(RECORD_LAUNCH)?
+        .split_once(':')
+        .filter(|(app, record)| !app.is_empty() && !record.is_empty())
+}
+
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
 /// runs through the host's action door.
@@ -70,6 +91,31 @@ pub enum Target {
     /// Search `source` from now on, or stop: the person's own choice, kept
     /// with their settings by the host ([`crate::preferences`]).
     Prefer { source: String, enabled: bool },
+}
+
+impl Target {
+    /// The place the person asked the window to go with the modifier
+    /// `held` as they chose: the row said what it would be. An app opens
+    /// as a tab here or a window beside; an item a row opens, in a window
+    /// of its own beside the app's.
+    pub(crate) fn place_by(&mut self, held: Option<ui::search::ActivationModifier>) {
+        use ui::search::ActivationModifier;
+        match (self, held) {
+            (Self::Launch { place, .. }, Some(asked)) => {
+                *place = match asked {
+                    ActivationModifier::Shift => LaunchPlace::TabHere,
+                    ActivationModifier::Ctrl => LaunchPlace::Beside,
+                    ActivationModifier::Alt => LaunchPlace::Focus,
+                };
+            }
+            (Self::Invoke(invoke), Some(ActivationModifier::Ctrl))
+                if invoke.descriptor.is_none() && invoke.address.action == OPEN_ACTION =>
+            {
+                invoke.place = LaunchPlace::Beside;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A line as the palette compares it: folded, and without the sentence
@@ -183,6 +229,10 @@ pub struct InvokeTarget {
     /// The published action, when the row is the action itself rather than
     /// something it opens: what the row shows and asks for.
     pub descriptor: Option<ActionDescriptor>,
+    /// Where an `open` shows what it opens: [`LaunchPlace::Beside`] is a
+    /// window of its own beside the app's, as the person asked by the
+    /// modifier they held.
+    pub place: LaunchPlace,
 }
 
 impl InvokeTarget {
@@ -206,6 +256,7 @@ impl InvokeTarget {
             address: ActionAddress::new(anchor, OPEN_ACTION),
             arguments,
             descriptor: None,
+            place: LaunchPlace::Focus,
         }
     }
 
@@ -224,6 +275,7 @@ impl InvokeTarget {
             address: ActionAddress::new(resource, action),
             arguments: serde_json::Map::new(),
             descriptor: None,
+            place: LaunchPlace::Focus,
         }
     }
 

@@ -18,14 +18,16 @@ fn original_import(
         .identities
         .into_iter()
         .map(|(id, bytes)| {
-            serde_json::from_slice::<GovernedIdentity>(&bytes)
+            GovernedIdentity::decode(&bytes)
                 .map(|identity| (id, identity))
                 .map_err(err)
         })
         .collect::<Result<Vec<_>, _>>()?;
     for (key, values) in workspace::invitation_receipts(doc)? {
         for bytes in values {
-            let receipt: RedemptionReceipt = serde_json::from_slice(&bytes).map_err(err)?;
+            let receipt: RedemptionReceipt = crate::state::LedgerReceipt::decode(&bytes)
+                .map_err(err)?
+                .receipt;
             if key != hex::encode(receipt.invite_id) {
                 return Err("governed invitation receipt key mismatch".into());
             }
@@ -91,6 +93,19 @@ fn compare_case(
     assert_eq!(got, expected);
     assert_eq!(actual.certificates(), oracle.certificates());
     assert_eq!(actual.revocations(), oracle.revocations());
+    // The rows read once per document state import alike, read fresh and
+    // read after the state the peer holds, whose views carry over.
+    let fresh = crate::cached_document::CachedDocument::from(workspace.clone());
+    let following = peer.core.workspace_doc.as_ref().map(|held| {
+        let _ = (held.identities(), held.identity_certificates());
+        held.followed_by(workspace.clone())
+    });
+    for rows in std::iter::once(fresh).chain(following) {
+        let mut cached = peer.clone();
+        assert_eq!(cached.import_governed_rows(&rows, now), expected);
+        assert_eq!(cached.certificates(), oracle.certificates());
+        assert_eq!(cached.revocations(), oracle.revocations());
+    }
     legacy(
         workspace,
         &peer.core.certificates,
@@ -105,9 +120,7 @@ fn set_identity(workspace: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
         .get(automerge::ROOT, "peer_identities_v1")
         .unwrap()
         .unwrap();
-    workspace
-        .put(object, id, serde_json::to_vec(row).unwrap())
-        .unwrap();
+    workspace.put(object, id, row.encode().unwrap()).unwrap();
     workspace.commit();
 }
 fn row(cert: DeviceCert) -> GovernedIdentity {
@@ -147,7 +160,6 @@ fn governed_import_preserves_real_signed_identity_admission_and_certificate_fail
         device_public_key: foreign.device_public_key,
         request_id: [8; 32],
         role: crate::join::MemberRole::Viewer,
-        invitation: None,
     });
     set_identity(
         &mut workspace,
@@ -187,6 +199,59 @@ fn governed_import_preserves_real_signed_identity_admission_and_certificate_fail
 }
 
 #[test]
+fn governed_import_keeps_a_minted_grants_issuer() {
+    let (peer, _, _, _, now) = crate::admission_tests::seeded();
+    let now_ns = now_ns(now);
+    let root = SigningKey::from_bytes(&[91; 32]);
+    let grant_key = SigningKey::from_bytes(&[92; 32]);
+    let mut grant = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: grant_key.verifying_key().to_bytes(),
+        device_label: "agent".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::AllWorkspaces,
+        ),
+        issued_at_ns: now_ns - 1,
+        expires_at_ns: Some(now_ns + 3_600_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut grant, &root).unwrap();
+    let mut minted = tilo_user_identity::prepare_minted_grant(
+        &grant,
+        SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+        [7; 16],
+        "minted",
+        now_ns - 1,
+        now_ns + 60_000_000_000,
+    );
+    tilo_user_identity::sign_device_cert(&mut minted, &grant_key).unwrap();
+    let mut identity = row(minted.clone());
+    identity.admission = Some(RedemptionReceipt {
+        invite_id: [7; 32],
+        user_public_key: minted.user_public_key,
+        device_public_key: minted.device_public_key,
+        request_id: [8; 32],
+        role: crate::join::MemberRole::Editor,
+    });
+    let mut workspace = peer.admitted_workspace().unwrap().clone();
+    set_identity(
+        &mut workspace,
+        &hex::encode(minted.device_public_key),
+        &identity,
+    );
+    compare_case(&peer, &workspace, now).unwrap();
+    let mut imported = peer;
+    imported
+        .import_governed_certificates(&workspace, now)
+        .unwrap();
+    assert!(
+        imported.certificates().contains(&minted),
+        "the minted grant is kept with its issuer"
+    );
+}
+
+#[test]
 fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let mut workspace = peer.admitted_workspace().unwrap().clone();
@@ -219,7 +284,7 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     workspace.commit();
     assert!(matches!(
         compare_case(&peer, &workspace, now),
-        Err(ImportError::LegacyJson(_))
+        Err(ImportError::Row(_))
     ));
     for kind in [automerge::ObjType::List, automerge::ObjType::Text] {
         let mut workspace = peer.admitted_workspace().unwrap().clone();

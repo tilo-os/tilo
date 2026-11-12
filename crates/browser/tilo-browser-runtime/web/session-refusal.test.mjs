@@ -72,6 +72,15 @@ test('a page with no door to come back through, and a revoked device, are told w
   assert.deepEqual(told.seen, {rejoined: [], refused: ['device-revoked']});
 });
 
+test('a workspace its owner deleted is said, and never joined again', async () => {
+  const peer = fakePeer();
+  const {seen} = follow({peer, canRejoin: () => true});
+  peer.send(failed('workspace-deleted'));
+  await settle();
+  assert.deepEqual(seen, {rejoined: [], refused: ['workspace-deleted']});
+  assert.match(refusalText('workspace-deleted', 'Acme'), /^Acme was deleted by its owner/);
+});
+
 test('a certificate the host did not take is issued again once, then said', async () => {
   const peer = fakePeer();
   const {seen} = follow({peer});

@@ -9,6 +9,7 @@ use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, SourceWords};
 use tilolang_tilo::action::{DynAction, DynEdit};
+use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::{DynRecord, DynValue};
 
@@ -41,6 +42,10 @@ action add_column(b: Board, title: Text) -> Column { b.columns.insert(Column(tit
 action add_card(c: Column, title: Text) -> Card { c.cards.insert(Card(title: title)) }
 
 action file(c: Column, card: Card) { c.cards.move(card, to: c.cards.len()) }
+
+action holds(c: Column, card: Card) -> Bool { c.cards.contains(card) }
+
+action where_it_stands(c: Column, card: Card) -> Option<Int> { c.cards.index_of(card) }
 
 action place(c: Column, card: Card, at: Int) { c.cards.move(card, to: at) }
 
@@ -338,6 +343,112 @@ fn shape(resource: &tilo_actions::ResourceSpec) -> String {
 }
 
 #[test]
+fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
+    let mut r = workspace();
+    let todo = r.column("ada", "To do");
+    let doing = r.column("ada", "Doing");
+    let first = r.card("ada", &todo, "first");
+    let second = r.card("ada", &todo, "second");
+    let elsewhere = r.card("ada", &doing, "elsewhere");
+    let todo_at = r.at(&todo);
+    let walked = |r: &Replica| r.host.store().read_stats().doc.entries;
+    let stands = |r: &Workspace, card: &str| -> Option<i64> {
+        let card_at = r.at(card);
+        let value = call(r, "where_it_stands", &todo_at, &card_at);
+        match value {
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Int(at) => Some(at),
+                other => panic!("{other:?}"),
+            },
+            Value::Opt(None) => None,
+            other => panic!("{other:?}"),
+        }
+    };
+    let holds = |r: &Workspace, card: &str| -> bool {
+        let card_at = r.at(card);
+        match call(r, "holds", &todo_at, &card_at) {
+            Value::Bool(held) => held,
+            other => panic!("{other:?}"),
+        }
+    };
+    // Where a card stands, and whether the column holds it, are read of the column's index:
+    // what the record would be walked for — its entries — stays where it was.
+    let before = walked(&r.ada);
+    assert_eq!(stands(&r, &first), Some(0), "the first card's place");
+    assert_eq!(stands(&r, &second), Some(1), "the second card's place");
+    assert_eq!(
+        stands(&r, &elsewhere),
+        None,
+        "a card of another column stands in this one nowhere"
+    );
+    assert!(holds(&r, &first), "the column holds its first card");
+    assert!(holds(&r, &second), "the column holds its second card");
+    assert!(
+        !holds(&r, &elsewhere),
+        "the column does not hold a card of another column"
+    );
+    assert_eq!(
+        walked(&r.ada),
+        before,
+        "reading a card's place walked the record's entries"
+    );
+    // A card that leaves is one the column no longer holds, and the one after it stands where
+    // the one before it did.
+    r.file("ada", &doing, &first);
+    assert!(!holds(&r, &first), "the card moved out is not held");
+    assert_eq!(stands(&r, &second), Some(0), "the card moved up");
+    r.act(
+        "ada",
+        ("Column", &todo_at),
+        "place",
+        json!({ "card": r.at(&first), "at": 0 }),
+    );
+    assert_eq!(stands(&r, &first), Some(0), "the card moved back");
+    assert_eq!(stands(&r, &second), Some(1), "and the other after it");
+}
+
+/// What the action `name` answers for the card `card` of the column `column`, run as `ada`.
+fn call(r: &Workspace, name: &str, column: &str, card: &str) -> Value {
+    let meta = r.meta.clone();
+    let id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("no action {name}"))
+        .id
+        .clone();
+    let ty = |name: &str| {
+        r.meta
+            .types
+            .iter()
+            .find(|t| t.name == name)
+            .expect("the type the package declares")
+            .id
+            .clone()
+    };
+    let (column, card) = (
+        ResourceRef::parse_id(column, ty("Column")).unwrap(),
+        ResourceRef::parse_id(card, ty("Card")).unwrap(),
+    );
+    let outcome = r
+        .ada
+        .host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                id.as_str(),
+                vec![Value::resource(&column), Value::resource(&card)],
+            ),
+        )
+        .unwrap();
+    match outcome {
+        tilolang_runtime::InvokeOutcome::Done(value) => value,
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
 fn what_is_published_follows_a_card_to_its_new_column() {
     use std::sync::Arc;
     use tilolang_tilo::publish::{ActionTypes, Planner, Publications, publish_tree};
@@ -576,4 +687,141 @@ fn concurrent_moves_into_each_other_hold_the_later_back() {
         (action.as_str(), vec![node(&held), node(&top)]),
     );
     assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
+fn a_card_removed_with_its_column_has_no_type_in_either_copy() {
+    let mut r = workspace();
+    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+    let stays = r.card("ada", &todo, "stays");
+    let leaves = r.card("ada", &todo, "leaves");
+    r.file("ada", &doing, &leaves);
+    r.sync();
+    let card = r
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Card")
+        .unwrap()
+        .id
+        .clone();
+    let at = |r: &Workspace, id: &str| ResourceRef::parse_id(&r.at(id), card.clone()).unwrap();
+    assert_eq!(r.ada.host.store().type_of(&at(&r, &stays)).unwrap(), card);
+    let root = r.root.clone();
+    let todo_at = r.at(&todo);
+    r.act(
+        "ada",
+        ("Board", &root),
+        "drop_column",
+        json!({ "c": todo_at }),
+    );
+    assert!(
+        r.ada.host.store().type_of(&at(&r, &stays)).is_err(),
+        "the card went with its column: its window says it is gone"
+    );
+    assert_eq!(
+        r.ada.host.store().type_of(&at(&r, &leaves)).unwrap(),
+        card,
+        "the card moved out before it is the one that stayed"
+    );
+    r.sync();
+    assert!(
+        r.grace.host.store().type_of(&at(&r, &stays)).is_err(),
+        "and it is gone for the other copy too"
+    );
+    assert_eq!(
+        r.grace.host.store().type_of(&at(&r, &leaves)).unwrap(),
+        card
+    );
+}
+
+/// The index a window of the record `doc` keeps under `dir`: built from the record and left
+/// there for the next window to open over.
+fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
+    std::fs::create_dir_all(dir).unwrap();
+    let host = Host::open(
+        tilolang_tilo::host::Opening {
+            record: Some(doc),
+            chunks: None,
+            index_dir: Some(dir.to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(KANBAN, lock).unwrap();
+    assert!(host.wait_index(), "the window reads its index");
+    host.store().persist_index();
+    host
+}
+
+#[test]
+fn a_card_that_left_its_column_is_gone_in_a_window_opened_over_the_index_kept() {
+    let mut r = workspace();
+    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+    let stays = r.card("ada", &todo, "stays");
+    let leaves = r.card("ada", &todo, "leaves");
+    r.file("ada", &doing, &leaves);
+    r.sync();
+    let card = r
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "Card")
+        .unwrap()
+        .id
+        .clone();
+    let stays = ResourceRef::parse_id(&r.at(&stays), card).unwrap();
+    let root = r.root.clone();
+    let todo_at = r.at(&todo);
+    // The column goes, and the card in it: the record still holds what the card held, so a copy
+    // of it answers the card's fields, and only the index says the card is gone.
+    r.act(
+        "ada",
+        ("Board", &root),
+        "drop_column",
+        json!({ "c": todo_at }),
+    );
+    assert!(
+        r.ada.host.store().type_of(&stays).is_err(),
+        "the card went with its column"
+    );
+    // The indexes a window of that record keeps, and the record itself: a window opened over
+    // them answers what they name, before it reads the record.
+    let dir = std::env::temp_dir().join(format!("tilolang-kept-index-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (doc, lock) = (r.ada.doc.clone(), r.lock.clone());
+    drop(kept_index(&doc, &lock, &dir));
+    // Done reading, the window closes, and its index is the disk's.
+    drop(r);
+    let host = Host::open(
+        tilolang_tilo::host::Opening {
+            record: None,
+            chunks: None,
+            index_dir: Some(dir.clone()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(KANBAN, &lock).unwrap();
+    host.store().set_loader(Box::new(move || Some(doc.clone())));
+    assert!(
+        host.index_ready(),
+        "the window opens over the index it kept"
+    );
+    assert!(!host.store().has_record(), "before its record");
+    let read = host.runtime().read(&stays, "title");
+    assert!(read.is_err(), "the card went with its column: {read:?}");
+    assert!(
+        !host.store().has_record(),
+        "the record is not read for a card the workspace no longer holds"
+    );
+    assert!(
+        host.store().type_of(&stays).is_err(),
+        "and its window says it is gone"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

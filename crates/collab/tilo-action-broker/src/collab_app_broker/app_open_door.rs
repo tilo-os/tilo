@@ -77,6 +77,19 @@ impl AppBrokerState {
         person: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<Result<RequestCaller, Box<RemoteActionMessage>>> {
+        if let RemoteActionMessage::RecordRead {
+            on_behalf_of: Some(parent),
+            ..
+        } = message
+        {
+            // A read continuing an invocation is its caller's read.
+            return match self.continuing(peer_id, app_id, *parent) {
+                Some(Continuing::Invocation(continued)) => Some(Ok((continued.caller, None))),
+                Some(Continuing::OwnDoor) => None,
+                None => tilo_actions::remote::refuse(message, ActionHostError::NotPermitted)
+                    .map(|refused| Err(Box::new(refused))),
+            };
+        }
         let RemoteActionMessage::Invoke(invoke) = message else {
             return None;
         };

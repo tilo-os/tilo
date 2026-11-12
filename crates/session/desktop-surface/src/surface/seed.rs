@@ -2,13 +2,26 @@
 //! one strip, and a window group per tab.
 
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, StripId, Tab, WindowWidth, Workspace, WorkspaceSlot,
+    DesktopTree, IdMinter, StripId, Tab, WindowWidth, Workspace, WorkspaceId, WorkspaceSlot,
 };
 
 /// The in-memory desktop a host starts from when it has no stored one: one workspace, one strip,
 /// and a window group per tab in `tabs` .
 pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceSlot(minter.mint()), workspace_name);
+    seed_tree_in(minter, WorkspaceId::new(), workspace_name, tabs)
+}
+
+/// [`seed_tree`] for a desk opened in the workspace `identity` names: its workspace is that one,
+/// as a session's is the workspace it joined, so what keeps the workspace's records by its id
+/// (its history, its agents' runs) finds them from the desk.
+pub fn seed_tree_in(
+    minter: &mut IdMinter,
+    identity: WorkspaceId,
+    workspace_name: &str,
+    tabs: Vec<Tab>,
+) -> DesktopTree {
+    let mut workspace =
+        Workspace::in_workspace(WorkspaceSlot(minter.mint()), identity, workspace_name);
     // A workspace keeps one identity on every device: the one the person starts from is opened
     // again by the id derived from it, not by an id only this desk knows.
     workspace.slot = WorkspaceSlot::of_workspace(workspace.id());

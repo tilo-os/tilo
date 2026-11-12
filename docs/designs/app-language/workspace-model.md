@@ -62,6 +62,12 @@ window or a place.
   so Ada can read one note while Bo writes another, each seeing the other's face at their note.
   A view that wants a second window (a custom layout, a preview beside an editor) opens one in
   the shared arrangement. On a phone, one pane shows at a time and back returns to the list.
+- **A window with nothing at all to list says so once.** While the app's list holds nothing (a
+  first run, an empty library) and nothing is chosen, the window shows the app's own state for
+  what is missing, spanning the place its columns would stand: never two states side by side
+  (the places' and the content's), and never a phone opening on "nothing open" when there is
+  nothing to open. The app declares the words and the line under them; the bar keeps the way to
+  make the first, and the columns come back with it.
 - **A window that shows a list, or the switch between views, takes the window over.** A
   notebook's list is the window's list; opening its project shows the project's list where the
   notebook's stood, with the project's title, its view switch and its controls in the one bar,

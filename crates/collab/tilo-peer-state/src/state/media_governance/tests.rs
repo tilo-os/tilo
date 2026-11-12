@@ -4,6 +4,7 @@ use crate::StatePeer;
 use crate::seed_workspace;
 use crate::{NeighbourMsg, TransportOrigin};
 use automerge::AutoCommit;
+use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,

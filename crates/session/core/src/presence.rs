@@ -189,7 +189,6 @@ impl Follow {
 mod tests {
     use super::*;
     use collab_types::presence::{ShellChat, ShellReaction, ShownPoint};
-
     fn place<'a>(id: &'a str, tab: Option<u64>, app: Option<&'a str>) -> Place<'a> {
         Place { id, tab, app }
     }

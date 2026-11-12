@@ -47,6 +47,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::fill_rect;
 use ui::portal::{ContentsOutcome, PickedContents, PortalOutcome};
@@ -66,8 +67,10 @@ use ui::framework::{
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
+use crate::i18n::CATALOG;
 use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVideos, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
+use ui::widget::DrawChild;
 
 /// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -285,8 +288,12 @@ pub(crate) struct PlayerState {
     rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
-    /// A video dropped anywhere on the window opens like one chosen.
+    /// A video dropped anywhere on the window opens like one chosen. Only a
+    /// device with a pointer can drag one in, so a phone is never told to.
     file_open: ui::widget::FileOpenSurface,
+    /// How the person reaches the window, as the host reports it: what the
+    /// drop hint reads.
+    pub(crate) interaction: ui::interaction::InteractionEnvironment,
     /// How far the docked library pushes the picture in from the leading
     /// edge, as the last layout laid the player out.
     content_inset: f64,
@@ -609,10 +616,11 @@ impl PlayerState {
             rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
             file_open: ui::widget::FileOpenSurface::default(),
+            interaction: ui::interaction::InteractionEnvironment::default(),
             drawer: SidebarDrawer::new()
                 .left()
                 .closed()
-                .content_kind(ui::widget::ContentKind::Document)
+                .content_kind(ui::widget::ContentKind::Canvas)
                 .with_push(),
             content_inset: 0.0,
             content_inset_stale: false,
@@ -803,7 +811,7 @@ impl PlayerState {
         let source = media::Source::from_contents(&file.name, &file.bytes)
             .map_err(|e| format!("could not stage {}: {e}", file.name))?;
         let title = if file.name.is_empty() {
-            "selected video".to_string()
+            CATALOG.t("video-player-selected-video")
         } else {
             file.name.clone()
         };
@@ -819,10 +827,15 @@ impl PlayerState {
     fn keep_contents(&mut self, queue_id: &str, file: &PickedContents) {
         if file.bytes.len() > crate::kept::KEEP_LIMIT {
             if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
-                entry.title = format!(
-                    "{} — too large to reopen after a reload (over {})",
-                    entry.title,
-                    ui::format::memory(crate::kept::KEEP_LIMIT as u64)
+                entry.title = CATALOG.t_args(
+                    "video-player-too-large",
+                    &[
+                        ("title", ArgValue::Text(entry.title.clone())),
+                        (
+                            "size",
+                            ArgValue::Text(ui::format::memory(crate::kept::KEEP_LIMIT as u64)),
+                        ),
+                    ],
                 );
             }
             return;
@@ -1109,7 +1122,7 @@ impl PlayerState {
             self.paint_letterbox(scene, transform, theme);
         } else {
             self.player
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.paint_media_status(scene, transform, text_renderer, theme);
         self.paint_library_panel(scene, transform, text_renderer, theme);
@@ -1186,7 +1199,7 @@ impl PlayerState {
             if self.library_back_rect.width() > 0.0 {
                 children.push(
                     AccessNode::new(Role::Button)
-                        .with_name("Back to video")
+                        .with_name(crate::i18n::t("video-back-to-video"))
                         .with_description("Escape")
                         .with_action_target("video-player.library.back")
                         .with_bounds(self.library_back_rect)
@@ -1199,7 +1212,7 @@ impl PlayerState {
             }
             children.extend([
                 AccessNode::new(Role::Tab)
-                    .with_name("Queue")
+                    .with_name(crate::i18n::t("video-queue"))
                     .with_action_target("video-player.library.tab.queue")
                     .with_bounds(self.library_queue_tab_rect)
                     .with_state(AccessState {
@@ -1209,7 +1222,7 @@ impl PlayerState {
                         ..Default::default()
                     }),
                 AccessNode::new(Role::Tab)
-                    .with_name("Recent")
+                    .with_name(crate::i18n::t("video-recent"))
                     .with_action_target("video-player.library.tab.recent")
                     .with_bounds(self.library_recent_tab_rect)
                     .with_state(AccessState {
@@ -1219,7 +1232,7 @@ impl PlayerState {
                         ..Default::default()
                     }),
                 AccessNode::new(Role::Tab)
-                    .with_name("Shared")
+                    .with_name(crate::i18n::t("video-shared"))
                     .with_action_target("video-player.library.tab.shared")
                     .with_bounds(self.library_shared_tab_rect)
                     .with_state(AccessState {
@@ -1241,7 +1254,7 @@ impl PlayerState {
                     .with_action_target("video-player.formats")
             } else {
                 AccessNode::new(Role::Button)
-                    .with_name("Open video")
+                    .with_name(crate::i18n::t("video-open-video"))
                     .with_description("Ctrl+O")
                     .with_action_target("video-player.open")
             };
@@ -1260,7 +1273,7 @@ impl PlayerState {
             .with_name(if self.player.has_media() {
                 self.title.clone()
             } else {
-                "Video Player".into()
+                crate::i18n::t("video-title")
             })
             .with_children(children)
     }

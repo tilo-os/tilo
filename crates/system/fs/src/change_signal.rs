@@ -157,7 +157,6 @@ mod worker {
                 .map(|registry| registry.lock_recover().subscribe_changes());
             let (mut changes, mut seen) = {
                 let mut ns = namespace.lock_recover();
-                ns.collect_projected_changes();
                 let seen = Seen {
                     heads: ns.heads(),
                     catalogue: ns.indexed_record_revision().to_owned(),
@@ -204,7 +203,6 @@ mod worker {
                     }
                 }
                 signal.live.store(false, Ordering::Release);
-                namespace.lock_recover().stop_collecting_projected_changes();
             });
             Ok(ChangeSignalTask { task })
         }

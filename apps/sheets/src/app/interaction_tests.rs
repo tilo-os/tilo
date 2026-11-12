@@ -8,6 +8,7 @@ use super::tests::{char_event, ctrl_mods, doc_workbook, feed, measured_app_with_
 use super::*;
 use crate::model::FormatCategory;
 use automerge::AutoCommit;
+use ui::widget::Tone;
 
 fn mouse(state: ElementState) -> WindowEvent {
     ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
@@ -98,6 +99,45 @@ fn the_window_bar_names_the_workbook_and_the_sheet_in_view() {
 }
 
 /// The commands, the menus and the sheet tabs act on pointer and keyboard.
+/// A comment's marker wears the colour presence paints its author in: the one
+/// the member list announced, or the one their identity derives when it
+/// announced none.
+#[test]
+fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
+    let (mut app, mut doc, mut tr, theme) = painted();
+    let sheet = app.sheet_ids[0].clone();
+    let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+    book.apply(Workbook::COMMENT.with(crate::resource::verbs::Comment {
+        sheet,
+        range: "C3".into(),
+        text: "Amira asked to swap Tuesday afternoon with Wen.".into(),
+    }))
+    .unwrap();
+    doc = book.doc().clone();
+    app.sync(&doc, &automerge::ROOT);
+    let c3 = app.grid.cell_screen_rect(2, 2).center();
+    click(&mut app, &mut doc, c3);
+    paint_frame(&mut app, &mut tr, &theme);
+    let author = app.open_thread().expect("the open thread").author.clone();
+
+    let mut presence = ui::presence::PresenceCtx::default();
+    presence.set_presence_hue(
+        ui::permissions::UserId(author.clone()),
+        ui::tokens::PresenceHue::Violet,
+    );
+    let markers = app.comment_markers(&presence);
+    assert_eq!(
+        markers[0].1,
+        Tone::Presence(ui::tokens::PresenceHue::Violet),
+        "the marker wears the colour the member list gives its author"
+    );
+    assert_eq!(
+        app.comment_markers(&ui::presence::PresenceCtx::default())[0].1,
+        Tone::of_identity(&author),
+        "someone who announced no colour keeps the one their identity derives"
+    );
+}
+
 #[test]
 fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `format_menu_applies_the_chosen_format`.
@@ -314,7 +354,7 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
 
     // The marker: on the commented cell, and only there.
     let c3 = app.grid.cell_screen_rect(2, 2);
-    let markers = app.comment_markers();
+    let markers = app.comment_markers(&ui::presence::PresenceCtx::default());
     assert_eq!(markers.len(), 1, "one comment, one marker");
     assert_eq!(markers[0].0, c3, "the marker is on the commented cell");
     assert!(app.open_thread().is_none(), "the thread waits on its cell");
@@ -503,4 +543,32 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         (cell.y0 - body.y0).abs() < 0.5,
         "with nothing covering it, the match stands at the body's top: {cell:?}"
     );
+}
+
+/// A sideways wheel the columns cannot follow is nobody's here: it is left
+/// to whatever encloses the window — on a desktop, the strip of windows,
+/// which pans it — so a swipe over a sheet already at its first column still
+/// moves something. One the columns can follow is the sheet's.
+#[test]
+fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_desk() {
+    let (mut app, mut doc, _tr, _theme) = painted();
+    let wheel = |dx: f64| {
+        ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            // A wheel's sideways travel is the negated delta on the page's
+            // wire, as winit hands it to every host.
+            delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(-dx, 0.0)),
+            phase: ui::winit::event::TouchPhase::Moved,
+        }
+    };
+    assert!(
+        !feed(&mut app, &mut doc, &wheel(-24.0), Modifiers::default()),
+        "the sheet shows its first column: a swipe before it is the desk's"
+    );
+    app.pending.redraw = false;
+    assert!(
+        feed(&mut app, &mut doc, &wheel(24.0), Modifiers::default()),
+        "the later columns are the sheet's"
+    );
+    assert!(app.pending.redraw, "the sheet repaints where it scrolled");
 }

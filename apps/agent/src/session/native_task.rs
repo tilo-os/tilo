@@ -186,8 +186,8 @@ impl Session {
                     CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
                 )
                 | None => {}
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
             }
@@ -253,9 +253,7 @@ impl Session {
         }
         state.epoch = Some(control.run_epoch);
         if control.has_more {
-            anyhow::bail!(
-                "More than one page of task directions needs person review; none were acknowledged"
-            );
+            anyhow::bail!(crate::i18n::t("agent-fail-direction-pages"));
         }
         if !control.directions.is_empty() {
             state.pending = Some(control);
@@ -405,9 +403,9 @@ fn cancel_running(followed: &mut [Following]) {
         .iter_mut()
         .filter(|following| following.outcome.is_none())
     {
-        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(
-            "Cancelled from Task Center".into(),
-        ))));
+        following.outcome = Some(Err(TaskActionStop::Cancelled(Some(crate::i18n::t(
+            "agent-cancel-task-center",
+        )))));
     }
 }
 
@@ -430,9 +428,9 @@ fn conclude_native(following: &mut Following) {
             .deadline
             .is_some_and(|deadline| ui::time::now() >= deadline) =>
         {
-            Some(Err(TaskActionStop::Failed(
-                "Native action outcome remains unknown; review history before retrying".into(),
-            )))
+            Some(Err(TaskActionStop::Failed(crate::i18n::t(
+                "agent-fail-native-outcome",
+            ))))
         }
         _ => None,
     };

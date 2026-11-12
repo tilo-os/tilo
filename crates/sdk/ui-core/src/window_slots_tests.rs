@@ -295,3 +295,30 @@ fn a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone() {
     slots.sync_hosted(&windows, groups.iter_mut());
     assert_eq!(groups[0].tab_toolbar(6), None, "bare again");
 }
+
+/// An app hears once when its window starts floating over the desk and once when it stands in its
+/// strip again.
+#[test]
+fn an_app_hears_when_its_window_floats_and_when_it_stands_again() {
+    let mut toolbars = WindowSlots::default();
+    let mut window = group(&[5]);
+    toolbars.declare(5, 61, Some(location("chat")));
+    toolbars.sync_groups([&mut window]);
+    assert!(
+        toolbars.take_outbox().is_empty(),
+        "a strip window is told nothing"
+    );
+    window.set_floating(true);
+    toolbars.sync_groups([&mut window]);
+    toolbars.sync_groups([&mut window]);
+    assert_eq!(
+        toolbars.take_outbox(),
+        vec![(61, ToolbarEvent::Floating { floating: true })]
+    );
+    window.set_floating(false);
+    toolbars.sync_groups([&mut window]);
+    assert_eq!(
+        toolbars.take_outbox(),
+        vec![(61, ToolbarEvent::Floating { floating: false })]
+    );
+}

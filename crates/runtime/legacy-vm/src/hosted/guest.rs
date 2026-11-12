@@ -1,5 +1,5 @@
-//! The hosted guest image: a signed, digest-pinned Firecracker kernel and root
-//! filesystem from the registry.
+//! The hosted guest images: a signed, digest-pinned Firecracker kernel and
+//! root filesystem from the registry.
 //!
 //! CI builds them (`tools/ci/publish/hosted-guest.sh`), wraps `vmlinux` and
 //! `rootfs.ext4` in one OCI image, signs it with the release key and pins the
@@ -10,6 +10,10 @@
 //! reflinked copy of `rootfs.ext4`, then grown to the VM's size
 //! ([`Machine::base_disk`](super::firecracker::Machine)), so the fetched image
 //! stays pristine and every VM of a host starts from the same bytes.
+//!
+//! One image boots every workspace's VM: its Linux programs, and the headless
+//! session with Browser and Chromium that holds the workspace's Browser
+//! (`docs/hosted-browser.md`).
 
 use std::path::{Path, PathBuf};
 
@@ -19,20 +23,25 @@ use crate::image;
 
 const SNAPSHOT: &str = include_str!("../../../../../os/hosted-guest-snapshot.env");
 
-/// The kernel inside the image's single layer.
+/// The kernel inside an image's single layer.
 pub const KERNEL_IN_IMAGE: &str = "vmlinux";
-/// The root filesystem base disk inside the image's single layer.
+/// The root filesystem base disk inside an image's single layer.
 pub const ROOTFS_IN_IMAGE: &str = "rootfs.ext4";
 
-/// The one repository the hosted guest is published to. Its scope in
+/// The repository the guest is published in. Its scope in
 /// `/etc/containers/policy.json` requires the release key's signature, so a
 /// sibling under the same namespace is not the guest.
-const GUEST_REPOSITORY: &str = "registry.tilo.so/tilo/hosted-guest";
+pub const REPOSITORY: &str = "registry.tilo.so/tilo/hosted-guest";
+
+/// The key its digest is pinned under, before the architecture.
+const PIN_PREFIX: &str = "HOSTED_GUEST_";
 
 #[derive(Debug, Error)]
 pub enum GuestError {
     #[error("no hosted guest image has been published for this Tilo build; pass --ref <reference>")]
     NotPublished,
+    #[error("{0} is not a digest-pinned hosted guest reference")]
+    NotARef(String),
     #[error("the fetched image is not a single-layer hosted guest")]
     Layout,
     #[error(transparent)]
@@ -43,15 +52,16 @@ pub enum GuestError {
 
 /// One fetched guest: what a VM boots and the disk it starts from.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Guest {
+pub struct Fetched {
     pub kernel: PathBuf,
     pub rootfs: PathBuf,
 }
 
-/// The pinned reference for this architecture, if one was published.
+/// The pinned reference of the guest for this architecture, if one was
+/// published.
 #[must_use]
 pub fn pinned_ref(snapshot: &str, arch: &str) -> Option<String> {
-    let key = format!("HOSTED_GUEST_{}_REF=", arch.to_ascii_uppercase());
+    let key = format!("{PIN_PREFIX}{}_REF=", arch.to_ascii_uppercase());
     snapshot
         .lines()
         .map(str::trim)
@@ -68,7 +78,7 @@ pub fn valid_pinned_ref(reference: &str) -> bool {
     let Some((repository, digest)) = reference.split_once("@sha256:") else {
         return false;
     };
-    repository == GUEST_REPOSITORY
+    repository == REPOSITORY
         && digest.len() == 64
         && digest
             .bytes()
@@ -81,7 +91,7 @@ pub fn current_ref() -> Option<String> {
     pinned_ref(SNAPSHOT, std::env::consts::ARCH)
 }
 
-/// Where the guest for `reference` is kept: both files, under the digest that
+/// Where the image `reference` is kept: both files, under the digest that
 /// names them.
 #[must_use]
 pub fn guest_dir(images: &Path, reference: &str) -> PathBuf {
@@ -89,15 +99,31 @@ pub fn guest_dir(images: &Path, reference: &str) -> PathBuf {
     images.join(format!("hosted-{digest}"))
 }
 
-fn files(dir: &Path) -> Guest {
-    Guest {
+fn files(dir: &Path) -> Fetched {
+    Fetched {
         kernel: dir.join(KERNEL_IN_IMAGE),
         rootfs: dir.join(ROOTFS_IN_IMAGE),
     }
 }
 
-/// Fetch the pinned guest into `images` unless it is already there.
-pub fn ensure_guest(images: &Path, reference: &str) -> Result<Guest, GuestError> {
+/// The reference the guest is fetched by: `reference` when given, else the
+/// pin compiled in. An empty reference names the pin, so a start can pass the
+/// variable it holds without asking whether it is set.
+///
+/// # Errors
+///
+/// The reference is not a digest pin of the guest's repository, or nothing
+/// has been published for it.
+pub fn reference(reference: Option<&str>) -> Result<String, GuestError> {
+    match reference.filter(|reference| !reference.is_empty()) {
+        Some(reference) if valid_pinned_ref(reference) => Ok(reference.to_string()),
+        Some(reference) => Err(GuestError::NotARef(reference.to_string())),
+        None => current_ref().ok_or(GuestError::NotPublished),
+    }
+}
+
+/// Fetch `reference` into `images` unless it is already there.
+pub fn ensure_guest(images: &Path, reference: &str) -> Result<Fetched, GuestError> {
     let dir = guest_dir(images, reference);
     let found = files(&dir);
     if found.kernel.is_file() && found.rootfs.is_file() {
@@ -147,24 +173,30 @@ mod tests {
     #[test]
     fn the_hosted_guest_is_fetched_only_by_pinned_digest() {
         let digest = "ab".repeat(32);
-        let reference = format!("registry.tilo.so/tilo/hosted-guest@sha256:{digest}");
-        // phase: only a digest pin of the signed hosted-guest repository is accepted
+        let linux = format!("registry.tilo.so/tilo/hosted-guest@sha256:{digest}");
+        // phase: only a digest pin of the guest's own signed repository is accepted
         {
-            let snapshot = format!("# pinned by CI\nHOSTED_GUEST_X86_64_REF={reference}\n");
-            assert_eq!(pinned_ref(&snapshot, "x86_64"), Some(reference.clone()));
+            let snapshot = format!("# pinned by CI\nHOSTED_GUEST_X86_64_REF={linux}\n");
+            assert_eq!(pinned_ref(&snapshot, "x86_64"), Some(linux.clone()));
             assert_eq!(pinned_ref(&snapshot, "aarch64"), None);
             assert_eq!(
-                pinned_ref(&format!("# HOSTED_GUEST_X86_64_REF={reference}"), "x86_64"),
+                pinned_ref(&format!("# HOSTED_GUEST_X86_64_REF={linux}"), "x86_64"),
                 None
             );
-            assert!(!valid_pinned_ref(
-                "registry.tilo.so/tilo/hosted-guest:latest"
+            assert!(matches!(
+                reference(Some("registry.tilo.so/tilo/hosted-guest:latest")),
+                Err(GuestError::NotARef(_))
             ));
             assert!(!valid_pinned_ref(&format!(
                 "evil.example/hosted-guest@sha256:{digest}"
             )));
             assert!(!valid_pinned_ref("registry.tilo.so/tilo/x@sha256:abc"));
-            for sibling in ["hosted-guest-dev", "tilo-vm", "legacy-guest", "hosted"] {
+            for sibling in [
+                "hosted-guest-dev",
+                "hosted-browser-guest",
+                "tilo-vm",
+                "hosted",
+            ] {
                 assert!(!valid_pinned_ref(&format!(
                     "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
                 )));
@@ -174,11 +206,8 @@ mod tests {
         }
         // phase: the guest lands under its digest, as both files the VM needs
         {
-            assert_eq!(
-                guest_dir(Path::new("/c"), &reference),
-                PathBuf::from(format!("/c/hosted-{digest}"))
-            );
-            let dir = guest_dir(Path::new("/c"), &reference);
+            let dir = guest_dir(Path::new("/c"), &linux);
+            assert_eq!(dir, PathBuf::from(format!("/c/hosted-{digest}")));
             let found = files(&dir);
             assert_eq!(found.kernel, dir.join("vmlinux"));
             assert_eq!(found.rootfs, dir.join("rootfs.ext4"));

@@ -9,6 +9,7 @@
 //! either way what a developer needs goes to the log.
 
 use super::{BrowsingMode, SharedEngine};
+use crate::CATALOG;
 use ui::icons::Icon;
 use ui::widget::{Column, EmptyState, Widget};
 
@@ -118,7 +119,7 @@ pub(super) fn unavailable_engine(mode: BrowsingMode) -> SharedEngine {
 pub(super) fn engine_failed_state() -> Box<dyn Widget> {
     let state = EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
         .with_icon(Icon::Info)
-        .with_message(ui::i18n!("browser-engine-failed"));
+        .with_message(CATALOG.t("browser-engine-failed"));
     Box::new(
         Column::new()
             .with_no_padding()

@@ -26,13 +26,17 @@ use tilo_ui_host::{UiNode, Value};
 use tilolang_tilo::runtime::{Principal, Value as RtValue};
 use ui::framework::{ResourceSurface as _, RunMode};
 use ui::permissions::policy::{self, agent_answers};
-use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
+use ui::widget::{DescribedList, NavShell, Widget as _};
 
 use super::*;
+use ui::widget::DrawChild;
 
+mod clocks;
 mod mail;
+mod names;
 mod opening;
 mod personal;
+mod tree;
 
 /// The text a value of the runtime holds.
 fn rt_text(value: &RtValue) -> String {
@@ -178,7 +182,7 @@ impl Workspace {
     /// Paint the window into `scene`, as a frame does.
     fn paint(&mut self, scene: &mut ui::vello::Scene) {
         let mut text = ui::TextRenderer::new();
-        self.window.draw(
+        self.window.draw_child(
             scene,
             ui::kurbo::Affine::IDENTITY,
             &mut text,
@@ -236,20 +240,15 @@ impl Workspace {
     }
 
     /// Frames and doors until the window has nothing more to hand over, and its instance
-    /// reads the indexes its packages' load built: a host's frames keep coming until then,
-    /// and this harness's stop when it is at rest.
+    /// reads the indexes its packages' load built: those are read from the record on threads
+    /// of their own, which a window with a frame loop is woken by and a harness here waits for.
     fn settle(&mut self) {
         for _ in 0..4 {
             self.frame();
             self.door();
         }
-        let start = std::time::Instant::now();
-        while !self.index_ready() && start.elapsed().as_secs() < 120 {
-            self.frame();
-            self.door();
-            if !self.index_ready() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+        if !self.index_ready() {
+            self.window.host().expect("the host started").wait_index();
         }
         assert!(self.index_ready(), "the window reads its packages' indexes");
         self.frame();
@@ -363,17 +362,59 @@ impl Workspace {
             .expect("the window composed its shell")
     }
 
-    /// The tree of the row the window shows first: a task opens where it stands, so what a
-    /// person sees of it is drawn in the list itself.
+    /// The tree of the row the window shows first.
     fn first_row_tree(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
         let len = self.root_rows().borrow().len();
         self.show_rows(0..len);
-        let list = self
+        self.row_tree()
+    }
+
+    /// The tree of the row the window shows first, standing open into its item where it stands
+    /// — the page a person reads under the row — as a press on the row opens it.
+    fn first_open_row(&mut self) -> Option<tilolang_tilo::runtime::UiNode> {
+        let len = self.root_rows().borrow().len();
+        self.show_rows(0..len);
+        let key = self.root_rows().borrow().key_at(0)?;
+        // A click tells the app which item stands open, as `on opened(x): set(opened, x)` does,
+        // so its page stays open when the view runs again.
+        let item = self.item_of(&key);
+        let value =
+            tilolang_tilo::runtime::Value::some(tilolang_tilo::runtime::Value::resource(&item));
+        let view = self
             .window
-            .view()
-            .lists()
-            .into_iter()
-            .find(|key| !key.starts_with(DETAIL))?;
+            .instance()
+            .view(tilo_render_protocol::patch::Lane::Root)?;
+        view.borrow().set_view_state("opened", value);
+        open_in_list(
+            self.window.shell_mut().expect("the window shows the shell"),
+            key,
+        );
+        // The list asks for the row standing open, the app builds its page, and the window
+        // mounts it under the row.
+        self.lay_out();
+        self.frame();
+        self.settle();
+        self.lay_out();
+        self.row_tree()
+    }
+
+    /// The key of the window's own list: the column the shell shows, not a list a row standing
+    /// open holds in its document, which a window's rows carry too once it opens.
+    fn root_list(&self) -> String {
+        fn outermost(node: &UiNode) -> Option<String> {
+            if tilo_render_protocol::patch::is_virtual_list(&node.kind)
+                && !node.key.starts_with(DETAIL)
+            {
+                return Some(node.key.clone());
+            }
+            node.children.iter().find_map(outermost)
+        }
+        outermost(&self.composed()).expect("the window shows a list of its own")
+    }
+
+    /// The tree of the first row the app rendered for the list it shows.
+    fn row_tree(&self) -> Option<tilolang_tilo::runtime::UiNode> {
+        let list = self.root_list();
         let view = self
             .window
             .instance()
@@ -383,19 +424,17 @@ impl Workspace {
 
     /// The rows of the root's list, as its list reads them.
     fn root_rows(&self) -> Rc<RefCell<RemoteRows>> {
-        self.window
-            .view()
-            .lists()
-            .into_iter()
-            .find(|key| !key.starts_with(DETAIL))
-            .and_then(|key| self.window.view().rows_of(&key))
-            .expect("the root lists its items")
+        let key = self.root_list();
+        self.window.view().rows_of(&key).unwrap_or_else(|| {
+            panic!(
+                "the window holds the rows of {key}: {:?}",
+                self.window.view().lists()
+            )
+        })
     }
 
-    /// Ask for `range` of the root's list, as the list does when it shows them, and let the
-    /// window take the rows the app renders for it.
     fn show_rows(&mut self, range: std::ops::Range<usize>) {
-        self.root_rows().borrow_mut().request_range(range);
+        self.root_rows().borrow_mut().request_range(range, None);
         self.frame();
     }
 
@@ -476,26 +515,57 @@ impl Workspace {
         self.settle();
     }
 
-    /// Press the header's button labelled `label`.
+    /// The window's search, as the bar runs it: what the window offers the bar and the driver
+    /// that types into it.
+    fn window_search(&mut self) -> (ui::widget::SearchDriver, ui::widget::InPlace) {
+        let in_place = ui::widget::InPlace::of(&mut self.window);
+        let mut driver = ui::widget::SearchDriver::default();
+        driver.open(in_place);
+        (driver, in_place)
+    }
+
+    /// Send what the person typed to the record, as the window's next frame does.
+    fn land_typed(&mut self) {
+        self.window.commit_planned();
+        self.settle();
+    }
+
+    /// Type `text` into the window's search, as the bar does, and take what the app answers:
+    /// the bar reads the count again on the frame after, as the app's answer arrives.
+    fn type_in_search(&mut self, driver: &mut ui::widget::SearchDriver, text: &str) {
+        for _ in 0..2 {
+            driver.drive(
+                &mut self.window,
+                text,
+                ui::widget::FindOptions::default(),
+                None,
+                false,
+            );
+            self.settle();
+        }
+    }
+
+    /// Press the header's button labelled `label`: the window bar's, or the sidebar's own where
+    /// the app makes what it lists there.
     fn header_action(&mut self, label: &str) {
         // The bar's own button for the action, not a control of the page that happens to be
         // named the same (a change mark's item is titled like the note it names).
+        fn walk<'a>(node: &'a UiNode, label: &str) -> Option<&'a UiNode> {
+            let names = node
+                .props
+                .get("label")
+                .is_some_and(|said| tilo_ui_host::reconcile::display(said) == label);
+            if node.kind == "ui.Button" && names {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| walk(child, label))
+        }
         let composed = self.composed();
-        let key = ["overview_actions", "actions"]
+        let key = ["overview_actions", "actions", "sidebar_actions"]
             .into_iter()
             .flat_map(|slot| slot_of(&composed, slot))
-            .find(|node| {
-                node.kind == "ui.Button"
-                    && node
-                        .props
-                        .get("label")
-                        .map(tilo_ui_host::reconcile::display)
-                        .as_deref()
-                        == Some(label)
-            })
-            .unwrap_or_else(|| panic!("the bar offers {label}"))
-            .key
-            .clone();
+            .find_map(|node| walk(node, label).map(|button| button.key.clone()))
+            .unwrap_or_else(|| panic!("the window's header offers {label}"));
         self.fire(&key, "press", None);
     }
 
@@ -588,6 +658,22 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
 }
 
 /// The key of the first text input under the runtime's node `node`, as a row renders it.
+/// Open the row `key` where it stands in the list under `widget`, as a press on it does.
+fn open_in_list(widget: &mut dyn ui::widget::Widget, key: String) -> bool {
+    if let Some(list) = widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<DescribedList>())
+        && let Some(rows) = list.list_mut()
+    {
+        rows.set_open(Some(key));
+        return true;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| open_in_list(child, key.clone()))
+}
+
 fn first_input_key(node: &tilolang_tilo::runtime::UiNode) -> Option<String> {
     if node.kind == "ui.TextInput" {
         return Some(node.key.clone());
@@ -647,117 +733,162 @@ fn header_labels(shell: &UiNode, slot: &str) -> Vec<String> {
 // ----- the shell ---------------------------------------------------------------------------
 
 #[test]
-fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_fills() {
+fn a_notebook_is_the_native_tree_shell_with_the_header_the_platform_fills() {
     let mut workspace = Workspace::seeded("notes");
     assert!(
-        workspace.shell().has_overview(),
-        "the notes list is the overview column"
+        !workspace.shell().has_overview(),
+        "no list of notes stands between the tree and the note it opens"
     );
     assert!(
         workspace.shell().has_sidebar(),
-        "the note's filters are the sidebar's places"
+        "the notebook is the sidebar's tree"
     );
-    let rows = workspace.rows();
-    assert!(rows.len() >= 3, "{rows:?}");
+    assert!(
+        workspace.shell().has_content(),
+        "the note chosen stands beside the tree"
+    );
+    let notes = workspace.tree_labels();
+    assert!(notes.len() >= 3, "{notes:?}");
+    assert_eq!(notes[0], "Q3 plan", "the notebook's notes, in its order");
     let shell = workspace.composed();
     assert_eq!(
-        shell.props.get("overview_title"),
-        Some(&Value::text("All notes"))
+        shell.props.get("sidebar_title"),
+        Some(&Value::text("Notes"))
+    );
+    assert!(
+        workspace.header_buttons("sidebar_actions").is_empty(),
+        "the sidebar's header offers no button of the window's: {:?}",
+        workspace.header_buttons("sidebar_actions")
+    );
+    assert!(
+        workspace
+            .header_buttons("actions")
+            .contains(&"New note".to_owned()),
+        "the window's primary action stands in its bar: {:?}",
+        workspace.header_buttons("actions")
+    );
+    // The window opens on the first note of the tree, its page beside it.
+    let opened = workspace.opened_note();
+    let host = workspace.window.current_host().unwrap();
+    assert_eq!(tilolang_tilo::instance::title_of(&host, &opened), "Q3 plan");
+}
+
+/// The window says what it shows, so a desktop names its tab, its switcher entry and its
+/// assistive-technology node by the page rather than by the app: two windows of one app read
+/// apart without either being opened.
+#[test]
+fn the_window_says_the_note_it_shows() {
+    let mut workspace = Workspace::seeded("notes");
+    assert_eq!(
+        ui::component_lifecycle::window_title(&workspace.window),
+        Some("Q3 plan"),
+        "the note the window opened on names it"
+    );
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
     );
     assert_eq!(
-        header_labels(&shell, "overview_actions"),
-        ["Sort", "search", "New note"],
-        "the sort menu, search, and the primary action last"
-    );
-    // The scenario showed its note; with that closed the list lists for the whole window, and
-    // the note's column stands there again once a note is shown.
-    assert!(workspace.window.detail_target().is_some());
-    workspace.window.close_detail();
-    workspace.settle();
-    assert!(workspace.window.detail_target().is_none());
-    assert!(
-        slot_of(&workspace.composed(), "content").is_empty(),
-        "no content column stands beside the list"
-    );
-    assert!(
-        !workspace.shell().has_content(),
-        "the list lists for the whole window"
+        ui::component_lifecycle::window_title(&workspace.window),
+        Some("Standups"),
+        "the note chosen beside the tree names the window now"
     );
 }
 
 // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as
-// push-navigation to the resource's default view with back". It now shows the resource's
-// default view in the next column, which a narrow window pushes with Back.
+// push-navigation to the resource's default view with back". A note chosen in the tree stands
+// beside it, in the window's own content column, and its page edits the note.
 #[test]
-fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_list() {
+fn choosing_a_note_in_the_tree_shows_it_beside_the_tree() {
     let mut workspace = Workspace::seeded("notes");
-    let (key, _) = workspace.rows().remove(1);
-    workspace.activate(&key);
-    let item = workspace.item_of(&key);
+    let first = workspace.opened_note();
+    // A note inside another: the bar names where it stands, the note under it.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
+    );
+    assert_ne!(
+        inside, first,
+        "another note than the one the window opened on"
+    );
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&item),
-        "the note is shown"
+        workspace.opened_note(),
+        inside,
+        "the row's note stands in the content column"
     );
-    let detail = workspace.window.detail_tree().expect("the note is shown");
-    assert!(
-        first_input(&detail).is_some(),
-        "the note's editor: {detail:#?}"
+    assert_eq!(
+        workspace.composed().props.get("title"),
+        Some(&Value::text("Standups")),
+        "the bar names the note the page shows, for when the page's heading scrolls away"
     );
-    let selected: Vec<String> = workspace
-        .list()
-        .list()
-        .unwrap()
-        .selection()
-        .stored_keys()
-        .cloned()
-        .collect();
-    assert_eq!(selected, std::slice::from_ref(&key), "the row is selected");
-    assert!(
-        workspace.composed().props.contains_key("title"),
-        "the shell keeps the title for when the note's own heading scrolls away"
-    );
-    // Editing the title changes the row.
-    let input = first_input(&workspace.composed())
+    // Editing the title on the page renames the note, and the tree's row says so. The page is
+    // what the window draws beside the tree, not the sidebar's own search field.
+    let composed = workspace.composed();
+    let input = slot_of(&composed, "content")
+        .into_iter()
+        .find_map(first_input)
         .expect("the composed editor")
         .key
         .clone();
+    drop(composed);
     workspace
         .window
         .act(UiEvent::Edit(input, "Plans for the week".to_owned()));
     workspace.settle();
     assert!(
         workspace
-            .rows()
+            .tree_labels()
             .iter()
-            .any(|(_, shown)| shown == "Plans for the week"),
+            .any(|shown| shown == "Plans for the week"),
         "{:?}",
-        workspace.rows()
+        workspace.tree_labels()
     );
-    workspace.window.close_detail();
-    workspace.settle();
-    assert!(
-        workspace.window.detail_target().is_none()
-            || workspace.shell().front_pane() != NavPane::Content
-    );
+}
+
+/// Every `ui.EmptyState` the node holds: what a column says when it lists nothing.
+fn empty_states(node: &UiNode, out: &mut Vec<UiNode>) {
+    if node.kind == "ui.EmptyState" {
+        out.push(node.clone());
+    }
+    for child in &node.children {
+        empty_states(child, out);
+    }
 }
 
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 0);
-    // An empty notebook says one sentence, and its primary action stands once, in the window's
-    // bar: the empty state has no button of its own.
-    let empty = slot_of(&workspace.composed(), "overview")
-        .into_iter()
-        .find(|node| node.kind == "ui.EmptyState")
-        .cloned()
-        .expect("the empty notebook says so");
-    assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
+    // An empty notebook says one sentence once, in place of both columns, and its primary action
+    // stands once, in the bar: the state has no button of its own.
+    let composed = workspace.composed();
+    let mut empty = Vec::new();
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
     assert_eq!(
-        header_labels(&workspace.composed(), "overview_actions"),
-        ["Sort", "search", "New note"],
-        "the bar offers the primary once"
+        empty[0].props.get("title"),
+        Some(&Value::text("No notes yet"))
+    );
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
+    assert!(
+        workspace.header_buttons("sidebar_actions").is_empty(),
+        "the sidebar's header offers no second button"
+    );
+    assert!(
+        workspace
+            .header_buttons("actions")
+            .contains(&"New note".to_owned()),
+        "the bar offers the primary once: {:?}",
+        workspace.header_buttons("actions")
     );
     workspace.header_action("New note");
     assert_eq!(
@@ -765,13 +896,12 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
         1,
         "the action inserted a note"
     );
-    assert_eq!(workspace.rows().len(), 1);
-    let (key, _) = workspace.rows().remove(0);
-    let made = workspace.item_of(&key);
+    assert_eq!(workspace.tree_labels(), ["Untitled"]);
+    let made = workspace.tree_row_note("Untitled");
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&made),
-        "and the note it made opened beside the list"
+        workspace.opened_note(),
+        made,
+        "and the note it made stands beside the tree"
     );
 }
 
@@ -864,62 +994,91 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     // The person pressing New note in the window opens what it made, whatever was made before.
     workspace.header_action("New note");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), 3);
-    let opened = workspace
-        .window
-        .detail_target()
-        .cloned()
-        .expect("the person's note opened");
-    let keys: Vec<String> = workspace.rows().into_iter().map(|(key, _)| key).collect();
-    let theirs = keys
-        .iter()
-        .filter(|key| workspace.item_of(key) == opened)
-        .count();
-    assert_eq!(theirs, 1, "it is a note of the list");
+    let opened = workspace.opened_note();
+    let notes: Vec<String> = workspace.tree_labels();
+    assert!(
+        notes.iter().filter(|label| *label == "Untitled").count() == 3,
+        "it is a note of the notebook: {notes:?}"
+    );
     // And an agent's note after that leaves the person's open.
     workspace
         .applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(workspace.window.detail_target(), Some(&opened));
+    assert_eq!(workspace.opened_note(), opened);
+}
+
+/// The labels of the navigation items under `node`.
+fn places(node: &UiNode, out: &mut Vec<String>) {
+    if node.kind == "ui.NavItem" {
+        out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
+    }
+    for child in &node.children {
+        places(child, out);
+    }
+}
+
+/// The sections of the navigation list under `node`: each heading and its places.
+fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
+    if node.kind == "ui.NavSection" {
+        let mut held = Vec::new();
+        places(node, &mut held);
+        out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
+        return;
+    }
+    for child in &node.children {
+        sections(child, out);
+    }
+}
+
+/// The composed shell's bar offers the action `label` once, and none of the empty states
+/// `states` draws a call to action beside it: one way to do it on the window at any width.
+fn one_offering(shell: &UiNode, states: &[UiNode], label: &str) {
+    assert_eq!(
+        header_labels(shell, "actions")
+            .iter()
+            .filter(|shown| *shown == label)
+            .count(),
+        1,
+        "the bar offers `{label}` once"
+    );
+    assert!(
+        states
+            .iter()
+            .all(|state| !state.props.contains_key("action")),
+        "no empty state draws a call to action beside the bar's"
+    );
 }
 
 #[test]
 fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
-    /// The labels of the navigation items under `node`.
-    fn places(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.NavItem" {
-            out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
-        }
-        for child in &node.children {
-            places(child, out);
-        }
-    }
-    /// The sections of the navigation list under `node`: each heading and its places.
-    fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
-        if node.kind == "ui.NavSection" {
-            let mut held = Vec::new();
-            places(node, &mut held);
-            out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
-            return;
-        }
-        for child in &node.children {
-            sections(child, out);
-        }
-    }
     let mut workspace = Workspace::new("chat");
-    assert!(
-        node_with(
-            &workspace.composed(),
-            "ui.EmptyState",
-            "title",
-            "No channels yet"
-        )
-        .is_some(),
-        "an empty workspace says so"
+    // A workspace with nothing at all to list says so once, where both columns stood: the places
+    // draw no second state beside it, and a narrow window opens on that one state.
+    let composed = workspace.composed();
+    assert_eq!(
+        composed.props.get("nothing_listed"),
+        Some(&Value::Bool(true)),
+        "the window says it lists nothing"
     );
-    // While there is no channel the empty state carries the only New channel button, so the
-    // header does not show the same one twice; its button comes back with the first channel.
-    let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");
-    workspace.fire(&empty, "act", None);
+    assert!(
+        slot_of(&composed, "sidebar").is_empty(),
+        "the places draw no second state"
+    );
+    let mut empty = Vec::new();
+    empty_states(&composed, &mut empty);
+    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
+    assert_eq!(
+        empty[0].props.get("title"),
+        Some(&Value::text("No channels yet")),
+        "the words the app declares for what it has none of"
+    );
+    assert!(
+        empty[0].props.contains_key("message"),
+        "with the line that says what a channel is for"
+    );
+    one_offering(&composed, &empty, "New channel");
+    let button = workspace.key_of("ui.Button", "label", "New channel");
+    workspace.fire(&button, "press", None);
     assert_eq!(workspace.items_of("so.tilo.lang.chat", "channels"), 1);
     let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")
@@ -986,15 +1145,29 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
 
 #[test]
 fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
-    let mut workspace = Workspace::seeded("notes");
-    let all = workspace.rows().len();
-    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
-    workspace.fire(&pinned, "select", None);
-    let shown = workspace.rows().len();
-    assert!(shown < all, "{shown} of {all}");
+    let mut workspace = Workspace::seeded("mail");
+    // The inbox narrows the account's mail; the place a person chooses says so over the list.
+    let inbox = workspace.rows().len();
+    assert!(inbox > 0, "the inbox lists its conversations");
     assert_eq!(
         workspace.composed().props.get("overview_title"),
-        Some(&Value::text("Pinned"))
+        Some(&Value::text("Inbox"))
+    );
+    let all = workspace.key_of("ui.NavItem", "label", "All mail");
+    workspace.fire(&all, "select", None);
+    let shown = workspace.rows().len();
+    assert!(shown > inbox, "{shown} of {inbox}");
+    assert_eq!(
+        workspace.composed().props.get("overview_title"),
+        Some(&Value::text("All mail"))
+    );
+    // And the inbox narrows it back, under its own name.
+    let back = workspace.key_of("ui.NavItem", "label", "All inboxes");
+    workspace.fire(&back, "select", None);
+    assert_eq!(workspace.rows().len(), inbox, "the inbox again");
+    assert_eq!(
+        workspace.composed().props.get("overview_title"),
+        Some(&Value::text("Inbox"))
     );
 }
 
@@ -1066,7 +1239,7 @@ fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
         workspace.settle();
     }
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "notes"), staged);
-    assert_eq!(workspace.rows().len(), staged);
+    assert_eq!(workspace.tree_labels().len(), staged);
     let records = tilolang_tilo::action::resource_ids(&workspace.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
 }
@@ -1683,9 +1856,12 @@ fn search_entries_find_notes_and_open_the_window_at_the_note() {
         .borrow_mut()
         .push(tilolang_tilo::OpenEffect::Open { anchor });
     workspace.settle();
-    assert!(
-        workspace.window.detail_target().is_some(),
-        "the hit showed the note"
+    let host = workspace.window.current_host().unwrap();
+    let note = workspace.opened_note();
+    assert_eq!(
+        tilolang_tilo::instance::title_of(&host, &note),
+        first.title,
+        "the hit showed the note it names in the page beside the tree"
     );
 }
 
@@ -1807,21 +1983,22 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
         "the list holds its scenario"
     );
     assert!(
-        workspace.items_of("so.tilo.lang.notes", "notes") >= 12,
+        workspace.items_of("so.tilo.lang.notes", "notes") >= 5,
         "and the notebook its"
     );
 }
 
 #[test]
 fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("mail");
     let shown = workspace
         .window
         .detail_target()
         .cloned()
-        .expect("the scenario's note is shown");
+        .expect("the scenario's thread is shown");
     let host = workspace.window.current_host().unwrap();
-    assert_eq!(tilolang_tilo::instance::title_of(&host, &shown), "Q3 plan");
+    let subject = tilolang_tilo::instance::title_of(&host, &shown);
+    assert!(!subject.is_empty(), "the thread's subject names it");
     let selected: Vec<String> = workspace
         .list()
         .list()
@@ -1841,15 +2018,21 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
 
 #[test]
 fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_page() {
-    let workspace = Workspace::seeded("notes");
-    assert!(
-        workspace.window.detail_target().is_some(),
-        "the scenario's note is shown"
+    let mut workspace = Workspace::seeded("notes");
+    // The bar names where the open note stands, and shows it only once the page's heading
+    // scrolls away: the note's own title is the page's.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let inside = workspace.tree_row_note("Standups");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&inside))),
     );
     let shell = workspace.composed();
-    assert!(
-        shell.props.contains_key("title"),
-        "the shell holds the title, and shows it only once the page's heading scrolls away"
+    assert_eq!(
+        shell.props.get("title"),
+        Some(&Value::text("Standups")),
+        "the bar names the note the page shows"
     );
     let title = first_input(&shell).expect("the editor");
     assert!(
@@ -1860,11 +2043,16 @@ fn a_document_edits_its_title_as_its_large_title_and_the_shell_leaves_it_to_the_
         "the editor binds the title as its large title: {:?}",
         title.props.get("title")
     );
+    assert_eq!(
+        workspace.opened_note(),
+        inside,
+        "and the page edits the note the tree shows open"
+    );
 }
 
 #[test]
 fn the_list_renders_only_the_rows_it_shows() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("mail");
     let rows = workspace.root_rows();
     // What the app renders: the rows of the list in its view's tree.
     let rendered = |workspace: &Workspace| -> Vec<String> {
@@ -1917,11 +2105,11 @@ fn first_of<'a>(
 
 #[test]
 fn a_change_to_an_item_reaches_its_shown_row() {
-    let mut workspace = Workspace::seeded("notes");
+    let mut workspace = Workspace::seeded("handmade");
     let (key, _) = workspace.rows().remove(0);
     workspace.activate(&key);
     let input = first_input(&workspace.composed())
-        .expect("the note's title")
+        .expect("the book's title")
         .key
         .clone();
     workspace
@@ -2169,9 +2357,21 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
 #[test]
 fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_day_changes() {
     /// The day dividers, the avatars shown and the avatars' workspaces kept empty under `widget`.
+    ///
+    /// A divider marks a day unless it only says where reading starts again: where a day turns
+    /// over at the reader's first unread line the two are one band that says both, and that band
+    /// still says the day it opens.
     fn marks(widget: &dyn ui::widget::Widget, found: &mut (usize, usize, usize)) {
         match widget.name() {
-            "DayDivider" => found.0 += 1,
+            "SectionDivider" => {
+                let day = widget
+                    .as_any()
+                    .and_then(|any| any.downcast_ref::<ui::widget::conversation::SectionDivider>())
+                    .is_some_and(ui::widget::conversation::SectionDivider::names_a_day);
+                if day {
+                    found.0 += 1;
+                }
+            }
             "Avatar" if widget.accessibility().is_some() => found.1 += 1,
             "Avatar" => found.2 += 1,
             _ => {}
@@ -2204,7 +2404,7 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
     assert_eq!(
         found,
         (2, 5, 1),
-        "a divider for each of the two days, an avatar for each of the five runs, and the workspace of one under the message that continues a run"
+        "a divider naming each of the two days — the first, where reading starts again, naming it with the line it stands over — an avatar for each of the five runs, and the workspace of one under the message that continues a run"
     );
 }
 
@@ -2287,8 +2487,8 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     );
     assert_eq!(
         header_labels(&shell, "overview_actions"),
-        ["search", "New book"],
-        "the header holds the shelf's primary action"
+        ["New book", "search"],
+        "the header leads with the shelf's primary action, then the window's search"
     );
     let items = workspace.items();
     assert_eq!(items.len(), 2);
@@ -2371,6 +2571,20 @@ fn later_notes(edit: impl Fn(&str) -> String) -> tilolang_tilo::bundle::Bundle {
     tilolang_tilo::bundle::Bundle::new(&compiled, used)
 }
 
+/// `signature`'s parameter list with its last parameter — the tag a tag
+/// action takes — made `Int`, whatever the source calls that parameter: an
+/// edit that changed a field's type must not stop compiling because a
+/// parameter was renamed.
+fn tag_takes_int(source: &str, signature: &str) -> String {
+    let from = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} is in the notes package"))
+        + signature.len();
+    let to = from + source[from..].find(')').expect("the parameters end");
+    let at = from + source[from..to].rfind(": Text").expect("the tag is Text");
+    format!("{}: Int{}", &source[..at], &source[at + ": Text".len()..])
+}
+
 /// Whether `text` is shown anywhere under `node`.
 fn shows_text(node: &UiNode, text: &str) -> bool {
     node.props
@@ -2382,89 +2596,55 @@ fn shows_text(node: &UiNode, text: &str) -> bool {
 #[test]
 fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail() {
     let mut workspace = Workspace::seeded("notes");
-    let all = workspace.rows().len();
-    // A place of the sidebar narrows the list: the person's filter.
-    let pinned = workspace.key_of("ui.NavItem", "label", "Pinned");
-    workspace.fire(&pinned, "select", None);
-    let filtered = workspace.rows().len();
-    assert!(filtered < all, "{filtered} of {all}");
-    let (key, _) = workspace.rows().remove(0);
-    workspace.activate(&key);
-    let shown = workspace
-        .window
-        .detail_target()
-        .cloned()
-        .expect("a note is shown");
-    let detail = workspace.window.detail_tree().unwrap();
-    assert!(shows_text(&detail, "Write something"), "{detail:#?}");
+    let all = workspace.tree_labels();
+    // The note the person chose stands forward: their own view state.
+    let tree = workspace.key_of("ui.TreeView", "name", "Notes");
+    let home = workspace.tree_row_note("Home");
+    workspace.fire(
+        &tree,
+        "select",
+        Some(Value::Ref(tilolang_tilo::instance::wire::resource(&home))),
+    );
+    assert_eq!(workspace.opened_note(), home, "the note the person chose");
 
     crate::updates::hand_over(later_notes(|source| {
         source.replace("\"Write something\"", "\"Write anything\"")
     }));
     workspace.settle();
 
-    let detail = workspace
-        .window
-        .detail_tree()
-        .expect("the note is still shown");
+    let composed = workspace.composed();
     assert!(
-        shows_text(&detail, "Write anything"),
-        "the new build renders it: {detail:#?}"
+        shows_text(&composed, "Write anything"),
+        "the new build renders the page: {composed:#?}"
     );
     assert_eq!(
-        workspace.window.detail_target(),
-        Some(&shown),
-        "the same note"
+        workspace.opened_note(),
+        home,
+        "the same note of the notebook is still shown"
     );
     assert_eq!(
-        workspace.composed().props.get("overview_title"),
-        Some(&Value::text("Pinned")),
-        "the same place of the sidebar is chosen"
-    );
-    assert_eq!(
-        workspace.rows().len(),
-        filtered,
-        "the list is still filtered"
-    );
-    let selected: Vec<String> = workspace
-        .list()
-        .list()
-        .unwrap()
-        .selection()
-        .stored_keys()
-        .cloned()
-        .collect();
-    assert_eq!(
-        selected,
-        std::slice::from_ref(&key),
-        "the row stays selected"
+        workspace.tree_labels(),
+        all,
+        "and the notebook still lists every note"
     );
 }
 
 #[test]
 fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     let mut workspace = Workspace::seeded("notes");
-    let notes = workspace.rows().len();
-    assert!(workspace.window.detail_target().is_some());
+    let notes = workspace.tree_labels().len();
+    assert_eq!(workspace.opened_note(), workspace.tree_row_note("Q3 plan"));
 
     crate::updates::hand_over(later_notes(|source| {
-        let source = source
-            .replace("tags: Set<Text>", "tags: Set<Int>")
-            .replace(
-                "action tag(n: Note, t: Text)",
-                "action tag(n: Note, t: Int)",
-            )
-            .replace(
-                "action untag(n: Note, t: Text)",
-                "action untag(n: Note, t: Int)",
-            )
-            .replace("ui.Chip(t)", "ui.Chip(\"{t}\")");
-        ["planning", "work", "q3"]
+        let source = ["action tag(", "action untag(", "action file_note("]
             .iter()
-            .enumerate()
-            .fold(source, |source, (n, tag)| {
-                source.replace(&format!("tags.add(\"{tag}\")"), &format!("tags.add({n})"))
-            })
+            .fold(
+                source.replace("tags: Set<Text>", "tags: Set<Int>"),
+                |source, signature| tag_takes_int(&source, signature),
+            );
+        source
+            .replace("ui.Chip(t)", "ui.Chip(\"{t}\")")
+            .replace("tags.add(\"planning\")", "tags.add(0)")
     }));
     workspace.settle();
 
@@ -2477,90 +2657,20 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         note.fields.iter().any(|field| field.ty == "Set<Int>"),
         "the new build runs: {note:?}"
     );
-    assert_eq!(workspace.rows().len(), notes, "every note is still there");
     assert_eq!(
-        workspace.window.detail_target(),
-        None,
+        workspace.tree_labels().len(),
+        notes,
+        "every note is still there"
+    );
+    assert!(
+        workspace.window.detail_target().is_none(),
         "the window started over"
     );
 }
 
 #[test]
-fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
-    use ui::widget::Widget as _;
-    // A task opens where it stands: the scenario's task is the row the window shows, and its
-    // title is that row's field.
-    let mut workspace = Workspace::seeded("tasks");
-    let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input_key(&row).expect("the item's title");
-    // The list mounts the rows its laid-out height shows, measures them as they are laid out,
-    // then holds them.
-    workspace.lay_out();
-    workspace.settle();
-    workspace.lay_out();
-    workspace.lay_out();
-    let mut typed = String::new();
-    for letter in ['p', 'l', 'a', 'n'] {
-        typed.push(letter);
-        workspace
-            .window
-            .act(UiEvent::Edit(input.clone(), typed.clone()));
-        workspace.settle();
-        let change = workspace.window.take_structure_change();
-        assert!(
-            matches!(
-                change,
-                ui::widget::StructureChange::None | ui::widget::StructureChange::Children
-            ),
-            "a keystroke rebuilt the window's tree ({change:?}): its row and its field change \
-             in place"
-        );
-        workspace.lay_out();
-    }
-}
-
-#[test]
-fn a_keystroke_repaints_its_field_not_the_window() {
-    // The item opens where it stands: what a keystroke repaints is asked of the
-    // window at rest.
-    let _settled = ui::motion::testing::settled();
-    // The scenario's task is the row the window shows.
-    let mut workspace = Workspace::seeded("tasks");
-    let row = workspace.first_row_tree().expect("the item's row renders");
-    let input = first_input_key(&row).expect("the item's title");
-    workspace.lay_out();
-    workspace.settle();
-    workspace.lay_out();
-    workspace.draw();
-    let window = workspace.window.get_rect();
-    let mut typed = String::new();
-    for letter in ['p', 'l', 'a', 'n'] {
-        typed.push(letter);
-        workspace
-            .window
-            .act(UiEvent::Edit(input.clone(), typed.clone()));
-        workspace.settle();
-        // Drawn where the last layout placed it: the harness lays a window
-        // out only by rebuilding it, which the live window does not do for
-        // a keystroke.
-        let mut scene = ui::vello::Scene::new();
-        workspace.paint(&mut scene);
-        let mut damage = Vec::new();
-        workspace.window.collect_damage(&mut damage);
-        workspace.window.mark_drawn();
-        // The field and the row change; nothing that holds them repaints
-        // as a whole (the harness, which presents no frame, leaves the
-        // list's column to repaint its box).
-        assert!(
-            !damage.is_empty() && damage.iter().all(|rect| rect.area() < window.area() / 2.0),
-            "a keystroke repainted what holds the field: {damage:?} of {window:?}"
-        );
-    }
-}
-
-#[test]
 fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
-    let mut workspace = Workspace::staged("notes", "a week of notes");
+    let mut workspace = Workspace::staged("mail", "a busy inbox");
     let rows = workspace.root_rows();
     let len = rows.borrow().len();
     workspace.show_rows(0..len);
@@ -2571,14 +2681,14 @@ fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
     );
     // The list asks for fewer rows (it has not measured them yet), then for all of them: until
     // the app answers, the rows it had stay.
-    rows.borrow_mut().request_range(0..len / 2);
+    rows.borrow_mut().request_range(0..len / 2, None);
     assert_eq!(
         rows.borrow().rendered().len(),
         len,
         "a row is kept until the app forgot it"
     );
     workspace.frame();
-    rows.borrow_mut().request_range(0..len);
+    rows.borrow_mut().request_range(0..len, None);
     assert_eq!(
         rows.borrow().rendered().len(),
         len / 2,
@@ -2733,4 +2843,159 @@ fn the_composed_tree_passes_the_window_s_validator() {
             .is_err(),
         "an undescribed component is refused"
     );
+}
+
+// ----- the window's search ----------------------------------------------------------------
+
+#[test]
+fn typing_in_the_window_s_search_narrows_the_tasks_list_to_what_matches() {
+    let mut workspace = Workspace::staged("tasks", "a busy week");
+    let flat = workspace.key_of("ui.NavItem", "label", "Move flat");
+    workspace.fire(&flat, "select", None);
+    let before = workspace.rows();
+    assert!(
+        before.len() > 1,
+        "the project's place lists its tasks: {before:?}"
+    );
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "the frame says where the search goes, so typing narrows the list in place"
+    );
+    workspace.type_in_search(&mut driver, "boxes");
+    let after = workspace.rows();
+    assert_eq!(
+        after.len(),
+        1,
+        "only the task that says boxes is left: {after:?} of {before:?}"
+    );
+    assert!(
+        after[0].1.contains("boxes"),
+        "the row left is the one the search found: {after:?}"
+    );
+    assert_eq!(
+        driver.count(),
+        Some(ui::widget::FilterCount::new(1, before.len())),
+        "the search says how many it left of how many the list held"
+    );
+    // Closing the search widens the list again.
+    driver.drive(
+        &mut workspace.window,
+        "",
+        ui::widget::FindOptions::default(),
+        None,
+        true,
+    );
+    workspace.settle();
+    assert_eq!(
+        workspace.rows().len(),
+        before.len(),
+        "the list widens back to the place's tasks"
+    );
+}
+
+#[test]
+fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change() {
+    let mut workspace = Workspace::seeded("notes");
+    let note = workspace.opened_note();
+    let body = node_with(&workspace.composed(), "ui.BlockEditor", "", "")
+        .expect("the note's body")
+        .key
+        .clone();
+    // The note's body, as the person writing it leaves it: three occurrences of a word.
+    workspace.window.act(UiEvent::EditRich(
+        body,
+        typed("Ship the boat. Ship the crew. Ship the cargo."),
+    ));
+    workspace.land_typed();
+    let body_of = |host: &tilolang_tilo::host::Host| match host.runtime().read(&note, "body") {
+        Ok(RtValue::Rich(rich)) => rich.written_text(),
+        other => panic!("a note's body is rich text: {other:?}"),
+    };
+    assert_eq!(
+        body_of(&workspace.window.current_host().expect("the host started")),
+        "Ship the boat. Ship the crew. Ship the cargo."
+    );
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "the notebook's frame narrows its tree, and the note beside it is found in too"
+    );
+    let find = |workspace: &mut Workspace, driver: &mut ui::widget::SearchDriver, step| {
+        driver.drive(
+            &mut workspace.window,
+            "Ship",
+            ui::widget::FindOptions::default(),
+            step,
+            false,
+        );
+        workspace.settle();
+    };
+    find(&mut workspace, &mut driver, None);
+    assert_eq!(
+        driver.position(),
+        Some((1, 3)),
+        "the note holds three, the first is current"
+    );
+    find(&mut workspace, &mut driver, Some(true));
+    assert_eq!(driver.position(), Some((2, 3)), "next");
+    find(&mut workspace, &mut driver, Some(false));
+    assert_eq!(driver.position(), Some((1, 3)), "previous");
+    // Replacing them all is one change of the field: one step to undo, as the person's own
+    // typing is.
+    let heads = workspace.doc.get_heads();
+    let touched = driver.replace(
+        &mut workspace.window,
+        "Ship",
+        ui::widget::FindOptions::default(),
+        "Launch",
+        true,
+    );
+    assert!(touched, "the replacement was taken");
+    workspace.land_typed();
+    assert_eq!(
+        body_of(&workspace.window.current_host().expect("the host started")),
+        "Launch the boat. Launch the crew. Launch the cargo.",
+        "every match replaced"
+    );
+    assert_eq!(
+        workspace.doc.get_changes(&heads).len(),
+        1,
+        "one change: one step to undo"
+    );
+}
+
+// `std.browse` narrows its list to the window's search, beside the place and the order it holds.
+#[test]
+fn typing_in_the_window_s_search_narrows_a_standard_list_window() {
+    let mut workspace = Workspace::staged("tasks", "a busy week");
+    // A project's tasks: the list the search narrows.
+    let launch = workspace.key_of("ui.NavItem", "label", "Website launch");
+    workspace.fire(&launch, "select", None);
+    let before = workspace.rows();
+    assert!(before.len() > 3, "the project lists its tasks: {before:?}");
+    let (mut driver, in_place) = workspace.window_search();
+    assert_eq!(
+        in_place,
+        ui::widget::InPlace::Query,
+        "the window narrows its list"
+    );
+    workspace.type_in_search(&mut driver, "pricing");
+    let after = workspace.rows();
+    assert_eq!(after.len(), 1, "one task says it: {after:?}");
+    assert!(
+        after[0].1.contains("pricing"),
+        "the task the search found: {after:?}"
+    );
+    // A task's notes are rich text: their words find it too.
+    workspace.type_in_search(&mut driver, "offline");
+    let body = workspace.rows();
+    assert_eq!(
+        body.len(),
+        1,
+        "the task whose notes say it: {body:?} of {before:?}"
+    );
+    assert!(body[0].1.contains("launch post"), "{body:?}");
 }

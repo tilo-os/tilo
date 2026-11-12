@@ -14,6 +14,8 @@
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
 //!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
+//! - `page-host <origin>` (feature `web`) — print what a site hands its page
+//!   about the host at `origin` (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 
@@ -34,6 +36,11 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
+
+// The tests in this binary open records, which an app worker serves: libtest
+// owns `main`, so the worker is one more test here.
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 #[cfg(feature = "agents")]
 mod persistent_moderation;
@@ -81,14 +88,21 @@ enum Cmd {
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
     Room(Box<web_cli::WorkspaceArgs>),
+    /// Print, as one line of JSON, what a site hands its page about the host
+    /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
+    #[cfg(feature = "web")]
+    PageHost(web_cli::PageHostArgs),
 }
 
 /// Logs go to stderr: a persistent workspace's stdout is the line protocol its
 /// workspace service reads, which dropped every log line, so a hosted relay's
 /// refusals and errors were never seen anywhere.
 fn install_logging() {
+    // The channel service says at info what an operator acts on once: state
+    // an earlier build saved upgraded in place, or a copied machine joining
+    // as itself.
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,warn"));
+        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,tilo_channels=info,warn"));
     fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -135,6 +149,8 @@ fn run() -> anyhow::Result<()> {
         Cmd::Room(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::workspace(*args, wait_for_shutdown()))?
         }
+        #[cfg(feature = "web")]
+        Cmd::PageHost(args) => tilo_rt::daemon("tilo-relay").run(web_cli::page_host(args))?,
     }
 }
 
@@ -211,18 +227,15 @@ fn load_identity(
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
     let device_cert = persist::read_device_cert(&paths.device_cert)
         .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;
-    let mut revocations = RevocationList::new();
-    for entry in tilo_relay::store::load_revocations(state_root)? {
-        revocations
-            .insert(entry)
-            .context("verify persisted relay revocation")?;
-    }
-    Ok(RelayIdentity {
-        user_public_key,
-        device_signing_key,
-        device_cert,
-        revocations,
-    })
+    tilo_relay::daemon::with_persisted_revocations(
+        RelayIdentity {
+            user_public_key,
+            device_signing_key,
+            device_cert,
+            revocations: RevocationList::new(),
+        },
+        state_root,
+    )
 }
 
 async fn wait_for_shutdown() -> anyhow::Result<()> {

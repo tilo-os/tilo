@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
 
 use super::tests_support::{alt, grave, key, part_with, reading_with_windows, tab};
-use tilo_compositor::{KeyClaim, SurfaceHost as _};
+use tilo_session_core::surface::KeyClaim;
+use tilo_session_core::surface::SurfaceHost as _;
 
 #[test]
 fn alt_tab_asks_for_the_switcher_from_rest() {
@@ -26,8 +27,8 @@ fn alt_tab_asks_for_the_switcher_from_rest() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "1".to_owned()),
-            ("scope".to_owned(), "workspace".to_owned()),
+            ("steps".to_owned(), 1.into()),
+            ("scope".to_owned(), "workspace".into()),
         ]))
     );
 }
@@ -39,8 +40,8 @@ fn alt_grave_asks_for_the_walk_over_this_apps_windows() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "1".to_owned()),
-            ("scope".to_owned(), "app".to_owned()),
+            ("steps".to_owned(), 1.into()),
+            ("scope".to_owned(), "app".into()),
         ])),
         "Alt and the grave key walk the app in front's windows"
     );
@@ -50,8 +51,8 @@ fn alt_grave_asks_for_the_walk_over_this_apps_windows() {
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([
-            ("steps".to_owned(), "-1".to_owned()),
-            ("scope".to_owned(), "app".to_owned()),
+            ("steps".to_owned(), (-1).into()),
+            ("scope".to_owned(), "app".into()),
         ]))
     );
 }
@@ -87,7 +88,7 @@ fn escape_closes_the_surface_that_is_up() {
         link.asked.borrow().front().map(|ask| ask.arguments.clone()),
         Some(std::collections::BTreeMap::from([(
             "surface".to_owned(),
-            "overview".to_owned()
+            "overview".into()
         )]))
     );
 }
@@ -108,6 +109,6 @@ fn a_surface_up_makes_the_part_cover_the_outputs() {
     );
 }
 
-fn escape() -> tilo_compositor::HostKey {
+fn escape() -> tilo_session_core::surface::HostKey {
     key(0xff1b, true)
 }

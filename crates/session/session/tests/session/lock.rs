@@ -91,7 +91,7 @@ pub(super) fn type_and_enter(session: &mut Session, word: &str) {
 /// The lock screen the session starts: the app whose window asks the compositor for the session
 /// lock.
 pub(super) fn lock_screen() -> Surface {
-    Surface::new("lock", screen_binary()).person("ada").lock()
+    Surface::new("lock", screen_binary()).lock()
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
@@ -190,8 +190,8 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
 }
 
 /// Step the session until the lock screen's own frame is on `displays` and is not changing any
-/// more: the screen itself, not the blank or dim a locked output shows before the client's first
-/// frame arrives.
+/// more: the screen itself — the app's own, once the session runs one — not the session's view
+/// that stands in while the app starts.
 /// The lock screen is an app of its own, drawing on its own clock: the frame it covers the desk
 /// with is not yet what it drew, and how many turns of the session pass before it rests is the
 /// app's to decide. What settles it is the rule [`until_still`] reads — a screen that stopped
@@ -206,10 +206,10 @@ pub(super) fn until_drawn(
     let mut waking = Waking::new();
     loop {
         waking.keep(session);
-        let now = session
-            .compositor()
-            .lock_drawn()
-            .then(|| pictures(session, displays));
+        let no_app = !session.surfaces().running(LOCK);
+        let now = (session.compositor().lock_drawn()
+            && (no_app || session.compositor().lock_client_drawn()))
+        .then(|| pictures(session, displays));
         let covers = now.as_ref().is_some_and(|now| {
             now.iter()
                 .zip(was)
@@ -234,6 +234,62 @@ pub(super) fn until_drawn(
         );
         session.step(REFRESH).expect("a turn of the session");
     }
+}
+
+/// What a session that drew the lock itself tells the person, once: the screen they unlocked was
+/// the session's own view of the lock, not the lock screen's app.
+const DREW_THE_LOCK_ITSELF: &str = "Lock screen did not start";
+
+/// The notices the desk holds, as its reading names them on the session's door: each one's key and
+/// its title.
+fn told(session: &Session, desk: &str) -> Vec<(String, String)> {
+    let reading = session.read(desk).expect("the session publishes its desk");
+    let notices: Vec<(String, String)> = reading["notices"]
+        .as_array()
+        .expect("the desk's reading lists its notices")
+        .iter()
+        .map(|notice| {
+            (
+                notice["key"].as_str().unwrap_or_default().to_owned(),
+                notice["title"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    notices
+}
+
+/// The session drew the lock itself, and says so: the person comes back to a desk holding the one
+/// notice that tells them why. It is critical, so no time on screen takes it away, and the desk is
+/// the one they left only once they have taken it back — as the centre's Dismiss does, with the
+/// desk's own `dismiss-notice` .
+#[track_caller]
+pub(super) fn take_back_the_notice_of_the_locks_own_view(session: &mut Session) {
+    pump(session, &mut [], |session, _| {
+        publisher(session, "dismiss-notice").is_some()
+    });
+    let desk = publisher(session, "dismiss-notice")
+        .expect("the unlocked desk offers to take a notice back");
+    let notices = told(session, &desk);
+    let [(key, title)] = notices.as_slice() else {
+        panic!("the session told the person one thing while it drew the lock: {notices:?}");
+    };
+    assert_eq!(
+        title, DREW_THE_LOCK_ITSELF,
+        "what the person is told is that the session drew the lock itself"
+    );
+    session
+        .invoke(
+            &desk,
+            "dismiss-notice",
+            &serde_json::Map::from_iter([(
+                "notice".to_owned(),
+                serde_json::Value::String(key.clone()),
+            )]),
+        )
+        .expect("the desk takes the notice back");
+    pump(session, &mut [], |session, _| {
+        told(session, &desk).is_empty()
+    });
 }
 
 /// Step the session until `displays` show what `was` showed again, settled: the desk, back.
@@ -303,7 +359,12 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     // What the screen shows is the session's own resource: the same reading any app of the session
     // reads.
     let reading = session.read(LOCK).expect("the session publishes the lock");
-    assert_eq!(reading["person"], "ada", "it says whose session this is");
+    assert_eq!(
+        reading["person"],
+        tilo_identity_host::provisioning::login_account_display_name(),
+        "it says whose session this is, as their own avatar on the bar names them, never the \
+         account the password is checked against"
+    );
     assert_eq!(reading["unlocking"], false);
     assert!(reading["error"].is_null(), "nothing was refused yet");
     assert!(
@@ -366,6 +427,49 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     );
 }
 
+/// The lock is on screen from the first frame after the session locks — the time, whose session it
+/// is and the password field — while the lock screen's app is still starting: a locked session
+/// never shows the person a blank screen that waits for a key.
+#[test]
+fn the_lock_shows_its_prompt_from_the_first_frame_after_it_locks() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut session = lockable_session(
+        &home.path().join("collab.sock"),
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        std::sync::Arc::new(Sesame),
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        session.compositor().lock_drawn(),
+        "the lock is drawn on the first frame after the session locks"
+    );
+    let drawn: std::collections::BTreeSet<Vec<u8>> = session
+        .compositor()
+        .screenshot(DISPLAY)
+        .expect("screenshot")
+        .rgba
+        .chunks(4)
+        .map(<[u8]>::to_vec)
+        .collect();
+    assert!(
+        drawn.len() > 2,
+        "the first frame shows the clock, the person and the prompt, not only the dim"
+    );
+    let reading = session.read(LOCK).expect("the session publishes the lock");
+    assert_eq!(
+        reading["person"],
+        tilo_identity_host::provisioning::login_account_display_name(),
+        "the first frame names the person whose session it is"
+    );
+}
+
 /// The colours `frame` is drawn in.
 fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
     frame.pixels().map(|pixel| pixel.0).collect()
@@ -376,7 +480,7 @@ fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
 #[track_caller]
 fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> image::RgbaImage {
     let path = home.join(format!("{name}.png"));
-    let asked = super::common::control(
+    let asked = crate::common::control(
         session,
         door,
         &serde_json::json!({
@@ -539,6 +643,9 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
+    // The lock the person saw was the session's own drawing, and the desk they come back to says
+    // so until they take that back; then it is the desk they left.
+    take_back_the_notice_of_the_locks_own_view(&mut session);
     let after = until_back(&mut session, &[DISPLAY], &desk);
     assert!(
         apart(&after[0], &desk[0]) < 24.0,

@@ -56,6 +56,10 @@
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
+#   --print-runtime    print the private runtime directory a session on
+#                      --state uses, and exit: a tool that has to reach into a
+#                      session (its mounts, its sockets) asks here instead of
+#                      deriving the path a second time
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -81,6 +85,7 @@ reset_identity=0
 fresh_desktop=0
 headless=0
 software=0
+print_runtime=0
 community=
 model_provider=
 install_tapps=()
@@ -102,6 +107,7 @@ while (($#)); do
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
         --software) software=1; shift ;;
+        --print-runtime) print_runtime=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         --model-provider) model_provider=${2:?--model-provider needs PRESET:MODEL or host}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
@@ -110,12 +116,11 @@ while (($#)); do
     esac
 done
 
-for tool in jq bwrap readelf python3 sha256sum; do
-    command -v "$tool" >/dev/null || die "$tool is required on PATH"
-done
-host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
+host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
-if ((!headless)); then
+# --print-runtime starts nothing, so it asks for no display.
+if ((!headless && !print_runtime)); then
+    [[ -n $host_runtime ]] || die "XDG_RUNTIME_DIR is unset"
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
     case $WAYLAND_DISPLAY in
         /*) host_display=$WAYLAND_DISPLAY ;;
@@ -133,6 +138,41 @@ if ((!headless)); then
     fi
 fi
 
+state=$(realpath -m "$state")
+[[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
+# The compositor's own runtime directory: private sockets, services and the
+# control socket, under a login runtime directory so it stays on tmpfs and
+# per-user. Never under the state directory: a unix socket's path holds 108
+# bytes, and a state directory sits as deep as its caller's output directory
+# (a worktree's own target/session-e2e is already too deep for it). A login
+# session's own XDG_RUNTIME_DIR comes first; a container's exec leaves it
+# unset even though the user's /run/user/<uid> is there, so that comes next,
+# and a directory this user owns in /tmp last.
+runtime_base=$host_runtime
+own_runtime_base=0
+if [[ -z $runtime_base ]]; then
+    seat=/run/user/$(id -u)
+    if [[ -d $seat && -w $seat ]]; then
+        runtime_base=$seat
+    else
+        # A directory of this user's own in /tmp: the shortest place that exists
+        # without a login seat, and the same one on every run, so a tool that
+        # asks for it (--print-runtime) finds the session.
+        runtime_base=/tmp/tilo-runtime-$(id -u)
+        own_runtime_base=1
+    fi
+    say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
+fi
+runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# Where the session's sockets go is a pure answer, so asking it takes no
+# tools, no build, no display and no state: a tool that reaches into a session
+# asks here and gets the same path the session itself will use.
+((print_runtime)) && { printf '%s\n' "$runtime"; exit 0; }
+
+for tool in jq bwrap readelf python3 sha256sum; do
+    command -v "$tool" >/dev/null || die "$tool is required on PATH"
+done
+
 selected=()
 for app in $apps; do
     [[ $app == files ]] && app=file-explorer
@@ -144,14 +184,8 @@ for app in $apps; do
     selected+=("$app")
 done
 
-state=$(realpath -m "$state")
-[[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
 mkdir -p "$state"
 chmod 700 "$state"
-# The compositor's own runtime directory: private sockets, services and the
-# control socket, under the host's runtime directory so it stays on tmpfs and
-# per-user.
-runtime=$host_runtime/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
 pidfile=$state/session.pid
 if [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null; then
     die "a nested session for $state is already running (pid $(<"$pidfile"))"
@@ -388,6 +422,11 @@ export TILO_APPS_DATA_DIR=$state/apps
 system_store=$state/system
 export TILO_APPS_SYSTEM_DIR=$system_store
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
+# Verified once here, as installing a runtime does on a device, leaving the
+# record a launch reads: the first app started in this state does not hash the
+# whole runtime on its way to its first frame.
+"$bin/tilo-runtime-bundle" verify --record --require-signature "$runtimes/$runtime_version" >/dev/null \
+    || die "the runtime bundle $runtime_version does not verify"
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: a running app whose payload is its module (a
@@ -544,6 +583,15 @@ unset provider_record provider_key
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
 # --- 8. Run ---------------------------------------------------------------------
+if ((own_runtime_base)); then
+    # This user's own directory, and never one planted at its name: everything
+    # the session serves lives under it.
+    [[ -L $runtime_base ]] && die "refusing runtime directory $runtime_base: it is a symlink"
+    if [[ -e $runtime_base && ! -O $runtime_base ]]; then
+        die "refusing runtime directory $runtime_base: it is not this user's"
+    fi
+    mkdir -p -m 700 "$runtime_base"
+fi
 rm -rf "$runtime"
 mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
@@ -578,6 +626,8 @@ cleanup() {
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
     rm -rf "$runtime" 2>/dev/null || true
+    # A runtime base this script made in /tmp goes with it.
+    if ((own_runtime_base)); then rmdir "$runtime_base" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
@@ -629,14 +679,18 @@ if ((!keep_identity)); then
 fi
 if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
-    # development identity a dev image would, then exits.
+    # development identity a dev image would, then exits. Its control socket is
+    # its own: the person's socket answers only the session this script goes on
+    # to start, so a client that asks the moment a socket is there reaches the
+    # desktop rather than a pass that is about to exit and holds no identity.
     say "minting a throwaway identity"
-    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
+    identity_control=$runtime/identity-control.sock
+    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$identity_control" setsid "$session_bus" "$dbus_daemon" \
         "$bin/tilo-session" --backend headless > "$logs/identity.log" 2>&1 &
     pid=$!
     children+=("$pid")
-    wait_for_socket "$control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
-    TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
+    wait_for_socket "$identity_control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
+    TILO_TEST_CONTROL=$identity_control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
         | grep -q '"throwaway": *true' || die "identity provisioning failed (see $logs/identity.log)"
     # Gone before the session starts: it holds the state file's writer lease
     # while it lives.
@@ -690,33 +744,69 @@ wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see
 # nothing it plays is heard on the machine running it. A headless session has
 # no speakers, so it gets one null sink: an output with a name and a level to
 # show and change.
-for tool in pipewire pipewire-pulse wireplumber pw-cli; do
-    command -v "$tool" >/dev/null \
-        || die "$tool is required on PATH: the session would start with no sound"
-done
-setsid pipewire > "$logs/pipewire.log" 2>&1 &
-children+=("$!")
-wait_for_socket "$runtime/pipewire-0" "$!" \
-    || die "the session's pipewire did not start (see $logs/pipewire.log)"
-setsid pipewire-pulse > "$logs/pipewire-pulse.log" 2>&1 &
-children+=("$!")
-wait_for_socket "$runtime/pulse/native" "$!" \
-    || die "the session's pulse socket did not start (see $logs/pipewire-pulse.log)"
-setsid wireplumber > "$logs/wireplumber.log" 2>&1 &
-children+=("$!")
-for ((try = 0; try < 100; try++)); do
-    wpctl status >/dev/null 2>&1 && break
-    sleep 0.05
-done
-pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=tilo-sink
+# The machine's own cards and Bluetooth are the host's, and its PipeWire holds
+# them. WirePlumber's hardware monitors would open those devices in this
+# session, find them taken, and retry without pause: nearly half a core spent
+# for as long as the session runs. Its session manager still runs (default
+# nodes, volume, routing); it just has no hardware to enumerate.
+# Sound is optional and comes and goes: a machine that has no audio server (a
+# check or an agent in a build container) starts the desktop all the same, its
+# sound controls saying there is no audio device, and the session's audio
+# service picks a server up when one appears.
+if ! command -v pipewire >/dev/null; then
+    say "no pipewire on PATH: this session runs without sound"
+else
+    if command -v wireplumber >/dev/null; then
+        wireplumber_config=$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d
+        mkdir -p "$wireplumber_config"
+        cat > "$wireplumber_config/50-nested-session.conf" <<'WIREPLUMBER'
+wireplumber.profiles = {
+  main = {
+    hardware.audio = disabled
+    hardware.bluetooth = disabled
+  }
+}
+WIREPLUMBER
+    fi
+    setsid pipewire > "$logs/pipewire.log" 2>&1 &
+    pipewire_pid=$!
+    children+=("$pipewire_pid")
+    if wait_for_socket "$runtime/pipewire-0" "$pipewire_pid"; then
+        if command -v pipewire-pulse >/dev/null; then
+            setsid pipewire-pulse > "$logs/pipewire-pulse.log" 2>&1 &
+            children+=("$!")
+            wait_for_socket "$runtime/pulse/native" "$!" \
+                || say "the session's pulse socket did not start: applications that speak PulseAudio have none (see $logs/pipewire-pulse.log)"
+        else
+            say "no pipewire-pulse on PATH: applications that speak PulseAudio have no socket"
+        fi
+        if command -v wireplumber >/dev/null; then
+            setsid wireplumber > "$logs/wireplumber.log" 2>&1 &
+            children+=("$!")
+            if command -v wpctl >/dev/null; then
+                for ((try = 0; try < 100; try++)); do
+                    wpctl status >/dev/null 2>&1 && break
+                    sleep 0.05
+                done
+            fi
+        fi
+        if command -v pw-cli >/dev/null; then
+            pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=tilo-sink
     node.description="Session output" media.class=Audio/Sink object.linger=true
     audio.position=[ FL FR ] }' > "$logs/pipewire-null-sink.log" 2>&1 \
-    || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
+                || say "the session's sound has no output to show (see $logs/pipewire-null-sink.log)"
+        else
+            say "no pw-cli on PATH: the session's sound has no output of its own to show"
+        fi
+    else
+        say "the session's pipewire did not start: this session runs without sound (see $logs/pipewire.log)"
+    fi
+fi
 
-# The default window is 1600x900 physical pixels, which a 2x host shows as
-# 800x450: too small for the task centre, which drops a card that does not
-# fit. Ask for 1280x800 logical at the host's scale (GNOME reports it; others
-# get scale 1) unless the caller chose a size.
+# The session's own nested window is 1280x720 physical pixels by default,
+# which a 2x host shows as 640x360: too small for the task centre, which drops
+# a card that does not fit. Ask for 1280x800 logical at the host's scale
+# (GNOME reports it; others get scale 1) unless the caller chose a size.
 if ((headless)); then
     export TILO_HEADLESS_SIZE=${TILO_HEADLESS_SIZE:-1280x800}
 elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
@@ -746,7 +836,7 @@ if ((headless)); then
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
     say "starting the session headless at ${TILO_HEADLESS_SIZE}${density} (log: $logs/session.log)"
 else
-    backend=(--backend nested)
+    backend=(--backend nested --size "$TILO_WINIT_SIZE")
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"
@@ -787,7 +877,7 @@ missing_surfaces() {
     done
     while IFS= read -r line; do
         say "!! this session started without part of its desktop: $line"
-    done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen|the audio service (is not installed|did not start)' \
+    done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen' \
                  "$logs/session.log" 2>/dev/null || true)
 }
 missing_surfaces &

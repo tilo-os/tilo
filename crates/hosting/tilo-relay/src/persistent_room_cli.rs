@@ -32,6 +32,7 @@ use tilo_relay_session::workspaces::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
+use tilo_relay::door;
 
 mod bots;
 mod discord_sign_in;
@@ -110,17 +111,22 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
-    /// Give each person who asks a workspace of their own on this host
-    /// (`room.create-own`), keeping up to this many gigabytes of it: 10 when
-    /// the flag names no number.
+    /// Where the host's own endpoint (iroh, UDP) listens: devices of the
+    /// operator that dial it, such as the members that take its workspaces'
+    /// work, name this port. Without it the machine picks one at each start.
+    #[arg(long = "iroh-listen", value_name = "ADDRESS", requires = "persistent")]
+    pub iroh_listen: Option<std::net::SocketAddr>,
+    /// Every host keeps workspaces of people's own (`room.create-own`) for
+    /// the people this workspace's door or an invitation into it let in, as
+    /// many of them as a person asks for, sharing this many gigabytes per
+    /// person: 10 when the flag is not given.
     #[arg(
-        long = "own-workspaces",
+        long = "person-storage-gb",
         value_name = "GB",
-        num_args = 0..=1,
-        default_missing_value = "10",
+        default_value_t = 10,
         requires = "persistent"
     )]
-    pub own_workspaces: Option<u64>,
+    pub person_storage_gb: u64,
     /// List the workspace in the public directory with this description, so
     /// anyone may join it through its door at `--default-role`. Settled at
     /// every start; without it the workspace is not listed.
@@ -166,18 +172,21 @@ pub struct PersistentArgs {
     /// How many requests left at the door the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
     /// without an invitation leaves, on the workspace's wait list for whoever
-    /// may invite until they take it off. `0`: the door keeps none.
+    /// may invite until they take it off. `0`: the door keeps none. It is the
+    /// door taking people by invitation that turns them away, so it is that
+    /// door this goes with.
     #[arg(
         long = "wait-list-max",
         value_name = "COUNT",
         default_value_t = 0,
-        requires = "members_only"
+        requires = "invitation_only"
     )]
     pub wait_list_max: usize,
-    /// Whoever runs the workspace sends mail from the web entry DOOR (a URL
-    /// ending in `/`): members may ask it to mail an invitation on that
-    /// door to a confirmed address on the wait list, which it hears as an
-    /// `invite_mail` event.
+    /// The web entry DOOR (a URL ending in `/`) the wait list's mails are
+    /// sent from, which their links open: the confirmation link, and an
+    /// invitation a member asks the door to mail to a confirmed address. It
+    /// defaults to the workspace's own web entry; without mail configured,
+    /// the list keeps addresses and mails nothing.
     #[arg(
         long = "wait-list-mail",
         value_name = "DOOR",
@@ -241,7 +250,8 @@ pub struct PersistentArgs {
     )]
     pub discord_client_secret_file: Option<PathBuf>,
     /// Where Discord's API is (`/api/v10` is appended): Discord's own host
-    /// unless set.
+    /// unless set. The Discord bridge's worker is pointed at it too, so a
+    /// test server serves both the sign-in and the bridge.
     #[arg(long = "discord-api-base", value_name = "URL")]
     pub discord_api_base: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
@@ -276,6 +286,8 @@ pub struct PersistentArgs {
     /// Serve the deployment's plain-HTTP routes at this address: the health
     /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
     /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    /// An address ending in `:0` takes a port the kernel picks, which the
+    /// room announces once it serves.
     #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
     pub http: Option<std::net::SocketAddr>,
     /// The largest file a member posts in the workspace's Chat that the workspace
@@ -526,6 +538,27 @@ fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>>
         .collect()
 }
 
+/// The identity this workspace hosts as: the operator's root file, the host
+/// device it keeps in its state, and the revocations its state's log holds.
+/// `tilo-enroll revoke` writes that log, so a device the root withdrew is
+/// refused when it connects, as on the plain daemon.
+fn hosted_identity(
+    root: &SigningKey,
+    host: SigningKey,
+    host_cert: DeviceCert,
+    relay_state: &Path,
+) -> anyhow::Result<RelayIdentity> {
+    tilo_relay::daemon::with_persisted_revocations(
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host,
+            device_cert: host_cert,
+            revocations: RevocationList::new(),
+        },
+        relay_state,
+    )
+}
+
 /// The host's own device key, kept beside the relay's state. The root is
 /// never written here.
 fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
@@ -704,7 +737,7 @@ async fn answer_wait_list(
         reason,
         full,
     };
-    if !governance.members_only || governance.wait_list_max == 0 {
+    if !governance.invitation_only || governance.wait_list_max == 0 {
         return refused("the workspace keeps no wait list".into(), false);
     }
     let Some(removal) = hex32(&removal_sha256) else {
@@ -747,13 +780,6 @@ async fn answer_wait_list(
     }
 }
 
-fn mailbox(mailbox: tilo_relay::workspaces::Mailbox) -> operator::WaitListMailbox {
-    operator::WaitListMailbox {
-        contact: mailbox.contact,
-        language: mailbox.language,
-    }
-}
-
 /// Take off the wait list the entry whose removal secret hashes to
 /// `removal_sha256`, for whoever left it: answered alike whether or not
 /// one did.
@@ -775,7 +801,10 @@ async fn answer_unlist(
     {
         Ok((told, contact)) => OperatorEvent::Unlisted {
             request,
-            told: told.map(mailbox),
+            told: told.map(|mailbox| operator::WaitListMailbox {
+                contact: mailbox.contact,
+                language: mailbox.language,
+            }),
             contact_sha256: contact.map(hex::encode),
         },
         Err(error) => OperatorEvent::WaitListFailed {
@@ -877,36 +906,6 @@ async fn answer_wait_list_command(
     }
 }
 
-/// The event that has the operator mail an invitation a member asked for.
-fn invite_mail(
-    mail: tilo_relay::workspaces::WaitListMail,
-    request: String,
-) -> (OperatorEvent, tokio::sync::oneshot::Sender<bool>) {
-    (
-        OperatorEvent::InviteMail {
-            request,
-            to: mailbox(mail.to),
-            link: mail.link,
-            removal: hex::encode(mail.removal),
-        },
-        mail.queued,
-    )
-}
-
-type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
-
-fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &mut MailAcks) {
-    mail_acks.retain(|_, sender| !sender.is_closed());
-    if mail_acks.len() >= 512 {
-        let _ = asked.queued.send(false);
-    } else {
-        let request = hex::encode(rand::random::<[u8; 32]>());
-        let (event, queued) = invite_mail(asked, request.clone());
-        mail_acks.insert(request, queued);
-        println!("{}", event.to_line());
-    }
-}
-
 async fn apply_role_changes(
     context: &PersistentRoom,
     changes: Vec<RoleChange>,
@@ -975,6 +974,15 @@ fn request_id(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// Seed the workspace with `apps`: each one's record written from its own
+/// factory, as the workspace's governor, and kept in `seeded_file` so a restart
+/// seeds only what it added since.
+///
+/// A workspace the operator just created holds no channel yet, and its records
+/// are sealed from their first write, so each seed's genesis waits for the
+/// group the host's channel service creates for it: the wait is bounded by the
+/// service (`crate::channels::OPEN_WAIT`, longer than the group may take to be
+/// founded), and each app is named in the error when its keys never come.
 pub(crate) async fn seed_apps(
     workspaces: &Workspaces,
     workspace: &str,
@@ -1252,6 +1260,18 @@ pub(crate) async fn settle_member_invites(
     Ok(())
 }
 
+/// Say a setting of the operator's that did not settle at this start: it is
+/// settled again at the next one.
+fn settled(workspace: &str, result: anyhow::Result<()>) {
+    if let Err(error) = result {
+        tracing::error!(
+            workspace,
+            error = format!("{error:#}"),
+            "a setting of the workspace did not settle; the host serves it as it was and tries again at the next start"
+        );
+    }
+}
+
 /// List the workspace in the public directory as the host configured it, or
 /// take it out when the host asks for no listing. Settled at every start: the
 /// listing is the host's word, and a person who joined yesterday stays a
@@ -1365,31 +1385,43 @@ pub(crate) async fn run(
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
         identity_root: state.join("identity"),
         member_limits: persistent.member_limits.then(Default::default),
+        iroh_listen: persistent
+            .iroh_listen
+            .unwrap_or_else(|| tilo_relay::RelayConfig::default().iroh_listen),
         ..Default::default()
     };
+    let identity = hosted_identity(&root, host, host_cert, &config.state_root)?;
+    // A host that places its workspaces' browser sessions certifies them as
+    // the person's stand-in, which it makes from the root it holds: nobody
+    // else approves for them here.
+    if tilo_relay::hosted_browser::HostedBrowsers::from_env()
+        .map_err(anyhow::Error::msg)?
+        .is_some()
+    {
+        tilo_relay::hosted_browser::keep_stand_in(&config.state_root, &root)
+            .map_err(anyhow::Error::msg)?;
+    }
     let hosted = start_relay_lending(
         config,
-        RelayIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host,
-            device_cert: host_cert.clone(),
-            revocations: RevocationList::new(),
-        },
+        identity,
         &args.web,
         &state,
         crate::web_cli::Lent { feedback_reviewer },
     )
     .await?;
-    let workspaces = hosted
-        .relay
-        .workspaces()
-        .context("the relay governs no workspaces in this mode")?
-        .clone();
-    let shown = persistent
-        .workspace_name
-        .clone()
-        .unwrap_or_else(|| workspace_name(&name));
-    if let Some(gigabytes) = persistent.own_workspaces {
+    // Everything a start settles and begins, in one place: a step that fails
+    // stops the relay it was started on before the error goes up (the `match`
+    // below).
+    let serving = async {
+        let workspaces = hosted
+            .relay
+            .workspaces()
+            .context("the relay governs no workspaces in this mode")?
+            .clone();
+        let shown = persistent
+            .workspace_name
+            .clone()
+            .unwrap_or_else(|| workspace_name(&name));
         let host = args.web.public_origin.as_deref().map_or_else(
             || shown.clone(),
             |origin| {
@@ -1400,196 +1432,289 @@ pub(crate) async fn run(
         workspaces
             .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer {
                 host,
-                storage_bytes: gigabytes.saturating_mul(1_000_000_000),
+                storage_bytes: persistent.person_storage_gb.saturating_mul(1_000_000_000),
             })
             .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
-    }
-    let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
-    // The certificate this host serves the workspace with: a build renamed
-    // the host's own after a workspace was made with it, and the host took
-    // the record's back (`Workspaces::serving_certificate`). Every governed
-    // operation below names it, so a renamed certificate is no refusal.
-    let host_cert = workspaces.serving_certificate().clone();
-    // The removals moderation made before the door had them, taken over once
-    // and kept out for the rest of their day.
-    let adopted = workspaces
-        .adopt_legacy_removals(&workspace, &state.join("removals.json"))
-        .await
-        .context("take over the removals the room kept before the door")?;
-    if adopted > 0 {
-        tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
-    }
-    settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
-    workspaces
-        .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
-        .await
-        .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
-    seed_apps(
-        &workspaces,
-        &workspace,
-        &host_cert,
-        &persistent.seed_apps,
-        &state.join("seeded.json"),
-    )
-    .await?;
-    settle_chat(
-        &workspaces,
-        &workspace,
-        &host_cert,
-        &persistent.seed_apps,
-        &persistent.chat_channels,
-        persistent.feedback_channel.as_deref(),
-        room_files(&persistent),
-        &persistent.discussions,
-    )
-    .await?;
-    settle_strips(
-        &workspaces,
-        &workspace,
-        &host_cert,
-        &shown,
-        &persistent.strips,
-    )
-    .await?;
-    ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
-    settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await?;
-    settle_app_authorship(
-        &workspaces,
-        &workspace,
-        &host_cert,
-        &authored_apps(&persistent),
-        &state.join("authored-apps.json"),
-    )
-    .await?;
-    // A record the operator named whose retained history lost the base its
-    // deltas were written over: founded again from what the workspace still
-    // reads, its old history archived beside the replay. Runs once per start
-    // that names it; a record that still reads is left as it is.
-    refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
-    let web = hosted
-        .relay
-        .serve_web(web_config(&args.web, listen, &state))
-        .await
-        .context("start the browser listener")?;
-    println!(
-        "{}",
-        OperatorEvent::Started {
-            version: operator::VERSION,
-            origin: web.origin.clone(),
-            plain_origin: web.plain_origin.clone(),
-            user_public_key: hex::encode(root.verifying_key().to_bytes()),
-            certificate_sha256: web.certificate_sha256.clone(),
-            allowed_origins: args.web.allowed_origins.clone(),
-            workspace: Some(workspace.clone()),
+        let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
+        // Its own workspaces are for the people this workspace's door, or an
+        // invitation into it, let in: never for anyone holding a root alone.
+        workspaces.admit_own_through(&workspace);
+        // The certificate this host serves the workspace with: a build renamed
+        // the host's own after a workspace was made with it, and the host took
+        // the record's back (`Workspaces::serving_certificate`). Every governed
+        // operation below names it, so a renamed certificate is no refusal.
+        let host_cert = workspaces.serving_certificate().clone();
+        // The removals moderation made before the door had them, taken over once
+        // and kept out for the rest of their day.
+        let adopted = workspaces
+            .adopt_legacy_removals(&workspace, &state.join("removals.json"))
+            .await
+            .context("take over the removals the room kept before the door")?;
+        if adopted > 0 {
+            tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
         }
-        .to_line()
-    );
-    // The moderation agent runs as the workspace's bot for as long as the workspace
-    // does; it answers reports left open while the workspace was down first.
-    let moderator = moderation.map(|agent| {
-        tokio::spawn(
-            tilo_relay::room_bots::ModerationBot::new(
-                workspaces.clone(),
-                workspace.clone(),
-                host_cert.clone(),
-                agent,
-            )
-            .run(),
+        // A setting of the operator's that the workspace's governance refuses
+        // stops the start only where going on without it would let in more than
+        // the operator configured: the door, the guests' outside effects and the
+        // removals above. The rest is said and settled again at the next start.
+        settled(
+            &workspace,
+            settle_listing(&workspaces, &workspace, &host_cert, &persistent).await,
+        );
+        workspaces
+            .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
+            .await
+            .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
+        seed_apps(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &persistent.seed_apps,
+            &state.join("seeded.json"),
         )
-    });
-    // The connectors bots listen to, the operator's and those a member
-    // sets up for a bot they ask for, share one host and one blob store.
-    let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
-        (Some(dir), Some(url)) => Some(
-            tilo_relay::public_avatars::PublicAvatars::new(dir.clone(), url)
-                .with_context(|| format!("prepare {}", dir.display()))?,
-        ),
-        _ => None,
-    };
-    let connector_host = tilo_relay::room_bots::installed::ConnectorHost::new(
-        workers,
-        tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
-            .context("prepare the blob store")?,
-        tilo_relay::room_bots::discord::Served {
-            avatars_url: persistent.public_avatars_url.clone(),
-            web_entry: args.web.web_entry.clone(),
-            origin: Some(web.origin.clone()),
-        },
-    );
-    let (runners, discord) = start_bots(
-        &workspaces,
-        &workspace,
-        &host_cert,
-        &root,
-        &bots,
-        &connector_host,
-        &persistent,
-        &state,
-    )
-    .await?;
-    if let Some(discord) = &discord {
-        offer_sign_in(discord, &persistent).await;
-    }
-    // The files members post in the workspace's Chat, kept in the same store
-    // as what the bots fetch, so they stay once their poster left.
-    let attachments = attachment_limits(&persistent).map(|limits| {
-        tokio::spawn(
-            tilo_relay::room_bots::attachments::WorkspaceAttachments::new(
-                workspaces.clone(),
-                workspace.clone(),
-                host_cert.device_public_key,
-                connector_host.store(&workspaces),
-                state.join("attachments.json"),
-                limits,
-            )
-            .run(),
+        .await?;
+        settle_chat(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &persistent.seed_apps,
+            &persistent.chat_channels,
+            persistent.feedback_channel.as_deref(),
+            room_files(&persistent),
+            &persistent.discussions,
         )
-    });
-    // Bots the workspace's members ask for, beside the operator's.
-    let requested =
-        tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
-            workspaces: workspaces.clone(),
-            workspace: workspace.clone(),
-            host: host_cert.clone(),
-            root: root.clone(),
-            state: state.clone(),
-            operator: bots.iter().map(|spec| spec.entry.clone()).collect(),
-            connectors: Some(connector_host),
+        .await?;
+        settle_strips(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &shown,
+            &persistent.strips,
+        )
+        .await?;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
+        // Members inviting, or not, never lets in anyone the door does not.
+        settled(
+            &workspace,
+            settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
+        );
+        settled(
+            &workspace,
+            settle_app_authorship(
+                &workspaces,
+                &workspace,
+                &host_cert,
+                &authored_apps(&persistent),
+                &state.join("authored-apps.json"),
+            )
+            .await,
+        );
+        // A record the operator named whose retained history lost the base its
+        // deltas were written over: founded again from what the workspace still
+        // reads, its old history archived beside the replay. Runs once per start
+        // that names it; a record that still reads is left as it is.
+        refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
+        // The wait list, when the workspace takes people by invitation and
+        // keeps one: the addresses' windows and the mail the door sends from
+        // its page (the web entry, or the door `--wait-list-mail` names).
+        let settings = door::WaitListSettings::from_env(
+            persistent.wait_list_max,
+            persistent
+                .wait_list_mail
+                .clone()
+                .or_else(|| args.web.web_entry.clone()),
+            std::env::var_os("TILO_ROOMS_LOCAL").is_some(),
+        )
+        .context("read the door's mail settings")?;
+        let wait_list = door::WaitListDoor::open(&workspaces, &workspace, &shown, &state, &settings)
+            .context("open the door's wait list")?;
+        let door = wait_list.map(std::sync::Arc::new);
+        if let Some(door) = &door {
+            let _ = workspaces.offer_wait_list(door.offered());
+            tracing::info!(
+                workspace = %workspace,
+                max = door.max(),
+                mail = door.mails(),
+                "the door keeps a wait list"
+            );
+        }
+        let mut config = web_config(&args.web, listen, &state);
+        config.door.clone_from(&door);
+        let web = hosted
+            .relay
+            .serve_web(config)
+            .await
+            .context("start the browser listener")?;
+        println!(
+            "{}",
+            OperatorEvent::Started {
+                version: operator::VERSION,
+                origin: web.origin.clone(),
+                plain_origin: web.plain_origin.clone(),
+                user_public_key: hex::encode(root.verifying_key().to_bytes()),
+                certificate_sha256: web.certificate_sha256.clone(),
+                allowed_origins: args.web.allowed_origins.clone(),
+                workspace: Some(workspace.clone()),
+            }
+            .to_line()
+        );
+        // The moderation agent runs as the workspace's bot for as long as the workspace
+        // does; it answers reports left open while the workspace was down first.
+        let moderator = moderation.map(|agent| {
+            tokio::spawn(
+                tilo_relay::room_bots::ModerationBot::new(
+                    workspaces.clone(),
+                    workspace.clone(),
+                    host_cert.clone(),
+                    agent,
+                )
+                .run(),
+            )
         });
-    let context = PersistentRoom {
-        workspaces,
-        workspace,
-        host_cert,
-        web,
-    };
-    // The deployment's own routes: its health check and the addresses other
-    // services are configured with. Started once the room serves, so a health
-    // check that answers means people can get in.
-    let _management = match persistent.http {
-        Some(listen) => Some(
-            http::serve(http::Config {
-                listen,
-                avatars: persistent.public_avatars.clone(),
-                sign_in,
+        // The connectors bots listen to, the operator's and those a member
+        // sets up for a bot they ask for, share one host and keep what they
+        // fetch in the workspace's content.
+        let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
+            (Some(dir), Some(url)) => Some(
+                tilo_relay::public_avatars::PublicAvatars::new(dir.clone(), url)
+                    .with_context(|| format!("prepare {}", dir.display()))?,
+            ),
+            _ => None,
+        };
+        let connector_host = tilo_relay::room_bots::installed::ConnectorHost::new(
+            workers,
+            // The relay's content, where it keeps each workspace's files, uploads
+            // and what its apps made: one store per workspace for everything this
+            // host keeps.
+            hosted.relay.content(),
+            public,
+            tilo_relay::room_bots::discord::Served {
+                avatars_url: persistent.public_avatars_url.clone(),
                 web_entry: args.web.web_entry.clone(),
-                discord: discord.clone(),
-            })
-            .await?,
-        ),
-        None => None,
+                origin: Some(web.origin.clone()),
+                discord_api_base: persistent.discord_api_base.clone(),
+            },
+        );
+        let (runners, discord) = start_bots(
+            &workspaces,
+            &workspace,
+            &host_cert,
+            &root,
+            &bots,
+            &connector_host,
+            &persistent,
+            &state,
+        )
+        .await?;
+        if let Some(discord) = &discord {
+            offer_sign_in(discord, &persistent).await;
+        }
+        // The files members post in the workspace's Chat, kept in the same store
+        // as what the bots fetch, so they stay once their poster left.
+        let posted = connector_host
+            .store(&workspace)
+            .map_err(|error| anyhow::anyhow!("the workspace's content: {error}"))?;
+        let attachments = attachment_limits(&persistent).map(|limits| {
+            tokio::spawn(
+                tilo_relay::room_bots::attachments::WorkspaceAttachments::new(
+                    workspaces.clone(),
+                    workspace.clone(),
+                    host_cert.device_public_key,
+                    posted,
+                    state.join("attachments.json"),
+                    limits,
+                )
+                .run(),
+            )
+        });
+        // Bots the workspace's members ask for, beside the operator's.
+        let requested =
+            tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
+                workspaces: workspaces.clone(),
+                workspace: workspace.clone(),
+                host: host_cert.clone(),
+                root: root.clone(),
+                state: state.clone(),
+                operator: bots.iter().map(|spec| spec.entry.clone()).collect(),
+                connectors: Some(connector_host),
+            });
+        let context = PersistentRoom {
+            workspaces,
+            workspace,
+            host_cert,
+            web,
+        };
+        // The deployment's own routes: its health check and the addresses other
+        // services are configured with. Started once the room serves, so a health
+        // check that answers means people can get in, and announced at the address
+        // it bound so a deployment can reach a port it let the kernel pick.
+        let management = match persistent.http {
+            Some(listen) => Some(
+                http::serve(http::Config {
+                    listen,
+                    avatars: persistent.public_avatars.clone(),
+                    sign_in,
+                    web_entry: args.web.web_entry.clone(),
+                    discord: discord.clone(),
+                })
+                .await?,
+            ),
+            None => None,
+        };
+        if let Some(management) = &management {
+            println!(
+                "{}",
+                OperatorEvent::DeploymentRoutes {
+                    origin: format!("http://{}", management.addr),
+                }
+                .to_line()
+            );
+        }
+        let governance = Governance {
+            owners,
+            moderators,
+            roles_file: persistent.roles_file.clone(),
+            inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
+            state: state.clone(),
+            invitation_only: persistent.invitation_only,
+            wait_list_max: persistent.wait_list_max,
+        };
+        Ok::<Serving, anyhow::Error>(Serving {
+            moderator,
+            runners,
+            attachments,
+            requested,
+            governance,
+            context,
+            management,
+            wait_list: door,
+        })
+    }
+    .await;
+    let Serving {
+        moderator,
+        runners,
+        attachments,
+        requested,
+        governance,
+        context,
+        management: _management,
+        wait_list,
+    } = match serving {
+        Ok(serving) => serving,
+        Err(error) => {
+            // A start that failed stops the relay it began before its error
+            // goes up: a relay dropped from here closes its endpoint after the
+            // runtime is gone, with its tasks still joining what they started.
+            hosted.shutdown().await;
+            return Err(error);
+        }
     };
-    let governance = Governance {
-        owners,
-        moderators,
-        roles_file: persistent.roles_file.clone(),
-        inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
-        state: state.clone(),
-        members_only: persistent.members_only,
-        wait_list_max: persistent.wait_list_max,
-        wait_list_mail: persistent.wait_list_mail.clone(),
-    };
+    let mut invitations = wait_list
+        .as_ref()
+        .and_then(|door| door.invitations(&context.workspaces));
     let result = tokio::select! {
-        result = serve_operator(&context, &governance, &mut operator) => result,
+        result = serve_operator(&context, &governance, &mut operator, invitations.as_mut()) => result,
         result = shutdown => result,
     };
     for runner in moderator
@@ -1605,6 +1730,27 @@ pub(crate) async fn run(
     result
 }
 
+/// What a started workspace keeps running until its operator stops it.
+struct Serving {
+    /// The moderation bot, when the operator gave it a model.
+    moderator: Option<tokio::task::JoinHandle<()>>,
+    /// The bots' tasks.
+    runners: Vec<tokio::task::JoinHandle<()>>,
+    /// The task posting the files members keep in the workspace's Chat.
+    attachments: Option<tokio::task::JoinHandle<()>>,
+    /// The task serving the bots members ask for.
+    requested: tokio::task::JoinHandle<()>,
+    /// The operator's declarations the workspace is kept in line with.
+    governance: Governance,
+    /// The workspace the operator's loop serves.
+    context: PersistentRoom,
+    /// The deployment's own routes, which stop when dropped.
+    management: Option<http::Handle>,
+    /// The wait list the door keeps, when the workspace takes people by
+    /// invitation and keeps one.
+    wait_list: Option<std::sync::Arc<door::WaitListDoor>>,
+}
+
 /// The operator's declarations the workspace is kept in line with.
 struct Governance {
     owners: BTreeSet<[u8; 32]>,
@@ -1613,12 +1759,11 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    /// The workspace takes people by invitation (`--members-only`).
-    members_only: bool,
+    /// The door lists the workspace and takes only people invited or
+    /// pre-admitted (`--invitation-only`).
+    invitation_only: bool,
     /// Requests left at the door it keeps (`--wait-list-max`).
     wait_list_max: usize,
-    /// The door whoever runs it sends mail from (`--wait-list-mail`).
-    wait_list_mail: Option<String>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1718,6 +1863,18 @@ async fn reconcile_roles(
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
     let current = governance.current();
+    // Whom the operator declares, the door lets in, also when it takes people
+    // by invitation: the first owner of a workspace nobody is in yet has no
+    // one to invite them.
+    context
+        .workspaces
+        .admit_declared(
+            &context.workspace,
+            &context.host_cert,
+            current.0.union(&current.1).copied().collect(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let changes = role_changes(
         &members,
         &current.0,
@@ -1867,6 +2024,7 @@ async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
+    mail: Option<&mut door::InvitationMail>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let removals = Removals::load(&summary(context).await?.members);
@@ -1883,22 +2041,18 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let mut mail_acks = MailAcks::new();
-    let mut mail = governance
-        .wait_list_mail
-        .as_ref()
-        .and_then(|door| context.workspaces.mail_wait_list(door));
+    let mut mail = mail;
     // A deployment that runs the room without an operator leaves its input at
     // its end: the room then keeps serving, and only a command ends it.
     let mut operator_open = true;
     loop {
         tokio::select! {
-            Some(asked) = async {
+            () = async {
                 match mail.as_mut() {
-                    Some(mail) => mail.recv().await,
+                    Some(mail) => { mail.mail_next().await; }
                     None => std::future::pending().await,
                 }
-            } => publish_invite_mail(asked, &mut mail_acks),
+            } => {}
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -1937,11 +2091,9 @@ async fn serve_operator(
                 | OperatorCommand::Standing { .. }))) => {
                     println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
                 }
-                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
-                    if let Some(sender) = mail_acks.remove(&request) {
-                        let _ = sender.send(queued);
-                    }
-                }
+                // An invitation the door mailed itself is acknowledged here:
+                // nothing else in the workspace hears of it.
+                Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
@@ -1958,10 +2110,7 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{
-        JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
-    };
+    use tilo_relay_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::DeviceCapabilities;
     const DAY_MS: u64 = 24 * 3600 * 1000;
     const NS_PER_SEC: u64 = 1_000_000_000;
@@ -2070,9 +2219,86 @@ mod tests {
     /// A relay governing one workspace `Plaza`, its workspaces and the host's
     /// device certificate.
     async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert, String) {
+        let (relay, workspaces, host_cert) = host(dir).await;
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        (relay, workspaces, host_cert, workspace)
+    }
+
+    /// Seeds as the operator's start does, naming the apps it asked `--seed-app`
+    /// for, and answers with what the workspace seeded.
+    async fn seeded(
+        state: &Path,
+        host_cert: &DeviceCert,
+        workspaces: &Workspaces,
+        workspace: &str,
+        apps: &[&str],
+    ) -> BTreeSet<String> {
+        let seeded_file = state.join("seeded.json");
+        seed_apps(
+            workspaces,
+            workspace,
+            host_cert,
+            &apps.iter().map(|app| (*app).to_owned()).collect::<Vec<_>>(),
+            &seeded_file,
+        )
+        .await
+        .unwrap();
+        read_json(&seeded_file).unwrap()
+    }
+
+    /// A persistent workspace's first start seeds its apps: a workspace that was
+    /// just created holds no channel yet, so each seed's genesis waits for the
+    /// group the host's channel service creates for it, and a wait that is too
+    /// short stops the start.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, workspaces, host_cert) = host_with(
+            dir.path(),
+            tilo_user_identity::cloud_enrollment::host_capabilities(),
+        )
+        .await;
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        let apps = ["so.tilo.notes", "so.tilo.chat"];
+        let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
+        assert_eq!(
+            first,
+            apps.iter()
+                .map(|app| (*app).to_owned())
+                .collect::<BTreeSet<_>>()
+        );
+        // A restart seeds nothing again: what the first start seeded is kept.
+        let again = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
+        assert_eq!(again, first);
+        relay.shutdown().await;
+    }
+
+    /// The relay of [`plaza`] started on `dir`, as every start signs its
+    /// certificate afresh.
+    async fn host(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert) {
+        host_with(dir, DeviceCapabilities::host()).await
+    }
+
+    /// [`host`] whose certificate carries `capabilities`: the host of a
+    /// persistent workspace owns its workspaces, so it takes part in their
+    /// channels too.
+    async fn host_with(
+        dir: &Path,
+        capabilities: DeviceCapabilities,
+    ) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert) {
         let root = SigningKey::from_bytes(&[1; 32]);
-        let host = SigningKey::from_bytes(&[2; 32]);
-        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        // The host's device key outlives its starts, as `host-device.key` does.
+        let kept = dir.join("host-device.key");
+        let key: [u8; 32] = std::fs::read(&kept).map_or_else(
+            |_| {
+                let key = tilo_test_env::node_key();
+                std::fs::write(&kept, key).unwrap();
+                key
+            },
+            |bytes| bytes.try_into().unwrap(),
+        );
+        let host = SigningKey::from_bytes(&key);
+        let host_cert = enrol(&root, &host, "host", capabilities).unwrap();
         let relay = tilo_relay::daemon::Relay::start(
             tilo_relay::RelayConfig {
                 state_root: dir.join("relay"),
@@ -2089,8 +2315,114 @@ mod tests {
         .await
         .unwrap();
         let workspaces = relay.workspaces().unwrap().clone();
-        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        (relay, workspaces, host_cert, workspace)
+        (relay, workspaces, host_cert)
+    }
+
+    /// A host started as `tilo-relay room` starts one: the operator's root
+    /// file, the host device it keeps in its state, and the revocation log
+    /// under that state.
+    async fn start_room(
+        root: &SigningKey,
+        host: &SigningKey,
+        host_cert: &DeviceCert,
+        relay_state: &Path,
+        state: &Path,
+    ) -> tilo_relay::daemon::Relay {
+        let identity = hosted_identity(root, host.clone(), host_cert.clone(), relay_state).unwrap();
+        tilo_relay::daemon::Relay::start(
+            tilo_relay::RelayConfig {
+                state_root: relay_state.to_path_buf(),
+                identity_root: state.join("identity"),
+                ..Default::default()
+            },
+            identity,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A workspace host reads its state's revocation log when it starts: a
+    /// device the operator's root withdrew is refused as it connects, while
+    /// another device of the same root still gets in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each host serves until the test is done with it"
+    )]
+    async fn a_revoked_device_is_refused_at_connect_and_its_sibling_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let relay_state = tilo_relay_protocol::metrics::room_relay_root(&state);
+        let root = SigningKey::from_bytes(&[0x11; 32]);
+        let host = SigningKey::from_bytes(&[0x22; 32]);
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let leaked = SigningKey::from_bytes(&[0x33; 32]);
+        let leaked_cert = enrol(&root, &leaked, "leaked", DeviceCapabilities::member()).unwrap();
+        let sibling = SigningKey::from_bytes(&[0x44; 32]);
+        let sibling_cert = enrol(&root, &sibling, "sibling", DeviceCapabilities::member()).unwrap();
+        let user = root.verifying_key().to_bytes();
+        let endpoint = || async {
+            iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .bind()
+                .await
+                .unwrap()
+        };
+
+        // Before the operator withdraws it, the device connects: what the
+        // refusal below is the log's doing, not the device's.
+        let relay = start_room(&root, &host, &host_cert, &relay_state, &state).await;
+        let addr = relay.node_addr();
+        let admitted = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr,
+            user,
+            leaked_cert.clone(),
+            leaked.clone(),
+            RevocationList::new(),
+        )
+        .await;
+        assert!(admitted.is_ok(), "an unrecognised device connects");
+        relay.shutdown().await;
+
+        // The operator's revocation, written where the host reads it.
+        let (_, changed) = tilo_relay::root_signer::revoke_device(
+            &relay_state,
+            &root,
+            leaked_cert.device_public_key,
+            tilo_user_identity::RevocationReason::Compromised,
+        )
+        .unwrap();
+        assert!(changed, "a first revocation changes the log");
+
+        let relay = start_room(&root, &host, &host_cert, &relay_state, &state).await;
+        let addr = relay.node_addr();
+        let refused = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr.clone(),
+            user,
+            leaked_cert,
+            leaked,
+            RevocationList::new(),
+        )
+        .await;
+        assert!(
+            refused.is_err(),
+            "the restarted host refuses the device its root revoked"
+        );
+        let admitted = tilo_relay::RelayClient::connect(
+            endpoint().await,
+            addr,
+            user,
+            sibling_cert,
+            sibling,
+            RevocationList::new(),
+        )
+        .await;
+        assert!(
+            admitted.is_ok(),
+            "another device of the same root still connects"
+        );
     }
 
     /// Ask for an invitation to `workspace` as `device`, as a member's page does.
@@ -2127,29 +2459,19 @@ mod tests {
     /// as their page does.
     async fn walk_in(
         workspaces: &Workspaces,
-        (key, cert): &(SigningKey, DeviceCert),
+        (_, cert): &(SigningKey, DeviceCert),
         invitation: Vec<u8>,
         token: &str,
     ) -> bool {
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation,
-                device_cert: cert.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            return false;
-        };
-        let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
         matches!(
             workspaces
-                .page_join(JoinStep::ProvePreAdmitted {
-                    challenge,
-                    signature,
-                    name: "Guest".into(),
-                    token: token.as_bytes().to_vec(),
-                })
+                .admit_proven(
+                    invitation,
+                    cert.clone(),
+                    rand::random(),
+                    "Guest",
+                    Some(token.as_bytes()),
+                )
                 .await,
             JoinReply::Admitted { .. }
         )
@@ -2219,23 +2541,14 @@ mod tests {
         else {
             panic!("a member invites: {issued:?}");
         };
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation: signed_invitation,
-                device_cert: stranger.1.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
         let admitted = workspaces
-            .page_join(JoinStep::Prove {
-                challenge,
-                signature,
-                name: "Stranger".into(),
-            })
+            .admit_proven(
+                signed_invitation,
+                stranger.1.clone(),
+                rand::random(),
+                "Stranger",
+                None,
+            )
             .await;
         assert!(
             matches!(admitted, JoinReply::Admitted { .. }),
@@ -2254,6 +2567,93 @@ mod tests {
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
+        relay.shutdown().await;
+    }
+
+    /// A listed workspace people walked in through, with an owner declared,
+    /// a moderator and someone removed, takes its host's start-time settings
+    /// again after the host restarts, as the public room does at every start.
+    #[tokio::test]
+    async fn a_lived_in_workspace_takes_its_hosts_settings_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+            .await
+            .unwrap();
+        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+            .await
+            .unwrap();
+        workspaces
+            .publish(
+                &workspace,
+                &host_cert,
+                Listing {
+                    description: "A plaza".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let people = [guest(21), guest(22), guest(23)];
+        for person in &people {
+            let (issued, token) = workspaces
+                .admit_listed(
+                    &workspace,
+                    &tilo_relay_protocol::directory::DoorJoin {
+                        user_public_key: hex::encode(person.1.user_public_key),
+                        display_name: "Guest".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(walk_in(&workspaces, person, issued.signed_invitation, &token).await);
+        }
+        workspaces
+            .set_member_administrator(&workspace, &host_cert, [1; 32], people[0].1.user_public_key)
+            .await
+            .unwrap();
+        workspaces
+            .set_member_role(
+                &workspace,
+                &host_cert,
+                SetMemberRoleRequest {
+                    request_id: [2; 32],
+                    user_public_key: people[1].1.user_public_key,
+                    role: tilo_peer_state::join::MemberRole::Moderator,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .ban_member(
+                &workspace,
+                &host_cert,
+                tilo_relay_session::workspaces::RemoveMemberRequest {
+                    request_id: [3; 32],
+                    user_public_key: people[2].1.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+        relay.shutdown().await;
+
+        let (relay, workspaces, host_cert) = host(dir.path()).await;
+        for step in 0..2 {
+            ensure_guest_policy(&workspaces, &workspace, &host_cert)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &host_cert, false)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &host_cert, true)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+        }
+        let log = workspaces.membership_log(&workspace).await.unwrap();
+        assert!(
+            !log.iter().any(|line| line.contains("log against rows")),
+            "{log:#?}"
+        );
         relay.shutdown().await;
     }
 
@@ -2398,6 +2798,52 @@ mod tests {
             .inactive_after_days;
         assert_eq!(shorter, 7, "the host configures it");
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
+    }
+
+    #[test]
+    fn a_host_keeps_ten_gigabytes_per_person_unless_the_operator_says_otherwise() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Args {
+            #[command(flatten)]
+            persistent: PersistentArgs,
+        }
+        let serving = |extra: &[&str]| {
+            Args::try_parse_from(
+                [
+                    "relay",
+                    "--persistent",
+                    "tilo",
+                    "--root-file",
+                    "/run/secrets/root",
+                    "--room-id-file",
+                    "/state/id",
+                ]
+                .into_iter()
+                .chain(extra.iter().copied()),
+            )
+        };
+        assert_eq!(
+            serving(&[]).unwrap().persistent.person_storage_gb,
+            10,
+            "the host's default"
+        );
+        assert_eq!(
+            serving(&["--person-storage-gb", "40"])
+                .unwrap()
+                .persistent
+                .person_storage_gb,
+            40,
+            "the operator sets it"
+        );
+        assert!(
+            serving(&["--person-storage-gb", "lots"]).is_err(),
+            "gigabytes are a number"
+        );
+        assert!(
+            Args::try_parse_from(["relay", "--person-storage-gb", "40"]).is_err(),
+            "workspaces of people's own are kept by a persistent host"
+        );
     }
 
     #[test]

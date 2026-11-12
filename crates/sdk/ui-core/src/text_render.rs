@@ -15,6 +15,9 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
 mod cache;
 pub use cache::PreparedText;
+mod presentation;
+pub use presentation::present_text;
+use presentation::{epoch as presentation_epoch, presents_text};
 mod row_ink;
 use cache::{CacheKey, CacheQuery, TextCache};
 use tilo_lock::RwLockRecover as _;
@@ -1665,6 +1668,16 @@ const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
+/// The face a line of one style is set in ([`TextRenderer::line_face`]).
+pub struct LineFace {
+    pub font: Font,
+    /// The size the line is set at, in the renderer's pixels.
+    pub size: f32,
+    pub coords: Vec<vello::NormalizedCoord>,
+    /// How far below the line's origin its baseline lies.
+    pub baseline: f32,
+}
+
 /// One contiguous span of glyphs sharing a single font face, already
 /// positioned in the text block's local coordinate space. Painting is then
 /// just `scene.draw_glyphs` with the caller's colour + transform.
@@ -1679,20 +1692,6 @@ struct GlyphRun {
     normalized_coords: Vec<vello::NormalizedCoord>,
     /// The characters the run sets, kept only while [`present_text`] is on.
     text: Option<std::sync::Arc<str>>,
-}
-
-static PRESENT_TEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Have every glyph run this renderer paints carry the characters it sets
-/// (`vello::DrawGlyphs::text`), for a host that presents text as text — a
-/// page that builds DOM from the scene — instead of as outlines. Off by
-/// default: a GPU host never reads them.
-pub fn present_text(on: bool) {
-    PRESENT_TEXT.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn presents_text() -> bool {
-    PRESENT_TEXT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The characters glyphs `start..end` (byte offsets into `line`) set.
@@ -1990,6 +1989,10 @@ pub struct TextRenderer {
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
     /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
+    /// The text-presentation offer as this renderer last shaped: a host
+    /// asking for characters a run sets makes every run shaped before it be
+    /// shaped again.
+    presentation_epoch: u64,
     /// Identity of widget-owned layouts, unique across renderers and font epochs.
     layout_epoch: Arc<()>,
     /// "Always distinguish similar letters" ([`Self::set_distinct_letters`]).
@@ -2119,6 +2122,7 @@ impl TextRenderer {
             swash_cache: SwashCache::new(),
             measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
             generation: 0,
+            presentation_epoch: presentation_epoch(),
             layout_epoch: Arc::new(()),
             distinct_letters: false,
             hits: 0,
@@ -2349,6 +2353,7 @@ impl TextRenderer {
     /// will shape glyphs differently after either swap, so stale numbers
     /// would let widgets compute wrong layouts.
     pub fn bump_generation(&mut self) {
+        self.presentation_epoch = presentation_epoch();
         self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
@@ -2357,6 +2362,20 @@ impl TextRenderer {
         self.shape_cache.clear();
         self.ink_bounds.clear();
         self.ink_bounds_entries = 0;
+    }
+
+    /// Shape again after a host changed whether runs keep the characters
+    /// they set ([`present_text`]): a run shaped before the host asked carries
+    /// none, and the caches that held it are keyed on the generation.
+    fn follow_text_presentation(&mut self) {
+        let epoch = presentation_epoch();
+        if epoch == self.presentation_epoch {
+            return;
+        }
+        self.presentation_epoch = epoch;
+        self.generation = self.generation.wrapping_add(1);
+        self.measure_cache.clear();
+        self.shape_cache.clear();
     }
 
     fn measure_insert(&mut self, key: CacheKey<'_>, value: (f32, f32)) {
@@ -2432,6 +2451,7 @@ impl TextRenderer {
         max_width: Option<f32>,
         warm_shape: bool,
     ) -> (f32, f32) {
+        self.follow_text_presentation();
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
         if let Some(label) = self.emoji_label(input.text, max_width, style) {
@@ -2902,6 +2922,26 @@ impl TextRenderer {
             .map_or(style.size * 0.8, |glyph| glyph.y)
     }
 
+    /// The face [`Self::draw_style`] sets a line of `style` in, at the size
+    /// it sets it, with its variation coordinates, and how far below the
+    /// origin it puts the baseline: what a host needs to set the same line
+    /// itself (a page's own text field). `None` when no face is loaded.
+    pub fn line_face(&mut self, style: &TextStyle) -> Option<LineFace> {
+        let logical_style = style;
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        let input = CacheQuery::new("x", logical_style);
+        let runs = self.shaped_query(&input, None, style);
+        let run = runs.first()?;
+        let font = self.vello_font(run.face_id, run.font_weight)?;
+        Some(LineFace {
+            font,
+            size: run.size,
+            coords: run.normalized_coords.clone(),
+            baseline: run.glyphs.first().map_or(style.size * 0.8, |glyph| glyph.y),
+        })
+    }
+
     /// Draw retained immutable input; colour and transform do not affect geometry identity.
     pub fn draw_prepared(
         &mut self,
@@ -3223,6 +3263,7 @@ impl TextRenderer {
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> Arc<Vec<GlyphRun>> {
+        self.follow_text_presentation();
         let text = input.text;
         let key = input.key(max_width, self.generation, self.text_scale);
         if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
@@ -4049,11 +4090,7 @@ mod tests {
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
         {
-            let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-                crate::font_catalog::checkout_root(),
-                "en-US",
-            );
-            let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+            let mut renderer = crate::font_catalog::fixture_renderer();
             let first = renderer.measure("Reading", 16.0, None);
             let second = renderer.measure("Reading", 16.0, None);
             assert_eq!(first, second);

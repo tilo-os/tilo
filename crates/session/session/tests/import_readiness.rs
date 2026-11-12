@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Read as _;
@@ -26,7 +24,7 @@ use std::time::Duration;
 
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::OutputConfig;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{Options, Session};
 
 /// A session that starts the person's apps, on the display it binds, through a launcher that
@@ -106,7 +104,7 @@ fn readiness_socket(runtime: &Path, display: &str) -> PathBuf {
 /// Run the session until `done` holds: a launched app starts on a worker of its own, so the loop
 /// keeps drawing while it gets there.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
-    common::wait_for(session, what, |_| done().then_some(()));
+    crate::common::wait_for(session, what, |_| done().then_some(()));
 }
 
 /// The installed folder importer reads the answer from this session and no other: ready once first

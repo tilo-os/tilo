@@ -147,14 +147,16 @@ where
         app_serving,
         carried_calls,
         admin,
-        here,
         fetch,
         agents,
+        environments,
         positions,
         compactor,
         member_limits,
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
+    let agent = std::sync::OnceLock::new();
+    let channel_reader = std::sync::atomic::AtomicBool::new(false);
     let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
     // relay's are what the stream accepted, not an estimate.
@@ -178,6 +180,7 @@ where
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     // Presence is batched per connection, in the order it was posted.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
+    let execution = tilo_actions::remote::ExecutionLease::mint();
     let session = SessionCtx {
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
@@ -195,13 +198,16 @@ where
         revocations: &revocations,
         carried_calls: carried_calls.clone(),
         admin: admin.as_deref(),
-        here: here.as_deref(),
         fetch: fetch.as_deref(),
         agents: &agents,
+        environments: &environments,
         positions,
         compactor: compactor.as_ref(),
         member_limits: member_limits.as_deref(),
         resumes: &resumes,
+        agent: &agent,
+        channel_reader: &channel_reader,
+        execution: &execution,
         lag: &lag,
         presence: Some(&presence),
     };
@@ -237,11 +243,22 @@ where
             end_writer,
             &mut closed,
             &mut disconnect_rx,
-            &stop,
+            Stopping {
+                stop: &stop,
+                outbound: &tx,
+                // Stopped by the person while the device stays theirs, rather than revoked.
+                stopped: &|| {
+                    admin
+                        .as_deref()
+                        .is_some_and(|admin| admin.runs_agent(&peer.device_public_key))
+                },
+            },
             &metrics,
         )
         .await
     };
+    // What an agent's run on this connection started is not followed again.
+    execution.close();
     if let Some(admin) = &admin {
         admin.agent_session_ended(&peer.device_public_key, &stop);
     }
@@ -258,12 +275,26 @@ where
         session.outbound,
     )
     .await;
+    // A browser environment's device that was here and is not any more: its
+    // environment ends, unless it is back before the host that placed it looks.
+    environments.departed(peer.device_public_key);
     outcome
 }
 
+/// How a session is stopped: the notice that stops it, where the device is told, and whether the
+/// person stopped its run (it is told, and connects no more) rather than its device being revoked.
+struct Stopping<'a> {
+    stop: &'a tokio::sync::Notify,
+    outbound: &'a mpsc::Sender<Envelope>,
+    stopped: &'a (dyn Fn() -> bool + Sync),
+}
+
+/// How long a stopped agent's session waits for the device to hear that it was stopped.
+const STOPPED_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Run a session's `reading` and `writing` until the session ends: the
 /// connection closes, the peer overflows its queue, the session is stopped
-/// (`stop`), or either half ends.
+/// ([`Stopping`]), or either half ends.
 /// When the reader ends it (the peer closed, or lost its access), the
 /// writer is told through `end_writer` and writes what was queued for the
 /// peer then, a refusal among it, before the close; unless the connection
@@ -275,14 +306,29 @@ async fn until_ended<C: std::future::Future>(
     end_writer: tokio::sync::watch::Sender<bool>,
     closed: &mut std::pin::Pin<&mut C>,
     disconnect: &mut mpsc::Receiver<()>,
-    stop: &tokio::sync::Notify,
+    stopping: Stopping<'_>,
     metrics: &crate::metrics::Metrics,
 ) -> Result<(), PeerError> {
     tokio::pin!(reading, writing, heartbeats);
     tokio::select! {
         _ = closed.as_mut() => Ok(()),
-        // The person stopped the agent this session is a run of.
-        () = stop.notified() => Ok(()),
+        // The person stopped the agent this session is a run of: the device is told, so it
+        // connects no more and its presence ends with it, and the session ends once that is
+        // written, or after a moment on a connection that takes nothing.
+        () = stopping.stop.notified() => {
+            if (stopping.stopped)() {
+                let _ = stopping.outbound.try_send(Envelope::AgentRunStopped);
+            }
+            let _ = end_writer.send(true);
+            // Written is not read: closing the connection now would drop the word on the way,
+            // so the session waits for the device to close it, as one that heard it does.
+            let heard = async {
+                let _ = (&mut writing).await;
+                closed.as_mut().await;
+            };
+            let _ = tokio::time::timeout(STOPPED_WRITE, heard).await;
+            Ok(())
+        }
         _ = disconnect.recv() => {
             metrics.inc_subscriber_dropped_backpressure();
             Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))

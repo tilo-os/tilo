@@ -161,12 +161,48 @@ fn a_container_that_keeps_a_padding_insets_what_it_holds() {
         .padding(Rhythm::Section)
         .push(boxed(100.0));
     led.set_lead(1);
-    solve(&mut led, &theme, 400.0);
+    // A column with the room for a lead: on a phone's screen it keeps none, and this is the
+    // padding's own test.
+    solve(&mut led, &theme, 600.0);
     let held = rects(&led)[0];
     assert!(
         held.x0 > pad + 0.5,
         "a lead stands what it holds further in than the padding alone: {held:?}"
     );
+}
+
+/// A column without the room for a row lead keeps none: on a phone's screen what a document's
+/// body holds starts on the page's gutter, so the words keep the width a control's cell would
+/// take from every line, while the column what it holds is read in is a column.
+#[test]
+fn a_phone_screen_keeps_no_lead_where_a_column_does() {
+    use super::units::COMPACT_BELOW;
+    let theme = Theme::dark();
+    let rem = f64::from(rem_of(&theme));
+    let lead = f64::from(Resolved::of(&theme).lead());
+    assert!(lead > 0.0);
+    // The narrowest a column what the lead holds stands at, and the widest box that leaves it
+    // below: `WidthClass::Medium`, where a lead has room again.
+    let column = f64::from(COMPACT_BELOW) * rem;
+    for (width, kept) in [
+        (320.0, false),
+        (390.0, false),
+        (column, false),
+        (column + lead - 1.0, false),
+        (column + lead, true),
+        (1280.0, true),
+    ] {
+        let mut body = Stack::stack().fill_width().push(boxed(100.0));
+        body.set_lead(1);
+        solve(&mut body, &theme, width as f32);
+        let held = rects(&body)[0];
+        let inset = if kept { lead } else { 0.0 };
+        assert!(
+            (held.x0 - inset).abs() < 0.5,
+            "{width} wide: what it holds stands at {}, where a lead is {lead}",
+            held.x0
+        );
+    }
 }
 
 /// Where the body of `root` — its second child, which leads — holds what is written in it.
@@ -483,13 +519,11 @@ fn a_page_is_bounded_to_its_measure_and_centred() {
 
     let mut phone = Page::new().push(content());
     solve(&mut phone, &theme, 390.0);
-    let gutter =
-        gap(&theme, Rhythm::Group) * f64::from(WidthClass::of(390.0 / rem as f32).gutter_steps());
+    let gutter = gap(&theme, Rhythm::Group);
     assert!(
-        gutter >= 24.0,
-        "a phone's page keeps the native gutter: {gutter}"
+        (rects(&phone)[0].width() - (390.0 - 2.0 * gutter)).abs() < 1.0,
+        "a phone's page keeps the content gutter"
     );
-    assert!((rects(&phone)[0].width() - (390.0 - 2.0 * gutter)).abs() < 1.0);
 }
 
 #[test]
@@ -522,19 +556,32 @@ fn a_filling_page_takes_the_panes_whole_width_and_starts_at_the_page_gutter() {
         "a canvas starts one content gap under the bar: {surface:?}"
     );
     assert!(
-        surface.y0 < inset.y0,
-        "content that grows with what it holds keeps the wider gutter: {surface:?} over {inset:?}"
+        (surface.y0 - inset.y0).abs() < 1.0,
+        "both start the same distance under the bar: {surface:?} over {inset:?}"
     );
 }
 
+/// A page keeps one content gutter at every width: a phone, a laptop and a wide monitor hold
+/// what they show the same distance in from the column, so what stands at the top of a page has
+/// the same room over it as the gap under it wherever the window is.
 #[test]
-fn a_page_gutter_grows_with_the_space_class() {
+fn a_page_keeps_one_content_gutter_at_every_width() {
     let theme = Theme::dark();
     let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
-    let (mut narrow, mut wide) = (Page::full().push(content()), Page::full().push(content()));
-    solve(&mut narrow, &theme, 360.0);
-    solve(&mut wide, &theme, 1600.0);
-    assert!(rects(&narrow)[0].x0 < rects(&wide)[0].x0);
+    let gutter = gap(&theme, Rhythm::Group);
+    for width in [360.0_f64, 1280.0, 1600.0, 3440.0] {
+        let mut page = Page::full().push(content());
+        solve(&mut page, &theme, crate::num::f32_of_f64(width));
+        let r = rects(&page)[0];
+        assert!(
+            (r.x0 - gutter).abs() < 1.0 && (r.y0 - gutter).abs() < 1.0,
+            "the content gutter at {width}: {r:?}"
+        );
+        assert!(
+            (width - r.x1 - gutter).abs() < 1.0,
+            "and the same on the trailing side at {width}: {r:?}"
+        );
+    }
 }
 
 #[test]
@@ -602,16 +649,20 @@ fn a_child_replaced_inserted_removed_or_moved_in_place_is_a_described_change() {
     assert_eq!(stack.take_structure_change(), StructureChange::Rebuild);
 }
 
+/// A layout its parent places stays where it is placed when it settles what it shows: a page a
+/// virtual list puts at an inset lays its columns out again for the width it was given without
+/// taking itself out of the place its parent put it.
 #[test]
-fn a_page_its_parent_places_stays_where_it_is_placed_when_it_settles_its_width() {
+fn a_container_its_parent_places_stays_where_it_is_placed_when_it_settles() {
     use taffy::style_helpers::length;
 
     let theme = Theme::dark();
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-    let mut page = Page::full()
-        .row_after(crate::tokens::Rhythm::Sibling)
-        .push(boxed(20.0));
+    let mut page = Grid::auto(Length::Rem(11.0));
+    for _ in 0..6 {
+        page = page.push(boxed(20.0));
+    }
     let node = page.build_layout(&mut tree, &theme, &mut nodes);
     // Placed as a virtual list places a row.
     let mut placed = tree.style(node).expect("styled").clone();
@@ -638,7 +689,7 @@ fn a_page_its_parent_places_stays_where_it_is_placed_when_it_settles_its_width()
     let mut text = crate::font_catalog::fixture_renderer();
     assert!(
         page.adjust_layout_style(&mut tree, node, &mut text),
-        "the page settles its width class"
+        "the grid settles its columns"
     );
     tree.compute_layout(parent, space).expect("laid out again");
     let laid = tree.layout(node).expect("laid");

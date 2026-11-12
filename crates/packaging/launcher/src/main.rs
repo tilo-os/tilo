@@ -866,18 +866,6 @@ fn run_gui_command(
                         launcher::retained_view::run_admitted_gui(admission, cancellation)
                     })
                 }
-                launcher::retained_view::OrdinaryLaunchGate::SelectedParent(endpoint) => {
-                    launcher::retained_view::SelectedParentAdmission::receive(
-                        endpoint,
-                        &args.manifest,
-                        &args.payload_root,
-                        &opts,
-                        &cancellation,
-                    )
-                    .and_then(|admission| {
-                        launcher::retained_view::run_selected_parent_gui(admission, cancellation)
-                    })
-                }
             }
         } else {
             run_manifest(&manifest, &args.payload_root, &opts)
@@ -1025,8 +1013,8 @@ const LAUNCH_LATER: u8 = 75;
 /// The installed `package`, held for the launch, at a build this system runs.
 ///
 /// A build made for older interface versions, or recorded at an older
-/// package format, is updated first, exactly as the shell does before it
-/// opens one (`shell::app_versions`), and the launch runs the new build. One
+/// package format, is updated first, exactly as the session does before it
+/// opens one (`tilo_session::app_versions`), and the launch runs the new build. One
 /// that needs a newer system starts the system's update. Either way the
 /// person is told what happens; a launch is never just refused for being
 /// behind (docs/architecture/compatibility.md).
@@ -1377,12 +1365,15 @@ fn host_launch_env_is_secret(key: &str) -> bool {
     matches!(key, "XDG_ACTIVATION_TOKEN" | "DESKTOP_STARTUP_ID")
 }
 
+/// The launcher's own diagnostics go to standard error: standard output is the app's, which a
+/// caller reads as the app's answer (a record's search entries, a surface report).
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .try_init();
 }
 

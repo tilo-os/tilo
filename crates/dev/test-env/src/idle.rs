@@ -826,14 +826,18 @@ mod tests {
         use std::os::unix::net::UnixStream;
 
         let (mut driver, mut parked) = UnixStream::pair().expect("a socket pair");
-        std::thread::Builder::new()
-            .name("idle-runs-probe".into())
-            .spawn(move || {
-                let mut byte = [0_u8; 1];
-                while parked.read(&mut byte).is_ok_and(|read| read == 1) {}
-            })
-            .expect("spawn the parked thread");
-        let tid = named_thread("idle-runs-probe");
+        // The id of the thread it starts: a thread names itself once it runs,
+        // so a lookup by name right after the spawn finds none on a runner
+        // that has not scheduled it yet.
+        let (_, tid) = spawned_thread("idle-runs-probe", || {
+            std::thread::Builder::new()
+                .name("idle-runs-probe".into())
+                .spawn(move || {
+                    let mut byte = [0_u8; 1];
+                    while parked.read(&mut byte).is_ok_and(|read| read == 1) {}
+                })
+                .expect("spawn the parked thread")
+        });
         assert_stays_asleep(&tid, "a thread parked on a socket");
         let settled = asleep_runs(&tid);
         driver.write_all(&[1]).expect("wake the parked thread");

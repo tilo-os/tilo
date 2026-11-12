@@ -2182,7 +2182,10 @@ impl App {
                     update = continuation.settle(update);
                 }
             }
-            if update.is_terminal() && !self.queue_documents_before_terminal() {
+            if update.is_terminal()
+                && self.queue_documents_before_terminal()
+                    == crate::app::document_routes::Handoff::Stopped
+            {
                 // Keep admitted lifecycle state; do not poll the completed
                 // operation again or fabricate a no-effect refusal.
                 changed = true;

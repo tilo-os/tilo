@@ -342,11 +342,13 @@ impl AccountList {
         self.sync_content();
         let count = self.accounts.len();
         let width = self.column.width();
-        let set_up = ButtonFace::new(Rect::ZERO, SET_UP_LABEL).control_size(ControlSize::Small);
+        let set_up_label = set_up_label();
+        let unkeyed = unkeyed_caption();
+        let set_up = ButtonFace::new(Rect::ZERO, &set_up_label).control_size(ControlSize::Small);
         let set_up_w = set_up.intrinsic_width(text, theme);
         let set_up_h = ButtonFace::height(ControlSize::Small, theme);
         let (caption_w, caption_h) =
-            text.measure_style(UNKEYED_CAPTION, None, &theme.text(TextRole::Caption));
+            text.measure_style(&unkeyed, None, &theme.text(TextRole::Caption));
         let (caption_w, caption_h) = (f64::from(caption_w), f64::from(caption_h));
         // The caption explaining the button shows when the title keeps half a
         // utility panel's width beside it.
@@ -568,7 +570,7 @@ impl AccountList {
             if layout.caption.area() > 0.0 {
                 let caption = self.at(i, layout.caption);
                 ctx.text_role(
-                    UNKEYED_CAPTION,
+                    &unkeyed_caption(),
                     TextRole::Caption,
                     theme.text_dim,
                     caption.origin(),
@@ -581,7 +583,7 @@ impl AccountList {
                 ctx.transform,
                 ctx.text,
                 theme,
-                &ButtonFace::new(rect, SET_UP_LABEL)
+                &ButtonFace::new(rect, &set_up_label())
                     .role(ButtonRole::Secondary)
                     .control_size(ControlSize::Small)
                     .hovered(hovered_zone == Some(Zone::SetUp)),
@@ -746,9 +748,14 @@ impl AccountList {
     }
 }
 
-const SET_UP_LABEL: &str = "Set up";
+/// What the account's button says when it has no key on this device.
+fn set_up_label() -> String {
+    crate::i18n::CATALOG.t("totp-add-save-provision")
+}
 /// What a shared account without its key here says about itself.
-const UNKEYED_CAPTION: &str = "Not set up on this device";
+fn unkeyed_caption() -> String {
+    crate::i18n::CATALOG.t("totp-a11y-unkeyed")
+}
 
 #[cfg(test)]
 mod tests {

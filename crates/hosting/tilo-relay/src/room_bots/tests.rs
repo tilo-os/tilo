@@ -211,7 +211,7 @@ async fn post_with(
             .into_iter()
             .find(|id| !before.contains(id))
             .expect("the post is in a part");
-        (id, page.take_record_mutations())
+        (id, page.take_record_mutations().unwrap())
     };
     for (record, mutation) in taken {
         match mutation {
@@ -668,9 +668,11 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     );
 }
 
+/// A bot's run reads the records it follows through the record door: Chat's
+/// record of the workspace and its messages' chain, with what was just posted.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bot_step_reads_through_a_records_registered_read() {
-    use tilo_automation::{ActorFilter, Selector, Shortcut, Step, StepKind, TriggerSpec};
+async fn a_bot_step_reads_the_records_it_follows_through_the_record_door() {
+    use tilo_automation::{ActorFilter, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
@@ -686,15 +688,24 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         id: "reader".into(),
         name: "Reader".into(),
         inputs: trigger.payload().to_vec(),
-        steps: vec![Step::new(
-            "digest",
-            StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-workspace"),
-                resource: Selector::FirstOfKind("chat.workspace".into()),
-                args: std::collections::BTreeMap::new(),
-                appearance: None,
-            },
-        )],
+        steps: vec![
+            Step::new(
+                "chat",
+                StepKind::Read {
+                    app: CHAT.into(),
+                    record: String::new(),
+                    joined: false,
+                },
+            ),
+            Step::new(
+                "messages",
+                StepKind::Read {
+                    app: CHAT.into(),
+                    record: chat::parts::chain().route().to_owned(),
+                    joined: true,
+                },
+            ),
+        ],
         step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
@@ -730,10 +741,35 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
     assert!(runner.step().await.unwrap().is_empty());
     ada_says(&workspaces, &workspace, &cert, &general, "what is here?").await;
     let reports = runner.step().await.unwrap();
-    assert!(
-        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
-        "{reports:?}"
+    let [report] = &reports[..] else {
+        panic!("one run: {reports:?}");
+    };
+    assert_eq!(
+        report.outcome,
+        tilo_automation::RunOutcome::Completed,
+        "{report:?}"
     );
+    let read = |step: &str| {
+        report
+            .steps
+            .iter()
+            .find_map(|record| match &record.status {
+                tilo_automation::StepStatus::Succeeded { output } if record.step == step => {
+                    output.clone()
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{step} read nothing: {report:?}"))
+    };
+    let chat = read("chat");
+    assert!(
+        chat["records"][0]["value"]["channels"]
+            .as_object()
+            .is_some_and(|channels| channels.contains_key(&general)),
+        "{chat}"
+    );
+    let messages = read("messages").to_string();
+    assert!(messages.contains("what is here?"), "{messages}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1020,7 +1056,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             false,
         )
         .unwrap();
-        match page.take_record_mutations().pop() {
+        match page.take_record_mutations().unwrap().pop() {
             Some((_, DocumentMutation::Snapshot(bytes))) => bytes,
             other => panic!("the page started the first part: {other:?}"),
         }
@@ -1055,6 +1091,83 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 }
 
+/// A member's own record is theirs alone: sealed under a channel only their
+/// devices hold, it is nobody else's to read, the governor's included. A bot
+/// whose pass follows the workspace's records leaves it out and goes on
+/// answering what it does hold, rather than stopping at it every pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_pass_goes_on_past_a_record_it_holds_no_keys_of() {
+    use crate::workspaces::sealed_fixtures::{SealingMember, member_device, plaintext_record};
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = crate::workspaces::fixtures::governor_with(
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
+    let (guest_key, _guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest_key).await;
+    // The guest's own drafts: a record of the chat only their devices read.
+    // One of their devices wrote it before its channel existed, and what
+    // another of them seals onto it now the workspace keeps but cannot open.
+    let drafts_id =
+        tilo_action_policy::member_record_id(&hex::encode(cert.user_public_key), "chat.drafts");
+    let (other_key, _other_cert) = member_device(&workspaces, &workspace, (&key, &cert), 4).await;
+    plaintext_record(
+        &workspaces,
+        &workspace,
+        &other_key,
+        (CHAT, &drafts_id),
+        |doc| {
+            use automerge::transaction::Transactable as _;
+            doc.put(automerge::ROOT, "drafts", "half a message")
+                .unwrap();
+        },
+    )
+    .await;
+    guest
+        .apart(&workspaces, &workspace, &drafts_id)
+        .await
+        .writes(&workspaces, &workspace, |doc| {
+            use automerge::transaction::Transactable as _;
+            doc.put(automerge::ROOT, "drafts", "half a message, sealed")
+                .unwrap();
+        })
+        .await;
+    let unread = workspaces
+        .record_document(&workspace, CHAT, &drafts_id)
+        .await;
+    assert!(
+        unread.is_err(),
+        "the workspace holds a record it cannot read: {unread:?}"
+    );
+
+    // A post in the chat still reaches the bot, which answers it.
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        greeter(general.as_str()),
+        scratch.path().join("greeter.json"),
+    )
+    .await;
+    assert!(runner.step().await.unwrap().is_empty());
+    ada_says(&workspaces, &workspace, &cert, &general, "hello").await;
+    let reports = runner.step().await.unwrap();
+    assert!(
+        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
+        "the pass goes on past the record it holds no keys of: {reports:?}"
+    );
+    assert!(
+        posts(&workspaces, &workspace)
+            .await
+            .iter()
+            .any(|message| message.text == "welcome!"),
+        "the bot answered the post beside it"
+    );
+    assert!(runner.dead_letters().next().is_none(), "nothing buried");
+}
+
 /// The files the chat's first part references, as the workspace holds it.
 async fn referenced_in(workspaces: &Workspaces, workspace: &str) -> Vec<attachments::Referenced> {
     attachments::referenced(
@@ -1084,6 +1197,7 @@ fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
         app_id,
         cluster_id,
         hash,
+        ..
     } = postcard::from_bytes(want).unwrap()
     else {
         panic!("a request for content")
@@ -1113,6 +1227,7 @@ fn opened(
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
         hash: blake3::hash(bytes).to_hex().to_string(),
+        have: Vec::new(),
     })
     .unwrap();
     let mut whole = Vec::new();
@@ -1142,9 +1257,11 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
-    let blobs =
-        std::sync::Arc::new(installed::FsBlobs::new(scratch.path().join("blobs"), None).unwrap());
-    workspaces.serve_content(blobs.clone());
+    let content = crate::content::stores(scratch.path());
+    workspaces.serve_content(std::sync::Arc::new(crate::content::StoresContent(
+        content.clone(),
+    )));
+    let blobs = content.get(&workspace).unwrap();
     let attachments_of = |limits| {
         attachments::WorkspaceAttachments::new(
             workspaces.clone(),
@@ -1160,7 +1277,8 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
         member_bytes: 40,
         workspace_bytes: 1000,
     });
-    workspaces.keep_content(keeper.clone());
+    let kept: std::sync::Arc<dyn crate::workspaces::ContentKeeper> = keeper.clone();
+    workspaces.keep_content(&kept);
     let ada = hex::encode(ADA);
 
     let notes = b"the meeting notes, version one".to_vec();

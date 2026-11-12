@@ -1,5 +1,7 @@
 desktop:chrome desktop (Desktop)
+  about Open or close the About sheet
   activity Show a workspace's history
+  branch-workspace Branch a workspace
   close-activity Close the workspace's history
   close-window Close a window
   delete-workspace Delete a workspace

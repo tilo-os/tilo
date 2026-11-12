@@ -1,7 +1,6 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use crate::workspace::AGENT_ACTOR_PREFIX;
-use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
 impl PeerWorkspace<'_> {
@@ -26,62 +25,8 @@ impl PeerWorkspace<'_> {
         }
         Ok(receipt)
     }
-    /// Authenticate a historical reader against exact current certificate evidence.
-    pub fn check_checkpoint_reader(
-        self,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-        record: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self
-            .peer
-            .certificate(&caller.device_public_key, now)
-            .map_err(|error| error.to_string())?
-            != caller
-        {
-            return Err("checkpoint caller is not exact current admitted evidence".into());
-        }
-        self.peer
-            .check_document_read(caller.device_public_key, app, record, now)
-    }
-    /// Require current workspace undoable-write permission for checkpoint capture and naming.
-    pub fn check_checkpoint_namer(
-        self,
-        caller: &tilo_user_identity::DeviceCert,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self
-            .peer
-            .certificate(&caller.device_public_key, now)
-            .map_err(|error| error.to_string())?
-            != caller
-        {
-            return Err("checkpoint caller is not exact current admitted evidence".into());
-        }
-        if !self.peer.membership(caller.device_public_key, now)?.allows(
-            &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        ) {
-            return Err(
-                "checkpoint capture and naming require current workspace undoable-write permission"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-    /// Check current native checkpoint signing custody, including retries: the
-    /// checkpoint rows are the workspace's settings, so the settings action
-    /// permits them.
-    pub fn check_checkpoint_writer(self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.peer.require_governance_action(
-            key,
-            tilo_action_policy::roles::governance::SETTINGS,
-            now,
-        )
-    }
-    /// Read the native checkpoint content anchor, never treating corruption as absence.
+    /// Read the checkpoint content anchor a workspace was signed with before
+    /// checkpoints were retired, never treating corruption as absence.
     pub fn workspace_checkpoint_root(self) -> Result<Option<[u8; 32]>, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let doc = self
@@ -153,8 +98,8 @@ impl PeerWorkspace<'_> {
 
 impl PeerWorkspaceMut<'_> {
     /// Record `receipt`, the terminal audit of an invocation this device
-    /// served, in its person's own slice of the workspace, signed by `key`, the
-    /// device's own: the rule every receiver holds a writer to
+    /// served, in its person's own slice of the workspace, as the device's own
+    /// change: the rule every receiver holds a writer to
     /// ([`crate::workspace::effect_slices_kept`]). The actor is the device's
     /// person, or an agent acting for them. This creates no application
     /// record or capability. Answers whether the workspace changed.
@@ -162,10 +107,9 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         receipt: &WorkspaceEffectReceipt,
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let candidate = self.own_effect_candidate(caller, key, now)?;
+        let candidate = self.own_effect_candidate(caller, now)?;
         let Some(mut candidate) = candidate else {
             return Err("effect workspace is absent".into());
         };
@@ -204,16 +148,12 @@ impl PeerWorkspaceMut<'_> {
 
     /// The workspace as `caller`, this device, writes its own effect receipts
     /// into it: under its actor, once its certificate and read permission
-    /// hold and `key` is its own.
+    /// hold.
     fn own_effect_candidate(
         &self,
         caller: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<Option<automerge::AutoCommit>, String> {
-        if key.verifying_key().to_bytes() != caller.device_public_key {
-            return Err("an effect receipt is signed by its recorder's own device".into());
-        }
         if self
             .peer
             .certificate(&caller.device_public_key, now)
@@ -238,52 +178,18 @@ impl PeerWorkspaceMut<'_> {
         Ok(Some(candidate))
     }
 
-    /// Anchor retained checkpoint content as `key`'s device, when the
-    /// workspace's settings are its to change.
-    pub fn set_workspace_checkpoint_root(
-        self,
-        root: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        self.peer.require_governance_action(
-            key,
-            tilo_action_policy::roles::governance::SETTINGS,
-            now,
-        )?;
-        let mut candidate = self
-            .peer
-            .core
-            .workspace_doc
-            .as_deref()
-            .ok_or("checkpoint workspace is absent")?
-            .clone();
-        candidate
-            .put(
-                ROOT,
-                "native_checkpoint_root_v1",
-                ScalarValue::Bytes(root.to_vec()),
-            )
-            .map_err(|e| e.to_string())?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
-        Ok(())
-    }
-
     /// Anchor `caller`'s archived effect receipts at `root`, in its
-    /// person's slice of the workspace, signed by `key`, the device's own.
+    /// person's slice of the workspace, as the device's own change.
     pub fn set_workspace_effect_history_root(
         self,
         caller: &tilo_user_identity::DeviceCert,
         root: [u8; 32],
-        key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         use tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
         let mut candidate = self
-            .own_effect_candidate(caller, key, now)?
+            .own_effect_candidate(caller, now)?
             .ok_or("effect workspace is absent")?;
         let object =
             |doc: &mut automerge::AutoCommit, parent: &automerge::ObjId, key: &str| match doc

@@ -1,4 +1,3 @@
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// One item. Its title is collaborative text.
@@ -89,8 +88,8 @@ impl ResourceApp for App {
         let hint = ModelView::from_state(&empty, |empty| -> Element {
             if *empty {
                 Box::new(
-                    EmptyState::new(I18nManager::lookup_plain("collection-empty-title"))
-                        .with_message(I18nManager::lookup_plain("collection-empty-message")),
+                    EmptyState::new(crate::locales::CATALOG.t("collection-empty-title"))
+                        .with_message(crate::locales::CATALOG.t("collection-empty-message")),
                 )
             } else {
                 Box::new(Column::new())

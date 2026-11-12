@@ -43,6 +43,7 @@ use ui::widget::{
 };
 
 use crate::model::{self, Account, AccountId, Algorithm};
+use ui::widget::DrawChild;
 
 /// Outcome the app acts on.
 #[derive(Clone, Debug)]
@@ -466,7 +467,8 @@ impl Widget for AddForm {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.tree.draw(scene, transform, text, theme, presence);
+        self.tree
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

@@ -46,3 +46,40 @@ weather-updated-date = Updated { $when }
 weather-outdated-ago = Last updated { $when }, and out of date
 weather-outdated-clock = Last updated at { $when }, and out of date
 weather-outdated-date = Last updated { $when }, and out of date
+weather-window-name = Weather
+weather-forecast = Forecast
+weather-refresh = Fetch the forecast again
+weather-saved-places = Saved places
+weather-places = Places
+weather-places-hint = Use Up and Down Arrow to change place, and Enter to open its forecast.
+weather-city-name = City name
+weather-no-places = No places yet. Add a place to see its forecast.
+weather-choose-place = Choose a saved place to see its forecast.
+
+## Window and accessibility copy
+weather-a11y-places = Places
+weather-add-place = Add a place
+weather-loading = Current conditions are loading
+weather-now-conditions = Current conditions
+weather-air-quality = Air quality
+weather-notice-retry-message = Check your connection and try again.
+weather-notice-offline-message = This is the last forecast saved on this device.
+
+## The window bar's slots
+weather-refresh-forecast = Refresh forecast
+
+## The forecast page while the forecast is on its way
+weather-loading-forecast = Loading the forecast
+
+## Actions
+
+weather-effects-refresh = Refresh forecasts
+weather-effects-open-location = Open forecast
+weather-locations = Weather
+weather-locations-save-location = Add location
+weather-locations-use-as-default = Use as default location
+weather-locations-move-to-top = Move to top
+weather-locations-remove = Remove location
+
+## The forecast's own button
+weather-retry = Retry

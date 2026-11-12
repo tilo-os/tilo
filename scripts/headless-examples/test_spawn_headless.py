@@ -14,11 +14,11 @@ class SocketPathPreflight(unittest.TestCase):
             script = root / "scripts/headless-examples/spawn-headless.sh"
             script.parent.mkdir(parents=True)
             shutil.copy2(Path(__file__).with_name("spawn-headless.sh"), script)
-            # There is deliberately no target/debug/shell. A short path must
+            # There is deliberately no target/debug/tilo-session. A short path must
             # reach the ordinary missing-binary refusal; nothing can launch.
             return subprocess.run(
                 ["bash", str(script), path], capture_output=True, text=True, timeout=5,
-                env={**os.environ,"TILO_HEADLESS_BINARY":str(root/"target/debug/shell")},
+                env={**os.environ,"TILO_HEADLESS_BINARY":str(root/"target/debug/tilo-session")},
             )
 
     def test_long_path_refuses_before_binary_or_profile(self):

@@ -110,7 +110,7 @@ async fn bind_inner(
     {
         return Err(refused());
     }
-    let process = launcher.with_executing(peer).ok_or_else(refused)?;
+    let process = launcher.with_executing(&peer).ok_or_else(refused)?;
     stream.write_all(&[1]).await?;
     Ok(process)
 }

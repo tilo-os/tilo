@@ -323,7 +323,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Surface(level)`, `paint_surface` | one of the five levels with its edge and shadow; children ask `SurfaceLevel::inner_radius` for a concentric radius |
 | `FloatingPanel`, `FloatingPanelFace` | header slot, body, footer slot; a field in the header renders embedded; a hairline under the header only while the body holds something |
 | `TextStack` | title (Body or Label, medium), secondary (Caption, secondary ink), tertiary; fixed gaps |
-| `Facts` | separate facts (icon and text) with space between, dropping the lowest priority first; never a joined string |
+| `Facts` | separate facts (an icon naming a kind of thing, or a dot in a tone marking something happening now, and text) with space between, dropping the lowest priority first; never a joined string |
 | `PropertyList` | label and value pairs |
 | `KeyHintsFace` | drawn keycaps and what they do |
 | `Breadcrumb` | drawn chevrons between segments |
@@ -340,7 +340,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
 | `Slider` | the value fill on a lifted track |
-| `ListRow` | leading icon 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
+| `ListRow` | leading icon 16 / face 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
 | `DisclosureRow` | a row whose chevron turns and whose body opens in place on `motion::Disclose`; one open at a time in a `DisclosureGroup` |
 | `Section` | an optional heading and rows, separated from the next by space, never boxed |
 | `EmptyState`, `Banner`, toast | on the tokens |

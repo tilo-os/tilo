@@ -36,7 +36,6 @@ pub const COMPUTED_STYLES: &[&str] = &[
     "border-right-color",
     "border-bottom-color",
     "border-left-color",
-    "border-top-style",
     "border-top-left-radius",
     "background-image",
     "position",
@@ -68,7 +67,6 @@ enum S {
     BorderRightC,
     BorderBottomC,
     BorderLeftC,
-    BorderStyle,
     Radius,
     BgImage,
     Position,
@@ -269,16 +267,19 @@ impl<'a> Doc<'a> {
         matches!(self.name(node), "#document" | "HTML" | "BODY")
     }
 
-    /// Does the element at layout index `li` root a layer?
-    fn roots_layer(&self, node: i64, li: usize) -> bool {
+    fn is_element(&self, node: i64) -> bool {
         const ELEMENT: i64 = 1;
-        let element = usize::try_from(node)
+        usize::try_from(node)
             .ok()
             .and_then(|n| self.node_type.get(n))
-            .is_some_and(|&t| t == ELEMENT);
+            .is_some_and(|&t| t == ELEMENT)
+    }
+
+    /// Does the element at layout index `li` root a layer?
+    fn roots_layer(&self, node: i64, li: usize) -> bool {
         // Text boxes report their parent's style; replaced elements compute
         // `overflow: clip` for their own content, which is not a scroller.
-        if !element || self.is_root_box(node) || self.is_replaced(node) {
+        if !self.is_element(node) || self.is_root_box(node) || self.is_replaced(node) {
             return false;
         }
         let pos = self.style(li, S::Position);
@@ -534,8 +535,10 @@ impl Converter<'_> {
             if rect.w <= 0.0 || rect.h <= 0.0 || self.doc.style(li, S::Visibility) != "visible" {
                 continue;
             }
-            // Root boxes paint the canvas instead (see `background`).
-            if self.doc.is_root_box(node) {
+            // Root boxes paint the canvas instead (see `background`), and a
+            // text box only reports its parent's style: its background and
+            // border are the parent's, drawn once from the parent's own box.
+            if !self.doc.is_element(node) || self.doc.is_root_box(node) {
                 continue;
             }
             let order = self.doc.paint_order.get(li).copied().unwrap_or(0);
@@ -575,10 +578,9 @@ impl Converter<'_> {
                 S::BorderLeftC,
             ]
             .map(|s| css_color(self.doc.style(li, s)).unwrap_or_default());
-            if widths.iter().any(|w| *w > 0.0)
-                && colors.iter().any(|c| c.0[3] > 0)
-                && !matches!(self.doc.style(li, S::BorderStyle), "none" | "hidden")
-            {
+            // A computed border width is 0 unless its style is a visible one,
+            // so the widths alone say which sides the page draws.
+            if widths.iter().any(|w| *w > 0.0) && colors.iter().any(|c| c.0[3] > 0) {
                 self.push_decoration(
                     node,
                     order,

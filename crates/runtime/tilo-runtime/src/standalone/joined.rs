@@ -135,6 +135,10 @@ impl Joined {
         let owner = tilo_peer_state::owner::open_file(&profile.join(JOINED_WORKSPACES))
             .map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
+        let keys = ChannelKeyProvider::default();
+        owner.keep_sealed_histories(Arc::new(tilo_session_client::engine::HistoryKeys(
+            keys.clone(),
+        )));
         let joined = Arc::new_cyclic(|this| Self {
             executions,
             owner,
@@ -147,7 +151,7 @@ impl Joined {
             content: std::sync::OnceLock::new(),
             governance: Mutex::new(Vec::new()),
             governance_wake: Arc::default(),
-            keys: ChannelKeyProvider::default(),
+            keys,
             own_host: std::sync::OnceLock::new(),
             this: this.clone(),
         });
@@ -178,9 +182,9 @@ impl Joined {
         Self::open(profile, custody, endpoint, refused, broker)
     }
 
-    /// This device's signing key, as its plane signs every request it makes.
-    pub(in crate::standalone) fn device_key(&self) -> ed25519_dalek::SigningKey {
-        self.custody.device_signing_key.clone()
+    /// What signs as this device, as its plane signs every request it makes.
+    pub(in crate::standalone) fn signer(&self) -> Arc<dyn collab_types::signer::DeviceSigner> {
+        Arc::clone(&self.custody.signer)
     }
 
     /// The device certificate this profile's custody holds.
@@ -212,7 +216,7 @@ impl Joined {
         let plane = {
             let _entered = runtime.enter();
             tilo_peer_state::actions::ActionPlane::over(
-                self.custody.device_signing_key.clone(),
+                self.signer(),
                 Arc::new(tilo_peer_state::actions::NoActions),
                 Arc::new(self.owner.clone()),
             )
@@ -283,6 +287,28 @@ impl Joined {
             .map(|(workspace, _)| workspace)
     }
 
+    /// This device as `workspace` knows it, for the workspace's Files
+    /// endpoint: the certificate the workspace holds for this device's key.
+    ///
+    /// # Errors
+    /// `workspace` is no workspace id, or the certificate is not valid now.
+    pub(super) fn files_credentials(
+        &self,
+        workspace: &str,
+    ) -> io::Result<tilo_fs::identity::PeerCredentials> {
+        let workspace =
+            WorkspaceId::parse(workspace).ok_or_else(|| io::Error::other("not a workspace id"))?;
+        let (cert, _) = self
+            .custody
+            .material_for(workspace_topic(workspace).map_err(io::Error::other)?);
+        tilo_fs::identity::PeerCredentials::certified(
+            cert,
+            self.signer(),
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(io::Error::other)
+    }
+
     /// Whether this profile has joined any workspace.
     pub(super) fn is_empty(&self) -> bool {
         self.owner.workspaces().is_empty()
@@ -348,13 +374,11 @@ impl Joined {
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(std::time::Duration::from_secs(now))
+            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let readers = self
             .owner
-            .with_current(workspace, |view| {
-                view.peer().governance().channel_readers(at, channel, route)
-            })
+            .with_current(workspace, |view| view.channel_readers(at, channel, route))
             // Governance that cannot be read says nothing of who reads.
             .ok()
             .flatten()?;
@@ -377,12 +401,10 @@ impl Joined {
         now: u64,
     ) -> Option<collab_types::ChannelId> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(std::time::Duration::from_secs(now))
+            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         self.owner
-            .with_current(workspace, |view| {
-                view.peer().governance().unit_scope(at, route)
-            })
+            .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
     }
 
@@ -442,21 +464,22 @@ impl Joined {
         let mut caught_up = link.caught_up();
         let mut live = false;
         let mut running = Box::pin(linked.run());
+        let mut sending = tilo_session_client::custody::Sending::default();
         let ended = loop {
             tokio::select! {
                 ended = &mut running => break ended,
-                caught = caught_up.wait_for(|up| *up), if !live => {
-                    if caught.is_err() {
+                caught = async { caught_up.wait_for(|up| *up).await.is_ok() }, if !live => {
+                    if !caught {
                         break Err("the link closed".into());
                     }
                     live = true;
                     self.set_live(workspace, Some((Arc::clone(&link), host)));
-                    self.publish(&scope, &link);
+                    self.publish(&scope, &link, &mut sending).await;
                 }
                 frame = heard.recv() => match frame {
                     Ok(heard) => {
                         self.take(&scope, heard);
-                        self.publish(&scope, &link);
+                        self.publish(&scope, &link, &mut sending).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         break Err("the session fell behind the workspace's frames".into());
@@ -465,13 +488,12 @@ impl Joined {
                         break Err("the link closed".into());
                     }
                 },
-                () = wake.notified() => self.publish(&scope, &link),
+                () = wake.notified() => self.publish(&scope, &link, &mut sending).await,
             }
         };
         if let Err(reason) = ended {
             tracing::debug!(%workspace, %reason, "a joined workspace's link ended");
         }
-        scope.close();
         self.set_live(workspace, None);
     }
 
@@ -503,23 +525,25 @@ impl Joined {
         let input = Input::heard(Arc::clone(scope), heard);
         match input.admit() {
             Ok(report) => {
-                let Some(write) = input.app_write(&report) else {
-                    return;
-                };
-                // Another member's write reaches this profile's apps on its route.
-                collab_inbound::deliver(
-                    &self.channels,
-                    &self.fanout,
-                    RemoteDocument {
-                        app_id: write.app_id,
-                        cluster_id: write.cluster_id,
-                        record_id: write.record_id,
-                        author: write.author,
-                        replayed: write.replayed,
-                        envelope: write.envelope,
-                    },
-                    |_| format!("peer@{}", hex::encode(author)),
-                );
+                // Another member's write reaches this profile's apps on its
+                // route, and so does every held write it brought what that
+                // write waited for.
+                for write in input.app_writes(&report) {
+                    let author = write.envelope.author.as_bytes().to_owned();
+                    collab_inbound::deliver(
+                        &self.channels,
+                        &self.fanout,
+                        RemoteDocument {
+                            app_id: write.app_id,
+                            cluster_id: write.cluster_id,
+                            record_id: write.record_id,
+                            author: write.author,
+                            replayed: write.replayed,
+                            envelope: write.envelope,
+                        },
+                        |_| format!("peer@{}", hex::encode(author)),
+                    );
+                }
             }
             Err(reason) => {
                 tracing::debug!(%reason, %workspace, "a joined workspace's frame was not taken in");
@@ -561,7 +585,7 @@ impl Joined {
     /// this profile's own and the host it is linked to, which its link
     /// already names.
     fn membership(&self, workspace: WorkspaceId, device: [u8; 32]) {
-        if device == self.custody.device_signing_key.verifying_key().to_bytes() {
+        if device == self.custody.device_public_key() {
             return;
         }
         if let Ok(mut sessions) = self.sessions.lock()
@@ -621,33 +645,62 @@ impl Joined {
 
     /// Send `workspace`'s own writes, and what its sealed records lack, to its
     /// host: the link carries them to every member.
-    fn publish(&self, scope: &Scope, link: &DirectSync) {
-        let Some(keys) = self.keys.get() else {
-            if let Err(error) = scope.publish(link, &self.custody) {
-                tracing::debug!(%error, "joined workspace publication remains in durable custody");
-            }
-            return;
-        };
-        // A sealed record's history this device can read is this device's to
-        // fold: it writes its own checkpoint where the workspace's host used to.
-        let compacted = scope.compact(
-            &self.custody,
-            &mut |write| keys.open_history_write(scope.workspace(), write),
-            &mut |app, record, snapshot| {
-                keys.seal_checkpoint(scope.workspace(), app, record, snapshot)
-            },
-        );
-        match compacted {
+    async fn publish(
+        &self,
+        scope: &Scope,
+        link: &DirectSync,
+        sending: &mut tilo_session_client::custody::Sending,
+    ) {
+        let workspace = scope.workspace();
+        // What the workspace answered for leaves custody before what it still
+        // holds is renewed and sent.
+        if let Err(error) = self.owner.retire_outgoing(workspace) {
+            tracing::warn!(%error, "joined workspace publication retirement not committed");
+        }
+        if scope.current(&self.custody).is_ok() {
+            self.fold_and_renew(workspace).await;
+        }
+        let sent = scope.current(&self.custody).and_then(|()| {
+            sending.drive(
+                &self.owner,
+                workspace,
+                |view| scope.authorize(view, &self.custody),
+                |write| {
+                    postcard::from_bytes(write.bytes)
+                        .map_err(|error| error.to_string())
+                        .and_then(|message| link.send(message))
+                        .is_ok()
+                },
+            )
+        });
+        if let Err(error) = sent {
+            tracing::debug!(%error, "joined workspace publication remains in durable custody");
+        }
+    }
+
+    /// What the link brought into a sealed record's history is this device's
+    /// to fold, as its own writes are before each of them
+    /// ([`NativeWorkspaceOwner::compact_outgoing`]). Then its sealed writes
+    /// that expired in custody are sealed again.
+    async fn fold_and_renew(&self, workspace: WorkspaceId) {
+        let signer = self.custody.signer.as_ref();
+        match self
+            .owner
+            .compact_outgoing(workspace, signer, SystemTime::now())
+            .await
+        {
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "joined workspace sealed histories compacted"),
             Err(error) => {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        if let Err(error) = scope.publish_renewing(link, &self.custody, &mut |sealed| {
-            keys.renew_sealed(scope.workspace(), sealed)
-        }) {
-            tracing::debug!(%error, "joined workspace publication remains in durable custody");
+        if let Err(error) = self
+            .owner
+            .renew_outgoing(workspace, signer, SystemTime::now())
+            .await
+        {
+            tracing::warn!(%workspace, %error, "native sealed write renewal blocked");
         }
     }
 
@@ -712,13 +765,24 @@ impl OwnerCommitService for Joined {
                 async move { this.commit_hosted(workspace, request, record_kind).await },
             );
         }
-        let receipt = self.owner.commit_document(request, SystemTime::now());
-        if receipt.is_ok()
-            && let Some(workspace) = workspace
-        {
-            self.wake(workspace);
-        }
-        Box::pin(std::future::ready(receipt))
+        // Drafted again past its record's floor when this device's local writers signed out of
+        // the order the owner takes them, for this device's custody to sign.
+        let (owner, signer, this) = (
+            self.owner.clone(),
+            Arc::clone(&self.custody.signer),
+            self.this.clone(),
+        );
+        Box::pin(async move {
+            let (_, receipt) = owner
+                .commit_local_document(request, signer.as_ref(), SystemTime::now())
+                .await?;
+            if let Some(workspace) = workspace
+                && let Some(this) = this.upgrade()
+            {
+                this.wake(workspace);
+            }
+            Ok(receipt)
+        })
     }
 
     fn health(&self) -> Result<(), String> {
@@ -730,16 +794,7 @@ impl OwnerCommitService for Joined {
 /// presence out; it is signed end to end.
 impl GovernanceTransport for Joined {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        let workspace = match &message {
-            NeighbourMsg::MlsGovernance {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsAccessRequest {
-                workspace: room, ..
-            }
-            | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => WorkspaceId::parse(room),
-            _ => None,
-        };
+        let workspace = message.channel_workspace().and_then(WorkspaceId::parse);
         let Some(live) = workspace.and_then(|workspace| self.live(workspace)) else {
             return false;
         };
@@ -790,7 +845,10 @@ impl Joined {
         let custody = &raw const self.custody;
         // SAFETY: no run has been admitted yet, so nothing reads this store
         // concurrently; each admission afterwards pins what it reads.
-        unsafe { (*(custody.cast_mut())).identity_paths = Some(paths) };
+        unsafe {
+            (*(custody.cast_mut())).custody =
+                std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths));
+        }
     }
 }
 

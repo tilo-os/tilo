@@ -2,9 +2,9 @@
 //! runs until the desk has done what it asked, the shell's laid-out tree read as assistive
 //! technology hears it, a press on one of its controls, the REPL's end of the agent door, and the
 //! test-control socket `tilo-control` drives a session over.
-//! Included by each test binary with `mod common;` , as a directory is not a test target of its
-//! own: the same helpers serve the REPL's test, the shell screen's, the test-control socket's and
-//! the acceptance path's.
+//! Included once by `tests/it.rs` as `mod common`, as a directory is not a test target of its own:
+//! the same helpers serve the REPL's test, the shell screen's, the test-control socket's and the
+//! acceptance path's.
 
 #![allow(
     dead_code,
@@ -244,14 +244,19 @@ pub fn on_screen_at(
     width: i32,
     height: i32,
 ) -> Option<(f64, f64, f64, f64)> {
-    session.shell_control(name).filter(|&(x, y, w, h)| {
-        w > 0.0
-            && h > 0.0
-            && x + w > 0.0
-            && y + h > 0.0
-            && x < f64::from(width)
-            && y < f64::from(height)
-    })
+    session
+        .shell_control(name)
+        .filter(|&rect| on_display(rect, width, height))
+}
+
+/// Whether any of the rectangle `(x, y, w, h)` stands on a display `width` by `height`.
+pub fn on_display((x, y, w, h): (f64, f64, f64, f64), width: i32, height: i32) -> bool {
+    w > 0.0
+        && h > 0.0
+        && x + w > 0.0
+        && y + h > 0.0
+        && x < f64::from(width)
+        && y < f64::from(height)
 }
 
 /// Press the shell's control named `name` on the standard display with the pointer, as the person
@@ -263,25 +268,35 @@ pub fn press(session: &mut Session, name: &str) {
 /// Press the shell's control named `name` on a display `width` by `height` with the pointer, as the
 /// person does.
 pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
+    press_where(session, &format!("the shell's {name}"), |session| {
+        on_screen_at(session, name, width, height)
+    });
+}
+
+/// Press with the pointer, as the person does, the control `find` answers where it stands: one a
+/// name alone does not single out, so the test says which of the controls by that name it means (a
+/// window's menu is named for its window, as its frame is). `what` names it when it never stands.
+#[track_caller]
+pub fn press_where(
+    session: &mut Session,
+    what: &str,
+    find: impl Fn(&Session) -> Option<(f64, f64, f64, f64)>,
+) {
     // The press lands where the control is drawn once it stood still across two frames. A surface
     // still arriving moves its controls from one frame to the next, and a press aimed at a place a
     // control has left misses it: the person waits for the menu to be there, and so does the test.
-    let (x, y, w, h) = wait_for(
-        session,
-        format!("the shell's {name} to stand still"),
-        |session| {
-            let mut place = on_screen_at(session, name, width, height)?;
-            for _ in 0..2 {
-                session.step(Duration::from_millis(16)).expect("step");
-                let next = on_screen_at(session, name, width, height)?;
-                if next != place {
-                    return None;
-                }
-                place = next;
+    let (x, y, w, h) = wait_for(session, format!("{what} to stand still"), |session| {
+        let mut place = find(session)?;
+        for _ in 0..2 {
+            session.step(Duration::from_millis(16)).expect("step");
+            let next = find(session)?;
+            if next != place {
+                return None;
             }
-            Some(place)
-        },
-    );
+            place = next;
+        }
+        Some(place)
+    });
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     session
         .compositor()
@@ -300,57 +315,17 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
     }
 }
 
-/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a time,
-/// as the person does. A question mark is Shift and the slash key.
+/// Type `text` on the keyboard, a key at a time, as the person does: each character's key on the
+/// seat's layout, with the modifiers it needs, pressed and let go before the next frame. A key held
+/// across a frame would repeat whenever that frame outlasts the repeat delay, as one on a loaded
+/// machine does.
 pub fn type_text(session: &mut Session, text: &str) {
-    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
-    const SPACE: u32 = 57;
-    /// Shift, held for the keys whose upper-case character is the one meant.
-    const SHIFT: u32 = 42;
-    const SLASH: u32 = 53;
     for letter in text.chars() {
-        let (keycode, shifted) = if letter == ' ' {
-            (SPACE, false)
-        } else if letter == '?' {
-            (SLASH, true)
-        } else {
-            (
-                ROWS.iter()
-                    .find_map(|(row, first)| {
-                        let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
-                        first.checked_add(at)
-                    })
-                    .unwrap_or_else(|| panic!("no key types {letter:?}")),
-                false,
-            )
-        };
-        if shifted {
-            session
-                .compositor()
-                .input(InputEvent::Key {
-                    keycode: SHIFT,
-                    pressed: true,
-                })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
-        for pressed in [true, false] {
-            session
-                .compositor()
-                .input(InputEvent::Key { keycode, pressed })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
-        if shifted {
-            session
-                .compositor()
-                .input(InputEvent::Key {
-                    keycode: SHIFT,
-                    pressed: false,
-                })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
+        assert!(
+            session.compositor().type_char(letter).unwrap(),
+            "no key types {letter:?}"
+        );
+        session.step(Duration::from_millis(1)).unwrap();
     }
 }
 
@@ -402,8 +377,14 @@ pub fn show_preset(session: &mut Session, preset: &str) {
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.
 pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
+    notebook_of(PERSON, titles)
+}
+
+/// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
+/// the id a session acts as on a device that has an identity of its own.
+pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
+    let host = Host::new(&record, Principal::new(person), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -420,13 +401,13 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
         let action = &committed.action;
         let context =
             ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
-                .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
+                .with_invoker(ui::tilo_actions::ActionInvoker::actor(person));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(
                 &mut record,
                 action,
                 action.encode().unwrap(),
-                Some(PERSON.as_bytes()),
+                Some(person.as_bytes()),
                 context,
             )
         })
@@ -444,7 +425,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
             .id
             .clone()
     };
-    let mut service = RecordService::new(record, host, PERSON);
+    let mut service = RecordService::new(record, host, person);
     let book = service
         .resources()
         .into_iter()
@@ -514,6 +495,60 @@ pub fn seeded_session(root: &Path) -> Session {
     seeded_session_at(root, vec![program], None)
 }
 
+/// Install the app `app` — named `name` — in `home` 's own app store: a package whose entrypoint is
+/// the launcher's to start, and whose provider scheme is its own.
+///
+/// # Panics
+/// The store, its manifest or its row cannot be written.
+pub fn probe_app(home: &mut tilo_test_env::TestHome, app: &str, name: &str) {
+    let store = home.data().join("tilo-apps");
+    let payload = store.join("payload").join(app);
+    std::fs::create_dir_all(payload.join("bin")).expect("the app's payload");
+    let manifest = payload.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\n\
+             id = \"{app}\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"app\"\n\
+             name = \"{name}\"\n\
+             \n\
+             [publisher]\n\
+             identity = \"ed25519:{key}\"\n\
+             signature = \"\"\n\
+             \n\
+             [sandbox]\n\
+             namespaces = [\"user\"]\n\
+             seccomp = \"tilo-default\"\n\
+             landlock = \"strict\"\n\
+             \n\
+             [sandbox.net]\n\
+             mode = \"off\"\n\
+             \n\
+             [entrypoint]\n\
+             bin = \"bin/app\"\n\
+             type = \"gui\"\n\
+             \n\
+             [providers]\n\
+             schemes = [\"probe\"]\n",
+            key = "11".repeat(32),
+        ),
+    )
+    .expect("the app's manifest");
+    std::fs::write(
+        store.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+            payload = payload.display(),
+            manifest = manifest.display(),
+        ),
+    )
+    .expect("the app's row");
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+}
+
 /// The app store this test process's tilolang apps are installed in, built the first time it is
 /// asked for: [`dev_apps::install`] builds each app from this tree into a signed `.tapp` and
 /// puts it in the store, the way a device has them. Every session a test starts reads that
@@ -534,7 +569,7 @@ pub fn app_store() -> &'static Path {
         let installed = dev_apps::install(&root, &root.join("build"));
         assert_eq!(
             installed.len(),
-            7,
+            6,
             "every app of the development session is installed, the shell among them: {installed:?}"
         );
         // The store the environment names is the one the session's launcher reads, and the one its
@@ -575,7 +610,7 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     let installed = dev_apps::install(store, scratch);
     assert_eq!(
         installed.len(),
-        7,
+        6,
         "every app of the development session is installed, the shell among them: {installed:?}"
     );
 }

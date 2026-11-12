@@ -13,7 +13,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ListRowFace;
-use ui::widget::{Button, ButtonFace, ModalAction, ModalSpec, Widget};
+use ui::widget::{Button, ButtonFace, ModalAction, ModalSpec};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
@@ -22,6 +22,7 @@ use super::{
     DirectoryImportEvent, DirectoryImportMode, DirectoryImportReceipt, DirectoryStatusHit, Photos,
     bound,
 };
+use ui::widget::DrawChild;
 
 impl Photos {
     /// Pose a running folder import for hermetic offscreen visual coverage.
@@ -117,7 +118,7 @@ impl Photos {
             self.notice = Some(tr("photos-import-already-running"));
             return;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = ui::wake::waking_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();
@@ -747,7 +748,7 @@ impl Photos {
                 y + f64::from(theme.tokens.radii.detail) * 2.0,
             );
             self.directory_import_progress.apply_layout_external(bar);
-            self.directory_import_progress.draw(
+            self.directory_import_progress.draw_child(
                 ctx.scene,
                 transform,
                 ctx.text,
@@ -770,7 +771,7 @@ impl Photos {
                 x = rect.x0 - gap;
                 button.set_enabled(true);
                 button.apply_layout_external(rect);
-                button.draw(ctx.scene, transform, ctx.text, &ink, &PresenceCtx::empty());
+                button.draw_child(ctx.scene, transform, ctx.text, &ink, &PresenceCtx::empty());
             } else {
                 button.set_enabled(false);
                 button.apply_layout_external(Rect::ZERO);

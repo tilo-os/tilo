@@ -34,7 +34,9 @@ impl Shared {
     ) -> Self {
         Self {
             tree,
+            dock: super::floats::Dock::default(),
             holders: HashMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
@@ -43,6 +45,7 @@ impl Shared {
             activity_focus: None,
             minter,
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
+            top_overlay: 0.0,
             replaced: false,
             shown_tabs: ShownTabs::default(),
             float_covers: Vec::new(),
@@ -77,6 +80,7 @@ impl Shared {
             unresponsive_revision: 0,
             liveness: Vec::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
+            notifications: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
             peers: Rc::new(RefCell::new(super::peer_view::PeerSurfaces::default())),
             bars: super::window_bars::Bars::default(),

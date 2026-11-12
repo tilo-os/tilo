@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::toast::{ToastKind, Transient};
@@ -73,14 +74,14 @@ use ui::tilo_resource::ActionDecl;
 use crate::actions::{HexEffect, HexPanel};
 use crate::model::{BufferEdit, Column, Endian, HexModel};
 use crate::resource::HexEditor;
-use layout::{CellMetrics, ENDIAN_LABELS, Geo};
+use layout::{CellMetrics, ENDIAN_MESSAGES, Geo};
 use ui::widget::toggle_group::Segment;
 
 /// What a cancelled chooser answers.
 const CANCELLED: &str = "cancelled";
 
 fn file_open_request() -> PickRequest {
-    PickRequest::open("Open file", "Open")
+    PickRequest::open(&crate::resource::CATALOG.t("hex-editor-open-file"), "Open")
         .thread_name("hex-portal-open")
         .filter(FileFilter::all_files())
 }
@@ -108,17 +109,15 @@ const NEW_FILE_NAME: &str = "Untitled.bin";
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
-        .with_message(
-            "Inspect and edit any file byte by byte, or start an empty one and type bytes in.",
-        )
-        .with_action("Open file")
+        .with_message(crate::resource::CATALOG.t("hex-editor-empty-hint"))
+        .with_action(crate::resource::CATALOG.t("hex-editor-open-file"))
         .with_action_id("hex.open")
 }
 
 /// A segmented strip over `labels`: the strip keeps the segment the person
 /// picks, and the view reads it ([`Editor::apply_strip_picks`]).
-fn strip(id: &str, labels: &[&str]) -> ToggleGroup {
-    ToggleGroup::new(labels.iter().map(|l| Segment::new(*l)).collect(), 0)
+fn strip(id: &str, labels: &[String]) -> ToggleGroup {
+    ToggleGroup::new(labels.iter().map(|l| Segment::new(l.clone())).collect(), 0)
         .with_id(id)
         .control_size(ControlSize::Small)
         .with_style(SegmentedStyle::Segmented)
@@ -191,7 +190,7 @@ pub(crate) struct Editor {
     /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
-    /// Where the empty state's "New empty file" button sits, once painted.
+    /// Where the empty state's new-file button sits, once painted.
     new_file: Rect,
     /// The bytes as last opened or saved, which the changed-byte marks
     /// compare against.
@@ -245,7 +244,11 @@ impl Editor {
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
             inspector_entry: ui::framework::BarCommands::new(),
-            endian_group: strip("hex.endian", &ENDIAN_LABELS).fill(),
+            endian_group: strip(
+                "hex.endian",
+                &ENDIAN_MESSAGES.map(|message| crate::resource::CATALOG.t(message)),
+            )
+            .fill(),
             endian_shown: 0,
             empty: empty_state(),
             inspector_scroll: 0.0,
@@ -882,28 +885,37 @@ impl Editor {
     fn accessibility(&self, goto: &Popover<PopoverPrompt>) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let mut children = vec![
+        let mut children =
+            vec![
             AccessNode::new(Role::StaticText)
                 .with_name(if self.has_file {
-                    format!(
-                        "{}; {} bytes; cursor at hexadecimal 0x{:X}; {} mode; {}",
-                        self.file_name,
-                        self.model.len(),
-                        self.model.cursor(),
-                        self.model.mode().label(),
-                        self.model.endian().label(),
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a byte count only selects a plural form; exactness past 2^52 is \
+irrelevant"
+                    )]
+                    let bytes = self.model.len() as f64;
+                    crate::resource::CATALOG.t_args(
+                        "hex-a11y-status",
+                        &[
+                            ("file", ArgValue::Text(self.file_name.clone())),
+                            ("bytes", ArgValue::Number(bytes)),
+                            ("cursor", ArgValue::Text(format!("0x{:X}", self.model.cursor()))),
+                            ("mode", ArgValue::Text(self.model.mode().label().to_owned())),
+                            ("endian", ArgValue::Text(self.model.endian().label().to_owned())),
+                        ],
                     )
                 } else {
-                    "No file open. Open a local file to inspect its bytes.".to_string()
+                    crate::resource::CATALOG.t("hex-a11y-no-file")
                 })
                 .with_live(Politeness::Polite)
                 .with_hashed_key("hex.status"),
         ];
         if self.has_file {
             children.push(
-                AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+A select all, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
-                ).with_hashed_key("hex.keyboard-help"),
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::resource::CATALOG.t("hex-editor-keyboard-help"))
+                    .with_hashed_key("hex.keyboard-help"),
             );
             if self.geo.inspector_visible {
                 children.extend(self.endian_group.accessibility());
@@ -914,24 +926,24 @@ impl Editor {
         } else {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Open file")
-                    .with_description("Choose a local file to inspect")
+                    .with_name(crate::resource::CATALOG.t("hex-editor-open-file"))
+                    .with_description(crate::resource::CATALOG.t("hex-editor-open-file-detail"))
                     .with_state(AccessState::default().focusable(true))
                     .with_bounds(self.empty.action_rect())
                     .with_action_target("hex.open"),
             );
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name("New empty file")
-                    .with_description("Start an empty buffer to type bytes into")
+                    .with_name(crate::resource::CATALOG.t("hex-editor-new-file"))
+                    .with_description(crate::resource::CATALOG.t("hex-editor-new-file-detail"))
                     .with_state(AccessState::default().focusable(true))
                     .with_bounds(self.new_file)
                     .with_action_target("hex.new"),
             );
         }
         AccessNode::new(Role::Document)
-            .with_name("Hex editor")
-            .with_description("The bytes of one file, edited byte by byte.")
+            .with_name(crate::resource::CATALOG.t("hex-editor-window-name"))
+            .with_description(crate::resource::CATALOG.t("hex-editor-window-detail"))
             .with_state(AccessState::default().focusable(true).focused(self.focused))
             .with_children(children)
     }
@@ -1742,7 +1754,7 @@ mod tests {
     /// Paint a frame of `view` at `theme` into a fresh scene.
     fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
         let mut scene = Scene::new();
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             view,
             &mut scene,
             Affine::IDENTITY,

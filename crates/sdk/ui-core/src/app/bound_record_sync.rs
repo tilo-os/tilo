@@ -35,6 +35,14 @@ impl BoundRecordSync {
     }
 }
 
+/// A primary document's unsent changes, the heads they leave, and the
+/// commit of the action they travel under.
+pub(super) type PrimaryPublication = (
+    collab_types::DocumentMutation,
+    Vec<automerge::ChangeHash>,
+    Option<collab_types::WorkspaceCommit>,
+);
+
 impl App {
     pub(super) fn prepare_primary_document(&mut self) -> Result<bool, String> {
         fn visit(
@@ -100,9 +108,27 @@ impl App {
         Ok(true)
     }
 
+    /// What of the primary document the route has not been sent, the heads
+    /// it leaves, and the commit it travels under.
     pub(super) fn pending_primary_document(
         &mut self,
-    ) -> Result<Option<(collab_types::DocumentMutation, Vec<automerge::ChangeHash>)>, String> {
+    ) -> Result<Option<PrimaryPublication>, String> {
+        let route = self
+            .bound_broker_route()
+            .map(|witness| witness.route().clone());
+        let commit = move |mutation: &collab_types::DocumentMutation,
+                           document: &automerge::Automerge| {
+            let route = route.as_ref()?;
+            let unit = collab_types::UnitMutation {
+                app: &route.app_id,
+                record: route.record.as_deref().unwrap_or(""),
+                mutation,
+                document: Some(document),
+            };
+            super::document_routes::unit_commits(route.cluster_id, &[unit])
+                .pop()
+                .flatten()
+        };
         if !self.prepare_primary_document()? {
             // A route's first publication in a session is the document
             // whole: what this device held before the route opened — a
@@ -115,12 +141,17 @@ impl App {
                     (
                         collab_types::DocumentMutation::Snapshot(self.state.doc.save()),
                         heads,
+                        None,
                     )
                 }));
             }
             let (delta, heads) = self.state.pending_outbound_delta();
-            return Ok((!delta.is_empty())
-                .then_some((collab_types::DocumentMutation::Incremental(delta), heads)));
+            if delta.is_empty() {
+                return Ok(None);
+            }
+            let mutation = collab_types::DocumentMutation::Incremental(delta);
+            let commit = commit(&mutation, self.state.doc.document());
+            return Ok(Some((mutation, heads, commit)));
         }
         let sync = self
             .actions
@@ -140,12 +171,21 @@ impl App {
                 actions.commit_for_save(doc);
                 if !*whole {
                     let heads = doc.get_heads();
-                    return (!heads.is_empty())
-                        .then(|| (collab_types::DocumentMutation::Snapshot(doc.save()), heads));
+                    return (!heads.is_empty()).then(|| {
+                        (
+                            collab_types::DocumentMutation::Snapshot(doc.save()),
+                            heads,
+                            None,
+                        )
+                    });
                 }
                 let (delta, heads) = frontier.pending_delta(doc, &actions.writers.borrow());
-                (!delta.is_empty())
-                    .then_some((collab_types::DocumentMutation::Incremental(delta), heads))
+                if delta.is_empty() {
+                    return None;
+                }
+                let mutation = collab_types::DocumentMutation::Incremental(delta);
+                let commit = commit(&mutation, doc.document());
+                Some((mutation, heads, commit))
             })
             .map_err(|error| error.to_string())
     }
@@ -204,7 +244,7 @@ impl App {
         let (changed, observed) = sync
             .binding
             .records
-            .merge_remote_document(&sync.binding.checkout, mutation)?;
+            .merge_replica(&sync.binding.checkout, mutation)?;
         sync.frontier.observe(observed);
         Ok(changed)
     }

@@ -1,6 +1,9 @@
 //! The platform's phrases the standard library's frames say (`phrase("tilolang-empty")`), in
-//! the person's language, without the toolkit: the UI host's own catalogue, read through the
-//! platform's toolkit-free Fluent catalogue (`tilo_history::Catalogue`).
+//! the person's language, without the toolkit: the UI host's own catalogue and the toolkit's
+//! locale catalogues — the words dates and clocks are written in — read through the platform's
+//! toolkit-free Fluent catalogue (`tilo_history::Catalogue`).
+
+use std::cell::RefCell;
 
 use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
@@ -13,74 +16,158 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
     include_str!("../../tilo-ui-host/locales/de-DE.ftl"),
 )];
 
+/// The words the toolkit writes dates, clocks and numbers with (`ui::format`), which a host
+/// without the toolkit says too: the same catalogues the toolkit reads, so a date reads the same
+/// in a window and in what its host wrote beside it.
+const TOOLKIT: (&str, &str) = (
+    "en-US",
+    include_str!("../../../sdk/ui-core/locales/en-US.ftl"),
+);
+const TOOLKIT_TRANSLATIONS: &[(&str, &str)] = &[(
+    "de-DE",
+    include_str!("../../../sdk/ui-core/locales/de-DE.ftl"),
+)];
+
 /// `locale` as a tag this catalogue compares (`de_DE.UTF-8` is `de-DE`).
 fn normalized(locale: &str) -> String {
     let wanted = locale.replace('_', "-");
     wanted.split('.').next().unwrap_or_default().to_owned()
 }
 
-/// The phrases of `wanted`, in its own language when there are any, else the source's.
-fn choose(wanted: &str) -> &'static (&'static str, &'static str) {
+/// `translations`' phrases of `wanted`, in its own language when there are any, else `source`.
+fn choose_in(
+    translations: &'static [(&'static str, &'static str)],
+    wanted: &str,
+    source: &'static (&'static str, &'static str),
+) -> &'static (&'static str, &'static str) {
     let language = wanted.split('-').next().unwrap_or_default();
-    TRANSLATIONS
+    translations
         .iter()
         .find(|(candidate, _)| *candidate == wanted)
         .or_else(|| {
-            TRANSLATIONS
+            translations
                 .iter()
                 .find(|(candidate, _)| candidate.split('-').next() == Some(language))
         })
-        .unwrap_or(&SOURCE)
+        .unwrap_or(source)
 }
 
 /// The phrases of one language.
 pub struct Phrases {
-    /// The language the host was built for, as its environment named it: the person's.
-    preference: String,
-    locale: &'static str,
-    catalogue: std::cell::RefCell<Catalogue>,
+    /// The language the phrases were asked for, normalized (`de-DE`): the person's, as their
+    /// session named it, else the one this process runs in. A window takes it as the language the
+    /// person prefers (`de`), whatever language the window itself reads in.
+    preference: RefCell<String>,
+    /// The language the phrases are in (`de-DE`): the window's, chosen among the languages the
+    /// package it shows ships. It is not the language of the host's own catalogue, which need not
+    /// have a translation in it: an app written in a language the host's chrome has none of still
+    /// reads its own words in it.
+    locale: RefCell<String>,
+    /// The languages the window's package ships, which its language is chosen among: `None` for
+    /// phrases of no window, which speak the language they were asked for.
+    shipped: Option<Vec<String>>,
+    /// Every package's catalogues taken in ([`Self::add_package`]): what the catalogue is built
+    /// from again when the person chooses another language ([`Self::speak`]).
+    packages: RefCell<Vec<Vec<(String, String)>>>,
+    catalogue: RefCell<Catalogue>,
+}
+
+/// The host's own words and the toolkit's, in `wanted` or in the closest language the catalogues
+/// have (the same language, else the source's).
+fn chrome(wanted: &str) -> Catalogue {
+    let mut sources = Vec::new();
+    // The host's own words, and the toolkit's beside them: a key both hold reads as the host's.
+    // Each falls back to its source language on its own, so a language the host's chrome has no
+    // translation for still reads its source rather than nothing at all.
+    for (translations, source) in [(TRANSLATIONS, &SOURCE), (TOOLKIT_TRANSLATIONS, &TOOLKIT)] {
+        let chosen = choose_in(translations, wanted, source);
+        sources.push(chosen.1);
+        if chosen.0 != source.0 {
+            sources.push(source.1);
+        }
+    }
+    Catalogue::new(wanted, &sources)
 }
 
 impl Phrases {
-    /// The phrases of `locale` (`de-DE`, `de_DE.UTF-8`), or of the closest language there are
-    /// phrases of: the same language, else the source's. A phrase a translation lacks reads in
-    /// the source language.
+    /// The phrases of `locale` (`de-DE`, `de_DE.UTF-8`): the host's own words and the toolkit's,
+    /// in that language or in the closest the catalogues have (the same language, else the
+    /// source's), and every package's words added later ([`Self::add_package`]) in it. A phrase a
+    /// translation lacks reads in the source language.
     #[must_use]
     pub fn new(locale: &str) -> Self {
         let wanted = normalized(locale);
-        let chosen = choose(&wanted);
-        let mut sources = vec![chosen.1];
-        if chosen.0 != SOURCE.0 {
-            sources.push(SOURCE.1);
-        }
         Self {
-            preference: wanted,
-            locale: chosen.0,
-            catalogue: std::cell::RefCell::new(Catalogue::new(chosen.0, &sources)),
+            catalogue: RefCell::new(chrome(&wanted)),
+            preference: RefCell::new(wanted.clone()),
+            locale: RefCell::new(wanted),
+            shipped: None,
+            packages: RefCell::default(),
         }
     }
 
     /// The phrases of the window of a package that ships `shipped`, the languages of its
-    /// catalogues: the person's when the package ships it, the package's source language
-    /// otherwise ([`tilo_history::window_language`]), so the frames' words read in the language
-    /// the window reads in throughout.
+    /// catalogues, in the language the window speaks: `language`, the person's as their session
+    /// named it, when the package ships it, the package's source language otherwise
+    /// ([`tilo_history::window_language`]); where the session named none, the language this
+    /// process runs in. The frames' words, the app's own and the history's sentences all read in
+    /// it, so the window reads in one language throughout. What the person types dates and times
+    /// in stays their own language, whatever language the window reads in ([`Self::language`]).
     #[must_use]
-    pub fn for_window(&self, shipped: &[&str]) -> Self {
-        let language = tilo_history::window_language(Some(&self.preference), shipped);
-        Self::new(&language)
+    pub fn for_window(&self, language: Option<&str>, shipped: &[&str]) -> Self {
+        let preference = self.preference.borrow().clone();
+        let window = Self {
+            shipped: Some(shipped.iter().map(|&locale| locale.to_owned()).collect()),
+            ..Self::new(&preference)
+        };
+        if let Some(language) = language {
+            window.speak(language);
+        } else {
+            window.speak(&preference);
+        }
+        window
+    }
+
+    /// Speak `language` (`de-DE`), the person's as they chose it now: a window's phrases read in
+    /// it where its package ships it, as [`Self::for_window`] chooses, with every package's words
+    /// taken in so far. An empty `language` names none and changes nothing. Whether the words
+    /// read in another language now.
+    pub fn speak(&self, language: &str) -> bool {
+        let language = language.trim();
+        if language.is_empty() {
+            return false;
+        }
+        let preference = normalized(language);
+        let locale = match &self.shipped {
+            Some(shipped) => {
+                let shipped: Vec<&str> = shipped.iter().map(String::as_str).collect();
+                tilo_history::window_language(Some(&preference), &shipped)
+            }
+            None => preference.clone(),
+        };
+        *self.preference.borrow_mut() = preference;
+        if *self.locale.borrow() == locale {
+            return false;
+        }
+        *self.catalogue.borrow_mut() = chrome(&locale);
+        *self.locale.borrow_mut() = locale;
+        for catalogues in self.packages.borrow().iter() {
+            self.take_in(catalogues);
+        }
+        true
     }
 
     /// The language the phrases are in (`en-US`).
     #[must_use]
-    pub fn locale(&self) -> &'static str {
-        self.locale
+    pub fn locale(&self) -> String {
+        self.locale.borrow().clone()
     }
 
     /// The language the person prefers (`de` for `de-DE`), the one they type dates and times
     /// in, whatever language the window's phrases are in.
     #[must_use]
     pub fn language(&self) -> String {
-        let preference = normalized(&self.preference);
+        let preference = normalized(&self.preference.borrow());
         preference
             .split('-')
             .next()
@@ -120,15 +207,21 @@ impl Phrases {
     /// phrases' language first, then the source language's, so a translation wins and a message
     /// it lacks reads in the source language.
     pub fn add_package(&self, catalogues: &[(String, String)]) {
-        let language = self.locale.split('-').next().unwrap_or_default();
+        self.take_in(catalogues);
+        self.packages.borrow_mut().push(catalogues.to_vec());
+    }
+
+    fn take_in(&self, catalogues: &[(String, String)]) {
+        let locale = self.locale.borrow();
+        let language = locale.split('-').next().unwrap_or_default();
         let mut catalogue = self.catalogue.borrow_mut();
         let translation = catalogues
             .iter()
-            .find(|(locale, _)| locale == self.locale)
+            .find(|(candidate, _)| candidate.as_str() == locale.as_str())
             .or_else(|| {
                 catalogues
                     .iter()
-                    .find(|(locale, _)| locale.split('-').next() == Some(language))
+                    .find(|(candidate, _)| candidate.split('-').next() == Some(language))
             });
         if let Some((_, text)) = translation {
             catalogue.add(text);
@@ -136,6 +229,23 @@ impl Phrases {
         if let Some((_, text)) = catalogues.iter().find(|(locale, _)| locale == SOURCE.0) {
             catalogue.add(text);
         }
+    }
+}
+
+impl tilo_formats::Words for Phrases {
+    fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
+        let args: Vec<(String, String)> = args
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    // A number stays a number here: this catalogue selects a plural by it.
+                    tilo_formats::Word::Number(n) => n.to_string(),
+                    tilo_formats::Word::Text(text) => text.clone(),
+                };
+                ((*name).to_owned(), value)
+            })
+            .collect();
+        self.say(key, &args)
     }
 }
 
@@ -189,11 +299,39 @@ mod tests {
             "Nothing here yet",
             "the host's own language is German"
         );
-        let english_only = german_host.for_window(&["en-US"]);
+        let english_only = german_host.for_window(None, &["en-US"]);
         assert_eq!(english_only.locale(), "en-US");
         assert_eq!(english_only.say("tilolang-empty", &[]), "Nothing here yet");
-        let both = german_host.for_window(&["en-US", "de-DE"]);
+        let both = german_host.for_window(None, &["en-US", "de-DE"]);
         assert_eq!(both.locale(), "de-DE", "the person's, when it ships it");
+    }
+
+    /// The window reads in the language the person's session names, whatever language this host's
+    /// own process runs in: the host that draws a German window may well have started in the
+    /// source language, and the app's words still come from its German catalogue.
+    #[test]
+    fn a_windows_language_is_the_one_the_session_names() {
+        let english_host = Phrases::new("en-US");
+        let german = english_host.for_window(Some("de-DE"), &["en-US", "de-DE"]);
+        assert_eq!(german.locale(), "de-DE");
+        german.add_package(&[("de-DE".to_owned(), "d-clean = Morgenroutine\n".to_owned())]);
+        assert_eq!(german.say("d-clean", &[]), "Morgenroutine");
+        assert_ne!(
+            german.say("tilolang-empty", &[]),
+            "Nothing here yet",
+            "the frames' words follow the window too"
+        );
+        // A window whose package ships no German still reads the German the person types their
+        // dates in: the language they prefer is theirs, whatever the window speaks.
+        let english_only = english_host.for_window(Some("de-DE"), &["en-US"]);
+        assert_eq!(english_only.locale(), "en-US");
+        assert_eq!(english_only.language(), "de");
+        // A language the host's own catalogue has no translation for is the app's to speak: the
+        // window's language is the one chosen, never the host chrome's nearest one.
+        let portuguese = english_host.for_window(Some("pt-BR"), &["en-US", "pt-BR"]);
+        assert_eq!(portuguese.locale(), "pt-BR");
+        portuguese.add_package(&[("pt-BR".to_owned(), "d-clean = Limpeza matinal\n".to_owned())]);
+        assert_eq!(portuguese.say("d-clean", &[]), "Limpeza matinal");
     }
 
     #[test]

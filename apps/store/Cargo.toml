@@ -27,7 +27,6 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-app-host-engine/thin"]
 
 [dependencies]
-fluent.workspace = true
 lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-files = { path = "../../crates/platform/tilo-files" }

@@ -7,8 +7,6 @@
     reason = "a fixture failing is its test failing"
 )]
 
-use std::time::SystemTime;
-
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
@@ -34,6 +32,56 @@ pub async fn member_device(
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(workspaces, workspace, key, &member).await;
     (member_key, member)
+}
+
+/// The write `device`, a member of `workspace`, founds `record` of `app` with,
+/// in the clear: a record written before its channel was sealed, which the
+/// workspace keeps as any other, so what a member seals onto it later is
+/// kept too — and stays shut to a host holding no keys of that channel.
+pub async fn plaintext_record(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &SigningKey,
+    (app, record): (&str, &str),
+    change: impl FnOnce(&mut automerge::AutoCommit),
+) {
+    let surface = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .peer()
+        .signed_surface(app);
+    let mut document = automerge::AutoCommit::new();
+    change(&mut document);
+    let plaintext = collab_types::DocumentMutation::Snapshot(document.save())
+        .encode()
+        .unwrap();
+    let author = collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+    let mut envelope = SignedOp::new_unsigned(
+        plaintext,
+        collab_types::document_artifact_id(app, workspace, record),
+        author,
+        collab_types::document_attestation_id(app, workspace, record),
+        collab_types::OpKind::Change,
+        tilo_clock::wall(),
+        1,
+    )
+    .with_surface(surface);
+    collab_types::sign_op(&mut envelope, device).unwrap();
+    let message = NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.into(),
+        record_id: record.into(),
+        envelope: Box::new(envelope),
+    };
+    let body = postcard::to_stdvec(&message).unwrap();
+    workspaces
+        .absorb(workspace, device.verifying_key().to_bytes(), &body)
+        .await
+        .unwrap();
 }
 
 /// A member device that holds one record's channel keys and writes the
@@ -111,6 +159,30 @@ impl SealingMember {
             seq: std::sync::atomic::AtomicU64::new(0),
             document: std::sync::Mutex::new(automerge::AutoCommit::new()),
         }
+    }
+
+    /// The same device taking part in a channel of its own founding for
+    /// `record` of the same app: keys it made and nobody else was given, as a
+    /// record read by one person alone is sealed (a member's own).
+    pub async fn apart(&self, workspaces: &Workspaces, workspace: &str, record: &str) -> Self {
+        let named = collab_types::ChannelRoute::new(&self.route.0, record);
+        let keys = channel_crypto::ChannelGroup::create(
+            named.channel(workspace),
+            channel_crypto::MemberKey::generate("a member's own record").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let member = Self {
+            key: self.key.clone(),
+            keys,
+            route: (self.route.0.clone(), record.into()),
+            surface: self.surface,
+            seq: std::sync::atomic::AtomicU64::new(0),
+            document: std::sync::Mutex::new(automerge::AutoCommit::new()),
+        };
+        member.catch_up(workspaces, workspace).await;
+        member
     }
 
     /// Take in the record as the workspace reads it now.
@@ -203,7 +275,7 @@ impl SealingMember {
     /// The member folds the record's sealed history, as the workspace holds it
     /// now, into one signed checkpoint under its own author: what its engine
     /// publishes in place of the writes the checkpoint covers.
-    pub async fn compact(&self, workspaces: &Workspaces, workspace: &str) -> NeighbourMsg {
+    pub async fn compact(&self, workspaces: &Workspaces, workspace: &str) -> Vec<NeighbourMsg> {
         let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let artifact = collab_types::document_artifact_id(app, workspace, record);
         let mut candidate = workspaces
@@ -214,30 +286,38 @@ impl SealingMember {
             .await
             .peer()
             .clone();
-        let message = candidate
-            .publication_mut()
-            .compact_sealed_history(
-                app,
-                record,
+        let now = tilo_clock::wall();
+        let mut ops = candidate
+            .publication()
+            .draft_sealed_compaction(
+                (app, record),
+                None,
                 &mut |op| self.open(op),
-                &mut |snapshot| {
+                &mut |frame| {
                     self.keys
-                        .seal_content(artifact, ContentRetention::Checkpoint, snapshot)
+                        .seal_content(artifact, ContentRetention::of_frame(frame), frame)
                         .map_err(|error| error.to_string())
                 },
-                &self.key,
-                SystemTime::now(),
+                self.key.verifying_key().to_bytes(),
+                now,
             )
+            .unwrap();
+        for op in &mut ops {
+            collab_types::sign_op(op, &self.key).unwrap();
+        }
+        let messages = candidate
+            .publication_mut()
+            .admit_sealed_compaction(app, record, ops, now)
             .unwrap();
         // The compaction took this device's next place in the record's
         // sequence, as its engine's own writes see it: the writes after it
         // carry the numbers after that.
-        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+        let Some(NeighbourMsg::AppDocument { envelope, .. }) = messages.first() else {
             panic!("a compaction is a document write")
         };
         self.seq
             .store(envelope.seq, std::sync::atomic::Ordering::Relaxed);
-        message
+        messages
     }
 
     /// Open `op`, any write of the record's history, under any epoch this
@@ -263,14 +343,32 @@ impl SealingMember {
         workspace: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> (R, NeighbourMsg) {
-        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let mut document = self.document();
         let heads = document.get_heads();
         let result = change(&mut document);
-        let plaintext = collab_types::DocumentMutation::Incremental(document.save_after(&heads))
+        let changes = document.save_after(&heads);
+        *self.document.lock().unwrap() = document;
+        (result, self.seal_changes(workspace, changes))
+    }
+
+    /// The member's next write of the record carrying `changes`, whichever
+    /// they are, sealed and signed as its page publishes it, and handed to the
+    /// workspace the way the relay hands it every member write.
+    pub async fn sends_changes(&self, workspaces: &Workspaces, workspace: &str, changes: Vec<u8>) {
+        let message = self.seal_changes(workspace, changes);
+        let body = postcard::to_stdvec(&message).unwrap();
+        workspaces
+            .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
+            .await
+            .unwrap();
+    }
+
+    /// `changes` as the member's next write of the record, sealed and signed.
+    fn seal_changes(&self, workspace: &str, changes: Vec<u8>) -> NeighbourMsg {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
+        let plaintext = collab_types::DocumentMutation::Incremental(changes)
             .encode()
             .unwrap();
-        *self.document.lock().unwrap() = document;
         let artifact = collab_types::document_artifact_id(app, workspace, record);
         let (metadata, payload) = self
             .keys
@@ -288,20 +386,19 @@ impl SealingMember {
             author,
             collab_types::document_attestation_id(app, workspace, record),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             seq,
             metadata,
         )
         .with_surface(self.surface);
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
-        let message = NeighbourMsg::AppDocument {
+        NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: workspace.into(),
             record_id: record.into(),
             envelope: Box::new(envelope),
-        };
-        (result, message)
+        }
     }
 }
 
@@ -320,7 +417,7 @@ pub async fn governor_published(
         .record
         .outgoing
         .iter()
-        .map(|publication| publication.bytes.clone())
+        .map(|publication| publication.bytes.to_vec())
         .collect();
     published
         .iter()

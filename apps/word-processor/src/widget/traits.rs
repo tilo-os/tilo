@@ -260,6 +260,7 @@ impl Editor {
                 multi_selection: multi_sel,
                 spell_by_block: &spell_by_block,
                 note_numbers: &note_nums,
+                presence,
             },
         );
         // The page-space passes over the content, each clipped to the canvas.
@@ -269,6 +270,7 @@ impl Editor {
                     &mut ui::paint::PaintCtx::new(scene, fg.ctf, text_renderer, theme),
                     self.chrome.paper,
                     &markers.comment_markers,
+                    presence,
                 );
                 self.draw_footnotes(
                     scene,
@@ -348,7 +350,7 @@ impl Editor {
             }
         }
         if self.context_menu.is_open() {
-            Widget::draw(
+            ui::widget::DrawChild::draw_child(
                 &mut self.context_menu,
                 scene,
                 transform,

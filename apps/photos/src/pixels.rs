@@ -85,30 +85,45 @@ impl Rgba {
     }
 }
 
-/// Decode any format the build enabled (PNG, JPEG, WebP) into RGBA8.
+/// Decode any format the build enabled (PNG, JPEG, WebP) into RGBA8, off the
+/// frame: the browser's own decoder on the web, which never runs inside a
+/// frame and so never blocks one.
 ///
 /// Returns `None` for bytes that are not a decodable image, rather than
 /// panicking: this runs on whatever the file chooser handed back, and a user
 /// picking a text file must produce an honest error, not a crash.
+pub async fn decode_async(bytes: &[u8]) -> Option<Rgba> {
+    // The header's size is checked before any pixel is allocated.
+    size(bytes)?;
+    let orientation = encoded_exif_orientation(bytes);
+    let decoded = ui::image_codec::decode(bytes, None).await.ok()?;
+    let decoded = Rgba::new(decoded.width, decoded.height, decoded.rgba)?;
+    Some(normalize_exif_orientation(decoded, orientation))
+}
+
+/// [`decode_async`] at once on the calling thread, with the codec's own
+/// decoders: for an import, a local analysis or a content-producing effect,
+/// whose answer is made in one step and cannot wait for a decoder. The
+/// window's own decode is [`decode_async`].
 pub fn decode(bytes: &[u8]) -> Option<Rgba> {
+    size(bytes)?;
+    let orientation = encoded_exif_orientation(bytes);
+    let decoded = ui::image_codec::decode_now(bytes, None).ok()?;
+    let decoded = Rgba::new(decoded.width, decoded.height, decoded.rgba)?;
+    Some(normalize_exif_orientation(decoded, orientation))
+}
+
+/// The size of the image in `bytes`, read from its header, when it is one
+/// Photos reads within its bounds: the answer a caller that only needs the
+/// picture's shape asks for, without decoding a pixel of it.
+pub fn size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() > MAX_ENCODED_BYTES {
         return None;
     }
-    // Read dimensions before decoding pixels. `load_from_memory` otherwise
-    // allocates the full RGBA image before Photos can apply its own limit.
-    let reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let (w, h) = reader.into_dimensions().ok()?;
-    if !within_decode_limits(w, h) {
-        return None;
-    }
-    let orientation = encoded_exif_orientation(bytes);
-    let img = image::load_from_memory(bytes).ok()?;
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    let decoded = Rgba::new(w, h, rgba.into_raw())?;
-    Some(normalize_exif_orientation(decoded, orientation))
+    // Read dimensions from the header before decoding pixels, so a decode
+    // never allocates past Photos' own limit.
+    let (w, h) = ui::image_codec::dimensions(bytes)?;
+    within_decode_limits(w, h).then_some((w, h))
 }
 
 /// Read the standard EXIF orientation without making metadata availability a

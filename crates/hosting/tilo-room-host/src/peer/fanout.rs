@@ -2,6 +2,8 @@
 //! sessions each frame reaches. A single state commit and a committed
 //! checkpoint batch publish through the same steps.
 
+use crate::store::record_sync::Reach;
+
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, ReplayCatchup, StateDelivery, StateSession,
     StateSource, Subscriber, WorkspaceOperation, gated_checkpoint_channel, live_audience, mpsc,
@@ -31,6 +33,9 @@ pub(super) struct LiveFrame<'a> {
     fanned: Option<FanoutStamp>,
     checkpoint_channel: Option<[u8; 32]>,
     audience: Option<std::collections::BTreeSet<[u8; 32]>>,
+    /// A device's request to be admitted to a channel's group, which a device
+    /// that only follows its groups is not sent.
+    asks_admission: bool,
     /// Who holds the frame's record ([`crate::store::record_sync`]).
     reach: crate::store::record_sync::Reach,
 }
@@ -52,6 +57,11 @@ impl<'a> LiveFrame<'a> {
             .then(|| gated_checkpoint_channel(payloads, envelope, source))
             .flatten();
         let audience = live_audience(runtime, envelope);
+        let asks_admission = match &**envelope {
+            Envelope::Delta { delta, .. } => crate::coedit::retention_view(delta)
+                .is_some_and(|(_, _, body)| payloads.asks_admission(body)),
+            _ => false,
+        };
         let reach = record_reach(runtime, envelope);
         Self {
             envelope,
@@ -59,6 +69,7 @@ impl<'a> LiveFrame<'a> {
             fanned,
             checkpoint_channel,
             audience,
+            asks_admission,
             reach,
         }
     }
@@ -71,7 +82,6 @@ fn record_reach(
     envelope: &Arc<Envelope>,
 ) -> crate::store::record_sync::Reach {
     use crate::coedit::CoeditPayload;
-    use crate::store::record_sync::Reach;
     let Envelope::Delta { delta, .. } = &**envelope else {
         return Reach::Everyone;
     };
@@ -103,6 +113,11 @@ impl LiveFanout<'_> {
         pending: &mut HashMap<[u8; 32], std::path::PathBuf>,
         delivered: &mut u64,
     ) -> Result<(), crate::store::StoreError> {
+        // A device admitted through the door that has not subscribed yet
+        // finds its Welcome first in its replay.
+        if let Some(audience) = &self.frame.audience {
+            runtime.arriving.address(audience, self.frame.envelope);
+        }
         for (recipient, original) in sessions {
             self.deliver_to(runtime, recipient, original, pending, delivered)?;
         }
@@ -143,12 +158,20 @@ impl LiveFanout<'_> {
         {
             return None;
         }
-        // An on-demand record's changes go to who opened it; a host this
-        // workspace is attached to keeps all of the workspace.
-        if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
-            && !runtime.attached(recipient)
-            && !runtime.holds_record(recipient, &channel)
-        {
+        if self.frame.asks_admission && target.channel_reader && !runtime.attached(recipient) {
+            return None;
+        }
+        // An on-demand record's changes go to who opened it, a chain's head
+        // to who follows the chain; a host this workspace is attached to
+        // keeps all of the workspace.
+        let held = match self.frame.reach {
+            Reach::Everyone | Reach::Head(_) => true,
+            Reach::Opened(channel) => runtime.holds_record(recipient, &channel),
+            Reach::ChainHead { head, chain } => {
+                runtime.holds_record(recipient, &head) || runtime.holds_record(recipient, &chain)
+            }
+        };
+        if !held && !runtime.attached(recipient) {
             return None;
         }
         Some((sub, target))
@@ -173,12 +196,21 @@ impl LiveFanout<'_> {
             // This commit is already durable. The replay owner
             // will take one final coherent cut before opening
             // this exact session to post-Ready live delivery.
-            target
-                .replay
-                .as_ref()
-                .invariant("replay missing")?
+            let replay = target.replay.as_ref().invariant("replay missing")?;
+            replay
                 .dirty
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            // A frame for this device alone (its Welcome to a channel's
+            // group) goes between the replay's batches: the keys it brings
+            // open what the replay is still sending.
+            if self
+                .frame
+                .audience
+                .as_ref()
+                .is_some_and(|audience| audience.contains(&target.peer.device_public_key))
+            {
+                replay.address(self.frame.envelope.clone());
+            }
             return Ok(());
         }
         if !runtime.attached(recipient)
@@ -224,7 +256,9 @@ impl LiveFanout<'_> {
                 }
                 // It follows this chain part now, and keeps it once a later
                 // part is the head.
-                if let crate::store::record_sync::Reach::Head(channel) = self.frame.reach {
+                if let Reach::Head(channel) | Reach::ChainHead { head: channel, .. } =
+                    self.frame.reach
+                {
                     runtime.hold_record(recipient, channel);
                 }
             }

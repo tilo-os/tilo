@@ -1,6 +1,8 @@
 /**
  * Getting into the workspace a link names, before anything about its target is
- * read. In order:
+ * read. Which way, and the next when one fails, is the runtime's to say (the
+ * rules every device takes, tilo-session-client's `way_in`); the page takes it
+ * and says what happened. In the order the rules try them:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
  *    once the home's door let them in where it gates (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
@@ -65,9 +67,9 @@ async function openedAt({site, secret, deps}) {
 /** What `invitation` offers at `origin`, shown to the person, then joined
  * with: the invitation is the approval of whoever made it, so the host
  * admits it at once and nobody in the workspace answers for it. */
-async function viaInvitation({origin, invitation, room = null, secrets, deps, onProgress}) {
+async function viaInvitation({origin, invitation, room = null, secrets, runtime, deps, onProgress}) {
   const offer = await deps.inspectInvitation(origin, invitation);
-  if (room && offer.room && offer.room !== room) {
+  if (!runtime.admittedAsAsked(room ?? undefined, offer.room ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
   if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
@@ -82,20 +84,23 @@ async function viaInvitation({origin, invitation, room = null, secrets, deps, on
  * never with the key, which only the link carries — and with where it admits
  * into. A shelf of a build that named no host is taken to mean the site's
  * home workspace's host, and the site itself where it has no home. */
-async function viaSealedLink({scope, secrets, home, deps, onProgress}) {
+async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) {
   const opened = await openedAt({site: scope.site, secret: `${scope.handle}${secrets.invite}`, deps});
   const origin = opened.host ?? home?.host?.origin ?? scope.site;
-  return viaInvitation({origin, invitation: opened.invitation, secrets, deps, onProgress});
+  return viaInvitation({origin, invitation: opened.invitation, secrets, runtime, deps, onProgress});
 }
 
 /** `{peer}` once `peer` is ready to use. */
 async function ready(peer) {
-  await peer?.whenReady?.();
+  // The desktop shows once the workspace's shared desktop record is here,
+  // not after the whole workspace: the rest arrives while it is shown.
+  await peer?.whenReady?.({shown: true});
   return {peer};
 }
 
-/** Admission through `workspace`'s host door, held to the workspace the link names. */
-async function viaHost({workspace, room, deps, onProgress}) {
+/** Admission through `workspace`'s host door, held to the workspace the
+ * link names (`admittedAsAsked` in `runtime`). */
+async function viaHost({workspace, room, runtime, deps, onProgress}) {
   onProgress({phase: 'joining'});
   // The workspace a link names, if any: what this browser kept for a host set up
   // again is offered to be joined again only from the bare entry, where the
@@ -105,8 +110,8 @@ async function viaHost({workspace, room, deps, onProgress}) {
   // until the visitor's first gesture (`entry-page.mjs`), and nothing mounts
   // before it.
   if (peer?.idle) return {peer: null, idle: true};
-  if (room && peer?.workspace && peer.workspace !== room) {
-    await peer.dispose?.();
+  if (!runtime.admittedAsAsked(room ?? undefined, peer?.workspace ?? undefined)) {
+    await peer?.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);
   }
   return ready(peer);
@@ -117,81 +122,123 @@ async function viaHost({workspace, room, deps, onProgress}) {
  * Where the home lets only some in (`deps.ownDesktopOpen`), a browser no
  * host let in is sent to the home's door instead, which says how to get
  * in; a seat in the workspace is not a desktop of their own. */
-async function ownDesktop({home, deps, onProgress}) {
+async function ownDesktop({home, runtime, deps, onProgress}) {
   const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
   if (gated) {
-    const {peer} = await viaHost({workspace: home, deps, onProgress});
+    const {peer} = await viaHost({workspace: home, runtime, deps, onProgress});
     await peer?.dispose?.();
     if (!await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);
   }
   return {peer: null};
 }
 
-export async function admit({scope, secrets = {}, tickets, home = null, deps, onProgress = () => {}}) {
-  if (secrets.malformed) {
-    throw new AdmissionError('malformed', 'This link’s invitation is damaged, so Tilo did not use it');
-  }
-  if (scope.kind === 'own') return ownDesktop({home, deps, onProgress});
-  if (scope.kind === 'sealed') return viaSealedLink({scope, secrets, home, deps, onProgress});
-  const {host: origin, room} = scope;
-  const listed = deps.workspaceAt?.(origin) ?? null;
-  if (!room) {
-    if (!listed?.admission) throw new AdmissionError('no-access', NO_ACCESS);
-    return viaHost({workspace: listed, room, deps, onProgress});
-  }
-  if (secrets.invite) {
-    // A link's `invite` names the invitation its host keeps, sealed under a
-    // key in the link; the page opens it before anything reads it. An
-    // invitation's own text is its own secret.
-    const opened = await openedAt({site: origin, secret: secrets.invite, deps});
-    return viaInvitation({origin: opened.host ?? origin, invitation: opened.invitation, room, secrets, deps, onProgress});
-  }
-  if (secrets.ticket) {
-    if (!tickets) throw new AdmissionError('unsupported', 'This page cannot redeem guest tickets');
-    onProgress({phase: 'joining'});
-    return ready(await deps.redeemTicket({origin, room, ticket: secrets.ticket, tickets}));
-  }
-  if (secrets.pair) {
-    if (!deps.pairDevice) throw new AdmissionError('unsupported', 'This page cannot pair a device');
-    const pairing = parsePairSecret(secrets.pair);
-    if (!pairing) throw new AdmissionError('malformed', 'This pairing link is damaged. Make a new one on your other device.');
-    onProgress({phase: 'pairing'});
-    return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}));
-  }
-  /** Steps 4 to 6: the host's door, else the root this page holds. */
-  const withoutAccount = async busy => {
-    if (listed?.admission) return viaHost({workspace: listed, room, deps, onProgress});
-    let peer = null;
-    try {
-      peer = await deps.reconnect?.({origin, room, onProgress});
-    } catch (error) {
-      // Other tabs hold every device key this browser can get in with: not
-      // the host's answer.
-      if (error?.name === 'CustodyError' && error.code === 'custody-busy') throw error;
-      // As below: the host's reason could tell a missing workspace from a private one.
-      console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
-    }
-    if (!peer) throw busy ?? new AdmissionError('no-access', NO_ACCESS);
-    return ready(peer);
+/** What each way in that ends without one says, by its code. */
+const REFUSED = {
+  'malformed': ['malformed', 'This link’s invitation is damaged, so Tilo did not use it'],
+  'malformed-pairing': ['malformed', 'This pairing link is damaged. Make a new one on your other device.'],
+  'no-tickets': ['unsupported', 'This page cannot redeem guest tickets'],
+  'no-pairing': ['unsupported', 'This page cannot pair a device'],
+  'no-access': ['no-access', NO_ACCESS],
+};
+
+/**
+ * Get into the workspace `scope` names, the way `runtime` (`wayIn`, the rules
+ * every device takes) says from what the link carries and what this page
+ * knows of the host; when a way fails, the next is the runtime's too
+ * (`wayInAfter`). Taking each way, and what the person is shown, are the page's.
+ */
+export async function admit({scope, secrets = {}, tickets, home = null, runtime, deps, onProgress = () => {}}) {
+  const origin = scope.kind === 'room' ? scope.host : null;
+  const room = scope.kind === 'room' ? scope.room : null;
+  const listed = origin ? deps.workspaceAt?.(origin) ?? null : null;
+  const pairing = secrets.pair ? parsePairSecret(secrets.pair) : null;
+  const here = {
+    door: Boolean(listed?.admission),
+    entered: Boolean(origin && room && deps.entered?.({origin, room})),
+    tickets: Boolean(tickets),
+    pairing: Boolean(deps.pairDevice),
   };
-  const accounts = await deps.readAccounts(origin);
-  if (!accounts.length) return withoutAccount();
-  const account = accounts.length === 1 ? accounts[0] : await deps.chooseAccount(accounts);
-  onProgress({phase: 'connecting'});
-  try {
-    // A host that revoked this device answers the connection and refuses it
-    // once the peer is certified: that, too, is no access.
-    return await ready(await deps.connectMember({origin, room, account}));
-  } catch (error) {
-    // Other tabs of this browser hold every device key the account has here:
-    // not the host's answer, and not no access. A tab is a device of its
-    // own, so this one gets in as a new device of the person, the way a
-    // browser without the account would. Only where it cannot does it say
-    // so. (An account with no device key here is no access, as a host's
-    // refusal is.)
-    if (error?.name === 'CustodyError' && error.code === 'custody-busy') return withoutAccount(error);
-    // The host's reason could tell "no such workspace" from "not a member".
-    console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
-    throw new AdmissionError('no-access', NO_ACCESS);
+  const link = JSON.stringify({
+    scope: scope.kind === 'room' ? {kind: 'room', room: room ?? undefined} : {kind: scope.kind},
+    malformed: Boolean(secrets.malformed), invite: Boolean(secrets.invite), ticket: Boolean(secrets.ticket),
+    pair: secrets.pair ? (pairing ? 'named' : 'damaged') : undefined,
+  });
+  let accounts = [];
+  /** The error a way that got no one in left behind, said where nothing else is. */
+  let busy = null;
+  let way = runtime.wayIn(link, JSON.stringify(here));
+  for (;;) {
+    switch (way) {
+      case 'own-desktop': return ownDesktop({home, runtime, deps, onProgress});
+      case 'sealed-invitation': return viaSealedLink({scope, secrets, home, runtime, deps, onProgress});
+      case 'invitation': {
+        // A link's `invite` names the invitation its host keeps, sealed under a
+        // key in the link; the page opens it before anything reads it. An
+        // invitation's own text is its own secret.
+        const opened = await openedAt({site: origin, secret: secrets.invite, deps});
+        return viaInvitation({origin: opened.host ?? origin, invitation: opened.invitation, room, secrets, runtime, deps, onProgress});
+      }
+      case 'ticket':
+        onProgress({phase: 'joining'});
+        return ready(await deps.redeemTicket({origin, room, ticket: secrets.ticket, tickets}));
+      case 'pair':
+        onProgress({phase: 'pairing'});
+        return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}));
+      case 'door':
+        if (room) console.warn('admission: asking at the host\'s door');
+        return viaHost({workspace: listed, room, runtime, deps, onProgress});
+      case 'accounts':
+        accounts = await deps.readAccounts(origin);
+        way = runtime.wayIn(link, JSON.stringify({...here, accounts: accounts.length}));
+        continue;
+      case 'member': {
+        const account = accounts.length === 1 ? accounts[0] : await deps.chooseAccount(accounts);
+        onProgress({phase: 'connecting'});
+        try {
+          // A host that revoked this device answers the connection and refuses it
+          // once the peer is certified: that, too, is no access.
+          return await ready(await deps.connectMember({origin, room, account}));
+        } catch (error) {
+          // Other tabs of this browser hold every device key the account has here:
+          // not the host's answer, and not no access.
+          const held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          // The host's reason could tell "no such workspace" from "not a member".
+          if (!held) console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
+          busy = held ? error : busy;
+          // A tab is a device of its own: with every key the account has here
+          // held, it gets in as a new device of the person, as a browser
+          // without the account would.
+          way = held ? runtime.wayIn(link, JSON.stringify({...here, accounts: 0}))
+            : runtime.wayInAfter('member', JSON.stringify({...here, accounts: accounts.length}));
+          continue;
+        }
+      }
+      case 'reconnect': {
+        let peer = null;
+        let held = false;
+        try {
+          peer = await deps.reconnect?.({origin, room, onProgress});
+        } catch (error) {
+          // Other tabs hold every device key this browser can get in with: not
+          // the host's answer.
+          held = error?.name === 'CustodyError' && error.code === 'custody-busy';
+          busy = held ? error : busy;
+          // As below: the host's reason could tell a missing workspace from a private one.
+          if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
+        }
+        if (peer) return ready(peer);
+        // Every key this browser could get in with is held by other tabs:
+        // that is what to say, not the host's answer.
+        if (held) throw busy;
+        way = runtime.wayInAfter('reconnect', JSON.stringify({...here, accounts: accounts.length}));
+        // Reached with an account only when its keys were all held elsewhere.
+        if (way === 'no-access' && busy) throw busy;
+        continue;
+      }
+      default: {
+        const [code, message] = REFUSED[way] ?? REFUSED['no-access'];
+        throw new AdmissionError(code, message);
+      }
+    }
   }
 }

@@ -150,6 +150,10 @@ fn undo(r: &mut Replica) {
     );
 }
 
+fn redo(r: &mut Replica) {
+    history(r, &HistoryEdit::Redo { steps: None });
+}
+
 /// A note both people have, with `body`.
 fn shared_note(ada: &mut Replica, ben: &mut Replica, body: &str) -> ResourceRef {
     let note = target(&call(
@@ -160,19 +164,7 @@ fn shared_note(ada: &mut Replica, ben: &mut Replica, body: &str) -> ResourceRef 
         vec![root(ada, NOTES_APP)],
     ));
     ada.commit();
-    // The body as a paragraph per line, no marks: the same words a plain text held.
-    let blocks: Vec<tilo_document::ClipBlock> = tilo_document::blocks_of_plain(body)
-        .iter()
-        .map(tilo_document::ClipBlock::from_view)
-        .collect();
-    let action = tilo_document::RichTextAction::SyncClips { blocks };
-    let rich = serde_json::to_value(&action).unwrap();
-    edit(
-        ada,
-        NOTES_APP,
-        (&note, "Note", "body"),
-        EditOp::Rich { rich },
-    );
+    write_body(ada, &note, body);
     ada.sync_with(ben);
     note
 }
@@ -291,6 +283,7 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
     ));
     ada.commit();
     ada.sync_with(&mut ben);
+    assert_eq!(tasks_in(&ada).len(), 2, "the list both of them read");
     call(
         &ada,
         "ada",
@@ -299,6 +292,7 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         vec![tasks, Value::resource(&milk)],
     );
     ada.commit();
+    assert_eq!(tasks_in(&ada).len(), 1, "the removal takes it out at once");
     edit(
         &mut ben,
         TASKS_APP,
@@ -320,6 +314,16 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
     undo(&mut ada);
     ada.sync_with(&mut ben);
     for r in [&ada, &ben] {
+        let listed: Vec<String> = tasks_in(r)
+            .iter()
+            .map(|item| target(item).id_string())
+            .collect();
+        assert_eq!(
+            listed,
+            [milk.id_string(), eggs.id_string()],
+            "{} lists the task that came back where it stood",
+            r.name
+        );
         assert_eq!(text(r, &milk, "title"), "Milk", "{}", r.name);
         assert_eq!(text(r, &eggs, "title"), "Free-range eggs", "{}", r.name);
         assert_eq!(
@@ -574,4 +578,156 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
     undo(&mut ada);
     assert_eq!(under(&ada, &ring), None);
     assert_eq!(order(&ada, &tasks), [id(&book), id(&find), id(&ring)]);
+}
+
+/// Ada's notebook: a note "Q3 plan" with "Monday" under it, each with a body and the branch
+/// tagged, and "Groceries" beside them. The branch and the notebook.
+fn planned_notebook(ada: &mut Replica) -> (ResourceRef, ResourceRef, ResourceRef) {
+    let notebook = target(&root(ada, NOTES_APP));
+    let made = |ada: &mut Replica, action: &str, args: Vec<Value>| {
+        let note = target(&call(ada, "ada", NOTES_APP, action, args));
+        ada.commit();
+        note
+    };
+    let plan = made(ada, "new_note", vec![Value::resource(&notebook)]);
+    call(
+        ada,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&plan), Value::text("Q3 plan")],
+    );
+    let meeting = made(
+        ada,
+        "new_child",
+        vec![Value::resource(&notebook), Value::resource(&plan)],
+    );
+    call(
+        ada,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&meeting), Value::text("Monday")],
+    );
+    let groceries = made(ada, "new_note", vec![Value::resource(&notebook)]);
+    call(
+        ada,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&groceries), Value::text("Groceries")],
+    );
+    call(
+        ada,
+        "ada",
+        NOTES_APP,
+        "tag",
+        vec![Value::resource(&meeting), Value::text("work")],
+    );
+    ada.commit();
+    write_body(ada, &plan, "Kickoff.\nOwners.");
+    write_body(ada, &meeting, "Agenda.");
+    (notebook, plan, meeting)
+}
+
+/// A note and every note under it go as one step: undo brings them all back, with their titles,
+/// bodies, tags and the order they stood in; redo takes them away again, on every replica.
+#[test]
+fn a_deleted_branch_of_notes_comes_back_with_one_undo() {
+    let (mut ada, mut ben) = workspace();
+    let (notebook, plan, meeting) = planned_notebook(&mut ada);
+    ada.sync_with(&mut ben);
+    let before = note_titles(&ada, &notebook);
+    assert_eq!(
+        before,
+        ["Q3 plan", "Monday", "Groceries"],
+        "the tree before"
+    );
+
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "delete",
+        vec![Value::resource(&notebook), Value::resource(&plan)],
+    );
+    ada.commit();
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        note_titles(&ada, &notebook),
+        ["Groceries"],
+        "the branch is gone"
+    );
+
+    undo(&mut ada);
+    ada.sync_with(&mut ben);
+    for r in [&ada, &ben] {
+        assert_eq!(
+            note_titles(r, &notebook),
+            before,
+            "{} holds the branch again",
+            r.name
+        );
+        assert_eq!(title_of(r, &plan), "Q3 plan", "{}", r.name);
+        assert_eq!(title_of(r, &meeting), "Monday", "{}", r.name);
+        assert_eq!(text(r, &plan, "body"), "Kickoff.\nOwners.", "{}", r.name);
+        assert_eq!(text(r, &meeting, "body"), "Agenda.", "{}", r.name);
+        assert_eq!(
+            note_parent(r, &meeting),
+            Some(plan.id_string()),
+            "{}",
+            r.name
+        );
+        assert_eq!(note_parent(r, &plan), None, "{}", r.name);
+        match r.host.runtime().read(&meeting, "tags").unwrap() {
+            Value::List(tags) => assert_eq!(tags.len(), 1, "{} keeps its tag", r.name),
+            other => panic!("the tags: {other:?}"),
+        }
+    }
+
+    redo(&mut ada);
+    ada.sync_with(&mut ben);
+    for r in [&ada, &ben] {
+        assert_eq!(note_titles(r, &notebook), ["Groceries"], "{}", r.name);
+    }
+}
+
+/// `r`'s person writes `body` into the note as a paragraph per line, no marks: the same words
+/// a plain text held.
+fn write_body(r: &mut Replica, note: &ResourceRef, body: &str) {
+    let blocks: Vec<tilo_document::ClipBlock> = tilo_document::blocks_of_plain(body)
+        .iter()
+        .map(tilo_document::ClipBlock::from_view)
+        .collect();
+    let action = tilo_document::RichTextAction::SyncClips { blocks };
+    let rich = serde_json::to_value(&action).unwrap();
+    edit(r, NOTES_APP, (note, "Note", "body"), EditOp::Rich { rich });
+}
+
+/// The titles of the notes the notebook holds, in the tree's order.
+fn note_titles(r: &Replica, notebook: &ResourceRef) -> Vec<String> {
+    match r.host.runtime().read(notebook, "notes").expect("the notes") {
+        Value::List(items) => items
+            .iter()
+            .map(|item| title_of(r, &target(item)))
+            .collect(),
+        other => panic!("a list of notes: {other:?}"),
+    }
+}
+
+/// The title of a note.
+fn title_of(r: &Replica, note: &ResourceRef) -> String {
+    match r.host.runtime().read(note, "title").unwrap() {
+        Value::Text(title) => title,
+        other => panic!("a title: {other:?}"),
+    }
+}
+
+/// The note a note stands under, by id.
+fn note_parent(r: &Replica, note: &ResourceRef) -> Option<String> {
+    match r.host.runtime().read(note, "parent").unwrap() {
+        Value::Opt(Some(parent)) => Some(target(&parent).id_string()),
+        Value::Opt(None) => None,
+        other => panic!("a parent: {other:?}"),
+    }
 }

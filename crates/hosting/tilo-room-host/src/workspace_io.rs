@@ -271,7 +271,7 @@ pub(crate) async fn replace_membership(
 /// durable projection. Removals narrow the live workspace before filesystem work;
 /// additions appear only after the atomic record commits. A failed write
 /// therefore leaves a fail-closed in-process ceiling until a later successful
-/// replacement.
+/// replacement. Returns the devices the replacement no longer admits.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the runtime guard publishes the narrowed ceiling as one step and ends with the task"
@@ -279,14 +279,14 @@ pub(crate) async fn replace_membership(
 pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
-) -> Result<(), StoreError> {
+) -> Result<Vec<[u8; 32]>, StoreError> {
     let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
-        let narrowed = {
+        let (narrowed, removed) = {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
                 .membership_revision
@@ -323,7 +323,10 @@ pub(crate) async fn replace_governed_access(
             // Refuse while the authority lane is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
-            !removed.is_empty() || roots_removed || !governed_before
+            (
+                !removed.is_empty() || roots_removed || !governed_before,
+                removed,
+            )
         };
         // Sessions of removed devices and roots re-check now, before the
         // write. A replacement that only admits narrows nobody's access: a
@@ -332,23 +335,25 @@ pub(crate) async fn replace_governed_access(
             crate::authority_epoch::bump();
         }
         let saved = access.clone();
-        authorization_io(move || {
-            let bytes = store.save_governed_access(&saved)?;
+        let writing = crate::timing::start();
+        let written = authorization_io(move || {
+            let (digest, written) = store.save_governed_access(&saved)?;
             // Applied to the runtime below, its narrowing announced
             // above: the watch need not announce the file again.
             crate::membership_watch::wrote_own(
                 &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
-                &bytes,
+                digest,
             );
-            Ok(())
+            Ok(written)
         })
         .await?;
+        crate::timing::event("room.settle.access_write", writing, written);
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();
         runtime.admission = AdmissionMode::Governed;
         runtime.membership_ceiling = None;
-        Ok(())
+        Ok(removed)
     })
     .await
     .map_err(|error| io_error(error.to_string()))?
@@ -829,6 +834,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let removed = crate::workspace_access::tests::unsigned_peer(owner, [1; 32]);
         for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
@@ -866,6 +872,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let stranger = crate::workspace_access::tests::unsigned_peer([8; 32], [1; 32]);
         assert_eq!(

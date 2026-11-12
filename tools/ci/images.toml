@@ -16,7 +16,7 @@
 host = "registry.tilo.so"
 namespace = "tilo"
 token_realm = "https://registry.tilo.so/token"
-# Resolved through its moving `latest` tag; see tools/ci/resolve_builder.py.
+# Resolved through the tag its inputs name; see tools/ci/resolve_builder.py.
 builder = "tilo-builder"
 
 # Repository name under host/namespace -> pinned digest.

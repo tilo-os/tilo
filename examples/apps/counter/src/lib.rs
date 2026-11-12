@@ -14,7 +14,6 @@ pub const APP_TITLE: &str = "Counter";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// The largest count, either way. Keeping it far below `i64::MAX` gives
@@ -81,7 +80,7 @@ impl ResourceApp for App {
 
     /// How the palette, search and history name the open counter.
     fn label(counter: &Counter) -> String {
-        I18nManager::format("counter-label", &[("count", counter.count.into())])
+        crate::locales::CATALOG.t_args("counter-label", &[("count", counter.count.into())])
     }
 
     /// Apps start empty. A screenshot that needs a busier state stages it with

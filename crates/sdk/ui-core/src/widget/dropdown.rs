@@ -26,6 +26,7 @@
 //! events to it exclusively — how the out-of-layout list becomes hit-testable and click-outside
 //! dismissal works.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::{AppModel, EventCtx, ModelPath};
@@ -711,7 +712,7 @@ impl Dropdown {
         });
         let search = if self.supports_filter() {
             field_width_for(
-                [crate::i18n!("dropdown-search-placeholder").as_str()],
+                [widget_text("dropdown-search-placeholder").as_str()],
                 true,
                 &self.label_style,
                 text,
@@ -803,8 +804,8 @@ impl Dropdown {
         self.rows_at = rows_at;
         // A list that filters keeps room for its empty-result line, so it
         // keeps its width while a query narrows it.
-        let hint = (rows.is_empty() || self.supports_filter())
-            .then(|| crate::i18n!("dropdown-no-matches"));
+        let hint =
+            (rows.is_empty() || self.supports_filter()).then(|| widget_text("dropdown-no-matches"));
         self.list.set_rows(rows);
         self.list.set_status(hint);
         self.list.set_anchor(self.rect);
@@ -1294,7 +1295,6 @@ impl Widget for Dropdown {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.place(crate::widget::layout_rect(taffy, node, origin));
-        self.layout_dirty = false;
     }
 
     /// The width every option needs, so a parent that measures its children
@@ -1356,6 +1356,10 @@ impl Widget for Dropdown {
         self.outer == Rect::ZERO || self.layout_dirty
     }
 
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1412,7 +1416,7 @@ impl Widget for Dropdown {
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: &crate::i18n!("dropdown-search-placeholder"),
+                    placeholder: &widget_text("dropdown-search-placeholder"),
                     show_caret: self.is_focused,
                 },
                 content,
@@ -1606,21 +1610,21 @@ impl Widget for Dropdown {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Explicit names are Fluent ids. Keep the legacy value/placeholder
         // fallback for unlabeled standalone dropdowns.
-        let name = if let Some(name) = &self.accessible_name {
-            Some(if self.name_resolved {
-                name.clone()
-            } else {
-                crate::i18n!(name)
-            })
-        } else if let Some(caption) = &self.caption {
-            Some(caption.clone())
-        } else if self.has_selected_value() {
-            Some(self.selected_label().to_string())
-        } else if !self.placeholder.is_empty() {
-            Some(self.placeholder.clone())
-        } else {
-            None
+        let name = match &self.accessible_name {
+            Some(name) => crate::i18n::spoken_name(name, self.name_resolved),
+            None => self.caption.clone(),
         };
+        // What the chooser shows stands in for a name where nothing named it,
+        // so a reader hears what it is set to; it is the chooser's own value,
+        // never the words for what it sets, so a row that holds those says
+        // them instead.
+        let found = name.is_none().then(|| {
+            if self.has_selected_value() {
+                self.selected_label().to_string()
+            } else {
+                self.placeholder.clone()
+            }
+        });
         let value = if self.open && !self.filter.is_empty() {
             Some(self.filter.clone())
         } else {
@@ -1633,16 +1637,18 @@ impl Widget for Dropdown {
             Role::ComboBox
         };
         let value = if self.menu.is_some() { None } else { value };
-        let mut node = AccessNode::new(role)
-            .with_optional_name(name)
-            .with_optional_value(value)
-            .with_state(
-                AccessState::new()
-                    .focusable(self.is_focusable())
-                    .focused(self.is_focused())
-                    .disabled(!self.is_enabled())
-                    .expanded(self.open),
-            );
+        let mut node = match found.filter(|found| !found.is_empty()) {
+            Some(found) => AccessNode::new(role).with_found_name(found),
+            None => AccessNode::new(role).with_optional_name(name),
+        }
+        .with_optional_value(value)
+        .with_state(
+            AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.is_focused())
+                .disabled(!self.is_enabled())
+                .expanded(self.open),
+        );
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
@@ -1651,7 +1657,7 @@ impl Widget for Dropdown {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         }
         if self.open && self.supports_filter() {
-            node = node.with_description(crate::i18n!("dropdown-search-description"));
+            node = node.with_description(widget_text("dropdown-search-description"));
         }
         if self.open {
             node = node

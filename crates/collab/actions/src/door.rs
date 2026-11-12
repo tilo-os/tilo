@@ -397,20 +397,35 @@ impl std::error::Error for DoorError {}
 /// [`flatten`](crate::resource::flatten)'s order. Borrows the tree,
 /// returns owned data — nothing handed back can act on what it described.
 pub fn survey(resources: &[ResourceSpec]) -> Vec<ActionDescriptor> {
-    let mut out = Vec::new();
-    for r in resources {
-        survey_into(r, &mut out);
-    }
-    out
+    survey_placed(resources)
+        .into_iter()
+        .map(|row| row.action)
+        .collect()
 }
 
-fn survey_into(resource: &ResourceSpec, out: &mut Vec<ActionDescriptor>) {
-    for action in &resource.actions {
-        out.push(describe(resource, action));
-    }
-    for child in &resource.children {
-        survey_into(child, out);
-    }
+/// Whether `a` and `b` publish the same: every resource as a reader sees it and every action as
+/// a survey describes it. A target bound anew to the same item publishes the same, so a surface
+/// that described itself again after drawing is told from one whose offer moved.
+#[must_use]
+pub fn publishes_same(a: &[ResourceSpec], b: &[ResourceSpec]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.id == b.id
+                && a.kind == b.kind
+                && a.label == b.label
+                && a.presentation == b.presentation
+                && a.semantic_identity == b.semantic_identity
+                && a.app_id == b.app_id
+                && a.views == b.views
+                && a.readers == b.readers
+                && a.resource_type == b.resource_type
+                && a.actions.len() == b.actions.len()
+                && a.actions
+                    .iter()
+                    .zip(&b.actions)
+                    .all(|(x, y)| x.bound() == y.bound() && describe(a, x) == describe(b, y))
+                && publishes_same(&a.children, &b.children)
+        })
 }
 
 /// One exported operation of a surveyed forest, in the row it stands in: the
@@ -908,7 +923,9 @@ fn dispatch_encoded_with_context(
     .map_err(|e| DoorError::Failed(e.to_string()))
 }
 
-fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
+/// The resource `id` in `resources` or among their children.
+#[must_use]
+pub fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
     fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
         if resource.id.as_str() == id {
             return Some(resource);

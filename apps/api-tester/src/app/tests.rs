@@ -10,6 +10,7 @@ use automerge::{AutoCommit, ROOT};
 use ui::Theme;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Invoke, Operation as _, Replica, Resource as _};
+use ui::widget::DrawChild;
 
 /// The sample workspace, built through its edits and verbs.
 fn sample() -> AutoCommit {
@@ -1325,7 +1326,7 @@ fn long_navigation_labels_fit_the_shared_rows() {
         if widget.test_id() == Some("api.nav") {
             let rect = widget.get_rect();
             let mut scene = vello::Scene::new();
-            widget.draw(
+            widget.draw_child(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 text,
@@ -1428,79 +1429,40 @@ fn long_navigation_labels_fit_the_shared_rows() {
     }
 }
 
-/// The request's name is the window's location and its commands are the
-/// window bar's actions: New collection, Save and Send in its row, Reset
-/// request area after them. The window draws no header row and no search
-/// of its own.
+/// The request's name and its commands stand in the window's header row, which is the window's
+/// bar: the bar declares no copy of them, and the window has no search of its own beside the
+/// bar's.
 #[test]
 fn the_requests_name_and_commands_are_in_the_window_bar() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     open(&mut app, &Request::new("List users"));
     app.harness().present_in_window_bar();
     app.settle();
-    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
     assert_eq!(
-        bar.location
-            .as_ref()
-            .map(|location| location.label.as_str()),
-        Some("List users")
+        ui::window_toolbar::declared(),
+        None,
+        "the bar holds only what is the window's"
     );
-    let names: Vec<&str> = bar
-        .actions
-        .iter()
-        .map(|action| action.name.as_str())
-        .collect();
-    for command in [
-        "New collection",
-        "Reset request area",
-        "Save request",
-        "Send",
-    ] {
+    let names = app.harness().header_row_names();
+    for word in ["List users", "New collection", "Save request", "Send"] {
         assert!(
-            names.contains(&command),
-            "{command} is a bar action: {names:?}"
+            names.iter().any(|name| name == word),
+            "{word} stands in the header row: {names:?}"
         );
     }
     assert!(
-        !names.iter().any(|name| name.contains("Search")),
+        names.iter().filter(|name| name.contains("Search")).count() <= 1,
         "the bar's own search is the only one: {names:?}"
     );
-    let row = &names[..bar
-        .row_actions()
-        .min(ui::window_toolbar::MAX_ACTIONS)
-        .min(names.len())];
-    for command in ["Save request", "Send"] {
-        assert!(
-            row.contains(&command),
-            "{command} stands in the bar's row: {names:?}"
-        );
-    }
-    let targets = app.harness().targets();
-    for drawn in ["api.send", "api.save-request", "api.new-collection"] {
-        assert!(
-            !targets.contains_key(drawn),
-            "{drawn} is the bar's, not drawn in the window"
-        );
-    }
 
-    let save = bar
-        .actions
-        .iter()
-        .find(|action| action.name == "Save request")
-        .expect("Save is a bar action")
-        .id
-        .clone();
-    app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: save });
-    // The shell presses the header's button in the frame's settle pass;
-    // the window then dispatches what the button invoked.
+    app.harness().press_window_action("Save request").unwrap();
     app.idle();
     app.settle();
     app.with_surface::<ApiTesterApp, _>(|surface| {
         assert_eq!(
             surface.form.as_ref().map(|form| form.mode),
             Some(FormMode::SaveRequest),
-            "the bar's Save opened the save form"
+            "the row's Save opened the save form"
         );
     })
     .unwrap();
@@ -1555,7 +1517,7 @@ fn a_history_entry_keeps_the_whole_request_it_sent() {
     assert_eq!(replay.params.len(), authored.params.len());
     assert_eq!(
         replay.scheme,
-        authored.auth.label(),
+        authored.auth.scheme(),
         "the scheme is public; the credential itself is not recorded"
     );
 

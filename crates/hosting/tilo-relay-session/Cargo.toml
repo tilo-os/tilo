@@ -33,7 +33,6 @@ tilo-workspace-join = { path = "../../collab/workspace-join" }
 # Co-edit bodies are neighbour messages; presence slots classify them.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-iroh.workspace = true
 iroh-base.workspace = true
 n0-future = "0.3.2"
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
@@ -49,6 +48,9 @@ hex.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+# The channel access request an entry's proof carries; the toolkit presence
+# bodies the pointer pacing tests classify.
+collab-types = { path = "../../collab/collab-types" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
@@ -56,13 +58,12 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time", "test-util"] }
-# Builds the toolkit presence bodies the pointer pacing tests classify.
-collab-types = { path = "../../collab/collab-types" }
 tilo-automerge-isolate.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

@@ -34,14 +34,6 @@ pub const SEP: char = '\u{0}';
 const AFTER: char = '\u{1}';
 /// Comes after every written value.
 const LAST: char = char::MAX;
-/// Whether `value`'s entries fall in the run `run`: at or after its start, before its end.
-#[must_use]
-pub fn holds_value(value: &str, (from, to): &(String, String)) -> bool {
-    let starts = format!("{value}{SEP}");
-    let ends = format!("{value}{AFTER}");
-    from.as_str() <= starts.as_str() && ends.as_str() <= to.as_str()
-}
-
 /// The list of the column `column` of the items of the collection `field` of `parent`.
 #[must_use]
 pub fn scope_list(parent: &str, field: &str, column: &str) -> String {

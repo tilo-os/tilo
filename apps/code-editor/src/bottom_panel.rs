@@ -19,6 +19,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
+use ui::widget::DrawChild;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{
     Container, Element, EmptyState, ListRow, Scrollable, Section, TabBar, TabDescriptor, Widget,
@@ -279,7 +280,13 @@ impl BottomPanel {
             .map(|(index, d)| {
                 let activated = Rc::clone(&self.activated);
                 let row = ListRow::new(format!("problem-{index}"), d.message.clone())
-                    .meta(format!("Ln {}, Col {}", d.line, d.col))
+                    .meta(crate::resource::CATALOG.t_args(
+                        "code-editor-cursor",
+                        &[
+                            ("line", ui::i18n::ArgValue::Number(d.line as f64)),
+                            ("column", ui::i18n::ArgValue::Number(d.col as f64)),
+                        ],
+                    ))
                     .on_view(move || activated.set(Some(index)));
                 let row = match d.severity {
                     Severity::Error => row.icon(ui::icons::Icon::Ban).error(),
@@ -516,15 +523,15 @@ impl Widget for BottomPanel {
             theme.tokens.colors.surfaces.content,
         );
         self.tabs
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.sync_empty();
         if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = self.list.as_mut()
         {
-            list.draw(scene, transform, text_renderer, theme, presence);
+            list.draw_child(scene, transform, text_renderer, theme, presence);
         }
         if let Some((_, empty)) = self.empty.as_mut() {
-            empty.draw(scene, transform, text_renderer, theme, presence);
+            empty.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -623,7 +630,7 @@ impl Widget for BottomPanel {
 
 impl BottomPanel {
     /// What the search found and whether it is still going or stopped at its
-    /// limit: "3 results in 2 files — 410 files scanned".
+    /// limit: "3 results in 2 files, 410 files scanned".
     fn search_summary(&self) -> String {
         let search = &self.search;
         if search.query.is_empty() {
@@ -635,22 +642,42 @@ impl BottomPanel {
             seen.dedup();
             seen.len()
         };
+        let count = |value: usize| ui::i18n::ArgValue::Number(value as f64);
         let head = match (search.rows.len(), files) {
-            (0, _) if search.running => return "Searching…".to_string(),
-            (0, _) => format!("No results for \u{201C}{}\u{201D}", search.query),
-            (1, _) => "1 result in 1 file".to_string(),
-            (n, 1) => format!("{n} results in 1 file"),
-            (n, f) => format!("{n} results in {f} files"),
+            (0, _) if search.running => return crate::resource::CATALOG.t("code-search-running"),
+            (0, _) => crate::resource::CATALOG.t_args(
+                "code-search-none",
+                &[("query", ui::i18n::ArgValue::Text(search.query.clone()))],
+            ),
+            (1, _) => crate::resource::CATALOG.t("code-search-one-result"),
+            (n, 1) => crate::resource::CATALOG
+                .t_args("code-search-results-one-file", &[("count", count(n))]),
+            (n, f) => crate::resource::CATALOG.t_args(
+                "code-search-results",
+                &[("count", count(n)), ("files", count(f))],
+            ),
         };
         if search.running {
-            format!("{head} \u{2014} still searching…")
+            crate::resource::CATALOG.t_args(
+                "code-search-still-running",
+                &[("head", ui::i18n::ArgValue::Text(head))],
+            )
         } else if search.truncated {
-            format!(
-                "{head} \u{2014} search limit reached after {} files; narrow the search",
-                search.files_scanned
+            crate::resource::CATALOG.t_args(
+                "code-search-limit",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(head)),
+                    ("files", count(search.files_scanned)),
+                ],
             )
         } else if search.files_scanned > 0 {
-            format!("{head} \u{2014} {} files scanned", search.files_scanned)
+            crate::resource::CATALOG.t_args(
+                "code-search-scanned",
+                &[
+                    ("head", ui::i18n::ArgValue::Text(head)),
+                    ("files", count(search.files_scanned)),
+                ],
+            )
         } else {
             head
         }
@@ -709,7 +736,7 @@ mod tests {
         panel.set_search(search.clone());
         assert_eq!(
             panel.search_summary(),
-            "3 results in 2 files \u{2014} 40 files scanned"
+            "3 results in 2 files, 40 files scanned"
         );
 
         search.truncated = true;

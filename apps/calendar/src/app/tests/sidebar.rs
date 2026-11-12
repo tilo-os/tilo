@@ -1,4 +1,5 @@
 use super::*;
+use ui::widget::DrawChild;
 
 #[test]
 #[allow(
@@ -47,7 +48,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         // hit-map, which is exactly what a user clicks.
         fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
             let mut scene = Scene::new();
-            app.draw(
+            app.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 tr,

@@ -8,8 +8,9 @@
 )]
 use super::*;
 
-/// The button's words, and its node's key in the transport's semantics.
-pub(super) const GO_TO_CLIP_LABEL: &str = "Go to clip";
+/// The catalogue message naming the button, and its node's key in the
+/// transport's semantics.
+pub(super) const GO_TO_CLIP_LABEL: &str = "video-editor-go-to-clip";
 pub(super) const GO_TO_CLIP_KEY: &str = "go to clip";
 
 impl VideoEditorApp {
@@ -72,7 +73,7 @@ impl VideoEditorApp {
         };
         let (bw, bh) = if offer {
             (
-                ButtonFace::new(Rect::ZERO, GO_TO_CLIP_LABEL)
+                ButtonFace::new(Rect::ZERO, &crate::resource::CATALOG.t(GO_TO_CLIP_LABEL))
                     .control_size(ControlSize::Small)
                     .intrinsic_width(tr, theme),
                 ButtonFace::height(ControlSize::Small, theme),

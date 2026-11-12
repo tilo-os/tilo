@@ -145,20 +145,21 @@ fn project_blob_map(
 }
 
 /// The values of the map at `key` that decode, with their keys.
+///
+/// The map is walked once, each key with the value a lookup by it reads: a
+/// workspace's member map holds a row per member, and looking each one up
+/// on its own cost a seek per member through a map that grows with them.
 fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Vec<(String, T)> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    use automerge::{ROOT, ReadDoc, ScalarValueRef, ValueRef};
 
     let Some((_, map)) = doc.get(&ROOT, key).ok().flatten() else {
         return Vec::new();
     };
-    doc.keys(&map)
-        .filter_map(|name| match doc.get(&map, name.as_str()).ok().flatten() {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(blob) => {
-                    serde_json::from_slice(blob).ok().map(|value| (name, value))
-                }
-                _ => None,
-            },
+    doc.map_range(&map, ..)
+        .filter_map(|item| match &item.value {
+            ValueRef::Scalar(ScalarValueRef::Bytes(blob)) => serde_json::from_slice(blob)
+                .ok()
+                .map(|value| (item.key.into_owned(), value)),
             _ => None,
         })
         .collect()
@@ -469,13 +470,15 @@ pub fn localise_tile(
             }
         }
         // A governed workspace's owner places in-process kinds; a member that bound
-        // its own instance of that app to the tab keeps it.
+        // its own instance of that app to the tab keeps it, as does a device whose
+        // saved window of that app waits for the app to open it again.
         placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {
             let app = crate::apps::canonical_app_id(&placeholder);
             match current {
                 Some(
                     bound @ (TileContent::Foreign { app_id, .. }
-                    | TileContent::PeerWindow { app_id, .. }),
+                    | TileContent::PeerWindow { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. }),
                 ) if app
                     .as_deref()
                     .is_some_and(|app| app.eq_ignore_ascii_case(app_id)) =>
@@ -751,6 +754,16 @@ mod tests {
         assert_eq!(
             localise_tile(placeholder.clone(), Some(&other), "Notes"),
             placeholder
+        );
+        let saved = TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        };
+        assert_eq!(
+            localise_tile(placeholder.clone(), Some(&saved), "Notes"),
+            saved,
+            "a window this device saved keeps waiting for its app"
         );
         assert_eq!(
             localise_tile(placeholder.clone(), None, "Notes"),

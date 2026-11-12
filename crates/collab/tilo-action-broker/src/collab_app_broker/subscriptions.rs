@@ -92,9 +92,16 @@ impl super::AppBrokerState {
         Some(live_admission(&broker_channels, route, envelope))
     }
 
-    /// The records local app windows hold, by the window instance the
-    /// shell launched each for: what each window shows, known as soon as its
-    /// app opens a record, before anyone points in it.
+    /// The records local app windows hold, by the window instance each shows:
+    /// what each window shows, known as soon as its app opens a record, before
+    /// anyone points in it.
+    ///
+    /// A window names itself: its app subscribes the window's own route
+    /// (`continuation:<tab>`, where the app speaks to the session about that
+    /// window), so the connection carrying it is that window's, however the
+    /// app came to be connected (a window the session connects for it, or the
+    /// launcher handing the app its own). The instance the shell recorded for
+    /// a connection it made itself answers for a window that names none.
     pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
         let Ok(instances) = self.window_instances.lock().map(|windows| windows.clone()) else {
             return Vec::new();
@@ -102,13 +109,24 @@ impl super::AppBrokerState {
         let Ok(channels) = self.channels.lock() else {
             return Vec::new();
         };
+        let mut named = instances;
+        for (key, subscribers) in channels.iter() {
+            let route = CrdtRoute::from_channel_key(key);
+            let Some(tab) = continuation_tab(&route) else {
+                continue;
+            };
+            for sub in &subscribers.op {
+                named.insert(sub.peer_id, tab);
+            }
+        }
         let mut held: Vec<(u64, CrdtRoute)> = channels
             .iter()
             .flat_map(|(key, subscribers)| {
                 subscribers.op.iter().filter_map(|sub| {
-                    let instance = *instances.get(&sub.peer_id)?;
+                    let instance = *named.get(&sub.peer_id)?;
                     let route = CrdtRoute::from_channel_key(key);
-                    (!route.app_id.is_empty()).then_some((instance, route))
+                    (!route.app_id.is_empty() && continuation_tab(&route).is_none())
+                        .then_some((instance, route))
                 })
             })
             .collect();
@@ -117,15 +135,28 @@ impl super::AppBrokerState {
         held
     }
 
-    /// The connection of the local app window the shell launched for
-    /// window instance `instance`, while it is connected. The lowest when a
-    /// window holds more than one.
+    /// The connection of the local app window `instance`, while it is
+    /// connected: the ones it named as its own, and the one the shell recorded
+    /// for a connection it made. The lowest when a window holds more than one.
     pub fn window_peer(&self, instance: u64) -> Option<u64> {
-        let windows = self.window_instances.lock().ok()?;
+        let windows = self.window_instances.lock().ok()?.clone();
+        // A window that named itself on its own route is its connection, as
+        // [`Self::window_records`] reads it.
+        let named: Vec<u64> = self
+            .channels
+            .lock()
+            .ok()?
+            .iter()
+            .filter(|(key, _)| {
+                continuation_tab(&CrdtRoute::from_channel_key(key)) == Some(instance)
+            })
+            .flat_map(|(_, subscribers)| subscribers.op.iter().map(|sub| sub.peer_id))
+            .collect();
         windows
             .iter()
             .filter(|(_, at)| **at == instance)
             .map(|(peer, _)| *peer)
+            .chain(named)
             .min()
     }
 
@@ -166,6 +197,14 @@ pub(super) fn context_frame<'a>(
 }
 
 impl super::InvocationEnvelope {}
+
+/// The tab a window's own route names (`continuation:<tab>`): the window a
+/// connection carrying it is, as its app says.
+fn continuation_tab(route: &CrdtRoute) -> Option<u64> {
+    let tab = route.record_id.strip_prefix("continuation:")?;
+    // ignored-failure: a route that says `continuation:` and then something that is not a tab number names no window this session holds
+    tab.parse().ok()
+}
 
 #[cfg(test)]
 mod tests {
@@ -216,6 +255,41 @@ mod tests {
         assert!(state.window_records().is_empty(), "gone with its app");
     }
 
+    /// A window whose app was handed its own connection names itself: the
+    /// route it speaks to the session about the window on carries its tab, so
+    /// its records are still known by the window that shows them — and that
+    /// route is never taken for what it shows.
+    #[test]
+    fn a_window_that_names_itself_is_known_by_the_tab_it_says() {
+        use crate::collab_broker::FanoutState;
+        use crate::collab_outbound::PeerPublisher;
+        use std::sync::Arc;
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = super::super::AppBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let note = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-1");
+        let window = CrdtRoute::record("so.tilo.notes", "workspace-1", "continuation:91");
+        state.ensure_channel(&note.channel_key());
+        state.ensure_channel(&window.channel_key());
+        let _note = state.subscribe_ops(&note.channel_key(), 5);
+        let _window = state.subscribe_ops(&window.channel_key(), 5);
+        assert_eq!(
+            state.window_records(),
+            [(91, note)],
+            "the record its window shows, by the tab it named"
+        );
+        assert_eq!(
+            state.window_peer(91),
+            Some(5),
+            "where an action for it goes"
+        );
+    }
+
     /// An op of `record` of `app` in `workspace`, admitted the way the broker
     /// admits every op it validated ([`BrokerChannels::record_history`] and
     /// the channel's op log); sealed under a content key when `sealed`.
@@ -236,7 +310,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(app, workspace, record),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         if sealed {
@@ -420,7 +494,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         let channels = Mutex::new(BrokerChannels::default());
@@ -459,7 +533,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         let channels = Mutex::new(BrokerChannels::default());

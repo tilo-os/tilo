@@ -34,7 +34,7 @@ impl Arranging {
         // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
         // place made by text is the page's palette's to open, never a second index of its own.
         let find: Find = Rc::new(|_: &str| Vec::new());
-        let ask: Ask = Rc::new(|_: &str| None);
+        let ask: Ask = Rc::new(|_: &str| false);
         let door = Door::new(Rc::clone(&arrangement), Rc::new(Busy::default), find, ask);
         Self { arrangement, door }
     }

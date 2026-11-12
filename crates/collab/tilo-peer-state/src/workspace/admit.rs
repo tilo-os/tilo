@@ -211,9 +211,9 @@ pub fn admit_workspace_changes(
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer(changes) if governs => {
+        super::base::Lineage::Newer { base, changes } if governs => {
             let mut candidate =
-                super::candidate(None, &changes).map_err(WorkspaceRefusal::Malformed)?;
+                super::candidate_on(*base, &changes).map_err(WorkspaceRefusal::Malformed)?;
             crate::members::settle(&mut candidate, input.workspace)
                 .map_err(WorkspaceRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
@@ -225,7 +225,7 @@ pub fn admit_workspace_changes(
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer(_) => Err(WorkspaceRefusal::GovernanceWriter),
+        super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter),
     }
 }
 
@@ -392,7 +392,7 @@ fn may_write(
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
-    let policy = tilo_desktop_model::projection::workspace_policy_of(before, workspace);
+    let policy = crate::workspace::policy_of(before, workspace);
     let person = hex::encode(person);
     if policy.active_role(&person).is_none() {
         return Err(WorkspaceRefusal::WriteForbidden);

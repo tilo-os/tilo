@@ -492,10 +492,15 @@ pub struct ContextMenu {
     /// `MouseInput` carries no position, so this is tracked from
     /// `CursorMoved` to map a press to a row.
     last_cursor: Point,
-    /// Where the menu was opened at the pointer, until the pointer moves
-    /// away from there. A host repeats a still pointer's position after a
-    /// rebuild ([`crate::pointer_replay`]); that repeat is not the person
-    /// pointing at a row, so it leaves the keyboard's row where it is.
+    /// The row a press took, which the release on it runs: a press highlights
+    /// the row and the menu stays open, so letting go elsewhere cancels it and
+    /// what a command starts (a rename's field) never sees half a click.
+    held: Option<usize>,
+    /// Where the menu was opened at the pointer, in the window's own
+    /// logical coordinates, until the pointer moves away from there. A host
+    /// repeats a still pointer's position after a rebuild
+    /// ([`crate::pointer_replay`]); that repeat is not the person pointing
+    /// at a row, so it leaves the keyboard's row where it is.
     opened_under: Option<Point>,
     /// Set by `handle_event`, drained by [`ContextMenu::take_selection`].
     /// The `&mut self` + CRDT-friendly action channel: instead of forcing
@@ -545,6 +550,9 @@ pub struct ContextMenu {
     /// sits; its owner's rows end there, and choosing it is never reported
     /// through [`ContextMenu::take_selection`].
     own_rows: Option<usize>,
+    /// The owner runs the rows' commands itself, hearing the choice through
+    /// [`ContextMenu::take_selection`] ([`ContextMenu::rows_are_the_owners`]).
+    rows_are_the_owners: bool,
     /// The query field, on a menu that takes typing.
     query: Option<Box<MenuQuery>>,
     /// The rows shown, in the order shown: every row with no query, else
@@ -593,6 +601,7 @@ impl ContextMenu {
             rect: Rect::ZERO,
             hovered: None,
             last_cursor: Point::ZERO,
+            held: None,
             opened_under: None,
             selection: None,
             row_height: ROW_HEIGHT,
@@ -618,6 +627,7 @@ impl ContextMenu {
             drawn: crate::motion::Pose::REST,
             about: None,
             own_rows: None,
+            rows_are_the_owners: false,
             query: None,
             shown: Vec::new(),
             owner_asks: false,
@@ -636,6 +646,15 @@ impl ContextMenu {
         menu.items = MenuItem::fold_groups(items);
         menu.refilter();
         menu
+    }
+
+    /// Say that the rows stand for commands the widget that opened this menu runs: a menu an
+    /// area opens over its content does, keeping them beside the menu so the choice survives it
+    /// closing. Choosing a row here reports it ([`Self::take_selection`]) and runs nothing, so a
+    /// row a person presses, a key takes and a tool or a screen reader activates all end in the
+    /// one place the owner runs the command.
+    pub fn rows_are_the_owners(&mut self) {
+        self.rows_are_the_owners = true;
     }
 
     /// Replace every row (closes an open nested menu).
@@ -1079,6 +1098,7 @@ impl ContextMenu {
         self.appear.show(false);
         self.opened_under = None;
         self.active_touch = None;
+        self.held = None;
         self.anchor_row = None;
         self.submenu = None;
         self.submenu_focused = false;
@@ -1723,13 +1743,18 @@ impl Widget for ContextMenu {
                 // A held bar thumb follows the pointer; the bar's hover and
                 // the pointer's lane are the region's to track.
                 self.scroll_event(event, ctx);
+                let at = ctx.logical(position);
                 // Rows are hit where they are drawn while the menu arrives.
-                self.last_cursor = self.drawn.to_local(ctx.logical(position));
+                self.last_cursor = self.drawn.to_local(at);
                 // Hover follows the pointer once it moves; until then the
                 // row the menu opened on (or the keyboard moved to) stays.
+                // The pointer's own place is what is compared: the menu still
+                // arriving moves what it draws under a still pointer, and a
+                // host repeating that pointer's place is not the person
+                // pointing at a row.
                 if self
                     .opened_under
-                    .is_some_and(|at| at.distance(self.last_cursor) <= STILL_POINTER)
+                    .is_some_and(|opened| opened.distance(at) <= STILL_POINTER)
                 {
                     return;
                 }
@@ -1835,6 +1860,10 @@ impl Widget for ContextMenu {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A press starts afresh: one whose release never came (the
+                // window lost the pointer) is forgotten, as the host forgets
+                // every press it handed out.
+                self.held = None;
                 // A press on the bar grabs or pages it and takes no row. The
                 // region answers in its own flag: the host that routed the
                 // press here may have marked it handled already.
@@ -1850,7 +1879,14 @@ impl Widget for ContextMenu {
                 if self.place_query_caret(self.last_cursor) {
                     // A press in the field puts the caret there.
                 } else if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
-                    self.click_item(idx);
+                    // The row the press took stays lit, and the menu stays open
+                    // until the button comes up: the release on this row runs
+                    // it, and one anywhere else leaves the menu as it was.
+                    self.held = Some(idx);
+                    if self.hovered != Some(idx) {
+                        self.set_hover(Some(idx));
+                        self.dirty = true;
+                    }
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
                     // so it doesn't also activate whatever sits underneath.
@@ -1864,6 +1900,16 @@ impl Widget for ContextMenu {
                 ..
             } => {
                 self.scroll_event(event, ctx);
+                if let Some(idx) = self.held.take() {
+                    // The press is the row's until this release: a pointer
+                    // still over it runs the row, one that left it first runs
+                    // nothing and the menu stays open.
+                    let over = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                    if over == Some(idx) {
+                        self.click_item(idx);
+                    }
+                    *ctx.handled = true;
+                }
             }
             WindowEvent::Touch(touch) => {
                 let point = self.drawn.to_local(ctx.logical(touch.location));
@@ -2058,6 +2104,10 @@ impl Widget for ContextMenu {
             return false;
         }
         if self.send_to.perform_semantic_action(target, action) {
+            // A send pressed by assistive technology or an agent ends the box as a press does.
+            if self.send_to.take_sent() {
+                self.close();
+            }
             return true;
         }
         if target == "context-menu:query" {
@@ -2080,6 +2130,12 @@ impl Widget for ContextMenu {
             return false;
         };
         if !self.items.get(index).is_some_and(MenuItem::is_enabled) {
+            return false;
+        }
+        // A row of the owner's is the owner's command: the menu reports the choice
+        // ([`Self::take_selection`]) and the owner runs it, so a row asked for by its name is
+        // pressed where it stands, instead of a command run here that the owner never hears.
+        if self.rows_are_the_owners && index < self.own_rows.unwrap_or(self.items.len()) {
             return false;
         }
         self.click_item(index);
@@ -2119,6 +2175,7 @@ mod nested_and_anchored_tests {
         crate::synthetic_input::cursor_moved(p.x, p.y)
     }
     use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::mouse_release;
     use crate::synthetic_input::named_key;
     use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
@@ -2177,6 +2234,7 @@ mod nested_and_anchored_tests {
             .unwrap();
         dispatch(&mut m, &cursor_at(nested_row.center()));
         dispatch(&mut m, &mouse_press());
+        dispatch(&mut m, &mouse_release());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open());
@@ -2251,6 +2309,7 @@ mod nested_and_anchored_tests {
         );
         dispatch(&mut m, &cursor_at(target.center()));
         dispatch(&mut m, &mouse_press());
+        dispatch(&mut m, &mouse_release());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open(), "the whole menu closes");

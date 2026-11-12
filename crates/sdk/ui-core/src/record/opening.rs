@@ -344,7 +344,7 @@ mod tests {
             .put(ROOT, "from_workspace", "another device")
             .unwrap();
         records
-            .merge_remote_document(
+            .merge_replica(
                 &want,
                 collab_types::DocumentMutation::Snapshot(committed.save()),
             )

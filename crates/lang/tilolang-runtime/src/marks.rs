@@ -1,18 +1,22 @@
 //! Marks in place (task-legibility.md §3): what someone else changed that the person looking
 //! has not seen, drawn by the host where the view shows it, with no code of the app's.
 //!
-//! The host knows what each part of a view is bound to: a `ui.ListItem` row presents its item,
-//! a bound control edits a field, a window shows its resource. As each node of a view is built,
-//! the host reads [`crate::seen::unseen`] there and marks it:
+//! The host knows what each part of a view is bound to: a `ui.ListItem` row, or a
+//! `ui.TreeViewNode` of a tree, presents its item, a bound control edits a field, a window shows
+//! its resource. As each node of a view is built, the host reads [`crate::seen::unseen`] there
+//! and marks it:
 //!
 //! - a row gets a `ui.ChangeMark` in its `change` slot: who, in which run; a row a list
 //!   folds away as done with stands with the rows above while the change is unseen, so the mark
 //!   is read where it happened. A row in the unseen part of a list that stands a divider where
 //!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
+//! - a list or a tree stands a struck row in for each item someone else removed that the person
+//!   has not seen go, with who removed it;
 //! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
 //!   the change (`previous`);
-//! - a window's header holds a mark with how many changes of what it shows are unseen, and by
-//!   whom.
+//! - a window's header holds a mark with how many of the items its lists show are new, and by
+//!   whom: what the person finds by scrolling it, never items put somewhere the window keeps
+//!   closed.
 //!
 //! A view that places `ui.ChangeMark(r)` itself has it filled in here, and the host places no
 //! mark of its own for `r` in that view. Every mark activates to the run that made the change
@@ -31,6 +35,8 @@ use crate::view::UiNode;
 pub const CHANGE_MARK: &str = "ui.ChangeMark";
 /// The node kind of a row of a list.
 const LIST_ITEM: &str = "ui.ListItem";
+/// The node kind of a row of a tree.
+const TREE_NODE: &str = "ui.TreeViewNode";
 /// The node kind of a window's shell.
 const NAV_SHELL: &str = "ui.NavShell";
 /// The node kind of a text field.
@@ -46,6 +52,8 @@ const ACTIONS: &str = "actions";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
 /// The node kind of a list of any length, whose rows are its items'.
 const VIRTUAL_LIST: &str = "ui.VirtualList";
+/// The node kind of a tree, whose rows are its nodes.
+const TREE_VIEW: &str = "ui.TreeView";
 /// The node kind of a list row.
 const LIST_ROW: &str = "ui.ListRow";
 /// How many resources of a window's document a window's mark reads changes of: one page of
@@ -76,7 +84,7 @@ impl Core {
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         match node.kind.as_str() {
-            VIRTUAL_LIST => match listed {
+            VIRTUAL_LIST | TREE_VIEW => match listed {
                 Some(coll) => self.mark_removed(node, viewer, coll, acc),
                 None => Ok(()),
             },
@@ -88,45 +96,7 @@ impl Core {
                 }
                 Ok(())
             }
-            LIST_ITEM => {
-                let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
-                    return Ok(());
-                };
-                let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)? else {
-                    return Ok(());
-                };
-                // The row does not hide in a list's folded tail while a change of it is
-                // unseen: it stands with the rows above, where its mark is read, and goes
-                // back under the tail once the person has seen it. A flag travels as the
-                // integer it was boxed as, or as the flag itself.
-                if matches!(
-                    node.props.get("tail"),
-                    Some(Value::Bool(true) | Value::Int(1))
-                ) {
-                    node.props.insert("tail".to_owned(), Value::Bool(false));
-                }
-                if places_mark(node, &r.target.id_string()) {
-                    return Ok(());
-                }
-                // A row in the unseen part of a list that stands a divider where it starts:
-                // the divider says the rows from there on are new, so a mark on one of them
-                // says it again, whether it was put there or changed since it was.
-                if walk.says_new {
-                    return Ok(());
-                }
-                let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
-                mark.props
-                    .insert("of".to_owned(), Value::resource(&r.target));
-                self.fill_mark(
-                    &mut mark,
-                    &r.target,
-                    std::slice::from_ref(&unseen),
-                    viewer,
-                    acc,
-                );
-                node.children.push(slot("change", &node.key, mark));
-                Ok(())
-            }
+            LIST_ITEM | TREE_NODE => self.mark_row(node, viewer, walk, acc),
             NAV_ITEM => self.mark_nav_item(node, viewer, acc),
             NAV_SHELL => self.mark_window(node, viewer, window, acc),
             TEXT_INPUT => self.mark_field(node, viewer, acc),
@@ -134,9 +104,59 @@ impl Core {
         }
     }
 
-    /// A list of the collection `coll`: a row after its items for each item someone else
-    /// removed from it that `viewer` has not seen go, its title as it was struck through, its
-    /// mark saying who removed it in which run and showing that run.
+    /// A row of a list, or of a tree, showing the resource it presents: what someone else
+    /// changed of it that the person has not seen goes in its `change` slot, and a row of a
+    /// list's folded tail stands with the rows above it while its change is unseen.
+    fn mark_row(
+        &self,
+        node: &mut UiNode,
+        viewer: &Principal,
+        walk: Walk<'_>,
+        acc: &mut Acc,
+    ) -> Result<(), RuntimeError> {
+        let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
+            return Ok(());
+        };
+        let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)? else {
+            return Ok(());
+        };
+        // The row does not hide in a list's folded tail while a change of it is unseen: it
+        // stands with the rows above, where its mark is read, and goes back under the tail once
+        // the person has seen it. A flag travels as the integer it was boxed as, or as the flag
+        // itself.
+        if matches!(
+            node.props.get("tail"),
+            Some(Value::Bool(true) | Value::Int(1))
+        ) {
+            node.props.insert("tail".to_owned(), Value::Bool(false));
+        }
+        if places_mark(node, &r.target.id_string()) {
+            return Ok(());
+        }
+        // A row in the unseen part of a list that stands a divider where it starts: the divider
+        // says the rows from there on are new, so a mark on one of them says it again, whether
+        // it was put there or changed since it was.
+        if walk.says_new {
+            return Ok(());
+        }
+        let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
+        mark.props
+            .insert("of".to_owned(), Value::resource(&r.target));
+        self.fill_mark(
+            &mut mark,
+            &r.target,
+            std::slice::from_ref(&unseen),
+            viewer,
+            acc,
+        );
+        node.children.push(slot("change", &node.key, mark));
+        Ok(())
+    }
+
+    /// A list or a tree of the collection `coll`: a row after its items for each item someone
+    /// else removed from it that `viewer` has not seen go, its title as it was struck through,
+    /// its mark saying who removed it in which run and showing that run. A tree's row is a node
+    /// of its own, standing after the nodes at the top level.
     fn mark_removed(
         &self,
         node: &mut UiNode,
@@ -191,17 +211,27 @@ impl Core {
                 None => None,
             };
             let key = format!("{}~removed~{resource}", node.key);
-            let mut row = UiNode::empty(LIST_ROW, &format!("{key}~row"));
-            row.props
-                .insert("title".to_owned(), Value::Text(said.unwrap_or_default()));
-            let mut item = UiNode::empty(LIST_ITEM, &key);
-            item.props.insert("removed".to_owned(), Value::Bool(true));
-            item.children.push(row);
+            let name = Value::Text(said.unwrap_or_default());
             let mut mark = UiNode::empty(CHANGE_MARK, &format!("{key}~change"));
             mark.props.insert("of".to_owned(), Value::resource(&at));
             self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-            item.children.push(slot("change", &key, mark));
-            rows.push(item);
+            // A row of a list stands for the item in a list row; a node of a tree is a row of
+            // its own, which says what it stood for.
+            let mut row = if node.kind == TREE_VIEW {
+                let mut struck = UiNode::empty(TREE_NODE, &key);
+                struck.props.insert("item".to_owned(), Value::resource(&at));
+                struck.props.insert("label".to_owned(), name);
+                struck
+            } else {
+                let mut line = UiNode::empty(LIST_ROW, &format!("{key}~row"));
+                line.props.insert("title".to_owned(), name);
+                let mut item = UiNode::empty(LIST_ITEM, &key);
+                item.children.push(line);
+                item
+            };
+            row.props.insert("removed".to_owned(), Value::Bool(true));
+            row.children.push(slot("change", &key, mark));
+            rows.push(row);
         }
         if !rows.is_empty() {
             let mut removed = UiNode::empty(SLOT, &format!("{}~slot-removed", node.key));
@@ -436,9 +466,14 @@ impl Core {
         if unseen.is_empty() {
             return Ok(());
         }
+        // The place counts the items of what it opens the person has not read, which is the
+        // number the window of it says in its header ([`Self::mark_window`]): one count, read
+        // from one place. A resource holding no items of its own counts its unseen changes.
+        let count = self
+            .unread_count_of(&viewer.0, &r.target)?
+            .unwrap_or_else(|| i64::try_from(unseen.len()).unwrap_or(i64::MAX));
         // A `live` the view set itself (a count of what it knows) is the view's; the host
         // fills only what the view left for it, as with a row's change mark.
-        let count = i64::try_from(unseen.len()).unwrap_or(i64::MAX);
         node.props
             .entry("live".to_owned())
             .or_insert(Value::Int(count));
@@ -553,17 +588,9 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
-        // A window counts the items the changes were made over rather than the versions that
-        // made them: what the person catches up on.
-        let count = unseen.iter().fold(0i64, |sum, version| {
-            sum.saturating_add(i64::from(version.count.max(1)))
-        });
+        let (count, added) = self.window_count(&at, &unseen, viewer, acc)?;
         mark.props.insert("count".to_owned(), Value::Int(count));
-        // Every change only put items in: what is new is said as new, not as changed.
-        if unseen
-            .iter()
-            .all(|version| self.puts_items_in(version, &at))
-        {
+        if added {
             mark.props.insert("added".to_owned(), Value::Bool(true));
         }
         // Activating the chip opens the catch-up, so what the chip does is show its list, not
@@ -587,6 +614,61 @@ impl Core {
             None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
+    }
+
+    /// How many of what a window of `at` shows are new to `viewer`, and whether every change it
+    /// counts only put items in — so what it says is new rather than changed.
+    ///
+    /// A window counts the items the changes were made over rather than the versions that made
+    /// them: what the person catches up on. The window of one resource that holds items of its
+    /// own ([`Self::unread_count_of`]) counts the items it shows the person has not read, which
+    /// is the number the place that opens it shows on its badge ([`Self::mark_nav_item`]): one
+    /// count for one thing, read from one place.
+    fn window_count(
+        &self,
+        at: &ResourceRef,
+        unseen: &[Version],
+        viewer: &Principal,
+        acc: &Acc,
+    ) -> Result<(i64, bool), RuntimeError> {
+        let counted = Self::counted_in(at, unseen, acc);
+        // Every change only put items in: what is new is said as new, not as changed.
+        let added = counted
+            .iter()
+            .all(|version| self.puts_items_in(version, at));
+        if at.item.is_some()
+            && let Some(unread) = self.unread_count_of(&viewer.0, at)?
+        {
+            return Ok((unread, added));
+        }
+        let count = counted.iter().fold(0i64, |sum, version| {
+            sum.saturating_add(i64::from(version.count.max(1)))
+        });
+        Ok((count, added))
+    }
+
+    /// The versions a window's mark counts: the changes of what the window *lists*, which is
+    /// what the person finds by scrolling it. A change of the window's own document that put
+    /// items into a collection the window does not list — a channel's threads, which its
+    /// transcript never shows — is named by the window's catch-up and not counted on the page.
+    /// Every change of everything else in the document counts as it did.
+    fn counted_in<'a>(at: &ResourceRef, unseen: &'a [Version], acc: &Acc) -> Vec<&'a Version> {
+        let listed: std::collections::HashSet<&crate::ids::FieldId> = acc
+            .listed
+            .iter()
+            .filter(|(doc, _)| doc == &at.doc)
+            .map(|(_, field)| field)
+            .collect();
+        let own = at.id_string();
+        unseen
+            .iter()
+            .filter(|version| {
+                version.resource != own
+                    || version.kind != VersionKind::Changed
+                    || listed.is_empty()
+                    || version.fields.iter().any(|field| listed.contains(field))
+            })
+            .collect()
     }
 
     /// The type of the resource `at` shows: its ref names one, and a window's mark stands for

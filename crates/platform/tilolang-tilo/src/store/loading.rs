@@ -13,7 +13,11 @@ impl TiloStore {
     /// How the store gets a chunk it was not sent: when something reads into it, or a write is
     /// addressed to it.
     pub fn set_chunk_loader(&self, loader: ChunkLoader) {
-        self.mutate().chunk_loader = Some(loader);
+        let mut inner = self.mutate();
+        // A new source may hold what the last one could not give: the chunks waited on are asked
+        // for again.
+        inner.waited.clear();
+        inner.chunk_loader = Some(loader);
     }
 
     /// Have the workspace record, if the store opened without it: from the loader.
@@ -38,15 +42,24 @@ impl TiloStore {
                 "the workspace record cannot be loaded".into(),
             ));
         };
-        inner.attach_document(chunk::FIRST, &record);
+        let moved = inner.attach_document(chunk::FIRST, &record);
         drop(inner);
-        self.changing().notify_all();
+        if moved {
+            self.changing().notify_all();
+        }
         Ok(())
     }
 
     /// Have the chunk `chunk`, if the store was not sent it: from the chunk loader. A chunk the
     /// manifest names not at all is one no write has started yet, which there is nothing to
     /// load for.
+    ///
+    /// A chunk the source cannot give — one this device has not been sent yet, and no peer
+    /// holding it is reachable — is asked for once, and waited on: the sync that brings it reads
+    /// it then ([`Inner::attach_document`]), so the store neither polls for it nor asks its
+    /// source again. What a person reads of it says it is not here yet, and what a window reads
+    /// meanwhile is what the store holds, its counts not yet known
+    /// ([`TiloStore::index_whole`]).
     pub(super) fn load_chunk(&self, chunk: ChunkNo) -> Result<(), StoreError> {
         if chunk == chunk::FIRST {
             return self.load_record();
@@ -66,6 +79,13 @@ impl TiloStore {
             if !inner.chunks.placement().chunks().contains(&chunk) {
                 return Ok(());
             }
+            // Asked for once already, and not given: nothing of it is owed until the sync that
+            // brings it ([`TiloStore::sync`]).
+            if inner.waited.contains(&chunk) {
+                return Err(StoreError::Backend(format!(
+                    "the chunk {chunk} is not here yet"
+                )));
+            }
             inner.chunk_loader.take()
         };
         let Some(mut loader) = loader else {
@@ -77,13 +97,16 @@ impl TiloStore {
         let mut inner = self.mutate();
         inner.chunk_loader = Some(loader);
         let Some(doc) = doc else {
+            inner.waited.insert(chunk);
             return Err(StoreError::Backend(format!(
                 "the chunk {chunk} cannot be loaded"
             )));
         };
-        inner.attach_document(chunk, &doc);
+        let moved = inner.attach_document(chunk, &doc);
         drop(inner);
-        self.changing().notify_all();
+        if moved {
+            self.changing().notify_all();
+        }
         Ok(())
     }
 

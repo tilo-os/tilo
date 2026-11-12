@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
 /** The short link the page's site keeps an invitation under. */
@@ -48,7 +49,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
     // A member, not the owner, of a host that keeps its wait list to whoever
     // it lets invite.
-    membership: {list: async () => ({name: 'Current', members: []}), waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
+    membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: {base: 'https://web.example/'},
@@ -56,7 +57,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
-  const runtime = {
+  const runtime = runtimeFake({
     presenceColor: id => {
       calls.push(['colour', id]);
       return '#ffd166';
@@ -65,8 +66,26 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       calls.push(['sealed', base, host, invitation]);
       return SEALED;
     },
-  };
-  globalThis.__entryPageFixture = {page, runtime, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+    // The rules of the list are the runtime's (tilo-session-client's `entered`,
+    // tested there); these keep only what the page's steps here rely on.
+    forgetGoneWorkspaces: (list, origin, hostDevice) => {
+      const all = JSON.parse(list);
+      const gone = entry => entry.origin === origin && entry.hostDevice !== hostDevice;
+      return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
+    },
+    rememberEntered: (list, entry) => {
+      const {origin, room, hostDevice} = JSON.parse(entry);
+      const {entered, unchoose} = JSON.parse(runtime.forgetGoneWorkspaces(list, origin, hostDevice));
+      const same = kept => kept.origin === origin && kept.room === room;
+      const name = JSON.parse(entry).name ?? entered.find(same)?.name;
+      return JSON.stringify({entered: [{origin, room, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
+    },
+    nameEntered: (list, place, name) => {
+      const {origin, room} = JSON.parse(place);
+      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
+    },
+  });
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost,
     boot: async options => {
       diagnostics = options.diagnostics;
@@ -74,15 +93,14 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       await options.deps.loadRuntime();
       return boot ? boot(options, page) : page;
     }};
-  rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
-  // Workspaces an earlier visit kept as they were stored, whichever host held them.
-  if (remembered.length) {
-    localStorage.setItem('tilo-entered-workspaces', JSON.stringify([...JSON.parse(localStorage.getItem('tilo-entered-workspaces')), ...remembered]));
-  }
+  // A workspace an earlier visit entered, and those it kept as they were
+  // stored, whichever host held them.
+  localStorage.setItem('tilo-entered-workspaces', JSON.stringify([
+    {origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
-    .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchOfferedApplications = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
+    .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchDesktop = () => {}, prefetchOfferedApplications = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
@@ -95,32 +113,34 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, listeners, session: stored, failure};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure};
 }
 
-test('the GPU is set up once the host lets the page in, not while it asks', async () => {
+test('the GPU device opens as the page starts, while the host is asked, once', async () => {
   const steps = [];
   const {prepared, failure} = await fixture({boot: async ({onStep}, page) => {
+    steps.push(globalThis.__entryPageFixture.prepared.length);
     onStep('join');
-    steps.push(document.documentElement.dataset.arrival);
     onStep('open');
     onStep('open');
     return page;
   }});
-  assert.deepEqual(steps, ['join']);
-  assert.deepEqual(prepared, ['join'], 'prepared once, as the page moved from join to open');
+  assert.deepEqual(steps, [1], 'the device was asked for before the page asked the host');
+  assert.equal(prepared.length, 1, 'and only once, however the page moves on');
   assert.equal(failure, null);
   assert.equal(document.documentElement.dataset.entry, 'open');
 });
 
-test('a page the host refuses compiles no renderer for the next page to wait on', async () => {
-  const {prepared, failure} = await fixture({boot: async ({onStep}) => {
+test('a page the host refuses mounts nothing, so it compiles no renderer for the next page to wait on', async () => {
+  const {prepared, failure, mounted} = await fixture({boot: async ({onStep}) => {
     onStep('join');
     throw new AdmissionError('no-access', 'You don’t have access to this workspace.');
   }});
   assert.equal(failure?.code, 'no-access');
   assert.equal(document.documentElement.dataset.entry, 'refused');
-  assert.deepEqual(prepared, []);
+  // The device alone: the renderer's pipelines compile as a mount draws.
+  assert.equal(prepared.length, 1);
+  assert.deepEqual(mounted, []);
 });
 
 test('the account choice says it is the account choice, and resolves to the account taken', async () => {
@@ -195,7 +215,7 @@ test('a wait-list invitation is the short link its site keeps, not the invitatio
   const {calls, diagnostics} = await fixture({member: {
     createInvitation: async () => 'SIGNED-invitation',
     membership: {list: async () => ({name: 'Current', members: []}),
-      waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
+      mayInvite: async () => true, waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this door sends no mail'); }},
   }});
   diagnostics.onHostAction('waiting-to-join');
   await tick();

@@ -939,26 +939,17 @@ fn verify_corruption(fixture: &Fixture, cancel: &AtomicBool) {
     fs::remove_file(&object).unwrap();
     fs::write(&object, b"corrupted real commit object").unwrap();
     let (mut corrupt, target) = fixture.import("corrupt", &fixture.manifest);
-    assert!(
+    // Every sealed commit is read against its checksum before the target is
+    // touched, so the corrupted app is refused with its intact runtime
+    // undeployed too.
+    assert_eq!(
         corrupt
             .restore(&NativeOfflineRunner, &target, cancel)
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+        "Extra-data source commit content changed"
     );
-    assert!(
-        NativeOfflineRunner
-            .run(&target, &["info".into(), "--user".into(), APP.into()])
-            .is_err()
-    );
-    assert_eq!(
-        native(&target, &["info", "--user", "--show-commit", RUNTIME]).trim(),
-        fixture
-            .manifest
-            .deployments
-            .iter()
-            .find(|item| item.installed.reference == RUNTIME)
-            .unwrap()
-            .commit
-    );
+    assert_undeployed(&target);
     fs::remove_file(&object).unwrap();
     fs::write(&object, original).unwrap();
 }

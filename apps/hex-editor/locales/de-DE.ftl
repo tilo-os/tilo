@@ -21,3 +21,43 @@ hex-editor-delete-bytes = { $len ->
     [one] Ein Byte
    *[other] { $len } Bytes
 } bei Offset { $offset } gelöscht
+hex-editor-keyboard-help = Tastatur: Strg+O öffnen, Strg+S speichern, Strg+F suchen, Strg+H ersetzen, Strg+G zum Offset springen, Strg+C kopieren, Strg+X ausschneiden, Strg+V einfügen, Strg+A alles auswählen, Strg+I Inspector zeigen oder verbergen, Strg+Z rückgängig, Strg+Umschalt+Z wiederholen, Tab wechselt Hex und ASCII, Einfg wechselt Überschreiben und Einfügen.
+hex-editor-open-file = Datei öffnen
+hex-editor-open-file-detail = Eine lokale Datei zum Ansehen wählen
+hex-editor-new-file = Neue leere Datei
+hex-editor-new-file-detail = Einen leeren Puffer zum Eintippen von Bytes beginnen
+hex-editor-window-name = Hex-Editor
+hex-editor-window-detail = Die Bytes einer Datei, Byte für Byte bearbeitet.
+
+## Fenster- und Barrierefreiheits-Texte
+hex-editor-inspector = Inspektor
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+hex-a11y-status = { $file }; { $bytes ->
+    [one] ein Byte
+   *[other] { $bytes } Byte
+}; Cursor bei Hexadezimal { $cursor }; Modus { $mode }; { $endian }
+hex-a11y-no-file = Keine Datei geöffnet. Öffne eine lokale Datei, um ihre Bytes zu prüfen.
+hex-offset-readout = Offset 0x{ $offset } ({ $cursor })
+hex-editor-empty-hint = Untersuche und bearbeite jede Datei Byte für Byte, oder starte eine leere und tippe Bytes ein.
+
+## Die Plätze der Fensterleiste
+hex-editor-edit-mode = Bearbeitungsmodus
+hex-editor-hide-inspector = Inspektor ausblenden
+hex-editor-show-inspector = Inspektor einblenden
+
+## Actions
+
+hex-editor-effects-save = Datei speichern
+hex-editor-effects-save-as = Speichern unter
+hex-editor-effects-search = Bytes suchen
+hex-editor-effects-goto-offset = Zu Offset springen
+hex-editor-document = Hex-Dokument
+hex-editor-document-load = Datei laden
+hex-editor-document-insert-bytes = Bytes einfügen
+hex-editor-document-overwrite-bytes = Bytes ersetzen
+hex-editor-document-delete-bytes = Bytes löschen
+
+## The endianness strip
+hex-editor-little-endian = Little Endian
+hex-editor-big-endian = Big Endian

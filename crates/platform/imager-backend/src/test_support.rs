@@ -48,7 +48,7 @@ const ROOT_VAR: &str = "TILO_IMAGER_TEST_CACHE_ROOT";
 fn qualified_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let root = std::env::var_os(ROOT_VAR).map_or_else(default_root, PathBuf::from);
+        let root = fixture_root();
         let created = std::fs::create_dir_all(&root);
         assert!(
             created.is_ok(),
@@ -59,6 +59,15 @@ fn qualified_root() -> &'static Path {
         assert_qualified(&root);
         root
     })
+}
+
+/// The directory the setup fixtures root their state and scratch in, as
+/// configured, without creating or checking it: the security check that
+/// recognises the machine directories above the fixtures asks for it before any
+/// fixture exists.
+#[cfg(target_os = "linux")]
+pub fn fixture_root() -> PathBuf {
+    std::env::var_os(ROOT_VAR).map_or_else(default_root, PathBuf::from)
 }
 
 /// The setup tests' precondition, checked once with the reason a run lacks it,

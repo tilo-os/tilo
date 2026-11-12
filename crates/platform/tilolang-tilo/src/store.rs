@@ -36,6 +36,15 @@
 //! One transaction may be open at a time: rolling one back puts the mirror and the overlay back
 //! as the store's earlier writes left them.
 //!
+//! **A burst of typing.** A bound control hands over the whole of what it holds on every
+//! keystroke, so typing into one field is one change per letter. Each is committed as any change
+//! is, so it is written to the chunk's copy on disk and sent on the route in the frame that made
+//! it: a peer, and every other view, sees the letter at once, and nothing typed waits on the
+//! burst's end to be safe. The keystrokes of one burst share a *gesture* ([`crate::store::burst`]),
+//! which history lists as one entry and undo takes back as one step. The burst ends at a pause in
+//! the typing ([`TiloStore::set_edit_pause`]), at another field or another person, and at
+//! anything else the person does.
+//!
 //! **Chunks.** The record may be split: resources it does not hold itself are in chunk documents
 //! above it ([`crate::chunk`]), each a document of its own the host sends when it is wanted. The
 //! store holds the chunks it was sent ([`TiloStore::sync`]) beside the record, and every
@@ -133,12 +142,18 @@ pub(crate) type ItemTouches = BTreeMap<FieldKey, BTreeSet<String>>;
 /// The runtime's name for a bound control's edit (`ViewInstance::edit`).
 const RUNTIME_EDIT: &str = "$edit";
 
+/// How long a pause in a person's typing ends the burst they are in (`TiloStore::set_edit_pause`):
+/// long enough that a person typing a thought, or stopping to think mid-word, makes one step of
+/// it, and short enough that coming back to the field is a step of its own.
+pub const DEFAULT_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_millis(1200);
+
 /// The action a committed change is published as: what the runtime named it, except a bound
 /// control's edit, which the runtime names `$edit` with the arguments `[field, value]`. Every
 /// receiver, and the identity service that signs the change, decides it against the package's
 /// surface, which publishes such an edit as `edit-flag` (a checkbox) or `edit-text` (anything
-/// else) with the arguments `{field, value}`, as the door plans an edit of a field. Under that
-/// name the keystrokes of one field also coalesce into one undo step.
+/// else) with the arguments `{field, value}`, as the door plans an edit of a field. The
+/// keystrokes of one typing burst are one gesture of that action, so history lists them as one
+/// entry and undo takes them back as one step.
 fn published_name(note: &ChangeNote) -> (String, Json) {
     if note.action != RUNTIME_EDIT {
         return (note.action.clone(), note.args.clone());
@@ -191,6 +206,17 @@ struct LocalWrite {
     /// it is the store's unsaved layer, and no change commits it. The record moving on leaves
     /// it in the mirror ([`Inner::drop_committed_local`]).
     derived: bool,
+    /// Whether those who read the mirror were told what it changed when its action committed
+    /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
+    /// says differently ([`TiloStore::sync`]).
+    told: bool,
+}
+
+/// A write of the store's the record holds, with the change that carried it: the overlay derives
+/// it until the index its app reads from reflects that change ([`Inner::rebuild_overlay`]).
+struct Accepted {
+    write: LocalWrite,
+    change: automerge::ChangeHash,
 }
 
 impl LocalWrite {
@@ -229,6 +255,10 @@ struct Planned {
     items: Vec<(FieldKey, String)>,
     placed: Vec<(DocId, String, bool)>,
 }
+
+/// What a write did ([`Inner::write`]): the steps each collection's listing took, per document,
+/// and every field it reached.
+type Written = (BTreeMap<DocId, Vec<ListingChange>>, Vec<FieldKey>);
 
 /// Where an item is: the resource holding its collection, the field, the order key; where an
 /// item of a record written before items were flat is nested; and its type.
@@ -275,6 +305,10 @@ pub struct StoreStats {
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
+    /// Indexes written: one commit of the rows a change derived, per package the change reached.
+    /// A change one package made writes that package's index alone, whatever else a workspace
+    /// holds.
+    pub index_writes: u64,
 }
 
 /// How much the store read, counted since it was made: work that does not depend on the
@@ -288,9 +322,12 @@ pub struct ReadStats {
     pub index: IndexReads,
     /// Items a filter was evaluated on one by one (a filter no column answers).
     pub evaluated: u64,
-    /// Times the versions of every resource were derived from the record's log: what a read
-    /// of a resource's whole history costs, and what a first render reads none of.
+    /// Times the versions of the resources of a chunk were derived from its log: what a read of
+    /// a resource's whole history costs, and what a first render reads none of.
     pub versions: u64,
+    /// The changes those derivations read: the log of the chunks holding a history that was
+    /// asked for, never the workspace's.
+    pub version_changes: u64,
 }
 
 mod listed;
@@ -300,15 +337,17 @@ mod sync;
 use scoped::{Changing, Held};
 mod clock;
 use clock::ClockSource;
+mod burst;
 
 mod index_build;
+pub(crate) use index_build::reached_app;
 mod loading;
 use loading::{planned_unheld, unloaded};
 mod reading;
 use index_build::AppIndex;
 use reading::{
     collections_by_doc, everything, mirror_of, name_version_changes, note_derived, scan,
-    version_fields, write_as_a_known_actor,
+    told_differently, version_fields, write_as_a_known_actor,
 };
 mod outbox;
 mod plan;
@@ -319,7 +358,7 @@ mod unsaved;
 mod upgrade_fields;
 mod versions;
 mod written;
-use versions::{NO_VERSIONS, note_versions};
+use versions::{NO_CHUNK_VERSIONS, note_versions};
 
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
@@ -343,6 +382,11 @@ struct Inner {
     /// record's carries what they wrote, so reads hold it from the index and the writes are not
     /// derived into the overlay again.
     settled: BTreeSet<Vec<u8>>,
+    /// The store's writes the record holds that an index read from does not reflect yet: what
+    /// the overlay keeps deriving until that index's heads take in the change that carried each
+    /// ([`Inner::drop_committed_local`]), so a write the record accepted while its app's index
+    /// is still being derived reads back all along.
+    accepted: Vec<Accepted>,
     stats: StoreStats,
     /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -356,14 +400,21 @@ struct Inner {
     /// Where a chunk the store was not sent comes from when something reads into it or a write
     /// is addressed to it ([`TiloStore::set_chunk_loader`]).
     chunk_loader: Option<ChunkLoader>,
+    /// The chunks the store asked its source for and the source cannot give: they are not on
+    /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
+    /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
+    /// what the store holds meanwhile, its counts not yet known ([`TiloStore::index_whole`]).
+    waited: BTreeSet<ChunkNo>,
     /// Called when an index built off the frame is ready to be taken in.
     wake: Option<Waker>,
     /// What the store read of the record so far: derivation, and reads no index answered.
     doc_reads: std::cell::Cell<DocReads>,
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
-    /// Times the versions of every resource were derived from the log.
+    /// Times the versions of a chunk's resources were derived from its log.
     versions_built: std::cell::Cell<u64>,
+    /// The changes those derivations read.
+    version_changes: std::cell::Cell<u64>,
     /// How `now` reads and where the person is, as the host names them: the time the columns that
     /// read the clock are written at ([`crate::index::Clock`]).
     clock: ClockSource,
@@ -388,6 +439,17 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The burst of typing the person is in: the gesture its keystrokes share, and what its next
+    /// one continues ([`burst`]).
+    burst: Option<burst::Burst>,
+    /// How long a pause in the typing ends the burst it is in.
+    edit_pause: std::time::Duration,
+    /// The type a commit adding it is refused for, as a test asks
+    /// ([`TiloStore::fail_commits_adding`]): what a record that cannot take a change does.
+    refused_commit: Option<String>,
+    /// The resource whose reads are refused, as a test asks ([`TiloStore::fail_reads_of`]):
+    /// what a store whose index has not caught up with the resource does.
+    refused_read: Option<String>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -397,9 +459,11 @@ struct Inner {
     next_ticket: u64,
     journals: BTreeMap<RunId, Journal>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
-    /// The versions of each resource the record's changes made (reflection), built from the
-    /// record the first time one is asked for and kept up as it moves.
-    versions: Option<versions::Versions>,
+    /// The versions each resource the changes of a chunk made (reflection), built from that
+    /// chunk the first time a history of it is asked for and kept up as it moves: a resource's
+    /// log is the log of the chunk it is stored in, so reading one page's history costs the
+    /// chunk it shows, never the workspace's every version.
+    versions: HashMap<ChunkNo, versions::Versions>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
     /// the record, and this device alone settles them.
@@ -671,6 +735,7 @@ impl TiloStore {
                 chunks: Chunks::default(),
                 local: Vec::new(),
                 settled: BTreeSet::new(),
+                accepted: Vec::new(),
                 stats: StoreStats::default(),
                 index: BTreeMap::new(),
                 apps: BTreeMap::new(),
@@ -678,10 +743,12 @@ impl TiloStore {
                 index_dir,
                 loader: None,
                 chunk_loader: None,
+                waited: BTreeSet::new(),
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
                 versions_built: std::cell::Cell::new(0),
+                version_changes: std::cell::Cell::new(0),
                 clock: ClockSource::default(),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
@@ -694,12 +761,16 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
+                burst: None,
+                edit_pause: DEFAULT_EDIT_PAUSE,
+                refused_commit: None,
+                refused_read: None,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
                 journals: BTreeMap::new(),
                 notes: BTreeMap::new(),
-                versions: None,
+                versions: HashMap::new(),
                 device: instance.clone(),
                 instance,
                 counter: 0,
@@ -788,45 +859,49 @@ impl TiloStore {
             index,
             evaluated: inner.evaluated.get(),
             versions: inner.versions_built.get(),
+            version_changes: inner.version_changes.get(),
         }
     }
 
-    /// The versions of every resource the record's changes made, by resource: built from the
-    /// record the first time they are asked for, and kept up as it moves.
-    fn built_versions(&self) -> std::cell::Ref<'_, HashMap<String, Vec<Version>>> {
+    /// The versions the changes of `chunk` made, by resource: built from that chunk the first
+    /// time a history of one of its resources is asked for, and kept up as the chunk moves. A
+    /// resource's log is the log of the chunk holding it ([`crate::chunk`]: an id is stored in
+    /// one chunk), so what a page's history costs is the chunk it shows.
+    pub(super) fn versions_in(&self, chunk: ChunkNo) -> std::cell::Ref<'_, versions::Versions> {
         {
             let mut held = self.changing();
             let inner = &mut *held;
-            if inner.versions.is_none() {
+            if !inner.versions.contains_key(&chunk)
+                && let Some(doc) = inner.chunks.mirror(chunk)
+            {
                 inner
                     .versions_built
                     .set(inner.versions_built.get().saturating_add(1));
                 let mut built = versions::Versions::default();
-                for (_, doc) in inner.chunks.docs() {
-                    note_versions(
-                        &mut built,
-                        &doc.committed_document().get_changes(&[]),
-                        doc,
-                        &inner.index,
-                    );
-                }
+                // What each change says of itself, not its operations: a step's are fetched
+                // alone, where what it wrote is read off them.
+                let changes = doc.committed_document().get_changes_meta(&[]);
+                inner.version_changes.set(
+                    inner
+                        .version_changes
+                        .get()
+                        .saturating_add(u64::try_from(changes.len()).unwrap_or(u64::MAX)),
+                );
+                note_versions(&mut built, &changes, doc, &inner.index);
                 // Oldest first, by [`Version::order`]: the order the changes reached this
                 // replica in says nothing of when they happened or of where they stand
                 // causally, and every replica reads one history.
                 for held in built.by_resource.values_mut() {
                     held.sort_by(|one, other| one.order().cmp(&other.order()));
                 }
-                inner.versions = Some(built);
+                inner.versions.insert(chunk, built);
             }
         }
         let (schemas, scope) = self.scoped();
         drop(schemas);
         std::cell::Ref::map(self.inner.borrow(), move |inner| {
             let _ = &scope;
-            inner
-                .versions
-                .as_ref()
-                .map_or(&*NO_VERSIONS, |held| &held.by_resource)
+            inner.versions.get(&chunk).unwrap_or(&NO_CHUNK_VERSIONS)
         })
     }
 
@@ -860,21 +935,6 @@ impl TiloStore {
             inner.handed.insert(entry.ticket, entry.action.clone());
         }
         taken
-    }
-
-    /// What was committed under a ticket of `first` or later and is still queued, left queued:
-    /// what one invocation would hand over.
-    #[must_use]
-    pub fn committed_from(&self, first: u64) -> Vec<Committed> {
-        self.held()
-            .committed
-            .iter()
-            .filter(|entry| entry.ticket >= first)
-            .map(|entry| Committed {
-                ticket: entry.ticket,
-                action: entry.action.clone(),
-            })
-            .collect()
     }
 
     /// The action committed under `ticket`, while it is queued or handed over.
@@ -970,6 +1030,42 @@ impl TiloStore {
         Store::outbox_pending(self).len()
     }
 
+    /// How long a pause in a person's typing ends the burst they are in: what history and undo
+    /// take as one step ([`DEFAULT_EDIT_PAUSE`] unless the host says otherwise).
+    pub fn set_edit_pause(&self, pause: std::time::Duration) {
+        self.mutate().edit_pause = pause;
+    }
+
+    /// Refuse every commit that adds a resource of the type `ty` (as a change names it, `$type`
+    /// included), until [`Self::take_commits`]: how a test takes a step the workspace cannot
+    /// keep, as a record that cannot take a change does.
+    pub fn fail_commits_adding(&self, ty: &str) {
+        self.mutate().refused_commit = Some(ty.to_owned());
+    }
+
+    /// Refuse no commit: the store takes changes again ([`Self::fail_commits_adding`]).
+    pub fn take_commits(&self) {
+        self.mutate().refused_commit = None;
+    }
+
+    /// Refuse every read of the resource `at` (as [`ResourceRef::id_string`] names it), with
+    /// the `NotFound` a store whose index has not caught up with the resource answers, until
+    /// [`Self::take_reads`]: how a test reads a workspace whose index is behind what it holds.
+    pub fn fail_reads_of(&self, at: &str) {
+        self.mutate().refused_read = Some(at.to_owned());
+    }
+
+    /// Refuse no read: the store answers what it holds ([`Self::fail_reads_of`]).
+    pub fn take_reads(&self) {
+        self.mutate().refused_read = None;
+    }
+
+    /// Whether a test asked the reads of the resource `at` to be refused
+    /// ([`Self::fail_reads_of`]).
+    fn refuses_reads_of(&self, at: &ResourceRef) -> bool {
+        self.inner.borrow().refused_read.as_deref() == Some(at.id_string().as_str())
+    }
+
     /// Take every action committed under a ticket of `first` or later, oldest first.
     #[must_use]
     pub fn take_from(&self, first: u64) -> Vec<Committed> {
@@ -1048,61 +1144,6 @@ impl TiloStore {
         }
         let mut inner = self.mutate();
         inner.upgrade_plain_text(app, module, by)
-    }
-
-    /// Whether the resource `doc` holds anything in any of `fields`: what a migration reads to
-    /// know its old field was ever written. Each field is read on its own, a collection by the
-    /// placements of the record's items, so a record of ten thousand items is not built to ask
-    /// whether one was written.
-    #[must_use]
-    pub fn holds_any(&self, doc: &str, fields: &[&str]) -> bool {
-        if fields.is_empty() {
-            return true;
-        }
-        if self.load_record().is_err() {
-            return false;
-        }
-        let schema: &'static crate::schema::TypeSchema = {
-            let inner = self.held();
-            let Some((_, ty)) = inner.index.get(doc) else {
-                return false;
-            };
-            let Some(schema) = lookup(ty) else {
-                return false;
-            };
-            schema
-        };
-        let named: Vec<&'static crate::schema::FieldSchema> = schema
-            .fields
-            .iter()
-            .filter(|field| fields.contains(&field.id.as_str()))
-            .collect();
-        if named.is_empty() {
-            return false;
-        }
-        let inner = self.held();
-        let Ok(mirror) = inner.held_doc(doc) else {
-            return false;
-        };
-        let Some((app, _)) = inner.index.get(doc) else {
-            return false;
-        };
-        let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
-            return false;
-        };
-        let located = crate::reads::Located {
-            obj: Some(root.clone()),
-            schema,
-            item: None,
-            chunk: inner.chunks.chunk(doc),
-        };
-        named.iter().any(|field| {
-            if field.kind == crate::schema::MergeKind::Collection {
-                crate::reads::collection_holds(mirror, &root, field)
-            } else {
-                crate::reads::holds_something(mirror, &located, field)
-            }
-        })
     }
 
     /// What the trigger `key` last did for the resource `doc`: the period it ran in, or the
@@ -1558,14 +1599,6 @@ fn scan_of(chunks: &Chunks) -> BTreeMap<DocId, (AppId, TypeId)> {
     out
 }
 
-/// Whether the stamps `from` reflect every chunk the store holds: what a change's versions and
-/// placements take in, so an index stamped with them has nothing else to read.
-fn reflects_held(chunks: &Chunks, from: &Stamps) -> bool {
-    chunks
-        .docs()
-        .all(|(chunk, doc)| from.get(&chunk) == Some(&doc.committed_document().get_heads()))
-}
-
 /// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
 /// and the stamps of the chunks it was not sent, which its index still reflects.
 fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
@@ -1699,6 +1732,11 @@ impl Inner {
         if !self.chunks.has_record() {
             return (moved, wholes, notified);
         }
+        // A change writes the index of each app it has something of to take in, and no other: an
+        // app with nothing of it keeps its rows, and a write for it is a commit of nothing. What
+        // such an index has taken in moves with the chunks here, as its rows are the ones they
+        // were: its own stamps are written with its next derivation, and one that opens before
+        // then catches up from them.
         let apps: Vec<AppId> = self
             .apps
             .iter()
@@ -1709,15 +1747,22 @@ impl Inner {
             let Some(held) = self.apps.get(&app) else {
                 continue;
             };
-            let index = Arc::clone(&held.index);
+            let index = Arc::clone(&*held.index);
             let seen = stamps_after(&self.chunks, &held.heads);
             let own;
             let docs = &self.index;
             let own_placed;
             let (ends, placed) = match since {
-                // The index reflects every chunk the store held before the change: what the
-                // change made is all it has to take in.
-                Some((from, ends, placed)) if reflects_held(&self.chunks, from) => (ends, placed),
+                // The index had taken in everything the store held before the change: what the
+                // change made is all it has to take in, read once for every app rather than a
+                // chunk's changes again for each.
+                Some((from, ends, placed))
+                    if from
+                        .iter()
+                        .all(|(chunk, heads)| held.heads.get(chunk) == Some(heads)) =>
+                {
+                    (ends, placed)
+                }
                 _ => {
                     // The versions of what changed since the index's heads, and where it put
                     // the items it placed: the chunks it does not reflect yet, and only those.
@@ -1733,7 +1778,14 @@ impl Inner {
                     (&own, &own_placed)
                 }
             };
+            if !reached_app(docs, &app, reached, ends) {
+                if let Some(held) = self.apps.get_mut(&app) {
+                    held.heads = seen;
+                }
+                continue;
+            }
             let nested = &self.nested;
+            self.stats.index_writes = self.stats.index_writes.saturating_add(1);
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&self.chunks, docs, nested, self.clock.read());
                 derive.removed_before(writer, &app, ends, placed)?;
@@ -1763,7 +1815,19 @@ impl Inner {
                         }
                     }
                 }
-                Err(_) => self.rebuild(&app),
+                Err(error) => {
+                    // The index is built anew from the record: what the failed derivation read
+                    // of the index it replaces is not what the new one holds, so every resource
+                    // of the package is derived again whole, and what a window read of it again.
+                    tracing::warn!(app, %error, "the index of a change was not derived");
+                    wholes.extend(
+                        self.index
+                            .iter()
+                            .filter(|(_, (held, _))| held == &app)
+                            .map(|(doc, _)| doc.clone()),
+                    );
+                    self.rebuild(&app);
+                }
             }
         }
         (moved, wholes, notified)
@@ -1795,7 +1859,9 @@ impl Inner {
 
     /// Apply one edit to the mirror's open transaction and derive what it changed into the
     /// overlay. `touched` names what it changes, and `items` the collection items it adds,
-    /// removes or moves. Returns the steps each collection's listing took.
+    /// removes or moves. Returns the steps each collection's listing took, and every field the
+    /// writes reached: `touched` and the fields their derivation moved on resources they did
+    /// not name.
     fn write(
         &mut self,
         app: &str,
@@ -1803,10 +1869,15 @@ impl Inner {
         seed: &[u8],
         touched: &[FieldKey],
         (items, placed): Moves,
-    ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
+    ) -> Result<Written, StoreError> {
         let before = (!items.is_empty()).then(|| Arc::clone(&self.overlay));
+        let mut reached = touched.to_vec();
         for edit in edits {
-            self.write_one(app, edit, seed, touched, (items.clone(), placed.clone()))?;
+            for key in self.write_one(app, edit, seed, touched, (items.clone(), placed.clone()))? {
+                if !reached.contains(&key) {
+                    reached.push(key);
+                }
+            }
         }
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
@@ -1835,12 +1906,12 @@ impl Inner {
                 }
             }
         }
-        Ok(listings)
+        Ok((listings, reached))
     }
 
     /// One of the edits of a write, into the chunk it is addressed to: the run's manifest into
     /// the record itself, and an item into the chunk the run it joins is in, so one write reaches
-    /// one document.
+    /// one document. Returns the fields it reached, derivation included.
     fn write_one(
         &mut self,
         app: &str,
@@ -1848,7 +1919,7 @@ impl Inner {
         seed: &[u8],
         touched: &[FieldKey],
         (items, placed): Moves,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<FieldKey>, StoreError> {
         let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
         let chunk = edit
             .chunk()
@@ -1887,6 +1958,7 @@ impl Inner {
             placed,
             versions: None,
             derived,
+            told: false,
         };
         // Derived either way: a failed edit may have written part of itself. What the manifest
         // change places is derived with the edit that places it.
@@ -1895,8 +1967,9 @@ impl Inner {
         }
         self.touch(&write);
         applied.map_err(|error| invalid(error.to_string()))?;
+        let reached = write.touched.clone();
         self.local.push(write);
-        Ok(())
+        Ok(reached)
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.
@@ -1922,15 +1995,22 @@ impl Inner {
         self.committed.push_back(Committed { ticket, action });
     }
 
-    /// The type the index names the resource `at` to be, on the index's answer alone: the type
-    /// of a document it lists, or of an item whose row it holds. `None` where the index names
-    /// the resource nowhere, which is where the record is read for it.
-    fn named_type(&self, at: &ResourceRef) -> Option<TypeId> {
+    /// The type the workspace holds the resource `at` to be: the one its package's index names
+    /// it ([`View::type_of`]) — a document's from the docs the index lists, an item's from its
+    /// row — or, for a document the index has not derived yet, the one the store's writes named
+    /// it. `None` when neither names it: the writes took it away, and it is not here.
+    fn held_type(&self, at: &ResourceRef) -> Option<TypeId> {
+        let resource = at.id_string();
+        // The writes are newer than the index: what one named of the resource, or took away,
+        // stands until the index derives it.
+        if let Some(named) = self.overlay.text(&resource, idx::TYPE) {
+            return named;
+        }
         let (app, ty) = self.locate(at).ok()?;
         if at.item.is_none() {
             return Some(ty);
         }
-        self.view(&app)?.type_of(&at.id_string()).ok().flatten()
+        self.view(&app)?.type_of(&resource).ok().flatten()
     }
 
     fn locate(&self, at: &ResourceRef) -> Result<(AppId, TypeId), StoreError> {

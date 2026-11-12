@@ -19,6 +19,10 @@
 //!    `invite` invites, never above their own role; an administrator holds
 //!    every governance action and is still bounded by their Editor role; an
 //!    Editor by role alone governs nothing.
+//!
+//! An agent's grant governs nothing, with one narrow exception: a person's
+//! server key invites for them, as an Editor at most, into the workspaces
+//! they administer (`server_key_invites`).
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
@@ -129,8 +133,12 @@ impl Workspaces {
         }
         // An agent's grant acts in workspaces through the person's runtime,
         // never on their governance: it may do only what the host's own
-        // operations allow it.
-        if device.capabilities.agent.is_some() && !matches!(op, WorkspaceOp::Host(_)) {
+        // operations allow it. A person's server key alone also invites for
+        // them ([`server_key_invites`]).
+        if device.capabilities.agent.is_some()
+            && !matches!(op, WorkspaceOp::Host(_))
+            && !server_key_invites(device, op)
+        {
             return Err(CollaborationError::new(
                 "room administration requires a person's device, not an agent's grant",
             ));
@@ -141,7 +149,17 @@ impl Workspaces {
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
-            if operation == HostOperation::CreateOwnWorkspace && self.own().is_none() {
+            // What anyone may do here is for a host that keeps workspaces of
+            // people's own: making theirs, listing them, and keeping their list.
+            let anyones = operation == HostOperation::CreateOwnWorkspace
+                || (matches!(
+                    operation,
+                    HostOperation::ListWorkspaces
+                        | HostOperation::DeleteOwnWorkspace
+                        | HostOperation::KeepPersonalList
+                        | HostOperation::ReadPersonalList
+                ) && !relay_person);
+            if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",
                 ));
@@ -159,8 +177,34 @@ impl Workspaces {
             return Ok(hex::encode(host));
         }
         let workspace = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
+        if device.capabilities.server_key
+            && !is_administrator(workspace, device.user_public_key, now)?
+        {
+            return Err(CollaborationError::new(
+                "a server key invites only into a workspace its person administers",
+            ));
+        }
         decide_by_governance(workspace, device, op, now)
     }
+}
+
+/// The highest role a person's server key invites anyone as.
+pub(super) const SERVER_KEY_INVITES_AT_MOST: Role = Role::Editor;
+
+/// Whether `device`, an agent's grant, may still do `op`: a person's server
+/// key (an all-workspaces key they made for their own backend, never the
+/// grant an agent gets through their consent nor a key minted for one
+/// workspace) invites for its person into a workspace that person
+/// administers, never as more than [`SERVER_KEY_INVITES_AT_MOST`] nor above
+/// the person's own role, and lists and cancels those invitations. Every
+/// other governance action stays the person's devices' own.
+fn server_key_invites(device: &DeviceCert, op: WorkspaceOp<'_>) -> bool {
+    device.capabilities.server_key
+        && match op {
+            WorkspaceOp::Invite(role) => role <= SERVER_KEY_INVITES_AT_MOST,
+            WorkspaceOp::Govern(action) => action == roles::governance::INVITE,
+            WorkspaceOp::Host(_) | WorkspaceOp::Change(_) => false,
+        }
 }
 
 /// The owner's devices administer everything but the owner's own place.
@@ -263,6 +307,24 @@ impl Workspaces {
             return Err(refused);
         }
         Ok(by)
+    }
+}
+
+impl Workspaces {
+    /// How `workspace`'s membership log stands against its rows, for an
+    /// operator ([`tilo_peer_state::PeerGovernance::membership_log`]).
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, or holds no governance.
+    pub async fn membership_log(&self, workspace: &str) -> Result<Vec<String>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .governance()
+            .membership_log()
+            .map_err(CollaborationError::new)
     }
 }
 

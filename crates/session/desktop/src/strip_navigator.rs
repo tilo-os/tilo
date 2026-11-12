@@ -571,7 +571,8 @@ impl StripNavigator {
             (self.lit_strip(), alpha),
             focus,
         );
-        self.ribbon_bounds(frame)
+        // Where it painted at this focus: a sliding focus moves segments past the settled ends.
+        drawn_extent((0..ribbon.count).map(|i| ribbon.segment_rect_at(i, focus)))
     }
 
     /// Paint the rail; its extent, for damage, when painted.
@@ -596,7 +597,7 @@ impl StripNavigator {
             (self.rail_hover, alpha),
             focus,
         );
-        self.rail_bounds(frame)
+        drawn_extent((0..rail.count).map(|i| rail.segment_rect_at(i, focus)))
     }
 
     /// Paint the labels, the ribbon and the rail.
@@ -616,9 +617,23 @@ impl StripNavigator {
             text,
             theme,
         };
-        self.draw_labels(frame, &mut cx, now);
-        self.draw_ribbon(frame, &mut cx, now);
-        self.draw_rail(frame, &mut cx, now);
+        // Each a damage part of its own: a fade or a slide repaints where the control painted, not
+        // the page around it.
+        let parts: [(&'static str, PartDraw); 3] = [
+            ("desktop.strip-labels", Self::draw_labels),
+            ("desktop.strip-ribbon", Self::draw_ribbon),
+            ("desktop.strip-rail", Self::draw_rail),
+        ];
+        for (key, draw) in parts {
+            let key = ui::scene_parts::PartKey::new(key, ());
+            ui::scene_parts::begin(cx.scene, key);
+            let painted = draw(self, frame, &mut cx, now);
+            let bounds = painted
+                .map(|rect| cx.transform.transform_rect_bbox(rect))
+                .into_iter()
+                .collect();
+            ui::scene_parts::end(cx.scene, bounds);
+        }
     }
 
     /// The ribbon's extent: its marks, and nothing beside them.
@@ -720,6 +735,17 @@ pub fn half_px_steps(scroll_x: f64) -> i64 {
     } else {
         0
     }
+}
+
+/// One of the navigator's controls painted: where, when it painted anything.
+type PartDraw = fn(&mut StripNavigator, &StripFrame, &mut DrawCx<'_>, Instant) -> Option<Rect>;
+
+/// The extent of every segment drawn, a pixel around for the antialiased edge and border.
+fn drawn_extent(segments: impl Iterator<Item = Option<Rect>>) -> Option<Rect> {
+    segments
+        .flatten()
+        .map(|rect| rect.inflate(1.0, 1.0))
+        .reduce(|current, rect| current.union(rect))
 }
 
 /// The extent of a run's first and last segments, a pixel around.
@@ -1025,6 +1051,59 @@ mod tests {
             Some(StripNavigation::Strip(Command::Create("Strip 3".into())))
         );
         assert!(nav.is_open() && nav.takes_keys());
+    }
+
+    /// The ribbon and rail fading in or out repaint where they paint, parts of the page's scene of
+    /// their own: a frame of the fade is not a repaint of the whole page.
+    #[test]
+    fn a_fading_indicator_repaints_where_it_painted() {
+        let t0 = Instant::now();
+        let (mut nav, _) = navigator(&tree(), t0);
+        // The strip panned to its second window: the indicators show, hold, then fade.
+        let frame = frame(
+            &tree(),
+            &[(1002, Rect::new(40.0, 60.0, 600.0, 780.0))],
+            640.0,
+        );
+        nav.observe(&frame, t0);
+        let theme = ui::Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut drawn = |nav: &mut StripNavigator, at| {
+            let mut scene = Scene::new();
+            let recording = ui::scene_parts::Recording::begin();
+            ui::scene_parts::track(&scene);
+            nav.draw(&frame, &mut scene, Affine::IDENTITY, &mut text, &theme, at);
+            let parts = recording.finish().of(&scene).expect("well nested parts");
+            (scene, parts)
+        };
+        let indicators = [nav.ribbon_bounds(&frame), nav.rail_bounds(&frame)]
+            .into_iter()
+            .flatten()
+            .map(|rect| rect.inflate(40.0, 40.0))
+            .collect::<Vec<_>>();
+        let (mut before, mut before_parts) = drawn(&mut nav, t0);
+        let mut faded = 0;
+        for step in 1..400 {
+            let at = t0 + ui::time::Duration::from_millis(16 * step);
+            let (after, after_parts) = drawn(&mut nav, at);
+            if !after.encoding_eq(&before) {
+                let damage = ui::scene_parts::damage(&before, &before_parts, &after, &after_parts)
+                    .expect("the frames compare part by part");
+                assert!(
+                    !damage.is_empty(),
+                    "a changed frame damages where it changed"
+                );
+                for rect in &damage {
+                    assert!(
+                        indicators.iter().any(|near| near.contains_rect(*rect)),
+                        "{rect:?} is beyond the ribbon and rail {indicators:?}"
+                    );
+                }
+                faded += 1;
+            }
+            (before, before_parts) = (after, after_parts);
+        }
+        assert!(faded > 1, "the indicators faded");
     }
 
     /// Who is on a strip shows in its label only: the ribbon at rest paints its marks and nothing

@@ -31,6 +31,7 @@ use ui::lock::MutexRecover as _;
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
 use ui::tilo_actions::{Availability, ResourceSpec};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::widget::DrawChild;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -397,7 +398,7 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                     item: resource_id.clone(),
                 },
                 crate::search_provider::OPEN_ACTION,
-                "Open",
+                crate::i18n::CATALOG.t("files-shortcuts-open"),
             );
             ResourceSpec::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
         })
@@ -643,8 +644,10 @@ pub struct FilesState {
     /// What the person is typing into the location in the window's bar, as
     /// the bar last said; `None` while it is not edited there.
     bar_query: Option<String>,
-    /// What the bar's slots were last declared from.
-    declared_bar: Option<window_bar::BarKey>,
+    /// What the bar's slots were last declared from, and the window they were
+    /// declared on ([`ui::window_toolbar::current_window`]): a window that
+    /// shows this app after it declared gets them declared on it too.
+    declared_bar: Option<(Option<u64>, window_bar::BarKey)>,
     /// The commands of the bar's entries.
     bar_entries: window_bar::BarEntries,
     /// News ([`Self::status`], or that an archive is read-only on entering
@@ -2270,7 +2273,10 @@ impl FilesState {
             FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
                 let path = path.into_path_buf();
                 if !path.is_dir() {
-                    return Err(format!("{} is not a folder Files can open", path.display()));
+                    return Err(crate::i18n::CATALOG.t_args(
+                        "files-not-a-folder",
+                        &[("path", ui::i18n::ArgValue::Text(path.display().to_string()))],
+                    ));
                 }
                 self.navigate(path);
                 Some(self.folder_answer())
@@ -2371,8 +2377,12 @@ impl FilesState {
                 None
             }
             FilesEffect::OpenTerminal => {
-                self.open_terminal()
-                    .map_err(|e| format!("could not open terminal: {e}"))?;
+                self.open_terminal().map_err(|e| {
+                    crate::i18n::CATALOG.t_args(
+                        "files-terminal-failed",
+                        &[("detail", ui::i18n::ArgValue::Text(e))],
+                    )
+                })?;
                 None
             }
             FilesEffect::EmptyTrash => {
@@ -2392,14 +2402,14 @@ impl FilesState {
                 // or disclose a path.
                 let target = self
                     .visible_open_path(&item)
-                    .ok_or_else(|| "file location is no longer available".to_string())?;
+                    .ok_or_else(|| crate::i18n::CATALOG.t("files-location-gone"))?;
                 self.open_path(target);
                 None
             }
             FilesEffect::ReadEntry { entry } => {
                 let entry = self
                     .entry_by_resource_id(&entry)
-                    .ok_or_else(|| "file location is no longer available".to_string())?;
+                    .ok_or_else(|| crate::i18n::CATALOG.t("files-location-gone"))?;
                 Some(entry_answer(entry))
             }
             FilesEffect::Reveal { record } => {
@@ -2423,7 +2433,7 @@ impl FilesState {
                     .find(|candidate| {
                         template_resource_id(&candidate.to_string_lossy()) == template
                     })
-                    .ok_or_else(|| "the template is no longer available".to_string())?;
+                    .ok_or_else(|| crate::i18n::CATALOG.t("files-template-gone"))?;
                 self.create_from_template(&target)?;
                 None
             }
@@ -2525,7 +2535,7 @@ impl FilesState {
                 self.refuse_while_answering()?;
                 let path = self
                     .visible_entry_path(&entry)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                    .ok_or_else(|| crate::i18n::CATALOG.t("files-entry-gone"))?;
                 if !self
                     .nearby_send
                     .targets()
@@ -2561,13 +2571,13 @@ impl FilesState {
                 self.refuse_while_answering()?;
                 let target = self
                     .visible_entry_path(&entry)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                    .ok_or_else(|| crate::i18n::CATALOG.t("files-entry-gone"))?;
                 self.select_entry(&target)?;
                 if !self.apply_command(FileCommand::Share) || !self.share_invite.asking() {
                     return Err(self
                         .status
                         .clone()
-                        .unwrap_or_else(|| "sharing is unavailable for this file".into()));
+                        .unwrap_or_else(|| crate::i18n::CATALOG.t("files-sharing-unavailable")));
                 }
                 self.structure_dirty = true;
                 return Ok(Ran::Pending);
@@ -2832,7 +2842,13 @@ impl FilesState {
         // Retain the validated target, not its alias, when the document
         // outbox executes the copy on a later frame.
         if !folder.is_dir() {
-            return Err(format!("{} is not an existing folder.", folder.display()));
+            return Err(crate::i18n::CATALOG.t_args(
+                "files-folder-missing",
+                &[(
+                    "path",
+                    ui::i18n::ArgValue::Text(folder.display().to_string()),
+                )],
+            ));
         }
         let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
         if self
@@ -2862,7 +2878,13 @@ impl FilesState {
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         if !folder.is_dir() {
-            return Err(format!("{} is not an existing folder.", folder.display()));
+            return Err(crate::i18n::CATALOG.t_args(
+                "files-folder-missing",
+                &[(
+                    "path",
+                    ui::i18n::ArgValue::Text(folder.display().to_string()),
+                )],
+            ));
         }
         self.queue_copy(crate::file_ops::FileOp::Copy {
             paths: vec![source.display().to_string()],
@@ -2881,9 +2903,12 @@ impl FilesState {
             cut: false,
         };
         match self.queue(op.clone(), follow) {
-            Some(outcome) => outcome
-                .reason()
-                .map_or(Ok(None), |error| Err(format!("copy failed: {error}"))),
+            Some(outcome) => outcome.reason().map_or(Ok(None), |error| {
+                Err(crate::i18n::CATALOG.t_args(
+                    "files-copy-failed",
+                    &[("detail", ui::i18n::ArgValue::Text(error.to_owned()))],
+                ))
+            }),
             None => Ok(Some(op)),
         }
     }
@@ -6587,8 +6612,25 @@ impl FilesState {
             self.navigate(path);
             return Ok(false);
         }
+        // The system Tilo replaced is left as it was. Opening one of its files brings a copy into
+        // the workspace and opens that copy: from its first edit on, its versions are the
+        // workspace document's, like any other file's.
+        if tilo_files::native::retained_home::contains(&path) {
+            match Self::bring_into_workspace(&path) {
+                Ok(copy) => self.ask_open(&copy, None),
+                Err(reason) => self.notify_open_failed(&path, &reason),
+            }
+            return Ok(true);
+        }
         self.ask_open(&path, None);
         Ok(true)
+    }
+
+    /// Copy a file of the system Tilo replaced into the workspace, choosing a name no other file
+    /// holds so an earlier copy the person edited is never overwritten. The original is only read.
+    fn bring_into_workspace(path: &Path) -> Result<PathBuf, String> {
+        let home = crate::model::user_home().ok_or_else(|| t("files-open-with-no-workspace"))?;
+        fileops::import_mounted_into(path, &home)
     }
 
     /// Ask the session to open `path`, in `app` or in the app that opens its
@@ -6890,7 +6932,7 @@ impl FilesState {
         self.rename_input.apply_layout_external(rect);
         let input = &mut self.rename_input;
         self.rename_paint.record(scene, transform, |scene| {
-            input.draw(scene, transform, text_renderer, theme, presence);
+            input.draw_child(scene, transform, text_renderer, theme, presence);
             // The field, its focus ring and the correction chip it floats
             // past itself.
             let reach = f64::from(theme.tokens.spacing.s2);
@@ -8537,7 +8579,11 @@ impl FilesState {
         if ui::bound_dispatch::host_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
-        let mut nearby_root = ResourceSpec::new("files.nearby", "files.nearby", "Nearby");
+        let mut nearby_root = ResourceSpec::new(
+            "files.nearby",
+            "files.nearby",
+            crate::i18n::CATALOG.t("files-resource-nearby"),
+        );
         self.append_nearby_receiver_resources(&mut nearby_root);
         extras.extend(nearby_root.children);
         if let Some((failure, _)) = self.folder_failure() {
@@ -8574,7 +8620,7 @@ impl FilesState {
                         account: account_id.clone(),
                     },
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Open",
+                    crate::i18n::CATALOG.t("files-shortcuts-open"),
                 );
                 open.type_mut().contract.availability = availability;
                 resource.actions.push(open);
@@ -8583,14 +8629,14 @@ impl FilesState {
                         account: account_id.clone(),
                     },
                     "details",
-                    "Show account status",
+                    crate::i18n::CATALOG.t("files-account-status"),
                 ));
                 resource.actions.push(crate::effects::row_action(
                     &crate::effects::FilesEffect::Reauthenticate {
                         account: account_id,
                     },
                     "reauthenticate",
-                    "How to sign in again",
+                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
                 ));
                 resource
             })

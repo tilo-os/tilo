@@ -12,10 +12,6 @@
               lives until the mounts it serves are done"
 )]
 
-tilo_automerge_isolate::test_worker!();
-
-mod common;
-
 use std::sync::{Arc, Mutex};
 
 use fs::namespace::{Namespace, ROOT_INO};
@@ -30,7 +26,7 @@ type Mounted = Arc<Mutex<Namespace>>;
 /// holder, and the workspace's removal taking both away again.
 #[test]
 fn a_folder_shared_through_the_desk_is_edited_then_taken_back() {
-    let (site, _ada, bob, ada_laptop) = common::people::a_site_with_files_for_one_laptop();
+    let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
     let cluster = site.workspace.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -51,7 +47,7 @@ fn a_folder_shared_through_the_desk_is_edited_then_taken_back() {
         "Ada's mount holds her folder"
     );
 
-    let invitation = common::people::shared_invitation(&ada_laptop, "editor", bob.public);
+    let invitation = crate::common::people::shared_invitation(&ada_laptop, "editor", bob.public);
     let mut bob_laptop = bob.device("Bob's laptop");
     bob_laptop.install_files();
     bob_laptop.join(&invitation);
@@ -124,14 +120,14 @@ fn a_folder_shared_through_the_desk_is_edited_then_taken_back() {
 }
 
 fn wait_until(
-    site: &common::people::Site,
-    devices: &[&common::people::Device],
+    site: &crate::common::people::Site,
+    devices: &[&crate::common::people::Device],
     namespace: &Mounted,
     expected: &[&str],
 ) -> Vec<String> {
     let mut expected: Vec<String> = expected.iter().map(|path| (*path).to_owned()).collect();
     expected.sort();
-    common::people::waited("the tree", site, devices, || {
+    crate::common::people::waited("the tree", site, devices, || {
         contents(namespace) == expected
     });
     contents(namespace)
@@ -166,7 +162,7 @@ fn namespace(author: &str) -> Mounted {
 }
 
 fn mount_on(
-    device: &common::people::Device,
+    device: &crate::common::people::Device,
     namespace: &Mounted,
     cluster: &str,
 ) -> tokio::task::JoinHandle<()> {

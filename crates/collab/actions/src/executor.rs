@@ -599,14 +599,15 @@ fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
 }
 
 /// The action as its change records it: itself when it fits the history
-/// budget, else with its large parts kept as content
-/// ([`EncodedAction::with_content_parts`]). An action too large even then
-/// is refused: a change never commits without the action it ran.
+/// budget, else with its large parts kept, sealed, in this thread's content
+/// store ([`crate::keep_content_in`]). Built once, on the device that
+/// invokes the action. An action too large even then is refused: a change
+/// never commits without the action it ran.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
     if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
         return Ok(action.clone());
     }
-    let (recorded, _) = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
+    let recorded = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
     if recorded_size(&recorded)? > crate::context::HISTORY_BUDGET {
         return Err(ActionError::Refused(
             "the action is too large to record, even with its large parts kept as content".into(),
@@ -703,7 +704,7 @@ fn validate_compensation(
     let Some(recorded) = context.action.as_ref() else {
         return Ok(());
     };
-    if recorded != &recorded_form(&env.action)?
+    if recorded.recorded_parts_of(&env.action).is_none()
         || inverse_as(doc, action, env.actor()) != context.compensation
     {
         return Err(ActionError::Refused(

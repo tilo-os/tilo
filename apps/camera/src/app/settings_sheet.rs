@@ -24,8 +24,6 @@ use crate::record::Record;
 /// that raised them.
 pub(super) type ActionQueue = Rc<RefCell<Vec<Action>>>;
 
-const TITLE: &str = "Camera settings";
-
 /// The settings sheet and the local values its controls show.
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
@@ -53,19 +51,19 @@ struct States {
 fn options<T: Copy>(
     all: &[T],
     value: fn(T) -> &'static str,
-    label: fn(T) -> &'static str,
+    label: impl Fn(T) -> String,
 ) -> Vec<(String, String)> {
     all.iter()
-        .map(|item| (value(*item).to_owned(), label(*item).to_owned()))
+        .map(|item| (value(*item).to_owned(), label(*item)))
         .collect()
 }
 
-fn timer_label(timer: Timer) -> &'static str {
-    match timer {
-        Timer::Off => "Off",
-        Timer::S3 => "3 seconds",
-        Timer::S10 => "10 seconds",
-    }
+fn timer_label(timer: Timer) -> String {
+    crate::CATALOG.t(match timer {
+        Timer::Off => "camera-timer-off",
+        Timer::S3 => "camera-timer-3s",
+        Timer::S10 => "camera-timer-10s",
+    })
 }
 
 fn timer_value(timer: Timer) -> &'static str {
@@ -92,7 +90,7 @@ fn bound<I: 'static, C: ActionControl<I>>(
 /// trailing edge; once the section stacks, each spans the row under its
 /// label.
 fn choice(
-    label: &str,
+    label: impl Into<String>,
     all: Vec<(String, String)>,
     state: &LocalState<String>,
     actions: Option<&Actions<Record>>,
@@ -129,24 +127,28 @@ impl States {
 
     /// The form, its controls bound to these values.
     fn form(&self, actions: Option<&Actions<Record>>, lenses: bool) -> Form {
-        let mut capture = FormSection::new("Capture")
+        let mut capture = FormSection::new(crate::CATALOG.t("camera-settings-capture"))
             .grouped()
             .field(choice(
-                "Resolution",
-                options(&Resolution::ALL, Resolution::as_str, Resolution::label),
+                crate::CATALOG.t("camera-settings-resolution"),
+                options(&Resolution::ALL, Resolution::as_str, |item| {
+                    Resolution::label(item).to_owned()
+                }),
                 &self.resolution,
                 actions,
                 CameraEffect::SET_RESOLUTION,
             ))
             .field(choice(
-                "Photo format",
-                options(&PhotoFormat::ALL, PhotoFormat::as_str, PhotoFormat::label),
+                crate::CATALOG.t("camera-settings-photo-format"),
+                options(&PhotoFormat::ALL, PhotoFormat::as_str, |item| {
+                    PhotoFormat::label(item).to_owned()
+                }),
                 &self.photo_format,
                 actions,
                 CameraEffect::SET_PHOTO_FORMAT,
             ))
             .field(choice(
-                "Self-timer",
+                crate::CATALOG.t("camera-settings-timer"),
                 options(&Timer::ALL, timer_value, timer_label),
                 &self.timer,
                 actions,
@@ -154,36 +156,41 @@ impl States {
             ));
         if lenses {
             capture = capture.field(choice(
-                "Default camera",
+                crate::CATALOG.t("camera-settings-default-camera"),
                 options(&Facing::ALL, Facing::as_str, Facing::label),
                 &self.default_camera,
                 actions,
                 CameraEffect::SET_DEFAULT_LENS,
             ));
         }
-        let options = FormSection::new("Viewfinder and photos")
+        let options = FormSection::new(crate::CATALOG.t("camera-settings-viewfinder"))
             .grouped()
-            .field(switch("HDR", &self.hdr, actions, CameraEffect::SET_HDR))
             .field(switch(
-                "Rule-of-thirds grid",
+                &crate::CATALOG.t("camera-settings-hdr"),
+                &self.hdr,
+                actions,
+                CameraEffect::SET_HDR,
+            ))
+            .field(switch(
+                &crate::CATALOG.t("camera-settings-grid"),
                 &self.grid,
                 actions,
                 CameraEffect::SET_GRID,
             ))
             .field(switch(
-                "Level guide",
+                &crate::CATALOG.t("camera-settings-level"),
                 &self.level,
                 actions,
                 CameraEffect::SET_LEVEL,
             ))
             .field(switch(
-                "Mirror front camera",
+                &crate::CATALOG.t("camera-settings-mirror"),
                 &self.mirror,
                 actions,
                 CameraEffect::SET_MIRROR_FRONT,
             ))
             .field(switch(
-                "Save location with photos",
+                &crate::CATALOG.t("camera-settings-geotag"),
                 &self.geotag,
                 actions,
                 CameraEffect::SET_GEOTAG,
@@ -196,9 +203,12 @@ impl SettingsSheet {
     pub(super) fn new(queue: &ActionQueue, settings: &Settings) -> Self {
         let states = States::of(settings);
         let dismiss = Rc::clone(queue);
-        let dialog = ModalDialog::new(TITLE, states.form(None, false))
-            .with_test_id("camera.settings")
-            .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
+        let dialog = ModalDialog::new(
+            crate::CATALOG.t("camera-settings-title"),
+            states.form(None, false),
+        )
+        .with_test_id("camera.settings")
+        .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
         Self {
             dialog,
             states,

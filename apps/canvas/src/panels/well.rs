@@ -42,7 +42,7 @@ impl Well {
                 .as_ref()
                 .map_or_else(|| self.tools.hex(), |(name, _)| name.replace('-', " "))
         });
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-well",
             &[
                 ("paint", paint.into()),
@@ -133,8 +133,8 @@ impl Widget for Well {
         }
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        Some(self.name.as_str())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(self.name.as_str().into())
     }
 
     fn accessibility(&self) -> Option<AccessNode> {

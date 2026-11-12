@@ -118,7 +118,7 @@ impl Rig {
     /// Arm `tool` from its item in the window bar's Tools menu, and assert
     /// it is armed.
     fn arm_via_window_bar(&mut self, tool: Tool, why: &str) {
-        self.app.press_bar(tool.label());
+        self.app.press_bar(&tool.label());
         assert_eq!(self.app.tool, tool, "{why}");
     }
 
@@ -218,7 +218,7 @@ fn signature_pad_controls_and_ink_follow_the_scaled_pointer() {
         rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
         let geo = rig.app.signature_geometry(rig.app.sidebar_body());
         let (_, hint_h) = text.measure_style(
-            SIGNATURE_PLACE_HINT,
+            &signature_place_hint(),
             Some(geo.place.width() as f32),
             &rig.app.layout_theme.text(TextRole::Caption),
         );
@@ -1050,7 +1050,10 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
     let before = rig.app.annotations.len();
     let ic = centre(item);
     rig.move_to((ic.x, ic.y));
+    // A menu row lights on the press and runs when the button comes up on it: a press alone
+    // leaves the menu open, as letting go anywhere else cancels the command.
     rig.press();
+    rig.release();
     assert!(
         rig.app.context_menu.is_none(),
         "the menu closes after the delete"
@@ -1146,4 +1149,88 @@ fn the_review_panel_gives_way_to_the_pages_and_its_edge_resizes_it() {
     rig.move_to((1270.0, y));
     rig.release();
     assert!(!rig.app.show_sidebar, "dragged shut, the panel closes");
+}
+
+/// The reader paints its own chrome, so the names assistive technology hears
+/// come from the catalogue: a translated window reads its tabs, its comment
+/// actions and its page states in its own language.
+#[test]
+fn the_reader_names_its_review_panel_from_the_catalogue() {
+    use ui::a11y::{AccessNode, Role};
+
+    fn collect(node: &AccessNode, role: Role, out: &mut Vec<String>) {
+        if node.role == role {
+            out.extend(node.name.clone());
+        }
+        for child in &node.children {
+            collect(child, role, out);
+        }
+    }
+
+    /// The description of every page row in the tree.
+    fn collect_pages(node: &AccessNode, out: &mut Vec<Option<String>>) {
+        if node.role == Role::ListItem
+            && node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Page "))
+        {
+            out.push(node.description.clone());
+        }
+        for child in &node.children {
+            collect_pages(child, out);
+        }
+    }
+
+    // One frame, so the page rail knows its pages, as in a live window.
+    let (app, st) = sample_app();
+    let app = ui::headless::Framed::new(
+        st,
+        app,
+        ui::headless::viewport((1280.0, 800.0)),
+        ui::theme::Theme::dark(),
+    );
+    assert!(app.show_sidebar, "the review panel is open");
+    let tree = ui::widget::Widget::accessibility(&*app).expect("reader semantics");
+
+    let mut tabs = Vec::new();
+    collect(&tree, Role::Tab, &mut tabs);
+    assert_eq!(
+        tabs,
+        [
+            crate::t("pdf-tab-comments"),
+            crate::t("pdf-tab-contents"),
+            crate::t("pdf-tab-signing"),
+        ],
+        "each tab is named by its catalogue message"
+    );
+    assert!(
+        tabs.iter().all(|name| !name.starts_with("pdf-")),
+        "the tabs are messages, not keys: {tabs:?}"
+    );
+
+    let mut toggles = Vec::new();
+    collect(&tree, Role::ToggleButton, &mut toggles);
+    assert!(
+        toggles.contains(&crate::t("pdf-comment-resolve"))
+            && toggles.contains(&crate::t("pdf-comment-reopen")),
+        "an open comment offers Resolve and a resolved one Reopen: {toggles:?}"
+    );
+
+    let markup = crate::t("pdf-a11y-page-markup");
+    let mut pages = Vec::new();
+    collect_pages(&tree, &mut pages);
+    assert!(!pages.is_empty(), "the page list is in the tree");
+    assert!(
+        pages
+            .iter()
+            .any(|page| page.as_deref() == Some(markup.as_str())),
+        "a page carrying markup says so: {pages:?}"
+    );
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.as_deref().is_none_or(|text| text == markup)),
+        "a page without markup says nothing: {pages:?}"
+    );
 }

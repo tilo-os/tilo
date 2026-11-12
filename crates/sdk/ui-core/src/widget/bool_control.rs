@@ -105,6 +105,8 @@ pub(super) struct BoolControl {
     /// Spoken name for a control with no owned visible label; unset falls
     /// back to a sibling label resolved by the tree builder.
     pub accessible_name: Option<String>,
+    /// `accessible_name` is already resolved text, spoken as given.
+    pub name_resolved: bool,
     /// Where the checked value lives: a document key or process-local state.
     pub binding: Option<BoxedBinding<bool>>,
     /// Observes user intent without owning model synchronization.
@@ -140,6 +142,7 @@ impl BoolControl {
             enabled: true,
             id_override: None,
             accessible_name,
+            name_resolved: false,
             binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
@@ -247,6 +250,13 @@ impl BoolControl {
 
     pub fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(BoolAction::is_available)
+    }
+
+    /// The name a reader hears: the control's own words, in the language
+    /// this thread reads.
+    pub fn spoken_name(&self) -> Option<String> {
+        let name = self.accessible_name.as_ref()?;
+        crate::i18n::spoken_name(name, self.name_resolved)
     }
 
     pub fn test_id<'a>(&'a self, kind: &'a str) -> &'a str {
@@ -487,10 +497,22 @@ macro_rules! bool_control_api {
         }
 
         /// Give a label-less control a spoken name so a screen reader
-        /// announces what it controls rather than just its state.
+        /// announces what it controls rather than just its state: `name` is
+        /// a message id, resolved in the language this thread reads.
         #[must_use]
         pub fn with_accessible_name(mut self, name: &str) -> Self {
             self.control.accessible_name = Some(name.to_string());
+            self.control.name_resolved = false;
+            self
+        }
+
+        /// [`Self::with_accessible_name`] with text that is already resolved
+        /// (a row's caption, a label the app localized itself): spoken as
+        /// given, never looked up as a message id.
+        #[must_use]
+        pub fn with_resolved_accessible_name(mut self, name: impl Into<String>) -> Self {
+            self.control.accessible_name = Some(name.into());
+            self.control.name_resolved = true;
             self
         }
 

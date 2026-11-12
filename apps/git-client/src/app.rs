@@ -1090,7 +1090,7 @@ impl GitClientState {
             })
             .collect();
         ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-            .with_name("Git")
+            .with_name(crate::i18n::t("git-window-name"))
             .with_description(if let Some(job) = &self.remote_job {
                 job.label.clone()
             } else if self.awaiting_repo {
@@ -1746,7 +1746,7 @@ impl GitClientState {
                 | GitClientEffect::OpenCommit { .. }
         );
         if !view && self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
+            return Err(crate::i18n::t("git-remote-busy"));
         }
         match effect {
             GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
@@ -1918,7 +1918,7 @@ impl GitClientState {
         let reply = cx.reply();
         reply
             .progress()
-            .report(ui::i18n!("git-remote-running"), None, None);
+            .report(crate::i18n::t("git-remote-running"), None, None);
         self.start_remote(action, Some(remote), Some(reply))?;
         Ok(Effected::Pending)
     }

@@ -16,8 +16,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -45,15 +43,15 @@ use settings_store::device_vpn::{
     status_path,
 };
 use tilo_compositor::OutputConfig;
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
-use tilo_device_fabric::speaker_group::SpeakerFabricState;
-use tilo_device_fabric::unlock::UnlockFabricState;
-use tilo_device_fabric::{
+use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
+use tilo_session::platform::fabric::Continuity;
+use tilo_session::platform::fabric::SpeakerFabricState;
+use tilo_session::platform::fabric::UnlockFabricState;
+use tilo_session::platform::fabric::{
     ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
-use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
-use tilo_session::fabric::Continuity;
+use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session, Vpn};
 use tilo_settings_service::SettingsService;
@@ -488,14 +486,6 @@ impl FabricLink for KnownDevices {
         None
     }
 
-    fn send_personal_fabric_action(
-        &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        Err("no transport in a test".to_owned())
-    }
-
     fn try_send_personal_fabric_action(
         &self,
         _: &DeviceId,
@@ -554,6 +544,8 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
+            fabric: None,
+            relays: test_relay::loopback(),
         },
         None,
         None,
@@ -710,6 +702,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
+            fabric: None,
+            relays: test_relay::loopback(),
         },
         None,
         None,
@@ -727,6 +721,8 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
+            fabric: None,
+            relays: test_relay::loopback(),
         },
         None,
         None,

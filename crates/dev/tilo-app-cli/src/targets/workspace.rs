@@ -6,8 +6,9 @@
 //! and what one person does reaches everyone else. The workspace is listed in
 //! the host's directory at its default role, so its door admits each person
 //! on their own: every browser that opens the served join page creates a
-//! person of its own, asks the page server's `/join`, and the page server asks
-//! the host's door for them. The app is an author of the workspace
+//! person of its own, tells the page server's `/join` the name it goes by,
+//! and enters through the host's door on its session with the host. The app
+//! is an author of the workspace
 //! (`--author-app`), so members write through it.
 //!
 //! It is for development on this machine. Anyone who reaches the page is
@@ -15,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::directory::door_path;
 use tilo_relay_protocol::web::API_PREFIX;
-use tilo_workspace_directory::{Person, client, join, web_origin};
+use tilo_workspace_directory::web_origin;
 
 use super::Project;
 
@@ -102,11 +102,10 @@ pub struct RecordClaim {
     pub open: bool,
 }
 
-/// What a page needs to join: the invitation the workspace's door issued for
-/// its person and the one-time token that redeems it at once.
+/// What a page needs to join: the workspace's door, which it enters through
+/// on its session with the host, whose origin is the door's own.
 pub struct Admission {
-    pub invitation: String,
-    pub admission_token: String,
+    pub door: String,
 }
 
 impl SharedWorkspace {
@@ -132,7 +131,6 @@ impl SharedWorkspace {
         if !owner_root.exists() {
             write_secret(&owner_root, &hex::encode(random::<32>()?))?;
         }
-        let [web, plain] = free_ports()?;
         let app_id = project.manifest.package.id.clone();
         let name = project.display_name();
         let mut child = ProcessCommand::new(&relay)
@@ -150,8 +148,11 @@ impl SharedWorkspace {
             .arg("--room-id-file")
             .arg(state.join("room-id"))
             .args(["--author-app", &app_id])
-            .args(["--web", &format!("127.0.0.1:{web}")])
-            .args(["--web-plain", &format!("127.0.0.1:{plain}")])
+            // Both listeners take a port the kernel picks, which the host
+            // announces once it serves: a port chosen here could be held by
+            // something else by the time the host binds it.
+            .args(["--web", "127.0.0.1:0"])
+            .args(["--web-plain", "127.0.0.1:0"])
             .args(["--allowed-origin", pages_origin])
             .env(
                 "TILO_RELAY_LOG",
@@ -174,6 +175,11 @@ impl SharedWorkspace {
             .and_then(Value::as_str)
             .context("the host named no room")?
             .to_owned();
+        let origin = started
+            .get("plain_origin")
+            .and_then(Value::as_str)
+            .context("the host announced no plain listener")?
+            .to_owned();
         let records_file = state.join("records.json");
         let people_file = state.join("people.json");
         let people = std::fs::read(&people_file)
@@ -185,7 +191,7 @@ impl SharedWorkspace {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Ok(Self {
-            origin: format!("http://127.0.0.1:{plain}"),
+            origin,
             relay_room,
             app_id,
             name,
@@ -234,8 +240,9 @@ impl SharedWorkspace {
             .with_context(|| format!("writing {}", self.records_file.display()))
     }
 
-    /// Ask the workspace's door to admit the person `user_public_key` (hex),
-    /// named `label`, at the workspace's default role.
+    /// Note the person `user_public_key` (hex), named `label`, and answer the
+    /// door they enter through: the door itself admits them, at the
+    /// workspace's default role, on their page's session with the host.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
         let mut user = [0_u8; 32];
         hex::decode_to_slice(user_public_key, &mut user)
@@ -246,20 +253,6 @@ impl SharedWorkspace {
             door_path(&self.relay_room)
         ))
         .map_err(anyhow::Error::msg)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("starting the door's runtime")?;
-        let granted = runtime
-            .block_on(join(
-                &client().map_err(anyhow::Error::msg)?,
-                &door,
-                &Person {
-                    user,
-                    name: label.to_owned(),
-                },
-            ))
-            .map_err(anyhow::Error::msg)?;
         let people = {
             let mut people = self.people.lock_recover();
             people.insert(hex::encode(user), label.to_owned());
@@ -267,8 +260,7 @@ impl SharedWorkspace {
         };
         let _ = people.map(|json| std::fs::write(&self.people_file, json));
         Ok(Admission {
-            invitation: granted.invitation,
-            admission_token: granted.admission_token,
+            door: door.to_string(),
         })
     }
 }
@@ -353,13 +345,6 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
-}
-
-/// Two free loopback ports, for the host's TLS and plain listeners.
-fn free_ports() -> Result<[u16; 2]> {
-    let a = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    let b = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    Ok([a.local_addr()?.port(), b.local_addr()?.port()])
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {

@@ -204,6 +204,10 @@ params = [
   { name = "tasks", type = { list = { named = "Imported" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, author = { type = "string" }, created_ms = { type = "integer" }, instruction = { type = "string" }, messages = { type = "array", items = { type = "object", additionalProperties = false, properties = { at_ms = { type = "integer" }, author = { type = "string" }, by_agent = { type = "boolean" }, text = { type = "string" } }, required = ["author", "text"] } }, status = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }, task = { type = "string" }, title = { type = "string" } }, required = ["task", "title", "status"] } } },
 ]
 
+[[resources.verbs]]
+id = "new-project"
+kind = "read"
+
 [[resources.types]]
 name = "Area"
 fields = [

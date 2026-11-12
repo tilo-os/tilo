@@ -125,9 +125,8 @@ impl Core {
             let Value::Ref(r) = &item else {
                 return trap("query: the list holds something other than resources");
             };
-            let holds = pred.eval(&mut |read: &crate::store::FieldRead| {
-                read.lit(store.read(&r.target, &read.spec)?)
-            });
+            let holds =
+                pred.eval(&mut |read: &crate::store::FieldRead| store.field_lit(&r.target, read));
             if holds.map_err(|e| e.to_string())? {
                 kept.push(item);
             }

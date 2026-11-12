@@ -21,7 +21,7 @@ use fs::full_replica::{
 };
 use fs::namespace::ROOT_INO;
 use fs::reachability;
-use fs::sync::{self, SyncHandle};
+use fs::sync;
 use fs::workspace_authority::{
     WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
     local_authority_socket_path, local_content_socket_path, register_local_content_peer,
@@ -29,8 +29,7 @@ use fs::workspace_authority::{
 };
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
-    IdentityKey, Namespace, QuickFS, RecordAccessRegistry, RecordMaterializer, RecordPublisher,
-    RecordRepository, RecordServices, ShareAuthority, Ticket, Workspace, identity_paths,
+    IdentityKey, Namespace, QuickFS, Ticket, Workspace, identity_paths,
     load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
@@ -1069,25 +1068,9 @@ async fn replica_workspace(
         Some(bundle.cache_dir.as_path()),
         namespace_path.as_deref(),
     );
-    // A home peer is a real record replica, not merely a namespace/blob
-    // cache. Keep the signed record repository and its materialized projection
-    // exactly as a normal mounted collaborator does, so replacements,
-    // revocations and signed content revisions converge before hydration.
-    let share_authority = open_share_authority(Some(&bundle.cache_dir))?;
-    let mut record_services = open_record_services(Some(&bundle.cache_dir), share_authority)?
-        .context("home-peer record repository unavailable")?;
-    record_services.workspace_authority = Some(Arc::new(authority));
-    let workspace_id = ticket.workspace_id();
-    let materializer = Arc::new(RecordMaterializer::new(
-        workspace_id,
-        Arc::clone(&namespace),
-        true,
-    ));
-    materializer.reconcile_repository(&record_services.repository)?;
-    let replica_repository = Arc::clone(&record_services.repository);
-    record_services.mutation_sink = Some(materializer.clone());
-    record_services.materializer = Some(Arc::clone(&materializer));
-    let workspace = Workspace::join_with_records(
+    // A home peer keeps the workspace's tree and every byte it names: the
+    // tree is the Files record it follows, and the content it hydrates.
+    let workspace = Workspace::join(
         sync::SyncNode {
             endpoint: endpoint.clone(),
             lookup,
@@ -1097,11 +1080,9 @@ async fn replica_workspace(
             identity: transport_identity,
             policy: Some(acl),
         },
-        ticket,
-        record_services,
-    )
-    .await?;
-    materializer.attach_sync(Arc::clone(&workspace.sync));
+        &ticket,
+        Some(&Arc::new(authority)),
+    )?;
     let _persist = namespace_path
         .clone()
         .map(|path| spawn_persist(Arc::clone(&namespace), path));
@@ -1109,19 +1090,6 @@ async fn replica_workspace(
     let mut hydrated_namespace = None;
     let mut wait = ReplicaWait::new(&namespace);
     loop {
-        // Namespace anti-entropy and signed-record anti-entropy are separate
-        // authenticated exchanges. Project the durable record truth before
-        // selecting a generation, so a namespace that arrived a few
-        // milliseconds earlier can never be advertised as ready with stale
-        // record metadata behind it.
-        if let Err(error) = materializer.reconcile_repository(&replica_repository) {
-            let mut failed = fs::full_replica::FullReplicaStatus::syncing();
-            failed.state = "failed".into();
-            failed.error = Some(format!("reconcile signed replica projection: {error}"));
-            let _ = status_tx.send((index, failed)).await;
-            wait.retry().await;
-            continue;
-        }
         let before = replica_namespace_fingerprint(&namespace);
         if hydrated_namespace.as_ref() == Some(&before) {
             // The proof stands for as long as this process holds its
@@ -1159,19 +1127,6 @@ async fn replica_workspace(
                 // A new root arrived while obsolete blobs were being released.
                 // The initial syncing status remains in force; hydrate that
                 // new root before publishing another ready proof.
-                hydrated_namespace = None;
-                continue;
-            }
-        }
-        if status.full_content_replication {
-            if let Err(error) = materializer.reconcile_repository(&replica_repository) {
-                status = fs::full_replica::FullReplicaStatus::syncing();
-                status.state = "failed".into();
-                status.error = Some(format!("verify signed replica projection: {error}"));
-            } else if replica_namespace_fingerprint(&namespace) != after {
-                // Signed records changed (or corrected a namespace-first
-                // arrival) during hydration. Verify and hydrate that exact
-                // projection on the next pass.
                 hydrated_namespace = None;
                 continue;
             }
@@ -1295,29 +1250,9 @@ async fn serve(
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
-    let replacement_transactions = cache_dir
-        .as_ref()
-        .zip(np.as_ref())
-        .map(|(cache, namespace_path)| {
-            fs::RecordTransactionJournal::open(cache.join("record-transactions"))
-                .map(|journal| (Arc::new(Mutex::new(journal)), namespace_path.clone()))
-        })
-        .transpose()?;
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
-    let share_authority = open_share_authority(cache_dir.as_deref())?;
-    let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
-    if let Some(records) = record_services.as_mut() {
-        if let Some((journal, _)) = &replacement_transactions {
-            records.repository.restore_admission_fences(
-                &*journal
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
-            )?;
-        }
-        records.availability.clone_from(&availability);
-    }
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
@@ -1337,11 +1272,6 @@ async fn serve(
     // mount (#4224, `fs::reachability`): each trace of one wakes them.
     let (endpoint, lookup, reachability) =
         sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
-    if let Some(authority) = share_authority.as_ref()
-        && authority.has_unrevoked_grants()
-    {
-        reachability::wake(&reachability, "a share grant is live");
-    }
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
@@ -1404,29 +1334,6 @@ async fn serve(
         tilo_paths::xdg::service_socket("collab"),
         tilo_paths::xdg::service_socket("identity"),
     );
-    let record_materializer = if let Some(records) = record_services.as_mut() {
-        let materializer =
-            RecordMaterializer::new(workspace_id, namespace.clone(), history.is_some());
-        let materializer = match &replacement_transactions {
-            Some((journal, namespace_path)) => {
-                materializer.with_transaction_recovery(Arc::clone(journal), namespace_path.clone())
-            }
-            None => materializer,
-        };
-        let materializer = Arc::new(materializer);
-        let recovery = materializer.reconcile_repository(&records.repository)?;
-        if recovery.operations_replayed > 0 || recovery.unknown_or_tombstoned_records > 0 {
-            println!(
-                "Reconciled {} record operation(s); {} deleted/unknown record(s) skipped",
-                recovery.operations_replayed, recovery.unknown_or_tombstoned_records
-            );
-        }
-        records.mutation_sink = Some(materializer.clone());
-        records.materializer = Some(materializer.clone());
-        Some(materializer)
-    } else {
-        None
-    };
 
     if fresh {
         if let Some(seed) = seed {
@@ -1437,146 +1344,66 @@ async fn serve(
         println!("Restored workspace from {}", p.display());
     }
 
-    let record_repository = record_services
-        .as_ref()
-        .map(|records| Arc::clone(&records.repository));
     // The serving owner is the authority publisher. A capability file may
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
-    if let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref()) {
-        let principals = acl_args
-            .principals
-            .iter()
-            .map(|principal| parse_principal(principal))
-            .collect::<Result<Vec<_>>>()?;
-        let bootstrap = acl_args
-            .acl
-            .as_ref()
-            .filter(|_| remote_ticket.is_none())
-            .zip(share_issuer.as_ref())
-            .map(|(path, signer)| -> Result<_> {
-                let authority: collab_types::FsAuthority =
-                    serde_json::from_slice(&std::fs::read(path)?)
-                        .context("parse workspace authority bootstrap capabilities")?;
-                Ok((authority.capabilities, signer))
-            })
-            .transpose()?;
-        records.workspace_authority = workspace_startup::owner_authority(
-            cache_dir,
-            workspace_id,
-            credentials.user_public_key(),
-            principals,
-            bootstrap,
-        )?;
-    }
-    let _authority_reachability = record_services
-        .as_ref()
-        .and_then(|records| records.workspace_authority.as_ref())
-        .and_then(|authority| {
-            reachability::wake_when_acl_admits_others(
-                &reachability,
-                &authority.handle(),
-                "the workspace authority names someone else",
-            )
-        });
-    let record_publisher = record_repository
-        .clone()
-        .map(|repository| {
-            RecordPublisher::new(
-                repository,
+    let workspace_authority = match cache_dir.as_ref() {
+        Some(cache_dir) => {
+            let principals = acl_args
+                .principals
+                .iter()
+                .map(|principal| parse_principal(principal))
+                .collect::<Result<Vec<_>>>()?;
+            let bootstrap = acl_args
+                .acl
+                .as_ref()
+                .filter(|_| remote_ticket.is_none())
+                .zip(share_issuer.as_ref())
+                .map(|(path, signer)| -> Result<_> {
+                    let authority: collab_types::FsAuthority =
+                        serde_json::from_slice(&std::fs::read(path)?)
+                            .context("parse workspace authority bootstrap capabilities")?;
+                    Ok((authority.capabilities, signer))
+                })
+                .transpose()?;
+            workspace_startup::owner_authority(
+                cache_dir,
                 workspace_id,
-                history_actor,
-                credentials.signing_key().clone(),
+                credentials.user_public_key(),
+                principals,
+                bootstrap,
+            )?
+        }
+        None => None,
+    };
+    let allow_history_baseline = remote_ticket.is_none();
+    let _authority_reachability = workspace_authority.as_ref().and_then(|authority| {
+        reachability::wake_when_acl_admits_others(
+            &reachability,
+            &authority.handle(),
+            "the workspace authority names someone else",
+        )
+    });
+    let authority_reload = workspace_authority
+        .as_ref()
+        .zip(share_issuer.as_ref())
+        .zip(acl_args.acl.as_ref())
+        .map(|((authority, governor), path)| {
+            fs::workspace_authority::spawn_capability_file_reload(
+                path.clone(),
+                Arc::clone(authority),
+                governor.clone(),
             )
-            .map(Arc::new)
+            .with_context(|| format!("watching the capability list {}", path.display()))
         })
         .transpose()?;
-    #[cfg(target_os = "linux")]
-    let external_history = if storage_sock.is_some() {
-        match (
-            record_services
-                .as_ref()
-                .and_then(|records| records.workspace_authority.as_ref()),
-            record_publisher.as_ref(),
-        ) {
-            (Some(authority), Some(publisher)) => {
-                match fs::external_history::ExternalHistoryFactory::for_mount(
-                    credentials.clone(),
-                    Arc::clone(&revocations),
-                    Arc::clone(authority),
-                    Arc::clone(publisher),
-                    &paths,
-                    history
-                        .zip(replacement_transactions.as_ref())
-                        .map(|(_, (journal, path))| {
-                            fs::external_history::ExternalHistoryRuntime::from_mount(
-                                Arc::clone(journal),
-                                Arc::clone(&namespace),
-                                path.clone(),
-                            )
-                        }),
-                ) {
-                    Ok(factory) => factory,
-                    Err(error) => {
-                        eprintln!("external-source enrollment unavailable: {error}");
-                        None
-                    }
-                }
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let allow_legacy_record_migration = remote_ticket.is_none()
-        && record_repository
-            .as_ref()
-            .is_some_and(|repository| repository.is_empty());
-    let initialized_record_authority = if allow_legacy_record_migration {
-        match (history, &record_publisher) {
-            (Some(_), Some(publisher)) => {
-                initialize_owner_record_authority(
-                    namespace.clone(),
-                    hydrator.clone(),
-                    history_actor,
-                    publisher.clone(),
-                )?;
-                true
-            }
-            _ => false,
-        }
-    } else {
-        false
-    };
-    let authority_reload = record_services.as_ref().and_then(|records| {
-        records
-            .workspace_authority
-            .as_ref()
-            .zip(share_issuer.as_ref())
-            .zip(acl_args.acl.as_ref())
-            .map(|((authority, governor), path)| {
-                fs::workspace_authority::spawn_capability_file_reload(
-                    path.clone(),
-                    Arc::clone(authority),
-                    governor.clone(),
-                )
-                .with_context(|| format!("watching the capability list {}", path.display()))
-            })
-    });
-    let authority_reload = authority_reload.transpose()?;
     // The desktop publishes signed ACL revisions through this group-restricted
     // local socket. It never receives write access to the daemon cache and the
     // daemon remains the single serialising authority writer.
-    let authority_socket = record_services
+    let authority_socket = workspace_authority
         .as_ref()
-        .and_then(|records| records.workspace_authority.as_ref())
         .map(|authority| local_authority_socket_path(authority.workspace()));
-    let authority_socket_task = match (
-        authority_socket.as_ref(),
-        record_services
-            .as_ref()
-            .and_then(|records| records.workspace_authority.as_ref()),
-    ) {
+    let authority_socket_task = match (authority_socket.as_ref(), workspace_authority.as_ref()) {
         (Some(socket), Some(authority)) => {
             Some(serve_local_authority(socket, Arc::clone(authority))?)
         }
@@ -1588,7 +1415,7 @@ async fn serve(
         .map(ServedSocket);
     // Content discovery registration is useful to a read-only recipient too;
     // it must not depend on that recipient owning the workspace authority.
-    let content_socket = record_services
+    let content_socket = cache_dir
         .as_ref()
         .map(|_| local_content_socket_path(workspace_id));
     // Only the managed system service may self-restart: an ad-hoc foreground
@@ -1614,14 +1441,9 @@ async fn serve(
     // FUSE/router state cannot safely swap that identity in place, so the
     // managed mount receives a clean rebind outcome after acknowledging the
     // durable registration; systemd then starts the joined service again.
-    let workspace_args = record_services
+    let workspace_args = workspace_authority
         .as_ref()
-        .and_then(|records| {
-            records
-                .workspace_authority
-                .as_ref()
-                .map(|authority| authority.handle())
-        })
+        .map(|authority| authority.handle())
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
     // The session names the agent behind writes it runs for, over the same
     // session-only socket; the mount attributes its versions accordingly.
@@ -1638,69 +1460,25 @@ async fn serve(
         .as_ref()
         .and_then(|_| blob_sock.clone())
         .map(ServedSocket);
-    let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
-        (Some(records), Some(ticket)) => (
-            Workspace::join_with_records(
-                sync::SyncNode {
-                    endpoint: endpoint.clone(),
-                    lookup,
-                    store: store.clone(),
-                    hydrator: hydrator.clone(),
-                    namespace: namespace.clone(),
-                    identity: transport_identity,
-                    policy: workspace_args,
-                },
-                ticket.clone(),
-                records,
-            )
-            .await?,
-            ticket,
-            true,
-        ),
-        (Some(records), None) => {
-            let (workspace, ticket) = Workspace::host_with_records(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
-                transport_identity,
-                workspace_args,
-                records,
-            )?;
-            (workspace, ticket, false)
-        }
-        (None, Some(ticket)) => (
-            Workspace::join(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
-                ticket.clone(),
-                transport_identity,
-                workspace_args,
-            )
-            .await?,
-            ticket,
-            true,
-        ),
-        (None, None) => {
-            let (workspace, ticket) = Workspace::host(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
-                transport_identity,
-                workspace_args,
-            )?;
-            (workspace, ticket, false)
-        }
+    let node = sync::SyncNode {
+        endpoint: endpoint.clone(),
+        lookup,
+        store: store.clone(),
+        hydrator: hydrator.clone(),
+        namespace: namespace.clone(),
+        identity: transport_identity,
+        policy: workspace_args,
     };
-    if let Some(materializer) = record_materializer {
-        materializer.attach_sync(workspace.sync.clone());
-    }
+    let (workspace, ticket, joined_remote) = if let Some(remote) = remote_ticket {
+        (
+            Workspace::join(node, &remote, workspace_authority.as_ref())?,
+            remote,
+            true,
+        )
+    } else {
+        let (workspace, ticket) = Workspace::host(node, workspace_authority.as_ref())?;
+        (workspace, ticket, false)
+    };
 
     println!("Iroh NodeID: {}", endpoint.id());
     if joined_remote {
@@ -1722,8 +1500,7 @@ async fn serve(
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
-            allow_legacy_record_migration: allow_legacy_record_migration
-                && !initialized_record_authority,
+            allow_history_baseline,
             storage_sock,
             read_only: false,
             data_plane: Some((data_plane, *history_actor.device.as_bytes())),
@@ -1731,15 +1508,11 @@ async fn serve(
         MountServices {
             namespace: namespace.clone(),
             hydrator,
-            sync: Some(workspace.sync.clone()),
+            namespace_persistence: np.clone(),
             acl,
             availability,
             eviction_queue,
             history,
-            record_publisher,
-            replacement_transactions,
-            #[cfg(target_os = "linux")]
-            external_history,
             write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
@@ -1764,20 +1537,6 @@ async fn serve(
     }
 }
 
-fn initialize_owner_record_authority(
-    namespace: Arc<Mutex<Namespace>>,
-    hydrator: Arc<Hydrator>,
-    actor: fs_protocol::FileActor,
-    publisher: Arc<RecordPublisher>,
-) -> Result<()> {
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let initialized = QuickFS::new(namespace, hydrator, heuristics)
-        .with_history(actor)?
-        .with_record_publisher(publisher)?;
-    drop(initialized);
-    Ok(())
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
@@ -1797,29 +1556,9 @@ async fn mount(
         save_workspace_ticket(cache_dir, &ticket)?;
     }
     let np = namespace_path(cache_dir.as_deref());
-    let replacement_transactions = cache_dir
-        .as_ref()
-        .zip(np.as_ref())
-        .map(|(cache, namespace_path)| {
-            fs::RecordTransactionJournal::open(cache.join("record-transactions"))
-                .map(|journal| (Arc::new(Mutex::new(journal)), namespace_path.clone()))
-        })
-        .transpose()?;
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
-    let share_authority = open_share_authority(cache_dir.as_deref())?;
-    let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
-    if let Some(records) = record_services.as_mut() {
-        if let Some((journal, _)) = &replacement_transactions {
-            records.repository.restore_admission_fences(
-                &*journal
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
-            )?;
-        }
-        records.availability.clone_from(&availability);
-    }
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
@@ -1863,32 +1602,6 @@ async fn mount(
     );
 
     let workspace_id = ticket.workspace_id();
-    let record_materializer = if let Some(records) = record_services.as_mut() {
-        let materializer =
-            RecordMaterializer::new(workspace_id, namespace.clone(), history.is_some());
-        let materializer = match &replacement_transactions {
-            Some((journal, namespace_path)) => {
-                materializer.with_transaction_recovery(Arc::clone(journal), namespace_path.clone())
-            }
-            None => materializer,
-        };
-        let materializer = Arc::new(materializer);
-        let recovery = materializer.reconcile_repository(&records.repository)?;
-        if recovery.operations_replayed > 0 || recovery.unknown_or_tombstoned_records > 0 {
-            println!(
-                "Reconciled {} record operation(s); {} deleted/unknown record(s) skipped",
-                recovery.operations_replayed, recovery.unknown_or_tombstoned_records
-            );
-        }
-        records.mutation_sink = Some(materializer.clone());
-        records.materializer = Some(materializer.clone());
-        Some(materializer)
-    } else {
-        None
-    };
-    let record_repository = record_services
-        .as_ref()
-        .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
     // The session names the agent behind writes it runs for, over the same
     // session-only socket; the mount attributes its versions accordingly.
@@ -1905,54 +1618,22 @@ async fn mount(
         .as_ref()
         .and_then(|_| blob_sock.clone())
         .map(ServedSocket);
-    let workspace = match record_services {
-        Some(records) => {
-            Workspace::join_with_records(
-                sync::SyncNode {
-                    endpoint: endpoint.clone(),
-                    lookup,
-                    store: store.clone(),
-                    hydrator: hydrator.clone(),
-                    namespace: namespace.clone(),
-                    identity: transport_identity,
-                    policy: workspace_args,
-                },
-                ticket,
-                records,
-            )
-            .await?
-        }
-        None => {
-            Workspace::join(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
-                ticket,
-                transport_identity,
-                workspace_args,
-            )
-            .await?
-        }
-    };
-    if let Some(materializer) = record_materializer {
-        materializer.attach_sync(workspace.sync.clone());
-    }
+    let workspace = Workspace::join(
+        sync::SyncNode {
+            endpoint: endpoint.clone(),
+            lookup,
+            store: store.clone(),
+            hydrator: hydrator.clone(),
+            namespace: namespace.clone(),
+            identity: transport_identity,
+            policy: workspace_args,
+        },
+        &ticket,
+        None,
+    )?;
 
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Joined workspace.");
-    let record_publisher = record_repository
-        .map(|repository| {
-            RecordPublisher::new(
-                repository,
-                workspace_id,
-                history_actor,
-                credentials.signing_key().clone(),
-            )
-            .map(Arc::new)
-        })
-        .transpose()?;
 
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
@@ -1962,7 +1643,7 @@ async fn mount(
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir,
             thumb_dir,
-            allow_legacy_record_migration: false,
+            allow_history_baseline: false,
             storage_sock,
             read_only: false,
             data_plane: Some((data_plane, *history_actor.device.as_bytes())),
@@ -1970,15 +1651,11 @@ async fn mount(
         MountServices {
             namespace: namespace.clone(),
             hydrator,
-            sync: Some(workspace.sync.clone()),
+            namespace_persistence: np.clone(),
             acl,
             availability,
             eviction_queue,
             history,
-            record_publisher,
-            replacement_transactions,
-            #[cfg(target_os = "linux")]
-            external_history: None,
             write_attributions: Some(write_attributions),
             rebind: None,
         },
@@ -2016,37 +1693,6 @@ fn open_eviction_queue(
         .transpose()
         .map(|queue| queue.map(|queue| Arc::new(tokio::sync::Mutex::new(queue))))
         .map_err(Into::into)
-}
-
-fn open_share_authority(cache_dir: Option<&Path>) -> Result<Option<Arc<ShareAuthority>>> {
-    cache_dir
-        .map(|dir| ShareAuthority::open(dir.join("share-authority.json")))
-        .transpose()
-        .map(|authority| authority.map(Arc::new))
-        .map_err(Into::into)
-}
-
-fn open_record_services(
-    cache_dir: Option<&Path>,
-    authority: Option<Arc<ShareAuthority>>,
-) -> Result<Option<RecordServices>> {
-    let (Some(cache_dir), Some(authority)) = (cache_dir, authority) else {
-        return Ok(None);
-    };
-    let repository = Arc::new(RecordRepository::open(cache_dir.join("records"))?);
-    let access_registry = Arc::new(RecordAccessRegistry::new(
-        fs::MAX_RECORD_ACCESS_ENTRIES,
-        fs::MAX_RECORD_ACCESS_TTL_MS,
-    )?);
-    Ok(Some(RecordServices {
-        authority,
-        repository,
-        access_registry,
-        mutation_sink: None,
-        materializer: None,
-        availability: None,
-        workspace_authority: None,
-    }))
 }
 
 /// Take in the history earlier releases kept beside the namespace document,
@@ -2233,7 +1879,9 @@ struct MountConfig {
     namespace_path: Option<PathBuf>,
     predictive_cache_root: Option<PathBuf>,
     thumb_dir: Option<PathBuf>,
-    allow_legacy_record_migration: bool,
+    /// Whether this mount may baseline the history of files it inherits from
+    /// a document written before versions lived in it.
+    allow_history_baseline: bool,
     storage_sock: Option<PathBuf>,
     read_only: bool,
     data_plane: Option<(DataPlaneArgs, [u8; 32])>,
@@ -2244,15 +1892,13 @@ struct MountConfig {
 struct MountServices {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    sync: Option<Arc<SyncHandle>>,
+    /// Where the mount's document is persisted, so a commit is durable before
+    /// it answers.
+    namespace_persistence: Option<PathBuf>,
     acl: Option<(AclHandle, IdentityKey)>,
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     history: Option<fs_protocol::FileActor>,
-    record_publisher: Option<Arc<RecordPublisher>>,
-    replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
-    #[cfg(target_os = "linux")]
-    external_history: Option<Arc<fs::external_history::ExternalHistoryFactory>>,
     /// What the desktop session says caused writes to some paths.
     write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
@@ -2270,7 +1916,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         namespace_path: durable_namespace_path,
         predictive_cache_root,
         thumb_dir,
-        allow_legacy_record_migration,
+        allow_history_baseline,
         storage_sock,
         read_only,
         data_plane,
@@ -2278,15 +1924,11 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let MountServices {
         namespace,
         hydrator,
-        sync,
+        namespace_persistence,
         acl,
         availability,
         eviction_queue,
         history,
-        record_publisher,
-        replacement_transactions,
-        #[cfg(target_os = "linux")]
-        external_history,
         write_attributions,
         mut rebind,
     } = services;
@@ -2325,14 +1967,13 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
         .with_document_content(tilo_content_device::for_app());
-    let fs = if allow_legacy_record_migration {
+    let fs = if allow_history_baseline {
         fs
     } else {
-        fs.without_legacy_record_migration()
+        fs.without_history_baseline()
     };
-    let native_sync = sync.clone();
-    let fs = match sync {
-        Some(sync) => fs.with_sync(sync),
+    let fs = match namespace_persistence {
+        Some(path) => fs.with_namespace_persistence(path),
         None => fs,
     };
     let fs = match availability {
@@ -2347,18 +1988,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(actor) => fs.with_history(actor)?,
         None => fs,
     };
-    let fs = match record_publisher {
-        Some(publisher) => fs.with_record_publisher(publisher)?,
-        None => fs,
-    };
     let fs = match write_attributions {
         Some(attributions) => fs.with_write_attributions(attributions),
-        None => fs,
-    };
-    let fs = match replacement_transactions {
-        Some((journal, namespace_path)) => {
-            fs.with_replacement_transactions(journal, namespace_path)?
-        }
         None => fs,
     };
     // Bind the capability list, if given, before the mount goes live, so every op is checked from the start.
@@ -2431,7 +2062,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
 
     let storage_authority = storage_sock.as_ref().map(|_| {
-        let authority = fs::storage::StorageAuthority::new(
+        fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
             fs.write_buffers_handle(),
@@ -2444,10 +2075,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
                 .and_then(|name| name.to_str())
                 .map_or_else(|| checked_history_workspace.to_string(), str::to_owned),
         )
-        .with_cache_policy(Arc::clone(&cache_policies));
-        #[cfg(target_os = "linux")]
-        let authority = authority.with_external_history(external_history.clone());
-        authority
+        .with_cache_policy(Arc::clone(&cache_policies))
     });
 
     let _storage = storage_sock
@@ -2487,14 +2115,14 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             read_only,
         )?
     {
-        let outcome = run_native(fs, cfg, native_sync, rebind, &mut stop).await;
+        let outcome = run_native(fs, cfg, rebind, &mut stop).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
         }
         return outcome;
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (&data_plane, &native_sync);
+    let _ = &data_plane;
 
     // Kernel passthrough for fully local read-only opens is opt-in while the
     // backing files are a per-open materialisation of the chunk store.
@@ -2695,7 +2323,6 @@ fn native_config(
 async fn run_native(
     fs: QuickFS,
     cfg: fs::native::NativeConfig,
-    sync: Option<Arc<SyncHandle>>,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
     stop: &mut StopSignals,
 ) -> Result<MountOutcome> {
@@ -2704,7 +2331,7 @@ async fn run_native(
     let hydrator = Arc::clone(&fs.hydrator);
     let runtime = tokio::runtime::Handle::current();
     let plane = tokio::task::spawn_blocking(move || {
-        fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
+        fs::native::NativePlane::start(cfg, fs, content, runtime)
     })
     .await??;
     // Every way out is an event: nothing here wakes until one happens.

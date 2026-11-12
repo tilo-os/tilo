@@ -165,6 +165,8 @@ fn a_jailed_vm_reaches_the_internet_and_nothing_of_the_hosts() {
             idle_suspend: Duration::from_secs(3),
             self_exe: env_path("TILO_LEGACY_BIN"),
             jail: Some(Arc::new(Jail::new(helper))),
+            relay: None,
+            templates: None,
         },
     };
     let service = Arc::new(Service::open(config.clone(), system_clock()).unwrap());

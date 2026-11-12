@@ -282,7 +282,7 @@ fn lead(node: &UiNode) -> i16 {
 pub fn normalize(node: &UiNode) -> UiNode {
     let mut out = page_once(node);
     crate::attach::hoist_in(&mut out);
-    out
+    crate::date::under_headings(crate::shell::titled_lists(out))
 }
 
 /// The tree with a page inside another page, or inside a block's view, a plain stack.
@@ -657,11 +657,6 @@ impl Reconciler {
     #[must_use]
     pub fn navigation(&self) -> Option<Navigation> {
         self.navigation.clone()
-    }
-
-    /// Forget the split of the last view built, before building another.
-    pub fn clear_navigation(&mut self) {
-        self.navigation = None;
     }
 
     /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
@@ -1597,7 +1592,7 @@ impl Reconciler {
             .children
             .iter()
             .map(|item| {
-                let row = find(item, &row_kind).unwrap_or(item);
+                let row = crate::rows::find_kind(item, &row_kind).unwrap_or(item);
                 self.build(row)
             })
             .collect();
@@ -1637,7 +1632,8 @@ impl Reconciler {
         match new_node.kind.as_str() {
             "image" => {
                 if same_shell_but(old_node, new_node, "value") {
-                    let value = crate::date::shown_brief(new_node, "value").unwrap_or_default();
+                    let value =
+                        crate::date::shown_brief(new_node, "value", None).unwrap_or_default();
                     self.set_text(&new_node.key, &value);
                     return None;
                 }
@@ -1985,15 +1981,6 @@ fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a m
     }
 }
 
-/// The first node of `kind` under `node`.
-fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    node.children.iter().find_map(|child| {
-        (child.kind == kind)
-            .then_some(child)
-            .or_else(|| find(child, kind))
-    })
-}
-
 /// Whether `a` and `b` have the same shell but for their property `name`, which the widget
 /// built for `a` takes in place.
 fn same_shell_but(a: &UiNode, b: &UiNode, name: &str) -> bool {
@@ -2279,6 +2266,7 @@ mod tests {
                 embeds: vec![Embed {
                     reference: TASK.into(),
                     view,
+                    preview: None,
                 }],
             })
         };
@@ -2309,7 +2297,7 @@ mod tests {
         size: (u32, u32),
     ) -> std::collections::BTreeMap<String, ui::vello::kurbo::Rect> {
         let built = reconciler().build(view);
-        let mut harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
         harness.targets().into_iter().collect()
     }
 

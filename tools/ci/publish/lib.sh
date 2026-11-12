@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Shared by the publishing scripts. Sourced, not run.
 #
-# A publishing check learns what it publishes for from t: T_REF is the branch (`main`,
-# `stable`) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
-# so main only ever publishes development artifacts; releases come from stable and release
-# tags, which only the stabilizer pushes.
+# A publishing check learns what it publishes for from t: T_REF is the branch (`main`, or one the
+# server follows) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
+# so main only ever publishes development artifacts; releases are cut by a release tag
+# (`tag:vMAJOR.MINOR.PATCH`), whose run builds, signs and publishes what the release carries.
 
 # What a build needs as well (die, the scratch directory, buildah, pinned assets, image digests)
 # is build-lib.sh's, which builds source alone, so they are not keyed on how publishing works.
 . "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
 
-# The channel of this run: `dev` on main, `release` on stable and release tags, `branch` on any
-# other branch, which publishes only its own build under tags that name the branch (`t dispatch
-# --ref BRANCH` of a check that publishes there). A working tree publishes nothing.
+# The channel of this run: `dev` on main, `release` on a tag, `branch` on any other branch, which
+# publishes only its own build under tags that name the branch (`t dispatch --ref BRANCH` of a
+# check that publishes there). A working tree publishes nothing.
 channel() {
   case ${T_REF:-} in
     main) echo dev ;;
-    stable | tag:*) echo release ;;
+    tag:*) echo release ;;
     '') die 'T_REF is not set: publishing runs only in trusted runs (on = [...] or t dispatch)' ;;
     *) echo branch ;;
   esac
@@ -176,14 +176,19 @@ registry_copy() {
 }
 
 # The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
-# published snapshot in SNAPSHOT/rpms-ref, or, where this package set is not published yet (off
-# stable, before stable publishes it), this run's image-rpms-ARCH in RPMS, loaded unsigned into
-# the store `b` runs on (use_buildah first). Sets rpms_ref, what the Containerfile's FROM takes,
-# and rpms_source, what the build records beside its output: the published reference, or
+# published snapshot of this architecture in SNAPSHOT/rpms-ref, or, where this architecture's set
+# is not published yet (a release tag has not published it), this run's image-rpms-ARCH in RPMS,
+# loaded unsigned into the store the build reads. Sets rpms_ref, what the Containerfile's FROM
+# takes, and rpms_source, what the build records beside its output: the published reference, or
 # "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot refuses, so a build of an
-# unpublished package set is tested everywhere and signed or published nowhere.
+# unpublished set is tested everywhere and signed or published nowhere. Each architecture is
+# published on its own, so nothing here waits for a node of the other one.
+#
+# LOADER is how the run's own archive reaches that store: `buildah` (the default, a store
+# use_buildah set up and `b` writes) or `podman`, for a step that installs with podman, such as
+# the OS assembler.
 snapshot_for_build() {
-  local snapshot=$1 rpms=$2 arch=$3 digest
+  local snapshot=$1 rpms=$2 arch=$3 loader=${4:-buildah} digest
   if [[ -f $snapshot/rpms-ref ]]; then
     rpms_ref=$(cat "$snapshot/rpms-ref")
     [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
@@ -194,7 +199,11 @@ snapshot_for_build() {
   digest=$(cat "$rpms/digest")
   [[ $(archive_digest "$rpms/image.oci.tar") == "$digest" ]] || die "$rpms/image.oci.tar is not the build $digest"
   rpms_ref=localhost/tilo-rpms:unpublished-$arch
-  b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref"
+  case $loader in
+    buildah) b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref" ;;
+    podman) podman tag "$(podman pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref" ;;
+    *) die "unknown snapshot loader $loader" ;;
+  esac
   rpms_source="unsigned image-rpms-$arch $digest"
   printf 'the RPM snapshot %s is not published: building from image-rpms-%s (%s), unsigned; nothing signs or publishes this build\n' \
     "$(cat "$snapshot/unpublished")" "$arch" "$digest"

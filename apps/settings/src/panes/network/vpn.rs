@@ -97,45 +97,45 @@ fn is_routed_address(text: &str) -> bool {
 #[effect(operation = "settings.effect")]
 pub enum VpnEffect {
     /// Show the VPNs.
-    #[effect(view, label = "VPN")]
+    #[effect(view)]
     ShowVpns,
     /// Show a VPN's page: its settings, Export and Delete.
-    #[effect(view, row, label = "VPN settings")]
+    #[effect(view, row)]
     ShowVpnProfile {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Show the kinds of VPN that can be added.
-    #[effect(view, label = "Add VPN")]
+    #[effect(view)]
     ShowAddVpn,
     /// Show the form of a new `WireGuard` tunnel.
-    #[effect(view, label = "Add WireGuard tunnel")]
+    #[effect(view)]
     ShowAddWireguard,
     /// Show the form of a new profile of an installed VPN plugin's type.
-    #[effect(view, label = "Add VPN of a plugin's type")]
+    #[effect(view)]
     ShowAddPluginVpn {
         #[param("The plugin's service type")]
         service: String,
     },
     /// Pick a `WireGuard` `.conf` file and set it up.
-    #[effect(attended, label = "Import WireGuard profile")]
+    #[effect(attended)]
     ImportWireguard,
     /// Pick an `OpenVPN` `.ovpn` file and set it up.
-    #[effect(attended, label = "Import OpenVPN profile")]
+    #[effect(attended)]
     ImportOpenvpn,
     /// Pick a `WireGuard` or `OpenVPN` file and set it up.
-    #[effect(attended, label = "Import from file")]
+    #[effect(attended)]
     ImportVpnFile,
     /// Ask for the private key of a new `WireGuard` tunnel with the password
     /// prompt.
-    #[effect(view, label = "Private key")]
+    #[effect(view, label = "net-vpn-private-key")]
     AskWireguardPrivateKey,
     /// Make a key pair for a new `WireGuard` tunnel: the public key is the
     /// one to give the server.
-    #[effect(label = "Generate keys")]
+    #[effect(label = "net-vpn-generate-keys")]
     GenerateWireguardKeys,
     /// Set up a `WireGuard` tunnel; what is omitted is what its form holds.
-    #[effect(job, label = "Create tunnel")]
+    #[effect(job)]
     CreateWireguard {
         name: Option<String>,
         #[param("This device's address in the tunnel with its prefix: 10.7.0.2/32")]
@@ -155,7 +155,7 @@ pub enum VpnEffect {
     },
     /// Set up a `WireGuard` tunnel from a pasted configuration; what is
     /// omitted is what its form holds.
-    #[effect(job, label = "Import configuration")]
+    #[effect(job)]
     ImportWireguardConfig {
         name: Option<String>,
         #[param(secret, "The configuration file's text")]
@@ -163,7 +163,7 @@ pub enum VpnEffect {
     },
     /// Make a profile of an installed plugin's type; what is omitted is what
     /// its form holds.
-    #[effect(job, label = "Create VPN")]
+    #[effect(job)]
     CreatePluginVpn {
         #[param("The plugin's service type")]
         service: String,
@@ -172,53 +172,53 @@ pub enum VpnEffect {
         server: Option<String>,
     },
     /// Bring a VPN up or down.
-    #[effect(job, row, idempotent, label = "VPN connection")]
+    #[effect(job, row, idempotent)]
     SetVpnConnected {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Bring a VPN up.
-    #[effect(job, row, label = "Connect")]
+    #[effect(job, row)]
     Connect {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Bring a VPN down.
-    #[effect(job, row, label = "Disconnect")]
+    #[effect(job, row)]
     Disconnect {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Delete a VPN from this device, with its keys.
-    #[effect(job, row, destructive, label = "Delete VPN")]
+    #[effect(job, row, destructive, label = "net-vpn-delete")]
     DeleteConnection {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Rename a VPN.
-    #[effect(job, row, idempotent, label = "Name")]
+    #[effect(job, row, idempotent)]
     SetVpnName {
         #[param("The VPN's id or name")]
         connection: String,
         name: String,
     },
     /// Bring a VPN up by itself, or not.
-    #[effect(job, row, idempotent, label = "Connect automatically")]
+    #[effect(job, row, idempotent)]
     SetVpnAutoconnect {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Send every connection through a VPN, or only what it routes.
-    #[effect(job, row, idempotent, label = "Send all traffic")]
+    #[effect(job, row, idempotent, label = "net-vpn-all-traffic")]
     SetVpnAllTraffic {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Have a VPN ask this name server too; without any it asks its own.
-    #[effect(job, row, idempotent, label = "Add DNS server")]
+    #[effect(job, row, idempotent)]
     AddVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -226,7 +226,7 @@ pub enum VpnEffect {
         server: String,
     },
     /// Stop a VPN asking this name server.
-    #[effect(job, row, idempotent, label = "Remove DNS server")]
+    #[effect(job, row, idempotent)]
     RemoveVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -235,7 +235,7 @@ pub enum VpnEffect {
     },
     /// The largest packet a VPN sends, in bytes; chosen automatically when
     /// omitted.
-    #[effect(job, row, idempotent, label = "Packet size")]
+    #[effect(job, row, idempotent, label = "net-vpn-mtu-size")]
     SetVpnMtu {
         #[param("The VPN's id or name")]
         connection: String,
@@ -243,7 +243,7 @@ pub enum VpnEffect {
         mtu: Option<u32>,
     },
     /// Where a `WireGuard` tunnel's server is.
-    #[effect(job, row, idempotent, label = "Server")]
+    #[effect(job, row, idempotent)]
     SetVpnServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -251,7 +251,7 @@ pub enum VpnEffect {
         endpoint: String,
     },
     /// Have a `WireGuard` tunnel route this address too.
-    #[effect(job, row, idempotent, label = "Add routed address")]
+    #[effect(job, row, idempotent)]
     AddVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -259,7 +259,7 @@ pub enum VpnEffect {
         address: String,
     },
     /// Stop a `WireGuard` tunnel routing this address.
-    #[effect(job, row, idempotent, label = "Remove routed address")]
+    #[effect(job, row, idempotent)]
     RemoveVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -269,7 +269,7 @@ pub enum VpnEffect {
     /// Block this device's traffic while a VPN is set to connect and is not
     /// connected, or not; and whether the local network stays reachable
     /// meanwhile (kept as it was when omitted).
-    #[effect(idempotent, row, label = "Block traffic while the VPN is down")]
+    #[effect(idempotent, row, label = "net-vpn-kill-switch")]
     SetKillSwitch {
         #[param("The VPN's id or name")]
         connection: String,
@@ -278,7 +278,7 @@ pub enum VpnEffect {
         allow_local: Option<bool>,
     },
     /// How often a `WireGuard` tunnel tells its server it is there; 0 never.
-    #[effect(job, row, idempotent, label = "Keepalive")]
+    #[effect(job, row, idempotent)]
     SetVpnKeepalive {
         #[param("The VPN's id or name")]
         connection: String,
@@ -286,14 +286,14 @@ pub enum VpnEffect {
         seconds: u32,
     },
     /// Save a VPN as a file to set it up elsewhere: its keys are in it.
-    #[effect(attended, row, label = "Export")]
+    #[effect(attended, row)]
     ExportVpn {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Send this device's traffic through another of the person's devices,
     /// or stop.
-    #[effect(job, row, idempotent, label = "Through your device")]
+    #[effect(job, row, idempotent)]
     SetDeviceVpn {
         #[param("The other device's id")]
         device: String,
@@ -301,13 +301,13 @@ pub enum VpnEffect {
     },
     /// Block this device's traffic while the tunnel to the device it routes
     /// through is down, or let it go out directly.
-    #[effect(idempotent, label = "Block traffic while the tunnel is down")]
+    #[effect(idempotent, label = "net-device-vpn-kill-switch")]
     SetDeviceVpnKillSwitch { on: bool },
     /// Let the person's other devices use this one as a VPN, or not.
-    #[effect(idempotent, label = "Let my other devices use this device as a VPN")]
+    #[effect(idempotent, label = "net-device-vpn-share")]
     SetDeviceExit { on: bool },
     /// Stop another of the person's devices using this one as a VPN.
-    #[effect(row, label = "Stop")]
+    #[effect(row)]
     StopDeviceExit {
         #[param("The other device's id")]
         device: String,

@@ -280,9 +280,7 @@ pub const SYSTEM_MONITOR: Key<WidgetPrefs> = Key::new(SECTION, "system_monitor",
     WidgetPrefs::default_for(WidgetId::SystemMonitor)
 });
 
-/// The people overlay: the list of everyone here, pinned out of the bar's
-/// people menu to wait at an edge like a widget, and dragged between edges
-/// the same way.
+/// The people roster pinned out of the bar: whether it waits at an edge of the desk, and which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeopleOverlayPrefs {
     /// Whether the person pinned it to their desk.
@@ -305,7 +303,7 @@ impl Default for PeopleOverlayPrefs {
     }
 }
 
-/// The people overlay's choices.
+/// The pinned roster's choices.
 pub const PEOPLE_OVERLAY: Key<PeopleOverlayPrefs> =
     Key::new(SECTION, "people_overlay", PeopleOverlayPrefs::default);
 
@@ -438,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_people_overlay_keeps_its_pin_and_edge_beside_the_widgets() {
+    fn the_pinned_roster_keeps_its_edge_beside_the_widgets() {
         assert_eq!(
             PEOPLE_OVERLAY.from_document(&serde_json::Map::new()),
             PeopleOverlayPrefs::default()

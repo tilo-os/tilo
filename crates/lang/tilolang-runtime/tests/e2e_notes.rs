@@ -1,16 +1,12 @@
-//! The notes app (`apps/tl/notes/app.tl`) end to end.
-
-#[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
+//! The notes app (`apps/tl/notes/app.tl`) end to end: a notebook whose notes are a tree.
 
 #[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
-        AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
-        Value, ViewInstance,
+        AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
+        ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
@@ -20,17 +16,32 @@ mod cases {
         rt: Runtime,
         app: App,
         nb: ResourceRef,
+        /// What the workspace's clock says: when a note is made, and when it is written since.
+        clock: std::rc::Rc<std::cell::RefCell<String>>,
     }
 
     impl Notes {
         fn new() -> Self {
+            Self::at("2026-06-30T08:00:00Z")
+        }
+
+        /// A notebook whose clock says `now`.
+        fn at(now: &str) -> Self {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let clock = std::rc::Rc::new(std::cell::RefCell::new(now.to_owned()));
+            let reading = std::rc::Rc::clone(&clock);
+            rt.set_clock(move || reading.borrow().clone());
             let discussion = App::compile(DISCUSSION, &[]);
             discussion.load(&rt);
             let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
             let nb = rt.create("Notebook").unwrap();
-            Self { rt, app, nb }
+            Self { rt, app, nb, clock }
+        }
+
+        /// The clock reads `now` from here on: a change made now is later than those before it.
+        fn set_clock(&self, now: &str) {
+            now.clone_into(&mut self.clock.borrow_mut());
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
@@ -42,11 +53,149 @@ mod cases {
             returned_ref(self.call("new_note", vec![Value::resource(&self.nb)]))
         }
 
-        fn count(&self) -> i64 {
-            self.rt.project(&self.rt.read(&self.nb, "notes").unwrap())["count"]
-                .as_i64()
+        fn child_of(&self, parent: &ResourceRef) -> ResourceRef {
+            returned_ref(self.call(
+                "new_child",
+                vec![Value::resource(&self.nb), Value::resource(parent)],
+            ))
+        }
+
+        fn titled(&self, title: &str) -> ResourceRef {
+            let note = self.new_note();
+            self.call("retitle", vec![Value::resource(&note), Value::text(title)]);
+            note
+        }
+
+        /// The notebook's window, its rows built as a host shows them: the tree holds the rows
+        /// the window asked for, and none other.
+        fn shown(&self) -> ViewInstance {
+            self.rt
+                .open_view(
+                    &me(),
+                    &self.app.view("notebook"),
+                    vec![Value::resource(&self.nb)],
+                )
                 .unwrap()
         }
+
+        /// The notebook's window, every row of its tree drawn.
+        fn window(&self) -> ViewInstance {
+            let mut view = self
+                .rt
+                .open_view(
+                    &me(),
+                    &self.app.view("notebook"),
+                    vec![Value::resource(&self.nb)],
+                )
+                .unwrap();
+            // These checks read the whole tree, as a host that draws every row does.
+            view.set_lazy_rows(false).unwrap();
+            view
+        }
+
+        fn parent_of(&self, note: &ResourceRef) -> Option<ResourceRef> {
+            match self.rt.read(note, "parent").unwrap() {
+                Value::Opt(Some(held)) => match *held {
+                    Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                    other => panic!("a parent is a note, not {other:?}"),
+                },
+                Value::Opt(None) => None,
+                other => panic!("parent reads {other:?}"),
+            }
+        }
+
+        fn title_of(&self, note: &ResourceRef) -> String {
+            match self.rt.read(note, "title").unwrap() {
+                Value::Text(title) => title,
+                other => panic!("title reads {other:?}"),
+            }
+        }
+    }
+
+    /// The tree the window's sidebar is: the shelf of pinned notes, when it stands, is the
+    /// first of the sidebar's trees and the notes are the last.
+    fn the_tree(view: &ViewInstance) -> &UiNode {
+        of_kind(view.tree(), "ui.TreeView")
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("no tree in\n{}", dump(view.tree())))
+    }
+
+    /// What the slot `name` of the window's shell holds: a pane of it.
+    fn slot<'a>(shell: &'a UiNode, name: &str) -> &'a UiNode {
+        shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+            })
+            .unwrap_or_else(|| panic!("no {name} in\n{}", dump(shell)))
+    }
+
+    /// The notes the window's tree draws, in its order.
+    fn labels(view: &ViewInstance) -> Vec<String> {
+        of_kind(the_tree(view), "ui.TreeViewNode")
+            .iter()
+            .map(|node| text_prop(node, "label"))
+            .collect()
+    }
+
+    /// The tree node of the note with this title.
+    fn node_titled<'a>(view: &'a ViewInstance, title: &str) -> &'a UiNode {
+        of_kind(the_tree(view), "ui.TreeViewNode")
+            .into_iter()
+            .find(|node| text_prop(node, "label") == title)
+            .unwrap_or_else(|| panic!("no node {title} in\n{}", dump(view.tree())))
+    }
+
+    /// Whether the tree node's flag `name` is set: a node says it as a boolean or as one.
+    fn flag(node: &UiNode, name: &str) -> bool {
+        match node.props.get(name) {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::Int(number)) => *number != 0,
+            _ => false,
+        }
+    }
+
+    /// The parent a tree node names, as the tree indents it.
+    fn parent_of_node(node: &UiNode) -> Option<ResourceRef> {
+        match node.props.get("parent") {
+            Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                other => panic!("a node's parent is a note, not {other:?}"),
+            },
+            _ => None,
+        }
+    }
+
+    /// The note a tree node names as the one just before it under the same parent: the place
+    /// its actions get and the row `Tab` indents it under.
+    fn above_of_node(node: &UiNode) -> Option<ResourceRef> {
+        match node.props.get("above") {
+            Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                other => panic!("a node's row above is a note, not {other:?}"),
+            },
+            _ => None,
+        }
+    }
+
+    /// Tell the tree of a move: `event` is how the note `moved` lands — `drop` just before the
+    /// row `at`, `into` at the end of its own, `after` past it and all it holds — and `at` is
+    /// none where it lands at the end of the top level.
+    fn move_on(view: &ViewInstance, event: &str, moved: &ResourceRef, at: Option<&ResourceRef>) {
+        let key = the_tree(view).key.clone();
+        // The row it lands at is the place the move's parameter holds, an option: some row, or
+        // none at the end of the top level.
+        let at = at.map_or_else(Value::none, |at| Value::some(Value::resource(at)));
+        view.fire_with(
+            &key,
+            event,
+            Some(&Value::List(vec![Value::resource(moved), at])),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -59,6 +208,7 @@ mod cases {
             "its title starts empty: what is typed first names it"
         );
         assert_eq!(n.rt.read(&note, "pinned").unwrap(), Value::Bool(false));
+        assert_eq!(n.parent_of(&note), None, "it stands at the top of the tree");
         assert_eq!(
             n.rt.title(&note).unwrap(),
             "Untitled",
@@ -69,7 +219,6 @@ mod cases {
             "Notes",
             "the notebook is called by the app's title"
         );
-        assert_eq!(n.count(), 1);
     }
 
     #[test]
@@ -96,202 +245,438 @@ mod cases {
             "delete",
             vec![Value::resource(&n.nb), Value::resource(&second)],
         );
-        assert_eq!(n.count(), 1);
         n.call(
             "delete",
             vec![Value::resource(&n.nb), Value::resource(&first)],
         );
-        assert_eq!(n.count(), 0);
+        assert_eq!(
+            n.rt.project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
+                .as_i64()
+                .unwrap(),
+            0
+        );
     }
 
-    fn list(view: &ViewInstance) -> &UiNode {
-        of_kind(view.tree(), "ui.VirtualList")
+    /// The window is two panes: the notes as a tree in the sidebar, and the note chosen beside
+    /// it — no list of them between. A window wide enough docks the tree beside the page it
+    /// opens; one too narrow for both makes the tree its first screen and pushes the page in
+    /// front of it, with the way back. The bar carries the "+" that starts a note, once.
+    #[test]
+    fn the_notebook_is_the_tree_beside_the_note_it_opens() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        n.call("pin", vec![Value::resource(&plan)]);
+        let mut view = n.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")[0];
+        assert_eq!(
+            text_prop(shell, "content_kind"),
+            "reading",
+            "the window is a reading column: wide, the tree docks beside the page, and narrow, \
+             the tree is its first screen: {}",
+            dump(view.tree())
+        );
+        assert_eq!(text_prop(shell, "sidebar_title"), "Notes");
+        // The notes stand in the sidebar and the note the window shows in the content beside
+        // them: the two panes a wide window docks side by side.
+        let sidebar = slot(shell, "sidebar");
+        let content = slot(shell, "content");
+        assert_eq!(
+            labels(&view),
+            ["Q3 plan"],
+            "the tree holds the notes: {}",
+            dump(view.tree())
+        );
+        assert!(
+            of_kind(sidebar, "ui.TreeView")
+                .iter()
+                .any(|tree| tree.key == the_tree(&view).key),
+            "the tree is the sidebar's: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            of_kind(content, "ui.BlockEditor").len(),
+            1,
+            "the open note's body stands in the content, beside the tree: {}",
+            dump(view.tree())
+        );
+        assert!(
+            of_kind(sidebar, "ui.BlockEditor").is_empty(),
+            "the page stands beside the tree, not in it: {}",
+            dump(view.tree())
+        );
+        // The window's "+": the primary action that makes a note, in the window's bar, where a
+        // narrow window's page keeps it too rather than in the sidebar's header.
+        let head = of_kind(slot(shell, "actions"), "ui.Button")
             .into_iter()
-            .next()
-            .unwrap_or_else(|| panic!("no list in\n{}", dump(view.tree())))
+            .find(|button| text_prop(button, "label") == "New note")
+            .unwrap_or_else(|| panic!("no New note button in\n{}", dump(view.tree())));
+        assert!(
+            of_kind(sidebar, "ui.Button")
+                .iter()
+                .all(|button| button.key != head.key),
+            "the bar offers it once, not again over the tree: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            text_prop(of_kind(content, "ui.TextInput")[0], "placeholder"),
+            "Untitled",
+            "the page edits the open note's title"
+        );
+
+        // Choosing a row opens that note in the content column.
+        let home = n.titled("Home");
+        view.poll_patches().unwrap();
+        assert_eq!(labels(&view), ["Q3 plan", "Home"]);
+        let key = the_tree(&view).key.clone();
+        view.fire_with(&key, "select", Some(&Value::resource(&home)))
+            .unwrap();
+        view.poll_patches().unwrap();
+
+        let title = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+        assert_eq!(
+            view.edit(&title, &Value::text("Flat")).unwrap(),
+            EditOutcome::Applied
+        );
+        assert_eq!(
+            n.title_of(&home),
+            "Flat",
+            "the page edits the note the person chose"
+        );
+        assert_eq!(n.title_of(&plan), "Q3 plan");
     }
 
-    fn titles(view: &ViewInstance) -> Vec<String> {
-        of_kind(view.tree(), "ui.ListRow")
+    /// The tree is a list of rows built as the window shows them: opening a notebook draws no
+    /// row of it, a row is read from the view when the window asks for it — of a thousand notes
+    /// as of three — and what it reads says where the note stands and whether it holds any.
+    #[test]
+    fn the_tree_builds_the_rows_the_window_shows() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let meetings = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&meetings), Value::text("Meetings")],
+        );
+        n.titled("Notes");
+        let mut view = n.shown();
+        let tree = the_tree(&view);
+        let key = tree.key.clone();
+        assert_eq!(view.list_len(&key), Some(3), "the tree holds three notes");
+        assert!(
+            of_kind(view.tree(), "ui.TreeViewNode").is_empty(),
+            "no row is built before the window shows it: {}",
+            dump(view.tree())
+        );
+
+        // The row the window shows first: the note it reads, how deep it stands, and that it
+        // holds one of its own.
+        let row = view.row(&key, 0).unwrap().expect("shown").clone();
+        let node = of_kind(&row, "ui.TreeViewNode")[0];
+        assert_eq!(text_prop(node, "label"), "Q3 plan");
+        assert_eq!(
+            node.props.get("depth"),
+            Some(&Value::Int(0)),
+            "the top row stands at the top"
+        );
+        assert!(flag(node, "branch"), "the note holds one of its own");
+
+        // The second row stands under it, one deep.
+        let under = view.row(&key, 1).unwrap().expect("shown").clone();
+        let child = of_kind(&under, "ui.TreeViewNode")[0];
+        assert_eq!(text_prop(child, "label"), "Meetings");
+        assert_eq!(
+            child.props.get("depth"),
+            Some(&Value::Int(1)),
+            "the note it holds stands one deep"
+        );
+        assert!(
+            !flag(child, "branch"),
+            "a note with none of its own holds none"
+        );
+        assert_eq!(parent_of_node(child), Some(plan));
+    }
+
+    /// The row over a note is the one beside it under the same parent, whatever the window shows
+    /// between them: a note following an expanded branch names that branch, never none — the
+    /// place its actions get and the row `Tab` indents it under.
+    #[test]
+    fn the_row_over_a_note_is_the_one_beside_it() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let first = n.child_of(&plan);
+        let second = n.child_of(&plan);
+        let after = n.titled("Groceries");
+        let view = n.window();
+        assert_eq!(
+            above_of_node(node_titled(&view, "Groceries")),
+            Some(plan.clone()),
+            "the row over the note after the branch is the branch itself, whose own stand \
+             between them"
+        );
+        let child = |id: &ResourceRef, title: &str| {
+            n.call("retitle", vec![Value::resource(id), Value::text(title)]);
+            id.clone()
+        };
+        child(&first, "Agenda");
+        child(&second, "Minutes");
+        let mut view = n.window();
+        assert_eq!(
+            above_of_node(node_titled(&view, "Minutes")),
+            Some(first),
+            "under the branch, the row over one note is the one before it"
+        );
+        assert_eq!(
+            above_of_node(node_titled(&view, "Agenda")),
+            None,
+            "the first of them has no row of its own over it"
+        );
+        assert_eq!(
+            above_of_node(node_titled(&view, "Q3 plan")),
+            None,
+            "and the first row at the top names none"
+        );
+
+        // What the tree reports of `Tab` on the note after the branch: the note lands inside
+        // the branch, and the store holds it there.
+        view.poll_patches().unwrap();
+        move_on(&view, "into", &after, Some(&plan));
+        assert_eq!(
+            n.parent_of(&after),
+            Some(plan),
+            "Tab under the branch makes the note one of it"
+        );
+    }
+
+    /// Dropping a note on a row makes it a note of that one: the tree indents it under the row
+    /// it landed on, and the store holds it there.
+    #[test]
+    fn a_note_dropped_on_a_row_stands_inside_it() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let meetings = n.titled("Meetings");
+        let mut view = n.window();
+        move_on(&view, "into", &plan, Some(&meetings));
+        assert_eq!(
+            n.parent_of(&plan),
+            Some(meetings.clone()),
+            "a note dropped inside another is its own"
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            parent_of_node(node_titled(&view, "Q3 plan")),
+            Some(meetings.clone()),
+            "and the tree draws it under that row"
+        );
+
+        // Dropped before a row, it takes that row's place among its own: a note of it keeps
+        // the place it has in the order.
+        let notes = n.titled("Notes");
+        view.poll_patches().unwrap();
+        move_on(&view, "drop", &meetings, Some(&notes));
+        assert_eq!(n.parent_of(&meetings), None);
+        view.poll_patches().unwrap();
+        assert_eq!(
+            labels(&view),
+            ["Q3 plan", "Meetings", "Notes"],
+            "the tree keeps the order the store does"
+        );
+    }
+
+    /// A note cannot go inside itself, nor inside anything of its own.
+    #[test]
+    fn a_note_never_lands_inside_itself() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let meetings = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&meetings), Value::text("Meetings")],
+        );
+        let view = n.window();
+        // The note it holds cannot go inside it, nor it inside that one.
+        let refused = view.fire_with(
+            &the_tree(&view).key.clone(),
+            "into",
+            Some(&Value::List(vec![
+                Value::resource(&plan),
+                Value::some(Value::resource(&meetings)),
+            ])),
+        );
+        assert!(
+            refused.is_err(),
+            "a note moved inside the note it holds is refused"
+        );
+        assert_eq!(n.parent_of(&meetings), Some(plan));
+    }
+
+    /// The pinned notes stand in a shelf over the tree, and the shelf is there only while one
+    /// is pinned: choosing one opens it beside the tree.
+    #[test]
+    fn a_pinned_note_says_so_in_its_row() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let mut view = n.window();
+        let icon = |view: &ViewInstance| {
+            of_kind(the_tree(view), "ui.TreeViewRow")
+                .first()
+                .and_then(|row| row.props.get("icon").cloned())
+        };
+        assert_eq!(icon(&view), Some(Value::text("file-text")));
+        n.call("pin", vec![Value::resource(&plan)]);
+        view.poll_patches().unwrap();
+        assert_eq!(
+            icon(&view),
+            Some(Value::text("pin")),
+            "a pinned note shows a pin in its row"
+        );
+        // One row per note: a window shows an item once, so its actions have one address.
+        assert_eq!(labels(&view), ["Q3 plan"]);
+    }
+
+    /// The places a note's line says it stands in, the outermost first: the trail's segments,
+    /// the note itself last.
+    fn trail(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.BreadcrumbSegment")
             .iter()
-            .map(|r| text_prop(r, "title"))
+            .map(|segment| text_prop(segment, "label"))
             .collect()
     }
 
-    /// The resource of the list item whose row has this title.
-    fn item_titled(view: &ViewInstance, title: &str) -> ResourceRef {
-        of_kind(list(view), "ui.ListItem")
-            .into_iter()
-            .find(|item| {
-                of_kind(item, "ui.ListRow")
-                    .iter()
-                    .any(|r| text_prop(r, "title") == title)
-            })
-            .and_then(|item| match item.props.get("item") {
-                Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("no item {title} in\n{}", dump(view.tree())))
+    /// The moments the window shows as how long ago they were, in the order it shows them.
+    fn moments(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Time")
+            .iter()
+            .map(|moment| text_prop(moment, "at"))
+            .collect()
     }
 
-    /// The node of `kind` whose `prop` is `value`.
-    fn node_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> &'a UiNode {
-        of_kind(tree, kind)
-            .into_iter()
-            .find(|node| node.props.get(prop) == Some(&Value::text(value)))
-            .unwrap_or_else(|| panic!("no {kind} with {prop} {value} in\n{}", dump(tree)))
+    /// What the window says in words, in the order it says them.
+    fn said(view: &ViewInstance) -> Vec<String> {
+        of_kind(view.tree(), "ui.Text")
+            .iter()
+            .map(|text| text_prop(text, "value"))
+            .collect()
     }
 
-    /// Fire `event` of the node of `kind` whose `prop` is `value`.
-    fn fire_on(view: &ViewInstance, kind: &str, prop: &str, value: &str, event: &str) {
-        let key = node_with(view.tree(), kind, prop, value).key.clone();
-        view.fire(&key, event).unwrap();
+    /// The note page's own line under the title, as the words it says: the facts, and the
+    /// words of the path among them.
+    fn line_says(view: &ViewInstance, word: &str) -> bool {
+        said(view).iter().any(|said| said == word)
     }
 
     #[test]
-    fn the_notebook_lists_its_notes_and_opens_each_in_a_window_of_its_own() {
-        let n = Notes::new();
-        let mut list =
-            n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
-                .unwrap();
-        // These checks read the whole tree, as a host that draws every row does.
-        list.set_lazy_rows(false).unwrap();
-        // The notebook's window is the library's list window: the view's root is the branch
-        // that picked it, which holds the shell.
-        let root = list.tree();
-        let window = match root.children.as_slice() {
-            [only] => only,
-            _ => root,
-        };
-        assert_eq!(
-            window.kind,
-            "ui.NavShell",
-            "the window is a shell: {}",
-            dump(list.tree())
+    fn the_line_under_a_note_says_where_it_stands_and_when_it_was_written() {
+        let n = Notes::at("2026-06-30T08:00:00Z");
+        let plan = n.titled("Q3 plan");
+        let standups = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&standups), Value::text("Standups")],
         );
-        // The words are the library's phrase, which a host gives from its catalogue; here the
-        // runtime shows the phrase itself.
-        assert_eq!(
-            text_prop(of_kind(list.tree(), "ui.EmptyState")[0], "title"),
-            "tilolang-empty-kind"
+        let monday = n.child_of(&standups);
+        n.call(
+            "retitle",
+            vec![Value::resource(&monday), Value::text("Monday")],
         );
-        assert_eq!(
-            text_prop(
-                node_with(list.tree(), "ui.Button", "label", "New note"),
-                "role"
-            ),
-            "primary",
-            "the header holds the primary action"
-        );
+        let mut view = n.window();
+        let tree = the_tree(&view).key.clone();
+        view.fire_with(&tree, "select", Some(&Value::resource(&monday)))
+            .unwrap();
+        view.poll_patches().unwrap();
 
-        // The header's primary action, as the platform applies it.
-        let note = n.new_note();
-        list.poll_patches().unwrap();
+        // Where it stands: every note over it, then the note itself, which its title says
+        // again — a trail opens every place before its last.
+        assert_eq!(
+            trail(&view),
+            ["Q3 plan", "Standups", "Monday"],
+            "{}",
+            dump(view.tree())
+        );
+        // When it was made: one moment, because nothing has written it since. The note's line
+        // stands before its body and its history, whose own times come after it.
+        assert_eq!(moments(&view)[..1], ["2026-06-30T08:00:00Z"]);
+        assert!(line_says(&view, "Created"), "{}", dump(view.tree()));
+        assert!(!line_says(&view, "Edited"), "nothing wrote it since");
+
+        // Written into: the note holds those words, and the moment it was written is its own.
+        n.set_clock("2026-06-30T08:05:00Z");
+        let body = of_kind(view.tree(), "ui.BlockEditor")[0].key.clone();
+        view.edit(
+            &body,
+            &Value::Rich(RichValue::from_text("Ada is on the sync bug.")),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            moments(&view)[..2],
+            ["2026-06-30T08:00:00Z", "2026-06-30T08:05:00Z"],
+            "the note was made at one moment and written at another"
+        );
+        assert!(line_says(&view, "Edited"), "{}", dump(view.tree()));
+        assert!(line_says(&view, "6 words"), "{:?}", said(&view));
+
+        // A place over the note opens that note.
+        let above = of_kind(view.tree(), "ui.BreadcrumbSegment")
+            .into_iter()
+            .find(|segment| text_prop(segment, "label") == "Standups")
+            .unwrap_or_else(|| panic!("no Standups in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire_with(&above, "activate", None).unwrap();
         assert!(
-            of_kind(list.tree(), "ui.TextInput").is_empty(),
-            "the list does not edit notes: {}",
-            dump(list.tree())
-        );
-        assert_eq!(titles(&list), ["Untitled"]);
-        assert_eq!(
-            item_titled(&list, "Untitled"),
-            note,
-            "activating the row opens this note"
+            matches!(
+                view.poll_events().as_slice(),
+                [tilolang_runtime::ViewEvent::Open { target, .. }] if *target == standups
+            ),
+            "pressing a place opens the note it names"
         );
 
-        let mut editor = n.rt.open_resource(&me(), &note, None).unwrap();
+        // A phone keeps the one place above the note: the trail is shorter, and still opens it.
+        view.set_space("", tilolang_runtime::Space::from_rem(24.4, 50.0));
+        view.poll_patches().unwrap();
+        assert_eq!(
+            trail(&view),
+            ["Standups", "Monday"],
+            "a narrow page keeps the note it stands under"
+        );
+
+        // A note at the top of the tree stands nowhere: it shows no path.
+        view.fire_with(&tree, "select", Some(&Value::resource(&plan)))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            trail(&view).is_empty(),
+            "a note of nothing shows no trail: {}",
+            dump(view.tree())
+        );
+        assert!(
+            line_says(&view, "Created"),
+            "and still says what is known of it"
+        );
+    }
+
+    #[test]
+    fn the_note_page_says_where_the_note_stands() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let meetings = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&meetings), Value::text("Meetings")],
+        );
+        let editor = n.rt.open_resource(&me(), &meetings, None).unwrap();
         assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
+        let shell = of_kind(editor.tree(), "ui.NavShell")[0];
+        assert_eq!(
+            text_prop(shell, "title"),
+            "Meetings",
+            "the bar names the note: {}",
+            dump(editor.tree())
+        );
         assert_eq!(
             text_prop(of_kind(editor.tree(), "ui.TextInput")[0], "placeholder"),
             "Untitled",
-            "the title field prompts with the words its type declares"
-        );
-        let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
-        assert_eq!(
-            editor.edit(&title, &Value::text("Plans")).unwrap(),
-            EditOutcome::Applied
-        );
-        assert!(
-            list.is_stale(),
-            "the list shows the title the editor changed"
-        );
-        list.poll_patches().unwrap();
-        assert_eq!(titles(&list), ["Plans"]);
-
-        n.call("pin", vec![Value::resource(&note)]);
-        list.poll_patches().unwrap();
-        let row = of_kind(list.tree(), "ui.ListRow")[0];
-        assert_eq!(text_prop(row, "mark"), "pin", "{}", dump(row));
-        editor.poll_patches().unwrap();
-
-        n.call(
-            "delete",
-            vec![Value::resource(&n.nb), Value::resource(&note)],
-        );
-        list.poll_patches().unwrap();
-        assert_eq!(n.count(), 0);
-        assert!(titles(&list).is_empty());
-    }
-
-    #[test]
-    fn the_note_rows_carry_the_body_at_every_width() {
-        let n = Notes::new();
-        let note = n.new_note();
-        let editor = n.rt.open_resource(&me(), &note, None).unwrap();
-        let body = of_kind(editor.tree(), "ui.BlockEditor")[0].key.clone();
-        editor
-            .edit(&body, &Value::Rich(RichValue::from_text("Oat milk, eggs")))
-            .unwrap();
-        let mut view =
-            n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
-                .unwrap();
-        // These checks read the whole tree, as a host that draws every row does.
-        view.set_lazy_rows(false).unwrap();
-        for width in [90.0, 20.0] {
-            view.set_space("", Space::from_rem(width, 40.0));
-            view.poll_patches().unwrap();
-            let row = of_kind(view.tree(), "ui.ListRow")[0];
-            assert_eq!(text_prop(row, "secondary"), "Oat milk, eggs");
-            assert!(
-                !row.props.contains_key("mark"),
-                "an unpinned note has no mark"
-            );
-        }
-    }
-
-    #[test]
-    fn the_filter_and_the_order_are_the_windows() {
-        let n = Notes::new();
-        for title in ["b", "a"] {
-            let note = n.new_note();
-            n.call("retitle", vec![Value::resource(&note), Value::text(title)]);
-            if title == "a" {
-                n.call("pin", vec![Value::resource(&note)]);
-            }
-        }
-        let mut view =
-            n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
-                .unwrap();
-        // These checks read the whole tree, as a host that draws every row does.
-        view.set_lazy_rows(false).unwrap();
-        assert_eq!(titles(&view), ["b", "a"]);
-        assert!(
-            !node_with(view.tree(), "ui.NavItem", "key", "is:pinned")
-                .props
-                .contains_key("count"),
-            "a filter that is not a place shows no count"
-        );
-        fire_on(&view, "ui.NavItem", "key", "is:pinned", "select");
-        view.poll_patches().unwrap();
-        assert_eq!(titles(&view), ["a"]);
-        fire_on(&view, "ui.NavItem", "key", "all", "select");
-        view.poll_patches().unwrap();
-        fire_on(&view, "ui.MenuItem", "label", "Title", "choose");
-        view.poll_patches().unwrap();
-        assert_eq!(titles(&view), ["a", "b"]);
-        assert_eq!(
-            node_with(view.tree(), "ui.MenuItem", "label", "Title").props["checked"],
-            Value::Int(1)
+            "and the page edits its title"
         );
     }
 

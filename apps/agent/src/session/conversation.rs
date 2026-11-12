@@ -9,10 +9,10 @@
 //! the summons derive (chat keeps that rule), so nothing here has to be
 //! stored to find it, and the conversation needs no record of its own.
 //!
-//! What the run records is what a person reads: its state, the route that
-//! decided it, the operations it dispatched, and — once, when it ends — its
-//! words. Every record a run makes lands in one group, so its turn is undone
-//! whole.
+//! What the run records is what a person reads: its state, the operations it
+//! dispatched, and — once, when it ends — its answer. How the run was planned
+//! stays in the run's own record. Every record a run makes lands in one group,
+//! so its turn is undone whole.
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
@@ -26,6 +26,9 @@ const CONVERSATION_PREFIX: &str = "chat.workspace/channels/";
 const MESSAGES: &str = "/messages/";
 /// The chat action that records a turn on the reply to its message.
 const RECORD_WORK: &str = "record-work";
+/// How long a turn waits for its conversation to offer `record-work` on its message: an agent
+/// started for the turn reads Chat's catalogue before Chat has republished the message it answers.
+const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// The longest id a conversation or a message may have.
 const MAX_ID_CHARS: usize = 256;
 /// The state that ends a turn: the reply's work is finished, and the turn is
@@ -55,18 +58,21 @@ impl Cause {
     }
 }
 
-/// The turn a run answers, as it is being told: the cause, how the run
-/// decided, and the operations it has dispatched so far.
+/// The turn a run answers, as it is being told: the cause, the operations
+/// it has dispatched so far, and the answer it ends with.
 #[derive(Clone, Debug)]
 pub(super) struct Record {
     cause: Cause,
-    /// `model` or `floor`: which path chose the run's steps.
-    route: &'static str,
-    /// The decider's account of why, in its own words.
-    why: String,
     /// The operations dispatched so far, each keyed by the id it was given
     /// when it was dispatched; every record repeats them whole.
     steps: Vec<Value>,
+    /// The words the run answers with, when it has any: the reply's text.
+    answer: Option<String>,
+    /// Whether the run has already looked for the reply's `record-work`,
+    /// waiting for the conversation to publish it: that wait is for a
+    /// catalogue republished moments after the run started, so it is paid
+    /// once, never on every step of a long run.
+    looked_for_work: bool,
 }
 
 /// The turn `run` answers, checked against what a conversation gives and
@@ -101,8 +107,8 @@ pub(super) fn validate(run: &runtime_collab::TaskRunEnvelope) -> Result<Cause, S
 
 impl Session {
     /// Start recording the turn `run` answers: what the reply will be told
-    /// is kept from here, and which route decides the run.
-    pub(super) fn start_turn(&mut self, cause: Cause, (route, why): (&'static str, String)) {
+    /// is kept from here.
+    pub(super) fn start_turn(&mut self, cause: Cause) {
         tracing::info!(
             conversation = %cause.conversation,
             message = %cause.message,
@@ -110,10 +116,33 @@ impl Session {
         );
         self.record = Some(Record {
             cause,
-            route,
-            why,
             steps: Vec::new(),
+            answer: None,
+            looked_for_work: false,
         });
+    }
+
+    /// End `run` as done: `answer` is the reply's text, and the run's own
+    /// record says `done` when there is no answer. A run with neither — a
+    /// model-planned run that ended with nothing said — is not reported as a
+    /// success with a line nobody wrote: the person reads that the agent
+    /// finished without answering.
+    pub(super) fn succeed_turn(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        answer: Option<String>,
+        done: Option<String>,
+    ) -> Result<()> {
+        if let Some(record) = self.record.as_mut() {
+            record.answer.clone_from(&answer);
+        }
+        let Some(message) = answer.or(done) else {
+            return self.fail_task(
+                run,
+                &crate::session::Failure::said(crate::i18n::t("agent-failure-no-answer")),
+            );
+        };
+        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
     /// Tell the conversation what `run` reports now, as the reply to its
@@ -126,18 +155,18 @@ impl Session {
         use runtime_collab::TaskRunUpdate;
         match update {
             TaskRunUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
-            TaskRunUpdate::Progress {
-                message,
-                presentation: None,
-            } => self.record_state(run, "doing", json!({"did": message}), None),
-            // A streamed presentation is the model's own output, shown where
-            // it streams, and what a run spent is its keeper's count: neither
-            // is a state of the turn.
+            // Progress narrates the run to its own record; the reply shows
+            // the operations it dispatched instead. What a run spent is its
+            // keeper's count. Neither is a state of the turn.
             TaskRunUpdate::Progress { .. }
             | TaskRunUpdate::DirectionsApplied { .. }
             | TaskRunUpdate::Spent { .. } => Ok(()),
-            TaskRunUpdate::Succeeded { message } => {
-                self.record_state(run, "provider_complete", json!({}), Some(message))
+            TaskRunUpdate::Succeeded { .. } => {
+                let answer = self
+                    .record
+                    .as_ref()
+                    .and_then(|record| record.answer.clone());
+                self.record_state(run, "provider_complete", json!({}), answer.as_deref())
             }
             TaskRunUpdate::Failed { message } => {
                 // What the host heard is the failure's sentence for a person —
@@ -187,7 +216,7 @@ impl Session {
             .first()
             .map(|row| row.action.clone())
             .or_else(|| step.previews.first().map(|row| row.action.clone()))
-            .unwrap_or_else(|| "a program".to_owned());
+            .unwrap_or_else(|| crate::i18n::t("agent-step-program"));
         let resource = step
             .changes
             .first()
@@ -203,6 +232,34 @@ impl Session {
             }
         };
         self.push_step(run, resource, &label, outcome, why.as_deref())
+    }
+
+    /// Add one web search or page the run did to the reply's step list: what
+    /// it asked for or read, and what came of it.
+    pub(super) fn record_web(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        call: &crate::tools::web::Call,
+        report: &crate::tools::InvokeReport,
+    ) -> Result<()> {
+        // The same vocabulary the person is told the step in, so the record
+        // and the note say the same thing.
+        let (resource, label) = match call {
+            crate::tools::web::Call::Search { query, .. } => (
+                "web.search",
+                crate::i18n::step(&tilo_actions::task_step::TaskStep::Searching(query.clone())),
+            ),
+            crate::tools::web::Call::Page { url, .. } => (
+                "web.page",
+                crate::i18n::step(&tilo_actions::task_step::TaskStep::Reading(url.clone())),
+            ),
+        };
+        let (outcome, why) = if report.succeeded {
+            ("applied", None)
+        } else {
+            ("refused", report.error.as_deref())
+        };
+        self.push_step(run, resource, &label, outcome, why)
     }
 
     /// Record one step of the turn, keyed by the place it takes in the list.
@@ -266,8 +323,6 @@ impl Session {
             return Ok(());
         };
         work.insert("state".into(), json!(state));
-        work.insert("route".into(), json!(record.route));
-        work.insert("why".into(), json!(record.why));
         work.insert("trace".into(), Value::Array(record.steps.clone()));
         if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
             work.insert("detail".into(), json!(detail));
@@ -314,17 +369,18 @@ impl Session {
     }
 
     /// The chat action that records work on the reply to the turn's message,
-    /// as the broker publishes it to this agent: absent when the agent's
-    /// catalogue offers no `record-work` on that reply, which is what a
-    /// workspace whose Chat is closed — or whose agent was admitted without
-    /// the chat app's actions — leaves, and the reason the reply a person
-    /// asked for never appears.
+    /// as the broker publishes it to this agent, once it does: an agent started
+    /// for the turn may read the catalogue before Chat republished the message.
+    /// Absent when the workspace offers no `record-work` on that reply, which
+    /// is what a workspace whose Chat is closed — or whose agent was admitted
+    /// without the chat app's actions — leaves, and the reason the reply a
+    /// person asked for never appears.
     fn record_work_action(&mut self, arguments: &Map<String, Value>) -> Option<TaskAction> {
         let message = arguments.get("message").and_then(Value::as_str)?;
         let reply = format!("{MESSAGES}{message}");
-        let offer = {
-            let catalogue = self.task_catalogue();
-            catalogue
+        let offer = |session: &mut Self| {
+            session
+                .task_catalogue()
                 .offers
                 .iter()
                 .find(|offer| {
@@ -333,7 +389,10 @@ impl Session {
                 })
                 .cloned()
         };
-        let Some(offer) = offer else {
+        if self.waits_for_record_work() {
+            self.await_catalogue(RECORD_WAIT, |session| offer(session).is_some());
+        }
+        let Some(offer) = offer(self) else {
             tracing::warn!(
                 reply = %reply,
                 action = RECORD_WORK,
@@ -349,6 +408,31 @@ impl Session {
                 None
             }
         }
+    }
+
+    /// Whether this run still waits for its reply's `record-work` to be
+    /// published, at most [`RECORD_WAIT`]: once per run, and only while a
+    /// running application publishes `record-work`. What the wait covers is Chat
+    /// republishing the message the run answers moments after the run
+    /// started. A closed Chat keeps the offers it last published — a
+    /// workspace whose Chat is closed, or that publishes none at all, has
+    /// nothing coming and would spend the bound on every step.
+    fn waits_for_record_work(&mut self) -> bool {
+        let Some(record) = self
+            .record
+            .as_mut()
+            .filter(|record| !record.looked_for_work)
+        else {
+            return false;
+        };
+        record.looked_for_work = true;
+        self.broker_catalogue.surfaces().iter().any(|surface| {
+            surface.live
+                && surface
+                    .actions
+                    .iter()
+                    .any(|action| action.action == RECORD_WORK)
+        })
     }
 }
 

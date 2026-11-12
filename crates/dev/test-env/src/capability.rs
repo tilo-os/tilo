@@ -352,7 +352,7 @@ pub fn network_tunnel() -> std::io::Result<()> {
 pub type NamedProbe = (&'static str, fn() -> std::io::Result<()>);
 
 /// Every probe the capability manifest may name, by its name there. The
-/// `capability_probe` test runs each where the tests run, and the CI test
+/// `tilo-capability-probe` program runs each where the tests run, and the CI test
 /// step leaves out the tests whose probe fails.
 #[cfg(target_os = "linux")]
 pub const PROBES: &[NamedProbe] = &[

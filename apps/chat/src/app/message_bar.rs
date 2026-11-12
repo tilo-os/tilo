@@ -137,6 +137,9 @@ impl ChatApp {
         };
         let mine = self.is_me(&message.author);
         let mut actions = vec![MenuAction::AddReaction, MenuAction::ReplyInThread];
+        if !self.keeps_threads() {
+            actions.retain(|action| *action != MenuAction::ReplyInThread);
+        }
         if mine {
             actions.push(MenuAction::EditMessage);
         }
@@ -175,7 +178,7 @@ impl ChatApp {
         };
         let mine = self.is_me(&message.author);
         let author = message.author.clone();
-        let items = if mine {
+        let mut items = if mine {
             let mut items = MenuAction::for_message().to_vec();
             if self.is_my_live_share(message) {
                 items.insert(0, MenuAction::StopSharing);
@@ -190,7 +193,42 @@ impl ChatApp {
             }
             items
         };
-        self.menu = Some(self.context_menu(MenuTarget::Message(msg), anchor, items));
+        // The link of what the message's chip shows, as the chip's own menu offers it.
+        if message
+            .attachments
+            .iter()
+            .any(|attached| attached.at().is_some())
+        {
+            let at = items
+                .iter()
+                .position(|action| *action == MenuAction::CopyText)
+                .map_or(items.len(), |at| at + 1);
+            items.insert(at, MenuAction::CopyLink);
+        }
+        // A direct conversation has no thread to reply in: its answers stand
+        // where they were written.
+        if !self.keeps_threads() {
+            items.retain(|action| *action != MenuAction::ReplyInThread);
+        }
+        // The menu is about the message, so a box it opens sends the message itself: the item of
+        // Chat's record, as its row publishes it.
+        let label = match message.text.trim() {
+            "" => self.message_label(message),
+            said => said.to_owned(),
+        };
+        let mut about = ui::shared_selection::SharedSelection::of_text(&label)
+            .at(ui::tilo_actions::SelectionPlace::item(msg.as_str()))
+            .in_resource(ui::tilo_actions::ActionResource {
+                id: crate::effects::item_row_id("messages", msg.as_str()),
+                kind: "chat.workspace.messages".to_owned(),
+                label,
+            });
+        if let Some(rect) = self.message_rect(msg.as_str()) {
+            about = about.within(rect);
+        }
+        let mut menu = self.context_menu(MenuTarget::Message(msg), anchor, items);
+        menu.widget.set_about(Some(about));
+        self.menu = Some(menu);
     }
 
     /// Open `msg`'s whole menu from its bar's More `button`: under it, its

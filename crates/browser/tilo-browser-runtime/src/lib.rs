@@ -25,6 +25,13 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// The record a page showing one app opens: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page opens an app alone")
+)]
+mod app_page;
 // The desk's arranging actions in the page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
@@ -51,14 +58,12 @@ mod capture_declarations;
 )]
 mod console_hold;
 // Content handed to an app, opened as its file: its tests run on the host too.
+#[cfg(target_arch = "wasm32")]
+mod browser;
 #[cfg(any(target_arch = "wasm32", test))]
 mod content_open;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use page_content::page_content;
-#[cfg(target_arch = "wasm32")]
-mod browser;
 /// Install an already-admitted feedback transport before mounting its desktop.
 /// This Rust host hook is intentionally absent from URL/JSON launch options.
 /// # Errors
@@ -127,17 +132,37 @@ mod dom_code;
 #[cfg(target_arch = "wasm32")]
 pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
 #[cfg(target_arch = "wasm32")]
+pub use over_page::{SHEETS, SheetsCode, builtin_sheets};
+#[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+// What the person's agents on a workspace host ask them, on the page: the
+// export JavaScript calls, and the sheet, which is code the page fetches.
+#[cfg(target_arch = "wasm32")]
+mod agent_questions;
+#[cfg(target_arch = "wasm32")]
+pub use questions::{
+    QUESTIONS, QuestionsCode, builtin_questions, code_arrived as questions_arrived,
+};
 #[cfg(target_arch = "wasm32")]
 mod guide;
 #[cfg(target_arch = "wasm32")]
 mod invite;
 #[cfg(target_arch = "wasm32")]
+mod layers;
+#[cfg(target_arch = "wasm32")]
 mod over_page;
+#[cfg(target_arch = "wasm32")]
+mod page_apps;
+#[cfg(target_arch = "wasm32")]
+mod page_machine;
+#[cfg(target_arch = "wasm32")]
+mod page_search;
+#[cfg(target_arch = "wasm32")]
+mod questions;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_code::{
     FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
@@ -156,12 +181,6 @@ pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
 #[cfg(target_arch = "wasm32")]
-mod pinned_roster;
-#[cfg(target_arch = "wasm32")]
-pub use pinned_roster::{MakePinnedRoster, PinnedRoster, builtin_pinned_roster};
-#[cfg(all(target_arch = "wasm32", feature = "deferred-people-overlay"))]
-pub use pinned_roster::{defer_people_overlay, install_people_overlay, people_overlay_load_failed};
-#[cfg(target_arch = "wasm32")]
 mod files;
 // What the page says about a fixed chord it cannot serve: its tests run on
 // the host too.
@@ -177,15 +196,15 @@ mod fixed_chords;
 #[cfg(target_arch = "wasm32")]
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
-mod history;
+mod page_activity;
 #[cfg(target_arch = "wasm32")]
-pub use history::{LoadActivity, defer_activity_pane};
+mod pages;
+#[cfg(target_arch = "wasm32")]
+pub use page_activity::{LoadActivity, defer_activity_pane};
 #[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
-pub use host_services::{MakeModelClients, ModelClients, builtin_model_clients};
-#[cfg(all(target_arch = "wasm32", feature = "deferred-model-clients"))]
-pub use host_services::{defer_model_clients, install_model_clients, model_clients_load_failed};
+pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};
 #[cfg(target_arch = "wasm32")]
 mod link;
 // A pairing link drawn as the code a phone reads.
@@ -209,9 +228,12 @@ mod peer;
 // The person's agent door, as the page carries it to their host.
 #[cfg(target_arch = "wasm32")]
 mod agent_door;
-// The page's presence on its workspaces' boards.
+// The person's devices, as the page administers them on their host.
 #[cfg(target_arch = "wasm32")]
-mod peer_presence;
+mod identity_door;
+// The page's collaboration plane: the session's sync over this page's endpoint.
+#[cfg(target_arch = "wasm32")]
+mod peer_sync;
 // The sign-in route's answer to a service (`web/sign-in.mjs`).
 #[cfg(target_arch = "wasm32")]
 mod sign_in_page;
@@ -223,11 +245,27 @@ mod person_records;
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg(target_arch = "wasm32")]
 mod replication;
+// The workspace a page replicates, as the start module asks it: the peer's
+// code installs the answers when it starts.
+#[cfg(target_arch = "wasm32")]
+mod replicated;
 // The workspaces a host governs, as the page administers them.
 #[cfg(target_arch = "wasm32")]
 mod rooms;
+// The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
-#[cfg(target_arch = "wasm32")]
+mod entered;
+// When a status carries the semantics tree: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod disk_key;
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser publishes statuses; the host runs its tests"
+    )
+)]
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
@@ -235,10 +273,21 @@ mod settings;
 pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser throttles statuses; the host runs its tests"
+    )
+)]
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
+#[cfg(target_arch = "wasm32")]
+mod way_in;
+#[cfg(any(target_arch = "wasm32", test))]
+mod window_pictures;
 #[cfg(target_arch = "wasm32")]
 mod workspace_records;
 // When graphics start-up is said to stall: its tests run on the host too.
@@ -262,3 +311,10 @@ mod viewport;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod frame_pacing;
+// How often a lost GPU is made again: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod gpu_recovery;

@@ -3,6 +3,7 @@
 //! promotion (`# ` -> H1, etc). No demotion once a block is a heading, and promotion only fires on
 //! an *empty* paragraph, matching the slash-menu convention.
 
+use crate::i18n::{widget_format, widget_text};
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -11,12 +12,11 @@ use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -27,13 +27,14 @@ use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_p
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Button;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
-use crate::widget::{EventCtx, Widget};
+use crate::widget::{EventCtx, Remount, StructureChange, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
 pub const MAX_LIST_INDENT: u8 = 5;
@@ -493,6 +494,8 @@ struct BlockSnapshot {
 
 /// Display-only, bounded projection for a live page embed. The source CRDT
 /// keeps only the stable UUID mark; hosts refresh this projection on sync.
+/// The excerpt is the start of what the page says: a card shows a few lines of
+/// it, a line per paragraph it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransclusionPreview {
     pub title: String,
@@ -516,7 +519,11 @@ struct ImageAttachment {
     command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
     edit: Button,
     done: Button,
+    /// The node the control it showed was laid out in, and whether that was the
+    /// editing one: a picture that starts being re-sourced shows its other
+    /// control, which is laid out in its own node.
     node: Option<NodeId>,
+    node_editing: bool,
 }
 
 impl ImageAttachment {
@@ -528,6 +535,7 @@ impl ImageAttachment {
             source: source.into(),
             editing: false,
             node: None,
+            node_editing: false,
             edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
                 .on_view(move || edit_command.set(Some(true))),
             done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
@@ -545,6 +553,18 @@ impl ImageAttachment {
         } else {
             &mut self.edit
         }
+    }
+
+    /// The node the picture's control was laid out in, while that is the
+    /// control the attachment shows now: a picture being re-sourced shows the
+    /// other one, whose node is the attachment's to let go of.
+    fn laid_out_node(&self) -> Option<NodeId> {
+        self.node.filter(|_| self.node_editing == self.editing)
+    }
+
+    /// The node the attachment placed, whichever of its controls it was.
+    fn placed_node(&self) -> Option<NodeId> {
+        self.node
     }
 }
 
@@ -592,6 +612,9 @@ pub struct BlockEditor {
     compact_paragraph_spacing: bool,
     /// The measured leaf that stands for the block stack in the layout tree.
     content_node: Option<NodeId>,
+    /// The editor's own node in the layout tree, where its change is carried
+    /// out in place ([`crate::widget::Widget::remount_children`]).
+    layout_node: Option<NodeId>,
     stack_leaf: Box<BlockStackLeaf>,
     /// Per-block margins and height bounds, resolved when the tree is built.
     stack_boxes: Vec<StackBox>,
@@ -731,8 +754,14 @@ pub struct BlockEditor {
     /// How the references in the text read, and where each was painted.
     references: references::References,
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
-    transclusion_rects: Vec<Option<(Rect, PageId)>>,
+    transclusion_rects: Vec<Option<(Rect, Card)>>,
+    /// How tall the card of each embed stands, by the block it is the whole of: what it shows of
+    /// what it projects was measured at the width the stack laid it out at, and the stack starts
+    /// from it when nothing has measured it yet.
+    card_heights: HashMap<String, f32>,
     pending_transclusion_opens: Vec<PageId>,
+    /// Where the links inside the cards painted last were painted, and what each names.
+    card_links: Vec<(Rect, String)>,
     pending_resource_link_opens: Vec<String>,
     pending_external_link_opens: Vec<String>,
     /// Images pasted into the editor, for its host to store and place after
@@ -782,6 +811,14 @@ pub struct BlockEditor {
     access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
+    /// Whether the slash menu offers the link command: the picker has pages or records to offer.
+    link_pages_offered: bool,
+    /// The slash commands the editor's host answers itself (a picture, a page made here).
+    host_commands: Vec<SlashHostCommand>,
+    /// The slash commands the view that placed the editor answers, by their labels.
+    view_commands: Vec<String>,
+    /// What choosing one of the view's commands does.
+    view_command: Option<Box<dyn FnMut(&str)>>,
     /// Retain decoded dimensions even if the bounded image cache evicts pixels.
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
@@ -914,6 +951,7 @@ impl BlockEditor {
             compact_paragraph_spacing: false,
             marker_x_height: None,
             content_node: None,
+            layout_node: None,
             stack_leaf: Box::new(BlockStackLeaf {
                 editor: std::ptr::null_mut(),
             }),
@@ -973,7 +1011,9 @@ impl BlockEditor {
             references: references::References::default(),
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
+            card_heights: HashMap::new(),
             pending_transclusion_opens: Vec::new(),
+            card_links: Vec::new(),
             pending_resource_link_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
             pasted_images: Vec::new(),
@@ -987,7 +1027,7 @@ impl BlockEditor {
             blocks_list: None,
             local_author: None,
             kbd_sel_anchor: None,
-            empty_hint: crate::i18n!("block-editor-empty"),
+            empty_hint: widget_text("block-editor-empty"),
             formula_preview_rects: Vec::new(),
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
@@ -997,6 +1037,10 @@ impl BlockEditor {
             access_row_builds: std::cell::Cell::new(0),
             image_preview_rects: Vec::new(),
             image_store: None,
+            link_pages_offered: false,
+            host_commands: Vec::new(),
+            view_commands: Vec::new(),
+            view_command: None,
             image_dimensions: HashMap::new(),
             image_resize: None,
             viewport_height: None,
@@ -1501,8 +1545,10 @@ impl BlockEditor {
         self.formula_chrome.clear();
         self.visual_formulas.clear();
         self.visual_formula_focus = None;
-        self.structure_dirty = true;
-        self.dirty = true;
+        // Another document is another block stack, not another editor: the
+        // stack is laid out again in place, and the pictures' controls the
+        // document keeps are its own children.
+        self.restack();
     }
 
     /// Show the blocks without taking input or focus: a read-only view of
@@ -2687,6 +2733,15 @@ impl BlockEditor {
         match command {
             SlashCommand::Block(kind) => self.slash_make_block(focused_idx, trigger, kind),
             SlashCommand::LinkPage => self.slash_link_page(focused_idx, trigger),
+            SlashCommand::EmbedPage => self.slash_embed_page(focused_idx, trigger),
+            // A command of the view that placed the editor runs there, by its label.
+            SlashCommand::Host(SlashHostCommand::Named(label)) => {
+                if let Some(run) = self.view_command.as_mut() {
+                    run(&label);
+                }
+                self.edit_pending = true;
+                self.dirty = true;
+            }
             SlashCommand::Host(command) => {
                 if let Some(block) = self.blocks.get(focused_idx) {
                     self.slash_request = Some(SlashRequest {
@@ -2743,17 +2798,29 @@ impl BlockEditor {
     /// The link picker, opened where the slash was, as if `[[` were typed
     /// there.
     fn slash_link_page(&mut self, idx: usize, trigger: Option<usize>) {
+        self.slash_pick_page(idx, trigger, "[[");
+    }
+
+    /// The same picker, choosing a record the block becomes a live projection of: what typing
+    /// `![[` there does.
+    fn slash_embed_page(&mut self, idx: usize, trigger: Option<usize>) {
+        self.slash_pick_page(idx, trigger, "![[");
+    }
+
+    fn slash_pick_page(&mut self, idx: usize, trigger: Option<usize>, opener: &str) {
         let Some(block) = self.blocks.get_mut(idx) else {
             return;
         };
         let at = trigger.unwrap_or_else(|| block.line.cursor_pos());
-        Self::insert_line_text(&mut block.line, at, "[[");
+        Self::insert_line_text(&mut block.line, at, opener);
         let caret = block.line.cursor_pos();
         self.link_popover
             .set_anchor(self.fallback_popover_anchor(idx));
         self.link_popover.set_filter("");
         self.link_popover.set_visible(true);
-        self.link_open_at = Some(at);
+        // Where the `[[` stands: the picker reads whether a `!` precedes it, which makes the
+        // block a projection of what it chooses.
+        self.link_open_at = Some(at.saturating_add(opener.len().saturating_sub(2)));
         self.link_anchor_caret = Some((idx, caret));
         self.dirty = true;
     }
@@ -2763,7 +2830,9 @@ impl BlockEditor {
     /// pages, [`Self::set_link_pages`]); and each of `host`, which the host
     /// carries out when [`Self::take_slash_request`] hands it over.
     pub fn set_slash_commands(&mut self, link_pages: bool, host: &[SlashHostCommand]) {
-        self.slash_menu.set_commands(link_pages, host);
+        self.link_pages_offered = link_pages;
+        self.host_commands = host.to_vec();
+        self.refresh_slash_commands();
     }
 
     /// [`Self::set_slash_commands`], as a builder.
@@ -2790,11 +2859,16 @@ impl BlockEditor {
         let Some(block) = self.blocks.get_mut(index) else {
             return false;
         };
+        // A record the page stands for, when it names one, is written as a reference to it.
+        let mark = match (&page.reference, page.id) {
+            (Some(reference), _) => Mark::Mention(reference.clone()),
+            (None, Some(id)) => Mark::Link(id),
+            (None, None) => return false,
+        };
         block.line.set_text(&page.title);
-        block.line.set_marks(vec![MarkSpan::new(
-            0..page.title.len(),
-            Mark::Link(page.id),
-        )]);
+        block
+            .line
+            .set_marks(vec![MarkSpan::new(0..page.title.len(), mark)]);
         block.line.set_cursor_pos(page.title.len());
         self.edit_pending = true;
         self.commit_pending = true;
@@ -3267,12 +3341,12 @@ impl BlockEditor {
                         .with_value(source)
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(crate::i18n!("block-a11y-formula-source"))
+                                .with_name(widget_text("block-a11y-formula-source"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Source,
                                 )),
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(crate::i18n!("block-a11y-formula-visual"))
+                                .with_name(widget_text("block-a11y-formula-visual"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Visual,
                                 )),
@@ -3292,8 +3366,13 @@ impl BlockEditor {
                     Some(
                         AccessNode::new(Role::Button)
                             .with_name(language.map_or_else(
-                                || crate::i18n!("block-editor-copy-code-hint"),
-                                |lang| crate::i18n!("block-a11y-copy-lang", "lang" => lang.to_string()),
+                                || widget_text("block-editor-copy-code-hint"),
+                                |lang| {
+                                    widget_format(
+                                        "block-a11y-copy-lang",
+                                        &[("lang", lang.to_string().into())],
+                                    )
+                                },
                             ))
                             .with_action_target(self.code_copy_run_target(*start, *end)?)
                             .with_bounds(*bounds)
@@ -3324,7 +3403,7 @@ impl BlockEditor {
         let mentions = self.mention_picker.access_rows();
         if !mentions.is_empty() {
             let mut list = AccessNode::new(crate::a11y::Role::List)
-                .with_name(crate::i18n!("widget-mention-list"));
+                .with_name(widget_text("widget-mention-list"));
             list.semantic_key = Some("editor.mention-picker".into());
             list.bounds = self.mention_picker.rect().map(Into::into);
             list.children = mentions;
@@ -3352,7 +3431,7 @@ impl BlockEditor {
         // Every block's controls carry the same labels: look each up once,
         // not once per block per frame.
         let labels = AccessRowContext {
-            change_type: crate::i18n!("block-editor-change-type"),
+            change_type: widget_text("block-editor-change-type"),
             text: crate::i18n::I18nManager::lookup("widget-block-text", None),
             indent: crate::i18n::I18nManager::lookup("widget-block-indent", None),
             outdent: crate::i18n::I18nManager::lookup("widget-block-outdent", None),
@@ -3517,7 +3596,7 @@ impl BlockEditor {
         } = *inputs;
         let mut block_children = vec![
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!("block-a11y-move-up"))
+                .with_name(widget_text("block-a11y-move-up"))
                 .with_action_target(Self::block_move_target(&block.id, "up"))
                 .with_bounds(bounds)
                 .with_state(
@@ -3526,7 +3605,7 @@ impl BlockEditor {
                         .disabled(up_disabled),
                 ),
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!("block-a11y-move-down"))
+                .with_name(widget_text("block-a11y-move-down"))
                 .with_action_target(Self::block_move_target(&block.id, "down"))
                 .with_bounds(bounds)
                 .with_state(
@@ -3564,20 +3643,26 @@ impl BlockEditor {
             );
         }
         if let Some(target) = transclusion_target(block) {
-            let name = self
-                .transclusion_previews
-                .get(&target)
-                .map_or("embedded note", |preview| preview.title.as_str());
+            let name = match &target {
+                Card::Page(page) => self.transclusion_previews.get(page).map_or_else(
+                    || "embedded note".to_owned(),
+                    |preview| preview.title.clone(),
+                ),
+                Card::Record(reference) => self.reference_title(reference, block.text()),
+            };
             let card_bounds = self
                 .transclusion_rects
                 .get(index)
-                .and_then(|entry| *entry)
-                .map_or(line, |(rect, _)| rect);
+                .and_then(|entry| entry.as_ref().map(|(rect, _)| *rect))
+                .map_or(line, |rect| rect);
             block_children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-a11y-open-embed", "title" => name.to_string()))
-                    .with_description(crate::i18n!("block-a11y-embed-description"))
-                    .with_action_target(transclusion_action_target(target))
+                    .with_name(widget_format(
+                        "block-a11y-open-embed",
+                        &[("title", name.into())],
+                    ))
+                    .with_description(widget_text("block-a11y-embed-description"))
+                    .with_action_target(target.action_target())
                     .with_bounds(card_bounds)
                     .with_state(AccessState::new().focusable(true)),
             );
@@ -3637,15 +3722,17 @@ impl BlockEditor {
                             }
                             AccessNode::new(Role::Cell)
                                 .with_name(if row_index == 0 {
-                                    crate::i18n!(
+                                    widget_format(
                                         "block-a11y-table-column",
-                                        "column" => column_index.saturating_add(1)
+                                        &[("column", column_index.saturating_add(1).into())],
                                     )
                                 } else {
-                                    crate::i18n!(
+                                    widget_format(
                                         "block-a11y-table-cell",
-                                        "row" => row_index,
-                                        "column" => column_index.saturating_add(1)
+                                        &[
+                                            ("row", row_index.into()),
+                                            ("column", column_index.saturating_add(1).into()),
+                                        ],
                                     )
                                 })
                                 .with_description(decode_table_cell(
@@ -3657,16 +3744,16 @@ impl BlockEditor {
                         .collect();
                     AccessNode::new(Role::Row)
                         .with_name(if row_index == 0 {
-                            crate::i18n!("block-a11y-table-header-row")
+                            widget_text("block-a11y-table-header-row")
                         } else {
-                            crate::i18n!("block-a11y-table-row", "row" => row_index)
+                            widget_format("block-a11y-table-row", &[("row", row_index.into())])
                         })
                         .with_children(cells)
                 })
                 .collect();
             block_children.push(
                 AccessNode::new(Role::Table)
-                    .with_name(crate::i18n!("block-a11y-table"))
+                    .with_name(widget_text("block-a11y-table"))
                     .with_value(block.text())
                     .with_bounds(table_bounds)
                     .with_children(rows),
@@ -3687,7 +3774,7 @@ impl BlockEditor {
             if image.editing {
                 block_children.push(
                     AccessNode::new(Role::MultilineTextInput)
-                        .with_name(crate::i18n!("notes-image-source"))
+                        .with_name(widget_text("notes-image-source"))
                         .with_value(block.text())
                         .with_action_target(format!("notes.image-source:{}", block.id))
                         .with_bounds(line)
@@ -3713,7 +3800,7 @@ impl BlockEditor {
             block_children.push(
                 AccessNode::new(Role::Image)
                     .with_name(if alt.is_empty() {
-                        crate::i18n!("block-image-untitled")
+                        widget_text("block-image-untitled")
                     } else {
                         alt.to_owned()
                     })
@@ -3724,11 +3811,11 @@ impl BlockEditor {
         for span in block.line.marks() {
             let (name, target) = match &span.mark {
                 Mark::Link(id) if !id.is_nil() => (
-                    crate::i18n!("block-a11y-open-link"),
+                    widget_text("block-a11y-open-link"),
                     page_link_action_target(*id),
                 ),
                 Mark::ExternalLink(url) => (
-                    crate::i18n!("block-a11y-open-external"),
+                    widget_text("block-a11y-open-external"),
                     external_link_action_target(url),
                 ),
                 Mark::ResourceLink(href) => (
@@ -3767,10 +3854,15 @@ impl BlockEditor {
         // in the kind's own words, which the role alone does not say.
         let said = block.text().lines().next().unwrap_or_default().trim();
         let name = if said.is_empty() {
-            crate::i18n!(
+            widget_format(
                 "block-a11y-block",
-                "kind" => accessible_block_name(&block.kind, Some(ordinal)),
-                "position" => position
+                &[
+                    (
+                        "kind",
+                        accessible_block_name(&block.kind, Some(ordinal)).into(),
+                    ),
+                    ("position", position.into()),
+                ],
             )
         } else {
             said.to_owned()
@@ -3803,7 +3895,10 @@ impl BlockEditor {
         // Also in words, which every screen reader reads: the platform
         // bridge does not carry a group's level.
         if level > 1 {
-            group.with_description(crate::i18n!("block-a11y-level", "level" => level))
+            group.with_description(widget_format(
+                "block-a11y-level",
+                &[("level", level.into())],
+            ))
         } else {
             group
         }
@@ -4149,7 +4244,7 @@ impl BlockEditor {
             event,
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
+                button: MouseButton::Left,
                 ..
             }
         );
@@ -4167,7 +4262,57 @@ impl BlockEditor {
     }
 
     pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
+        self.link_pages_offered = true;
         self.link_popover.set_items(pages);
+        self.refresh_slash_commands();
+    }
+
+    /// Offer the records a view names in the `[[` picker and the slash menu's link command:
+    /// choosing one writes a run that refers to it, which every reader reads as it reads now.
+    pub fn set_links(&mut self, links: impl IntoIterator<Item = (String, String)>) {
+        let entries: Vec<PageEntry> = links
+            .into_iter()
+            .map(|(reference, title)| PageEntry::link(&reference, &title))
+            .collect();
+        self.link_pages_offered = !entries.is_empty();
+        self.link_popover.set_items(entries);
+        self.refresh_slash_commands();
+    }
+
+    /// Offer the commands a view answers besides the block kinds, by their labels: choosing one
+    /// runs [`Self::on_command`].
+    pub fn set_view_commands(&mut self, commands: &[String]) {
+        self.view_commands = commands.to_vec();
+        self.refresh_slash_commands();
+    }
+
+    /// The slash menu's rows: the block kinds, a link when there are pages or records to link,
+    /// and each command the host or the view answers.
+    fn refresh_slash_commands(&mut self) {
+        let mut host = self.host_commands.clone();
+        host.extend(
+            self.view_commands
+                .iter()
+                .map(|label| SlashHostCommand::Named(label.clone())),
+        );
+        self.slash_menu.set_commands(self.link_pages_offered, &host);
+    }
+
+    /// Run `command` with the label of the view's slash command the person chose, each time.
+    pub fn on_command(&mut self, command: impl FnMut(&str) + 'static) {
+        self.view_command = Some(Box::new(command));
+    }
+
+    /// The document's headings, each with its level (1 for `#`), in the order they stand.
+    #[must_use]
+    pub fn headings(&self) -> Vec<(u8, String)> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::Heading(level) => Some((level, block.text().to_owned())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Supply an asynchronous, host-policy-owned image loader. The editor
@@ -4281,7 +4426,7 @@ impl BlockEditor {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button: winit::event::MouseButton::Left,
                 ..
             } => {
                 let Some(index) = (0..self.blocks.len()).find(|&index| {
@@ -4375,7 +4520,7 @@ impl BlockEditor {
                     || hovered
                     || image.button().is_focused()
                     || (self.is_focused && self.focused == Some(index));
-                if visible && let Some(node) = image.node {
+                if visible && let Some(node) = image.laid_out_node() {
                     image
                         .button_mut()
                         .handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -4522,7 +4667,7 @@ impl BlockEditor {
     }
 
     fn refresh_image_attachments(&mut self) {
-        let previous_count = self.image_attachments.len();
+        let had: Vec<String> = self.image_attachments.keys().cloned().collect();
         let commands = self
             .image_attachments
             .iter()
@@ -4549,7 +4694,13 @@ impl BlockEditor {
                 attachment.source = block.text().into();
             }
         }
-        if self.image_attachments.len() != previous_count {
+        // A picture that came or went changes the controls under the editor: one
+        // it keeps is no change, whatever a new document kept the same count.
+        if self.image_attachments.len() != had.len()
+            || had
+                .iter()
+                .any(|id| !self.image_attachments.contains_key(id))
+        {
             self.structure_dirty = true;
             self.dirty = true;
         }
@@ -4574,7 +4725,7 @@ impl BlockEditor {
     fn document_access_node(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Document)
-            .with_description(crate::i18n!("block-a11y-document"))
+            .with_description(widget_text("block-a11y-document"))
             .with_state(
                 AccessState::new()
                     .focusable(self.is_focusable())
@@ -4642,29 +4793,31 @@ impl BlockEditor {
     /// A stale layout intentionally refuses rather than approximating with a
     /// different theme or font.
     pub fn link_at_point(&self, point: Point) -> Option<LinkTarget> {
-        if let Some(id) = self
+        if let Some(page) = self
             .transclusion_rects
             .iter()
             .flatten()
-            .find_map(|(rect, id)| rect.contains(point).then_some(*id))
+            .find_map(|(rect, card)| match card {
+                Card::Page(id) if rect.contains(point) => Some(*id),
+                Card::Page(_) | Card::Record(_) => None,
+            })
         {
-            return Some(LinkTarget::Page(id));
+            return Some(LinkTarget::Page(page));
         }
         self.live_link_hits
             .iter()
             .find_map(|(rect, target)| rect.contains(point).then(|| target.clone()))
     }
 
-    pub fn set_transclusion_previews(&mut self, previews: HashMap<PageId, TransclusionPreview>) {
-        if self.transclusion_previews != previews {
-            self.transclusion_previews = previews;
-            self.dirty = true;
-            self.structure_dirty = true;
+    /// Open what the card a click landed on projects, or what a link inside it names. A page
+    /// the host keeps is left to it ([`Self::link_at_point`]); a record any app keeps is
+    /// activated as the reference it is, so the host opens it wherever it lives. `true` when a
+    /// card was.
+    /// Open what `reference` names, as activating it does.
+    fn open_reference(&mut self, reference: &str) {
+        if let Some(open) = self.references.on_open.as_mut() {
+            open(reference);
         }
-    }
-
-    pub fn take_transclusion_open(&mut self) -> Option<PageId> {
-        self.pending_transclusion_opens.pop()
     }
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
@@ -4937,18 +5090,25 @@ impl BlockEditor {
         let (Some(head), Some(tail)) = (text.get(..head_end), text.get(cursor..)) else {
             return;
         };
-        let mark_start = head_end;
+        // A record a view offers is written as a reference to it, which every reader reads as
+        // it reads now: projected where the paragraph is nothing but it (`![[`, "Embed note"),
+        // and mentioned in the prose otherwise. A page is written as the link its id names.
+        let projection = embedded && head.trim().is_empty() && tail.trim().is_empty();
+        let (head, tail) = if projection { ("", "") } else { (head, tail) };
+        let mark = match (&page.reference, embedded, projection, page.id) {
+            (Some(reference), _, true, _) => Mark::Embed(reference.clone()),
+            (Some(reference), _, false, _) => Mark::Mention(reference.clone()),
+            (None, true, _, Some(id)) => Mark::Transclusion(id),
+            (None, false, _, Some(id)) => Mark::Link(id),
+            (None, _, _, None) => return,
+        };
+        let mark_start = head.len();
         let title_end = mark_start.saturating_add(page.title.len());
         let mut new_text = String::with_capacity(text.len().saturating_add(page.title.len()));
         new_text.push_str(head);
         new_text.push_str(&page.title);
         new_text.push_str(tail);
         b.line.set_text(&new_text);
-        let mark = if embedded {
-            Mark::Transclusion(page.id)
-        } else {
-            Mark::Link(page.id)
-        };
         b.line.add_mark(MarkSpan::new(mark_start..title_end, mark));
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
@@ -5919,43 +6079,6 @@ pub(super) fn measure_table_preview_height(
     markdown_table_layout(source, width, renderer, theme).height() as f32
 }
 
-/// A block that is only a Markdown picture: its description and where its
-/// bytes are. A width the person sized it to (`![alt|480](…)`, as Obsidian
-/// writes it) is not part of the description; [`markdown_image_parts`]
-/// reads it.
-fn standalone_markdown_image(source: &str) -> Option<(&str, &str)> {
-    let (alt, destination, _) = markdown_image_parts(source)?;
-    Some((alt, destination))
-}
-
-/// The narrowest and widest a person can size a picture to.
-const IMAGE_WIDTH_RANGE: std::ops::RangeInclusive<u32> = 48..=4096;
-
-fn markdown_image_parts(source: &str) -> Option<(&str, &str, Option<u32>)> {
-    let source = source.trim();
-    let body = source.strip_prefix("![")?;
-    let (alt, destination) = body.split_once("](")?;
-    let destination = destination.strip_suffix(')')?.trim();
-    if destination.is_empty() || destination.contains(['\n', '\r']) {
-        return None;
-    }
-    let (alt, width) = match alt.rsplit_once('|') {
-        Some((text, width)) => match width.trim().parse::<u32>() {
-            Ok(width) if IMAGE_WIDTH_RANGE.contains(&width) => (text, Some(width)),
-            _ => (alt, None),
-        },
-        None => (alt, None),
-    };
-    Some((alt.trim(), destination, width))
-}
-
-/// `source` with its picture sized to `width` logical pixels.
-fn with_markdown_image_width(source: &str, width: u32) -> Option<String> {
-    let (alt, destination, _) = markdown_image_parts(source)?;
-    let width = width.clamp(*IMAGE_WIDTH_RANGE.start(), *IMAGE_WIDTH_RANGE.end());
-    Some(format!("![{alt}|{width}]({destination})"))
-}
-
 fn formula_run_end(blocks: &[Block], start: usize) -> usize {
     let Some(descriptor) = blocks
         .get(start)
@@ -6069,7 +6192,7 @@ fn draw_formula_preview(
     if source.trim().is_empty() {
         text_renderer.draw_text(
             scene,
-            &crate::i18n!("block-formula-empty"),
+            &widget_text("block-formula-empty"),
             12.0,
             theme.tokens.colors.text_dim,
             transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
@@ -6105,8 +6228,10 @@ fn draw_formula_preview(
         theme.tokens.colors.text_primary,
     );
     if let Some(diagnostic) = parsed.diagnostics.first() {
-        let mut message =
-            crate::i18n!("block-formula-diagnostic", "message" => diagnostic.message.clone());
+        let mut message = widget_format(
+            "block-formula-diagnostic",
+            &[("message", diagnostic.message.clone().into())],
+        );
         if message.chars().count() > 90 {
             let mut truncated: String = message.chars().take(89).collect();
             truncated.push('…');
@@ -6156,12 +6281,12 @@ fn draw_formula_chrome(
     for (rect, label, selected) in [
         (
             chrome.source_button,
-            crate::i18n!("block-formula-source"),
+            widget_text("block-formula-source"),
             chrome.descriptor.mode == crate::math::FormulaMode::Source,
         ),
         (
             chrome.visual_button,
-            crate::i18n!("block-formula-visual"),
+            widget_text("block-formula-visual"),
             chrome.descriptor.mode == crate::math::FormulaMode::Visual,
         ),
     ] {
@@ -6452,6 +6577,24 @@ pub fn document_selection_presence_key(start_block_id: &str, span: usize) -> Pre
     }
 }
 
+/// A caret (`start == end`) or band of one block's line, at the geometry
+/// that line draws a peer's own at.
+fn line_range_rects(
+    line: &RichTextLine,
+    theme: &crate::theme::Theme,
+    start: usize,
+    end: usize,
+) -> Vec<vello::kurbo::Rect> {
+    if start >= end {
+        vec![line.caret_rect(theme, start)]
+    } else {
+        line.inner()
+            .selection_rects(theme, start, end)
+            .into_iter()
+            .collect()
+    }
+}
+
 /// `(start block id, span)` of a document selection key.
 fn document_selection_parts(key: &PresenceKey) -> Option<(&str, usize)> {
     let PresenceKey::Widget { path } = key else {
@@ -6487,7 +6630,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
 }
 
 fn accessible_kind_name(kind: &BlockKind) -> String {
-    crate::i18n!(match kind {
+    widget_text(match kind {
         BlockKind::Paragraph => "block-kind-paragraph",
         BlockKind::Quote => "block-kind-quote",
         BlockKind::Heading(_) => "block-kind-heading",
@@ -6511,9 +6654,10 @@ fn accessible_block_name(kind: &BlockKind, ordinal: Option<u32>) -> String {
             accessible_kind_name(kind),
             list_marker::ordinal_label(ordinal.unwrap_or(1), *indent)
         ),
-        BlockKind::Callout(callout) => {
-            crate::i18n!("block-kind-named-callout", "name" => callout.label())
-        }
+        BlockKind::Callout(callout) => widget_format(
+            "block-kind-named-callout",
+            &[("name", callout.label().into())],
+        ),
         _ => accessible_kind_name(kind),
     }
 }
@@ -7696,7 +7840,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     // What the picture is (its description), and, once loading gave up,
     // why it is not shown; never its storage address.
     let label = if alt.is_empty() {
-        crate::i18n!("block-image-untitled")
+        widget_text("block-image-untitled")
     } else {
         alt.to_owned()
     };
@@ -7715,7 +7859,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     {
         ctx.text_renderer.draw_style(
             ctx.scene,
-            &crate::i18n!("block-image-missing"),
+            &widget_text("block-image-missing"),
             ctx.theme.tokens.colors.text_dim,
             ctx.transform
                 .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
@@ -7783,7 +7927,7 @@ fn draw_block(
             let mut quiet = ctx.theme.clone();
             quiet.text_primary = quiet.text_dim;
             quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
-            b.line.draw(
+            b.line.draw_child(
                 ctx.scene,
                 ctx.transform,
                 ctx.text_renderer,
@@ -7843,7 +7987,7 @@ fn draw_block(
             // behind that editor is still there, just not painted.
             let descriptor = formula_descriptor(&b.kind);
             if descriptor.is_none_or(|value| value.mode == crate::math::FormulaMode::Source) {
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -7857,7 +8001,7 @@ fn draw_block(
         BlockKind::Table { visual } => {
             if !visual {
                 let outer = ctx.table_cells.is_some().then(|| std::mem::take(ctx.scene));
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -7887,7 +8031,7 @@ fn draw_block(
             return;
         }
     }
-    b.line.draw(
+    b.line.draw_child(
         ctx.scene,
         ctx.transform,
         ctx.text_renderer,
@@ -7924,22 +8068,6 @@ fn damages_where_it_paints(kind: &BlockKind) -> bool {
     }
 }
 
-fn transclusion_target(block: &Block) -> Option<PageId> {
-    let text_len = block.text().len();
-    block.line.marks().iter().find_map(|span| match &span.mark {
-        Mark::Transclusion(id)
-            if !id.is_nil() && span.range.start == 0 && span.range.end == text_len =>
-        {
-            Some(*id)
-        }
-        _ => None,
-    })
-}
-
-fn transclusion_action_target(id: PageId) -> String {
-    format!("notes.transclusion:{id}")
-}
-
 fn page_link_action_target(id: PageId) -> String {
     format!("notes.page-link:{id}")
 }
@@ -7950,98 +8078,6 @@ fn external_link_action_target(url: &str) -> String {
 
 fn resource_link_action_target(href: &str) -> String {
     format!("notes.resource-link:{href}")
-}
-
-fn draw_transclusion_card(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    preview: Option<&TransclusionPreview>,
-) {
-    let tokens = &theme.tokens;
-    let card = vello::kurbo::RoundedRect::from_rect(
-        rect.inflate(-1.0, -1.0),
-        f64::from(tokens.radii.control),
-    );
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        crate::surface::edge_on(tokens.colors.surfaces.raised),
-        None,
-        &card,
-    );
-    let (title, excerpt) = preview.map_or(
-        (
-            crate::i18n!("block-embed-missing-title"),
-            crate::i18n!("block-embed-missing"),
-        ),
-        |p| (p.title.clone(), p.excerpt.clone()),
-    );
-    // An embedded note is an object you open: a note glyph and its title on
-    // the first line with a trailing chevron (the whole card opens it), its
-    // excerpt as the secondary line. No "Embedded note · Open" chain.
-    let pad = f64::from(tokens.spacing.s4);
-    let gap = f64::from(tokens.spacing.s2);
-    let icon_side = f64::from(tokens.metrics.icon_sm * theme.text_scale);
-    let title_style = theme.text(crate::tokens::TextRole::Subheading);
-    let excerpt_style = theme.text(crate::tokens::TextRole::Body);
-    let ink = tokens.colors.on_surface(tokens.colors.surfaces.raised);
-    let (_, title_h) = text_renderer.measure_style("Ag", None, &title_style);
-    let title_h = f64::from(title_h);
-    let title_y = rect.y0 + pad;
-    let chevron_x = rect.x1 - pad - icon_side;
-    let icon_rect = Rect::new(
-        rect.x0 + pad,
-        title_y + (title_h - icon_side) / 2.0,
-        rect.x0 + pad + icon_side,
-        title_y + (title_h + icon_side) / 2.0,
-    );
-    crate::icons::draw_icon(
-        scene,
-        transform,
-        icon_rect,
-        crate::icons::Icon::FileText,
-        ink.ink_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    crate::icons::draw_icon(
-        scene,
-        transform,
-        Rect::new(chevron_x, icon_rect.y0, chevron_x + icon_side, icon_rect.y1),
-        crate::icons::Icon::ChevronRight,
-        ink.ink_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    let title_x = icon_rect.x1 + gap;
-    let title_w = (chevron_x - gap - title_x).max(1.0);
-    let title = text_renderer.elide_to_width_style(&title, title_w as f32, &title_style);
-    text_renderer.draw_style(
-        scene,
-        &title,
-        ink.ink,
-        transform.pre_translate((title_x, title_y).into()),
-        None,
-        &title_style,
-    );
-    let excerpt_w = (rect.x1 - pad - title_x).max(1.0);
-    let excerpt = text_renderer.elide_to_width_style(&excerpt, excerpt_w as f32, &excerpt_style);
-    text_renderer.draw_style(
-        scene,
-        &excerpt,
-        ink.ink_dim,
-        transform.pre_translate((title_x, title_y + title_h + f64::from(tokens.spacing.s1)).into()),
-        None,
-        &excerpt_style,
-    );
 }
 
 fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
@@ -8493,8 +8529,10 @@ impl BlockEditor {
                 && is_paragraph[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_paragraph[previous]);
-            // An embed (an embedded note, an image) is an object in the
-            // flow: it stands a group gap from the text on either side.
+            // An embed (an embedded note, an image) is an object in the flow: the text it
+            // stands between is one group of prose, so it sits a group gap from the line
+            // above it and from the one below, the same distance a page puts between the
+            // groups a person reads down.
             let around_embed = embeds.get(i).copied().unwrap_or(false)
                 || i.checked_sub(1)
                     .and_then(|previous| embeds.get(previous).copied())
@@ -8505,25 +8543,32 @@ impl BlockEditor {
             let list_item_pair = is_list_item[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_list_item[previous]);
+            let rhythm = &theme.tokens.spacing.rhythm;
             let paragraph_gap = if self.compact_paragraph_spacing {
-                theme.tokens.spacing.s1
+                rhythm.tight
             } else {
-                theme.tokens.spacing.s2
+                rhythm.related
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if heading_above {
-                theme.tokens.spacing.s6 * theme.text_scale
-            } else if against_surface || around_embed {
-                theme.tokens.spacing.s4 * theme.text_scale
+            } else if heading_above || around_embed {
+                // The gap between groups keeps a heading off the line above it and an embed off
+                // the text on either side.
+                rhythm.group * theme.text_scale
+            } else if against_surface {
+                // A surface a block paints of its own reaches past its box, so it stands a
+                // section gap from the text around it.
+                rhythm.section * theme.text_scale
             } else if heading_below {
-                theme.tokens.spacing.s3 * theme.text_scale
+                // What a heading opens stands at the closest gap the rhythm has: the distance
+                // from the heading down to it is a third of the distance up to the heading.
+                rhythm.tight * theme.text_scale
             } else if list_item_pair {
                 paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {
-                theme.tokens.spacing.s1 * theme.text_scale
+                rhythm.tight * theme.text_scale
             } else {
-                theme.tokens.spacing.s2 * theme.text_scale
+                rhythm.related * theme.text_scale
             };
             if is_formula_end.get(i).copied().unwrap_or(false) {
                 stack_box.min = if formula_descriptor(&b.kind)
@@ -8535,7 +8580,14 @@ impl BlockEditor {
                 };
             }
             if transclusion_target(b).is_some() {
-                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+                // The card shows what it projects, so its height is the height of that content:
+                // the stack measures it at the width it lays the blocks out at, and starts here
+                // from the height it measured last.
+                stack_box.min = self
+                    .card_heights
+                    .get(&b.id)
+                    .copied()
+                    .unwrap_or(TRANSCLUSION_MIN_HEIGHT * theme.text_scale);
             }
             self.stack_boxes.push(stack_box);
         }
@@ -8612,6 +8664,9 @@ impl BlockEditor {
     /// inputs are unchanged reuses its cached height, so the cost of an edit does not grow with the
     /// document; without a text renderer, a line keeps the height it last measured.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
+        if let Some(text_renderer) = text_renderer.as_deref_mut() {
+            self.measure_card_heights(width, text_renderer);
+        }
         let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
             let shaping = (
@@ -8654,11 +8709,10 @@ impl BlockEditor {
                     }
                     block.line.measure_stacked(width, text_renderer)
                 }
-                // No renderer to measure with: the line keeps the height it last measured, at
-                // this width or the one before it, so a restack the host solves without
-                // measuring cannot clip a line it cannot measure here. A line never measured
-                // counts as empty.
-                (None, None) => block.line.last_height().unwrap_or(0.0),
+                // No renderer to measure with: the line keeps the tallest height it measured
+                // at any width, so a restack the host solves without measuring cannot clip a
+                // line it cannot measure here. A line never measured counts as empty.
+                (None, None) => block.line.tallest_height().unwrap_or(0.0),
             };
             stack.measured |= stack_box.fixed.is_none();
             let height = stack_box.fixed.unwrap_or(content).max(stack_box.min);
@@ -8719,6 +8773,17 @@ impl BlockEditor {
             rects.push(Rect::new(x0, y0, x0 + width, y0 + f64::from(height)));
         }
         rects
+    }
+}
+
+impl crate::widget::TextFits for BlockEditor {
+    /// A block's box is the height its text measured at the width it is applied at, so a box
+    /// that cannot hold its text means the stack gave the line another width's height: rows
+    /// laid out and never painted.
+    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<crate::widget::CutText> {
+        self.blocks
+            .iter_mut()
+            .find_map(|block| crate::widget::TextFits::cut_text(&mut block.line, text))
     }
 }
 
@@ -8855,8 +8920,15 @@ impl super::find_bar::Findable for BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(
         dyn crate::presence::capability::PublishesPresence,
-        dyn super::find_bar::Findable
+        dyn super::find_bar::Findable,
+        dyn crate::widget::TextFits
     );
+
+    /// The document's blocks as what they are: paragraphs, headings, list
+    /// items, with their marks and the caret.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.blocks(self.composed_blocks());
+    }
 
     /// The described component's instance, for the generic adapter to take new props in place
     /// and for a harness to read it by type.
@@ -8998,46 +9070,12 @@ impl Widget for BlockEditor {
                 style.position = taffy::Position::Absolute;
                 let _ = taffy.set_style(button_node, style);
                 image.node = Some(button_node);
+                image.node_editing = image.editing;
                 layout_children.push(button_node);
             }
         }
-        let style = Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            align_items: Some(taffy::AlignItems::Stretch),
-            gap: taffy::Size {
-                width: length(0.0_f32),
-                height: length(0.0_f32),
-            },
-            // The drag handles stand in the editor's own leading column,
-            // so a host leaves no gutter for them and they are never
-            // clipped by the window edge at any text scale.
-            padding: taffy::Rect {
-                left: length(self.handle_column() as f32),
-                right: length(0.0_f32),
-                top: length(0.0_f32),
-                bottom: length(0.0_f32),
-            },
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.widget_node(style, &layout_children, node_map, self);
-        // A document's body hangs its handle lane outside the text column, so its text starts
-        // on the page's content edge, under the title, and still runs to the column's end, as
-        // native Notes lines a note's title up with its text. It is placed there, not margined
-        // there: a margin would have the layout ask the block stack for heights at a second
-        // width than the one it is applied at, and its blocks then paint taller than the rect
-        // they got.
-        if self.body.is_some() {
-            let inset = self.text_inset(theme);
-            if let Ok(mut hung) = taffy.style(node).cloned() {
-                hung.inset.left = length(-inset as f32);
-                let _ = taffy.set_style(node, hung);
-            }
-        }
+        let node = taffy.widget_node(self.own_style(theme), &layout_children, node_map, self);
+        self.layout_node = Some(node);
         node
     }
 
@@ -9138,8 +9176,13 @@ impl Widget for BlockEditor {
                 ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
-                let source_bottom =
-                    (original.y0 + f64::from(b.line.image_source_height())).min(original.y1);
+                // The room the picture's source takes at the width this block is applied at,
+                // not the one it was last measured at: a host measures lines at widths it never
+                // applies, and a source measured at one of those would place the picture inside
+                // itself.
+                let source_bottom = (original.y0
+                    + f64::from(b.line.image_source_height_at(original.width())))
+                .min(original.y1);
                 if let Some(slot) = self.image_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
                         original.x0 + pad,
@@ -9438,6 +9481,42 @@ impl Widget for BlockEditor {
             .retained_block_selection
             .as_ref()
             .and_then(|_| self.selected_block_range());
+        // What each card shows, read before the blocks are painted: how what it projects reads
+        // now, and the start of its own content, are the editor's, not the block's.
+        let cards: Vec<Option<(String, Vec<tilo_ui_graph::rich::Run>)>> = self
+            .blocks
+            .iter()
+            .map(|block| {
+                Some(match transclusion_target(block)? {
+                    Card::Page(id) => self.transclusion_previews.get(&id).map_or_else(
+                        || {
+                            (
+                                widget_text("block-embed-missing-title"),
+                                vec![tilo_ui_graph::rich::Run {
+                                    text: widget_text("block-embed-missing"),
+                                    reference: None,
+                                }],
+                            )
+                        },
+                        |preview| {
+                            (
+                                preview.title.clone(),
+                                vec![tilo_ui_graph::rich::Run {
+                                    text: preview.excerpt.clone(),
+                                    reference: None,
+                                }],
+                            )
+                        },
+                    ),
+                    Card::Record(reference) => (
+                        self.reference_title(&reference, block.text()),
+                        self.reference_preview(&reference)
+                            .unwrap_or_default()
+                            .to_vec(),
+                    ),
+                })
+            })
+            .collect();
         let x_height_em = list_marker::x_height_em(&mut self.marker_x_height, text_renderer, theme);
         let mut ctx = BlockDrawCtx {
             scene,
@@ -9468,6 +9547,9 @@ impl Widget for BlockEditor {
 
         let outside_prefix = track_paragraphs.then(|| std::mem::take(ctx.scene));
         let mut dragged_scene: Option<(Scene, Rect)> = None;
+        // Where the links inside the cards painted this frame land: they open what they name,
+        // the card under them opening the thing that projects.
+        let mut card_links: Vec<(Rect, String)> = Vec::new();
         #[cfg(test)]
         drop(setup_probe);
         #[cfg(test)]
@@ -9515,14 +9597,19 @@ impl Widget for BlockEditor {
             b.line.inner_mut().suppress_caret_paint(
                 preceding.is_some() || self.caret_paint_suppressed || caret_apart,
             );
-            if let Some(Some((rect, id))) = self.transclusion_rects.get(idx) {
-                draw_transclusion_card(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text_renderer,
-                    ctx.theme,
+            if let Some(Some((rect, _))) = self.transclusion_rects.get(idx) {
+                let (title, body) = cards.get(idx).cloned().flatten().unwrap_or_default();
+                draw_embed_card(
+                    &mut cards::CardPaint {
+                        scene: &mut *ctx.scene,
+                        transform: ctx.transform,
+                        text_renderer: &mut *ctx.text_renderer,
+                        theme: ctx.theme,
+                    },
                     *rect,
-                    self.transclusion_previews.get(id),
+                    &title,
+                    &body,
+                    &mut card_links,
                 );
             } else {
                 // A table's cells become parts of their own.
@@ -9643,20 +9730,24 @@ impl Widget for BlockEditor {
                         y + 24.0 * self.text_scale,
                     ));
                 }
-                control
-                    .button
-                    .draw(ctx.scene, ctx.transform, ctx.text_renderer, theme, presence);
+                control.button.draw_child(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text_renderer,
+                    theme,
+                    presence,
+                );
                 if self.focused == Some(idx)
                     || Rect::new(rect.x0, top, rect.x1, rect.y1).contains(self.last_mouse_pos)
                 {
-                    control.add_row.draw(
+                    control.add_row.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
                         theme,
                         presence,
                     );
-                    control.add_column.draw(
+                    control.add_column.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
@@ -9848,6 +9939,7 @@ impl Widget for BlockEditor {
                 }
             }
         }
+        self.card_links = card_links;
         #[cfg(test)]
         drop(blocks_probe);
         #[cfg(test)]
@@ -9941,7 +10033,7 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let code_label = crate::i18n!("block-kind-code-short");
+            let code_label = widget_text("block-kind-code-short");
             let language = match self.blocks.get(*start).map(|block| &block.kind) {
                 Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
                     lang.as_str()
@@ -10009,7 +10101,7 @@ impl Widget for BlockEditor {
                 {
                     image
                         .button_mut()
-                        .draw(scene, transform, text_renderer, theme, presence);
+                        .draw_child(scene, transform, text_renderer, theme, presence);
                 }
             }
             if let Some(handle) = self.image_resize_handle(index) {
@@ -10082,6 +10174,10 @@ impl Widget for BlockEditor {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.activate_card(event) {
+            *ctx.handled = true;
+            return;
+        }
         if self.read_only {
             self.handle_cursor_moved(event, ctx.scale_factor);
             if self.activate_reference(event) {
@@ -10094,6 +10190,7 @@ impl Widget for BlockEditor {
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         self.sync_slash_query();
+        self.publish_link_query();
         let scope = match typing {
             Some((index, count, id))
                 if self.blocks.len() == count
@@ -10121,22 +10218,30 @@ impl Widget for BlockEditor {
         self.rect
     }
 
+    /// The image buttons, in block order: the ones a route reaches by index and the ones
+    /// handed out to change are the same buttons in the same order, and an attachment no
+    /// block stands is in neither.
     fn children(&self) -> Vec<&dyn Widget> {
-        self.blocks
-            .iter()
-            .filter_map(|block| {
-                self.image_attachments
-                    .get(&block.id)
-                    .map(|image| image.button() as &dyn Widget)
-            })
-            .collect()
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        for block in &self.blocks {
+            if let Some(image) = self.image_attachments.get(&block.id) {
+                children.push(image.button());
+            }
+        }
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.image_attachments
-            .values_mut()
-            .map(|image| image.button_mut() as &mut dyn Widget)
-            .collect()
+        // The attachments are kept by id, so each is placed by the block it belongs to: the
+        // same block order `children` reads them in.
+        let mut placed: Vec<(usize, &mut (dyn Widget + '_))> = Vec::new();
+        for (id, image) in &mut self.image_attachments {
+            if let Some(index) = self.blocks.iter().position(|block| block.id == *id) {
+                placed.push((index, image.button_mut()));
+            }
+        }
+        placed.sort_unstable_by_key(|(index, _)| *index);
+        placed.into_iter().map(|(_, button)| button).collect()
     }
 
     /// The one leaf the block stack is measured through, and the image
@@ -10271,7 +10376,7 @@ impl Widget for BlockEditor {
             .map(visible)
             .find(|rect| rect.contains(point))
         {
-            return Some((rect, crate::i18n!("block-editor-change-type")));
+            return Some((rect, widget_text("block-editor-change-type")));
         }
         for (rect, start, _) in &self.code_copy_hits {
             let copy_rect = visible(*rect);
@@ -10286,9 +10391,9 @@ impl Widget for BlockEditor {
                 return Some((
                     copy_rect,
                     if copied {
-                        crate::i18n!("block-editor-code-copied")
+                        widget_text("block-editor-code-copied")
                     } else {
-                        crate::i18n!("block-editor-copy-code-hint")
+                        widget_text("block-editor-copy-code-hint")
                     },
                 ));
             }
@@ -10761,6 +10866,10 @@ impl Widget for BlockEditor {
             self.dirty = true;
             return true;
         }
+        if let Some(reference) = target.strip_prefix("notes.reference:") {
+            self.open_reference(reference);
+            return true;
+        }
         if let Some(id) = target
             .strip_prefix("notes.page-link:")
             .and_then(|id| id.parse::<PageId>().ok())
@@ -10829,24 +10938,31 @@ impl Widget for BlockEditor {
             self.drawn_table_focus.clone_from(&self.table_focus_paint);
         }
         self.paint_damage.mark_drawn();
+        for block in &mut self.blocks {
+            Widget::mark_drawn(&mut block.line);
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Blocks that came or went may bring or take an image's button: a
-        // widget, which only a rebuild adds or removes.
-        if self.restack {
-            self.refresh_image_attachments();
-        }
-        let was = self.structure_dirty;
-        self.structure_dirty = false;
-        was
+        self.take_structure_change().rebuilds()
     }
 
-    /// The editor is a column of one taffy node per line; its own margins
-    /// and formula minimums are styles set at build time (a structural
-    /// change), so its size can only move when a line's does. Forwarded per
-    /// line rather than through `children()`, which the editor does not
-    /// expose, so an idle document re-measures nothing.
+    /// What changes under the editor — a document's blocks, a picture's
+    /// control, its find bar — is a change of its own children, which it
+    /// mounts and lets go of in place ([`Self::remount_children`]): every
+    /// widget it holds stays alive, so no widget above it is replaced and the
+    /// window around it is not composed again for what a note, a task or a
+    /// picture shows.
+    fn take_structure_change(&mut self) -> StructureChange {
+        self.change_of_its_own()
+    }
+
+    /// The change the editor reported, carried out where it stands: see
+    /// [`Self::remount_own`].
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.remount_own(remount)
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.restack
             || self.table_relayout
@@ -10858,6 +10974,7 @@ impl Widget for BlockEditor {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let edited = self.take_body_edits();
         let followed = self.follow_body();
+        self.publish_headings();
         super::defaults::update(self.children_mut(), state, path) || edited || followed
     }
 }
@@ -11012,6 +11129,49 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
                 .spanning("body", self.spanned_ranges(selection_across));
         }
         Some(self.drawn_at(selection))
+    }
+
+    /// Where a peer's caret or band at `key` is drawn: in the block that key
+    /// names, or across the blocks a spanning selection covers, at each
+    /// line's own caret and selection geometry.
+    fn presence_range_rects(
+        &self,
+        theme: &crate::theme::Theme,
+        key: &PresenceKey,
+        range: crate::presence::SelectionRange,
+    ) -> Vec<vello::kurbo::Rect> {
+        let named = self
+            .blocks
+            .iter()
+            .find(|block| &self.presence_key_for(&block.id) == key);
+        if let Some(block) = named {
+            return line_range_rects(&block.line, theme, range.start, range.end);
+        }
+        let Some((start_id, span)) = document_selection_parts(key) else {
+            return Vec::new();
+        };
+        let Some(start) = self.blocks.iter().position(|block| block.id == start_id) else {
+            return Vec::new();
+        };
+        let last = start
+            .saturating_add(span)
+            .min(self.blocks.len().saturating_sub(1));
+        let mut rects = Vec::new();
+        for index in start..=last {
+            let Some(line) = self.blocks.get(index).map(|block| &block.line) else {
+                break;
+            };
+            // The endpoints hold the payload's bytes; the blocks between are
+            // covered whole, as they are painted.
+            let from = if index == start { range.start } else { 0 };
+            let to = if index == last {
+                range.end
+            } else {
+                line.value().len()
+            };
+            rects.extend(line_range_rects(line, theme, from.min(to), to.max(from)));
+        }
+        rects
     }
 }
 
@@ -11520,58 +11680,6 @@ impl BlockEditor {
         }
     }
 
-    /// `TextInput` does NOT handle Tab, but intercept anyway so future
-    /// `TextInput` changes don't break the contract. Returns `true` when
-    /// the caller should stop routing this event any further.
-    fn try_tab_indent(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        use winit::event::{ElementState, KeyEvent};
-        use winit::keyboard::{Key, NamedKey};
-
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let Some(focused_idx) = self.focused else {
-            return false;
-        };
-        if !self.is_focused || self.tab_navigation || ctx.modifiers.state().alt_key() {
-            return false;
-        }
-        let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        let delta = match logical_key {
-            Key::Character(key) if command && key == "]" => 1,
-            Key::Character(key) if command && key == "[" => -1,
-            Key::Named(NamedKey::Tab)
-                if !command
-                    && (self.document_selection.is_some()
-                        || self.blocks.get(focused_idx).is_some_and(|b| {
-                            !matches!(
-                                b.kind,
-                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                            )
-                        })) =>
-            {
-                if ctx.modifiers.state().shift_key() {
-                    -1
-                } else {
-                    1
-                }
-            }
-            _ => return false,
-        };
-        self.try_indent_selection(delta);
-        *ctx.handled = true;
-        true
-    }
-
     /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
@@ -11887,6 +11995,8 @@ mod clipboard;
 mod format;
 #[path = "block_editor_html.rs"]
 mod html;
+#[path = "block_editor_keys.rs"]
+mod keys;
 pub use html::{blocks_from_html, blocks_to_html};
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
@@ -11901,9 +12011,21 @@ mod presence;
 mod present;
 #[path = "block_editor_references.rs"]
 pub mod references;
+#[path = "block_editor_remount.rs"]
+mod remount;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
+
+#[path = "block_editor_cards.rs"]
+mod cards;
+use cards::{Card, draw_embed_card, transclusion_target};
+
+#[path = "block_editor_picture_markdown.rs"]
+mod picture_markdown;
+use picture_markdown::{
+    IMAGE_WIDTH_RANGE, markdown_image_parts, standalone_markdown_image, with_markdown_image_width,
+};
 
 #[path = "block_editor_callout.rs"]
 mod callout;
@@ -11911,6 +12033,9 @@ pub use callout::CalloutKind;
 
 #[path = "block_editor_list_marker.rs"]
 mod list_marker;
+
+#[path = "block_editor_composition.rs"]
+mod composition;
 
 #[cfg(test)]
 #[path = "block_editor_list_callout_tests.rs"]
@@ -11943,6 +12068,10 @@ mod image_paste_tests;
 #[cfg(test)]
 #[path = "block_editor_clipboard_tests.rs"]
 mod clipboard_tests;
+
+#[cfg(test)]
+#[path = "block_editor_heading_tests.rs"]
+mod heading_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -13045,6 +13174,10 @@ impl BlockEditor {
 mod tests;
 
 #[cfg(test)]
+#[path = "block_editor_structure_tests.rs"]
+mod structure_tests;
+
+#[cfg(test)]
 #[path = "block_editor_access_tests.rs"]
 mod access_tests;
 
@@ -13308,6 +13441,10 @@ impl BlockEditor {
             ) {
                 self.tab_navigation = false;
             }
+        }
+
+        if self.try_heading_shortcut(event, ctx) {
+            return;
         }
 
         // TextInput does NOT handle Tab, but intercept anyway so future

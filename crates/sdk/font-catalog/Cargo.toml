@@ -18,9 +18,12 @@ serde.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-toml.workspace = true
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs"], optional = true }
 serde_json = { workspace = true, optional = true }
+
+[build-dependencies]
+# Reads `manifest.toml` into the Rust `manifest()` builds (build.rs).
+toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

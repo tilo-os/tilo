@@ -17,7 +17,8 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::Density;
-use tilo_ui::widget::{QuickTile, QuickTilePart, Widget};
+use tilo_ui::widget::DrawChild;
+use tilo_ui::widget::{QuickTile, QuickTilePart};
 
 /// What each tile shows and which state it is put in.
 enum Pose {
@@ -101,7 +102,7 @@ fn shoot(theme: &Theme, width: u32, out: &Path) {
         let y = pad + index.checked_div(columns).unwrap_or(0) as f64 * (height + gap);
         tile.apply_layout_external(Rect::new(x, y, x + tile_w, y + height));
         // A first draw takes the theme's sizes, which split the tile.
-        tile.draw(
+        tile.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut tr,
@@ -116,7 +117,7 @@ fn shoot(theme: &Theme, width: u32, out: &Path) {
             Pose::FocusSwitch => tile.set_focused_part(Some(QuickTilePart::Switch)),
             Pose::FocusDetails => tile.set_focused_part(Some(QuickTilePart::Details)),
         }
-        tile.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        tile.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
     #[allow(
         clippy::cast_possible_truncation,

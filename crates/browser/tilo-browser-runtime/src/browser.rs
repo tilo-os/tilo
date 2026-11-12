@@ -10,13 +10,10 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect};
-use ui::application::{
-    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-};
-use ui::application_view::InstanceViewStore;
+use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{PermissionContext, SharedPermissions, UserId};
-use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::record::{RecordCheckout, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -24,7 +21,6 @@ use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as
 use winit::window::{Window, WindowId};
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
-use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
@@ -144,6 +140,20 @@ pub(crate) fn wake_desktops() {
     });
 }
 
+/// Schedule a frame for every mount, desk or single application: the page
+/// draws at another device pixel ratio, and each lays out at it on its next
+/// frame.
+fn wake_mounts() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    LOOP.with_borrow(|proxy| {
+        if let Some(proxy) = proxy {
+            for id in ids {
+                let _ = proxy.send_event(id);
+            }
+        }
+    });
+}
+
 /// Whether any mount has presented a frame: code the first frame does not
 /// need (the spelling dictionaries) waits for it, so that it never shares
 /// the link or the main thread with what that frame does need.
@@ -154,10 +164,11 @@ pub(crate) fn first_frame_presented() -> bool {
     FIRST_FRAME_PRESENTED.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Code fetched on first use arrived (search, spelling, hyphenation): lay
-/// out and draw every mount again, so that what it changes shows. Runs from
-/// the loader's promise, outside any mount; a mount that is busy anyway
-/// gets a frame through the event loop.
+/// Code the page fetched on first use arrived (search, spelling, hyphenation,
+/// the data an application's bundle holds): lay out and draw every mount
+/// again, so that what it changes shows. Runs from the loader's promise,
+/// outside any mount; a mount that is busy anyway gets a frame through the
+/// event loop.
 pub(crate) fn refresh_mounts() {
     let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
     for id in ids {
@@ -272,10 +283,7 @@ impl Config {
     /// Lend Model Providers the administration; any other application
     /// gets none.
     fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
-        if crate::host_services::provider_admin_app(context.app_id()) {
-            crate::host_services::provide_provider_admin(context, self.provider_admin()?)
-                .map_err(error)?;
-        }
+        crate::host_services::provide_provider_admin(context, self.provider_admin()?);
         Ok(())
     }
 
@@ -455,6 +463,11 @@ pub(crate) struct Mount {
     checkout: Option<RecordCheckout>,
     /// The single application's package id; `None` for the desktop.
     app: Option<String>,
+    /// The page showing one application whose record the workspace still
+    /// sends: what builds the component once the record is here, or once the
+    /// workspace answered it holds none of it. Its window shows the app
+    /// arriving until then.
+    waiting: Option<Rc<AppPage>>,
     /// The workspace's presence board, as the last frame read it: who is
     /// here, where their pointers are, and when what they say animates.
     presence: presence::Presence,
@@ -497,6 +510,14 @@ pub(crate) struct Mount {
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
+    /// How many frames this mount had presented when the desk took the last
+    /// pressed key: the frame after that one is the first that can show what
+    /// the key did. A page reading its own frame counter when the browser
+    /// fires the key reads it earlier than that, as a frame can be presented
+    /// between the browser's event and the desk taking it.
+    frames_at_key: Option<u64>,
+    /// When this mount made its GPU again lately ([`Mount::frame_failed`]).
+    gpu_remakes: crate::gpu_recovery::GpuRemakes,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
     /// The last frame's layout failed and was skipped
@@ -537,8 +558,8 @@ pub(crate) struct Mount {
     cursor: winit::window::CursorIcon,
 }
 
-struct Desktop {
-    handle: tilo_desktop_surface::DesktopHandle,
+pub(crate) struct Desktop {
+    pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
     /// The person's arrangement of this desk: what the palette, a script and an
@@ -547,7 +568,7 @@ struct Desktop {
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
-    requests: crate::shell::HostRequests,
+    pub(crate) requests: crate::shell::HostRequests,
     /// Who is here and what they are doing, as the page reports it.
     here: tilo_desktop::here::Here,
     /// Who this page writes as, to find their own steps.
@@ -559,6 +580,9 @@ struct Desktop {
     /// The session the desktop serves its windows: where a window's "open
     /// another app" goes, and what it reads of the workspace's activity.
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
+    /// The workspace's history, as the session serves it: what a window asks of it, and what the
+    /// person opened from it.
+    pub(crate) activity: tilo_session::activity::Activity,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
     /// The agent grants the person took back at their door since the last
@@ -566,8 +590,13 @@ struct Desktop {
     revoked: crate::agent_door::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
+    /// The session's search, which the desk's palette asks beyond the desk's own windows and
+    /// commands: the bundle's apps and what the arrangement publishes.
+    search: Rc<tilo_session::search::SessionSearch>,
+    /// The desk's revision search last read what it publishes at.
+    search_seen: Cell<Option<u64>>,
     /// Mentions of this person in the workspace's records, and what was told.
-    mentions: RefCell<mention_notices::Mentions>,
+    mentions: RefCell<tilo_session::mentions::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: SharedPermissions,
@@ -582,6 +611,9 @@ struct Desktop {
             u64,
         )>,
     >,
+    /// The runs a finished notice already told, by the history's id: an agent's sessions that
+    /// worked one run are told of once.
+    told_runs: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Desktop {
@@ -682,6 +714,44 @@ impl Desktop {
         }
     }
 
+    /// Serve the desk's search from the session's: what stands over the desk as published actions,
+    /// the workspaces it shows, and the rows the person chose, carried out here.
+    fn follow_search(&self) {
+        // What search reads of the desk is what the desk publishes, so it is read when the desk
+        // changed and not on a frame that only drew.
+        let revision = self.handle.revision();
+        if self.search_seen.replace(Some(revision)) != Some(revision) {
+            let resources = self.arrangement.resources();
+            let (tabs, workspaces) = self.handle.read(|tree| {
+                let workspaces = tree
+                    .workspaces
+                    .iter()
+                    .map(|held| (held.id().to_string(), held.name.clone()))
+                    .collect();
+                (
+                    tree.tabs().map(|tab| tab.id).collect::<Vec<_>>(),
+                    workspaces,
+                )
+            });
+            self.search.set_workspaces(workspaces);
+            // A page bundles no programs and serves no notification centre of its own: the palette
+            // lists neither.
+            self.search.observe(&resources, tabs, None, Vec::new());
+        }
+        let refused = self.search.perform_choices(&self.handle, &mut |own| {
+            self.arrangement
+                .invoke(&own.address, &own.arguments)
+                .map(drop)
+        });
+        for (chosen, error) in refused {
+            // A row that could not be carried out opens the palette again, saying why on it.
+            let why = tilo_session::search::why_in_words(&error);
+            if !self.handle.answer_search(&chosen, why.clone()) {
+                web_sys::console::warn_1(&format!("search: {why}").into());
+            }
+        }
+    }
+
     /// The name presence shows for the person with user root `user`: here
     /// now, else as last seen, else a guest's, never their key.
     fn person_name(&self, user: &str) -> String {
@@ -691,8 +761,9 @@ impl Desktop {
     }
 
     /// Tell the surface who holds each window this page's person may not
-    /// close or move, on a desktop shared through a workspace. Whether that
-    /// changed anything.
+    /// close or move, and which agent run opened each window an agent
+    /// opened, on a desktop shared through a workspace. Whether that changed
+    /// anything.
     fn refresh_holders(&self, in_workspace: bool) -> bool {
         let holders = if in_workspace {
             let here = self.here.borrow();
@@ -730,11 +801,97 @@ impl Desktop {
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);
-        self.handle.set_holders(holders) | opened
+        let runs = in_workspace.then(|| self.shared.opened_by.borrow().clone());
+        let named = self.handle.set_opened_by(runs.unwrap_or_default());
+        self.handle.set_holders(holders) | opened | named
     }
 }
 
 impl Mount {
+    /// The desk's search and the apps still arriving, beside a frame's status.
+    fn add_desk_state(&self, value: &mut serde_json::Value) {
+        let desktop = self.desktop.as_ref();
+        value["searchOpen"] = desktop.is_some_and(|d| d.handle.search_open()).into();
+        value["searchCard"] = self.search_card().into();
+        // Whether the open search still owes rows. A settled desk presents no
+        // frame until something changes, so a page that waits for the palette's
+        // answer reads this rather than counting presented frames: the answer
+        // is the desk's own, and a frame of it may wait for the next minute.
+        value["searchSearching"] = desktop.is_some_and(|d| d.handle.search_searching()).into();
+        // The apps whose code is still on its way: a link to one of them waits
+        // for it before it asks the app's window for a view, where a large app
+        // over a slow link takes tens of seconds to arrive.
+        value["appsLoading"] = desktop
+            .map(|d| d.shared.loading_apps())
+            .unwrap_or_default()
+            .into();
+    }
+
+    /// What the open search stands on, as the desk shows it: the query the field holds and the rows
+    /// it offers, each as a name with what it says under it. A search the person pressed Enter on
+    /// and that is still up says here what they were pressing on — a card that stayed open over a
+    /// row that did nothing, or one that says why the row did not happen.
+    fn search_card(&self) -> Option<serde_json::Value> {
+        let desktop = self.desktop.as_ref().filter(|d| d.handle.search_open())?;
+        let (query, rows) = desktop.handle.search_rows();
+        Some(serde_json::json!({
+            "query": query,
+            "rows": rows.into_iter().take(16).map(|row| serde_json::json!({
+                "title": row.title,
+                "subtitle": row.subtitle,
+                "kind": row.kind,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// An app this page showed arriving builds once the workspace sent the
+    /// record its window opens, or answered it holds none of it: the component
+    /// takes the place the arrival stood in, and shows the record — the
+    /// workspace's own, or the new one it does not hold.
+    fn build_arriving(&mut self) -> Result<(), String> {
+        let Some(page) = self.waiting.clone() else {
+            return Ok(());
+        };
+        if page.arriving() {
+            return Ok(());
+        }
+        let presentation = page.present().map_err(|failure| {
+            failure
+                .as_string()
+                .unwrap_or_else(|| "the app's record did not open".to_owned())
+        })?;
+        let Presentation {
+            root,
+            stores,
+            checkout,
+            images,
+            image_owners,
+            waiting,
+            ..
+        } = presentation;
+        self.waiting = waiting;
+        let Root::Component(component) = root else {
+            // Still on its way: the window keeps showing the arrival.
+            return Ok(());
+        };
+        let wake = proxy().map_err(|failure| failure.as_string().unwrap_or_default())?;
+        let id = self.id;
+        self.frame
+            .show_component(
+                *component,
+                Arc::new(move || {
+                    let _ = wake.send_event(id);
+                }),
+            )
+            .map_err(|failure| failure.to_string())?;
+        self.stores = stores;
+        self.checkout = checkout;
+        self.images = images;
+        self.image_owners = image_owners;
+        self.pending = true;
+        Ok(())
+    }
+
     /// Send the workspace what an input just committed. An app applies the
     /// action a key or a click invokes while handling it (a message sent
     /// with Enter is in its record at once), so the others get it now,
@@ -747,7 +904,7 @@ impl Mount {
             _ => false,
         };
         if committing && let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
         }
     }
 
@@ -776,7 +933,7 @@ impl Mount {
             self.pending = true;
             self.save_desktop();
             if let Some(peer) = self.peer {
-                crate::replication::publish(peer);
+                crate::replicated::publish(peer);
             }
         }
         match result {
@@ -811,11 +968,6 @@ impl Mount {
     }
 }
 
-/// Glyphs one frame may encode. A full 4K screen of small text is far below
-/// this; only unculled off-screen content reaches it.
-const MAX_SCENE_GLYPHS: usize = 400_000;
-/// Encoded scene bytes one frame may hand to the renderer.
-const MAX_SCENE_BYTES: usize = 128 << 20;
 /// vello's adaptive scratch buffers, in total, above the viewport floors. A
 /// 60-window desktop at the capped canvas holds about 92 MiB of them, floors
 /// included. Safari kills its GPU process past 600 MB; with every buffer
@@ -855,26 +1007,6 @@ fn describe_repaint(repaint: &ui::retained_raster::Repaint, window: u64) -> Stri
     }
 }
 
-fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
-    let encoding = scene.encoding();
-    let glyphs = encoding.resources.glyphs.len();
-    let bytes = encoding
-        .path_tags
-        .len()
-        .saturating_add(encoding.path_data.len().saturating_mul(4))
-        .saturating_add(encoding.draw_tags.len().saturating_mul(4))
-        .saturating_add(encoding.draw_data.len().saturating_mul(4))
-        .saturating_add(encoding.transforms.len().saturating_mul(24))
-        .saturating_add(encoding.styles.len().saturating_mul(8));
-    if glyphs > MAX_SCENE_GLYPHS || bytes > MAX_SCENE_BYTES {
-        Err(format!(
-            "Browser runtime: frame not rendered, scene too large ({glyphs} glyphs, {bytes} encoded bytes)"
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 #[allow(
     clippy::needless_pass_by_value,
     reason = "a map_err adapter receives each error by value"
@@ -910,6 +1042,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
+    scale::install(wake_mounts);
     event_loop.spawn_app(frame_loop::Runner);
     Ok(proxy)
 }
@@ -919,6 +1052,21 @@ fn admit_runtime() -> Result<(), JsValue> {
         .with(crate::mount_service_custody::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
+
+/// The box of the field an input method is helping, and what that field is
+/// for, as the page places its hidden editor and hints the browser's input
+/// method. The one shape both the status and the input-owner read hand over.
+pub(crate) fn ime_json(window: &ui::ime::ImeWindowState) -> serde_json::Value {
+    serde_json::json!({
+        "x": window.x,
+        "y": window.y,
+        "width": window.width,
+        "height": window.height,
+        "purpose": format!("{:?}", window.content.purpose),
+        "hints": window.content.html(),
+    })
+}
+
 fn with_mount<R>(
     id: u64,
     run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
@@ -1052,7 +1200,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
         let Some(lease) = lease.as_mut() else { return Ok(js_sys::Array::new().into()); };
         let mut mount = lease.take_mount().map_err(|_| error("closed mount"))?;
     if let Some(peer) = mount.peer {
-        crate::replication::detach(peer, id);
+        crate::replicated::detach(peer, id);
     }
     mount.semantic_targets.clear();
     mount.presentation.set(false);
@@ -1137,60 +1285,18 @@ struct Presentation {
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     image_owners: crate::page_content::ImageOwners,
     desktop: Option<Desktop>,
+    /// The page showing one app whose record the workspace still sends: what
+    /// builds its component once the record is here or the workspace answered
+    /// it holds none of it.
+    waiting: Option<Rc<AppPage>>,
 }
 
 enum Root {
     Component(Box<ui::application::AppComponent>),
     Desktop(Box<crate::shell::BrowserShell>),
-}
-
-/// What the page's desktop mounts with: its stores, identity and settings.
-fn desktop_inputs(
-    config: &Config,
-    dyn_store: &Rc<dyn durable_store::DurableStore>,
-    permissions: SharedPermissions,
-) -> Result<crate::desktop::Inputs, JsValue> {
-    let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
-            .map_err(error)?,
-    );
-    Ok(crate::desktop::Inputs {
-        feedback: config.peer.and_then(crate::feedback_code::take_startup),
-        owners: RecordOwners::with_store(Rc::clone(dyn_store)),
-        store: Rc::clone(dyn_store),
-        views,
-        device: config.device.clone(),
-        salt: config
-            .peer
-            .and_then(crate::replication::device_of)
-            .unwrap_or_else(|| config.device.clone()),
-        workspace: config.workspace.clone(),
-        author: config.author(),
-        permissions,
-        models: config.models()?,
-        model_name: config
-            .models
-            .as_ref()
-            .map(crate::host_services::ModelConfig::name)
-            .unwrap_or_default(),
-        provider_admin: config.provider_admin()?,
-        peer: config.peer,
-    })
-}
-
-/// What the page offers its desktop beyond the workspace: inviting, its
-/// host and build, the About sheet's links and the layout it opens in.
-fn host_offers(config: &Config) -> crate::shell::HostOffers {
-    crate::shell::HostOffers {
-        invite: config.invite.clone(),
-        mac: config.mac,
-        host: config.host.clone(),
-        about: config.about.clone(),
-        build: config.build.clone(),
-        link_offer: config.link_offer.clone(),
-        directory: config.directory.clone(),
-        layout: config.layout,
-    }
+    /// A window standing in for its application until the record it opens
+    /// arrives: the place it reserves, showing its arrival.
+    Arriving(Box<dyn ui::widget::Widget>),
 }
 
 fn present_desktop(
@@ -1201,6 +1307,10 @@ fn present_desktop(
 ) -> Result<Presentation, JsValue> {
     let opening_permissions = permissions.clone();
     let dyn_history_store = Rc::clone(&dyn_store);
+    // What the person's mentions are told by, kept where their settings are.
+    let mentions_store = Rc::clone(&dyn_store);
+    // What the palette finds the workspace's records in: the indexes the page took in.
+    let records_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         desktop_inputs(config, &dyn_store, permissions)?,
@@ -1213,56 +1323,48 @@ fn present_desktop(
     )
     .map_err(error)?;
     let persistence = Rc::new(persistence);
-    // The model the history asks, when this page has one: the host's, else a
-    // provider the person set up here. Without one nothing is asked and the
-    // history keeps its deterministic digest.
-    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
-        .then(|| config.models().ok())
-        .flatten();
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
-    surface.set_history_source(Box::new(crate::history::PageHistory::new(
-        &config.workspace,
-        config.peer,
-        config.author(),
-        Rc::clone(&dyn_history_store),
-        shared.clone(),
-        crate::history::person_of(&here, &people, config.author()),
-        Rc::clone(&persistence),
-        models,
-    )));
-    let (session, openings) =
-        tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
-    surface.serve_activity(openings.activity());
-    let revoked = config.agent_door(&session, &shared.woken);
-    surface.set_notifications(persistence.notifications.clone());
-    if let Some(inbox) = crate::host_services::notification_inbox() {
-        surface.set_app_notifications(inbox);
-    }
+    let activity = serve_history(
+        &mut surface,
+        config,
+        dyn_history_store,
+        &shared,
+        &persistence,
+        &here,
+        &people,
+    );
+    let (session, openings, revoked) = serve_session(&mut surface, config, &shared, &persistence);
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
-    let requests = crate::shell::HostRequests::default();
-    let authorship = crate::shell::Authorship {
-        authors: Rc::clone(&shared.authors),
-        author: config.author(),
-    };
-    let wake = proxy()?;
-    let shell = crate::shell::BrowserShell::new(
-        surface,
-        handle.clone(),
-        generation.clone(),
-        host_offers(config),
-        Rc::clone(&requests),
-        crate::shell::ChromeSources {
-            here: Rc::clone(&here),
-            shared: shared.clone(),
-            authorship,
-            notifications: persistence.notifications.clone(),
-            peer: config.peer,
-            wake: Arc::new(move || {
-                let _ = wake.send_event(id);
-            }),
-        },
+    let requests = Rc::clone(&shared.requests);
+    let shell = desktop_shell(
+        id,
+        config,
+        (surface, &handle, &generation),
+        &shared,
+        &persistence,
+        (&here, &session),
+    )?;
+    // What the session asks the page for its windows, and the workspace's peer in it.
+    let asks = session_asks::Asks::new(config.peer);
+    let mentions = mention_notices::over(
+        mentions_store,
+        &asks,
+        &config.author(),
+        &people,
+        &here,
+        &shared.woken,
+    );
+    let search_wake = proxy()?;
+    let search = crate::page_search::mount(
+        &handle,
+        &config.author(),
+        records_store,
+        Arc::new(move || {
+            let _ = search_wake.send_event(id);
+        }),
+        asks.reveals(),
     );
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
@@ -1279,6 +1381,7 @@ fn present_desktop(
             handle,
             shared,
             persistence,
+            activity,
             generation,
             requests,
             here,
@@ -1287,135 +1390,62 @@ fn present_desktop(
             session,
             openings,
             revoked,
-            asks: session_asks::Asks::new(config.peer),
-            mentions: RefCell::new(mention_notices::Mentions::new(
-                &config.workspace,
-                &config.author(),
-            )),
+            asks,
+            search,
+            search_seen: Cell::default(),
+            mentions: RefCell::new(mentions),
+
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
             finishing: RefCell::default(),
+            told_runs: RefCell::default(),
         }),
+        waiting: None,
     })
 }
 
-fn present_component(
-    definition: &'static ui::application::ApplicationDefinition,
+/// The page's desktop shell over the mounted surface: its chrome, sheets and roster, fed from what
+/// the mount prepared.
+fn desktop_shell(
+    id: u64,
     config: &Config,
-    dyn_store: &Rc<dyn durable_store::DurableStore>,
-    permissions: SharedPermissions,
-) -> Result<Presentation, JsValue> {
-    if definition.app_id() == tilo_desktop::feedback::PACKAGE {
-        return present_private_feedback(config);
-    }
-    let owners = RecordOwners::with_store(Rc::clone(dyn_store));
-    let record = owners
-        .clone()
-        .open(definition.app_id(), &config.workspace)
-        .map_err(error)?;
-    let stores = Rc::new(RefCell::new(vec![record.clone()]));
-    // The instance's default record, named by the host so a reload opens the
-    // same document, as a native launch does.
-    let default = RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(config.instance)),
-        definition.record_kind.clone(),
-    );
-    let (checkout, named_new) = match &config.record {
-        // The workspace's own document of an app that keeps one: opened as a
-        // launch naming nothing opens it, so a link to it works before anyone
-        // wrote it (the first write founds it), as it does natively.
-        Some(existing)
-            if definition.keeps_workspace_record()
-                && existing == RecordId::package_primary().as_str() =>
-        {
-            (None, None)
-        }
-        Some(existing) => (
-            Some(RecordCheckout::new(
-                RecordId::parse(existing).ok_or_else(|| error("invalid record id"))?,
-                definition.record_kind.clone(),
-            )),
-            None,
-        ),
-        None if config.new_document || definition.keeps_workspace_record() => (None, None),
-        None => match record.try_open_record(&default) {
-            Ok(_) => (Some(default), None),
-            Err(ui::record::RecordOpenError::MissingRecord) => (None, Some(default.id)),
-            Err(open) => return Err(error(open)),
+    (surface, handle, generation): (
+        tilo_desktop_surface::DesktopSurface,
+        &tilo_desktop_surface::DesktopHandle,
+        &str,
+    ),
+    shared: &crate::desktop::Shared,
+    persistence: &crate::desktop::Persistence,
+    (here, session): (
+        &tilo_desktop::here::Here,
+        &Arc<tilo_desktop_surface::session::DesktopSession>,
+    ),
+) -> Result<crate::shell::BrowserShell, JsValue> {
+    let authorship = crate::shell::Authorship {
+        authors: Rc::clone(&shared.authors),
+        author: config.author(),
+    };
+    let wake = proxy()?;
+    Ok(crate::shell::BrowserShell::new(
+        surface,
+        handle.clone(),
+        generation.to_owned(),
+        host_offers(config),
+        Rc::clone(&shared.requests),
+        crate::shell::ChromeSources {
+            here: Rc::clone(here),
+            shared: shared.clone(),
+            authorship,
+            notifications: persistence.notifications.clone(),
+            peer: config.peer,
+            session: Arc::clone(session),
+            caller: tilo_actions::remote::Caller::local_person(config.author())
+                .in_workspace(config.workspace.clone()),
+            wake: Arc::new(move || {
+                let _ = wake.send_event(id);
+            }),
         },
-    };
-    let target = match checkout {
-        Some(checkout) => LaunchTarget::Record {
-            checkout,
-            reveal: None,
-        },
-        None if named_new.is_some() => LaunchTarget::New,
-        None => definition.unsaved_target(&record).map_err(error)?,
-    };
-    let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
-            .map_err(error)?,
-    );
-    let restore = views
-        .load(config.instance)
-        .map_err(error)?
-        .map_or(RestoreInput::None, RestoreInput::Local);
-    let inputs = HostContextInputs {
-        records: record,
-        views,
-        device_id: config.device.clone(),
-        instance_id: config.instance,
-        permissions,
-        author: UserId(config.author()),
-        action_context: tilo_actions::ActionContext::default(),
-    };
-    let mut context = match named_new {
-        Some(id) => HostContext::prepare_new_record(definition, inputs, id),
-        None => HostContext::prepare(definition, inputs, &target),
-    }
-    .map_err(error)?;
-    context.provide_models(config.models()?);
-    context.provide_content(crate::page_content());
-    context.provide_workspace_records(in_page(
-        &owners,
-        &stores,
-        &config.workspace,
-        config.author(),
-    ));
-    crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
-    config.lend_provider_admin(&mut context)?;
-    let loaders = Rc::new(RefCell::new(Vec::new()));
-    let image_owners = crate::page_content::ImageOwners::default();
-    crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
-    let component = definition
-        .instantiate(context, target, restore)
-        .map_err(error)?;
-    let checkout = component.record().clone();
-    Ok(Presentation {
-        root: Root::Component(Box::new(component)),
-        stores,
-        checkout: Some(checkout),
-        images: loaders,
-        image_owners,
-        desktop: None,
-    })
-}
-
-fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
-    // The page loads a deferred composer's code before mounting it alone
-    // (`load_application`).
-    let code = crate::feedback_composer::code()
-        .ok_or_else(|| error("the Feedback composer's code is not loaded"))?;
-    let component =
-        (code.prepare)(None, &config.device, &config.author(), config.instance).map_err(error)?;
-    Ok(Presentation {
-        root: Root::Component(Box::new(component)),
-        stores: Rc::default(),
-        checkout: None,
-        images: Rc::default(),
-        image_owners: crate::page_content::ImageOwners::default(),
-        desktop: None,
-    })
+    ))
 }
 
 #[allow(
@@ -1430,6 +1460,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
+    let config = Rc::new(config);
     // Apps can measure shared controls while constructing their views. Publish
     // the verified browser fonts first: WASM has no system fonts to fall back
     // to when those constructor-time renderers shape their labels.
@@ -1447,7 +1478,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // records where the peer keeps what the workspace delivers: in the page.
     let store = config
         .peer
-        .and_then(crate::replication::page_store)
+        .and_then(crate::replicated::page_store)
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
     // In a workspace, the page's apps may only read until the workspace says what
@@ -1468,10 +1499,14 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         images,
         image_owners,
         mut desktop,
+        waiting,
     } = match definition {
-        Some(definition) => {
-            present_component(definition, &config, &dyn_store, permissions.clone())?
-        }
+        Some(definition) => present_component(
+            definition,
+            Rc::clone(&config),
+            &dyn_store,
+            permissions.clone(),
+        )?,
         None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
     let window = Arc::new(
@@ -1515,6 +1550,21 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             // The page is the app's window, outside any Tilo session: it
             // hosts the app's window-bar slots, search and History in a
             // row of its own, as a native window of its own does.
+            frame.host_window_slots();
+            frame
+        }
+        // The app's record is on its way: its window reserves the place,
+        // showing what it declared for it, and the app is built into it once
+        // the record is here (`Mount::build_arriving`).
+        Root::Arriving(shown) => {
+            let mut frame = FrameHarness::new_with_controlled_inputs(
+                ui::state::State::new(),
+                shown,
+                viewport.logical_size(),
+                crate::page_theme::current(),
+                text_renderer,
+                UserId(config.author()),
+            );
             frame.host_window_slots();
             frame
         }
@@ -1565,10 +1615,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let replica_changed = Rc::new(std::cell::Cell::new(false));
     if let Some(peer) = config.peer {
         let wake = proxy()?;
-        let attached = crate::replication::attach(
+        let attached = crate::replicated::attach(
             peer,
             id,
-            crate::replication::Attachment {
+            crate::replicated::Attachment {
                 stores: Rc::clone(&stores),
                 desktop: desktop
                     .as_ref()
@@ -1601,6 +1651,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         stores,
         checkout,
         app: definition.map(|definition| definition.app_id().to_owned()),
+        waiting,
         presence: presence::Presence::default(),
         id,
         desktop,
@@ -1626,6 +1677,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         blob_waiting: RefCell::default(),
         image_tickets: RefCell::default(),
         error: None,
+        gpu_remakes: crate::gpu_recovery::GpuRemakes::default(),
+        frames_at_key: None,
         oversized_scene: false,
         skipped_frame: false,
         followed_view: ui::headless::FollowedView::default(),
@@ -1691,17 +1744,20 @@ enum PreparedGpu {
     Ready(Box<Result<ui::gpu::RenderContext, String>>),
 }
 
-/// Open the WebGPU device now, while the page opens the workspace, rather
-/// than once the first mount's canvas exists: the first surface then only
-/// configures its canvas on a device that is ready. Without a mount nothing
-/// else happens; the first mount takes what this opened, and one that comes
-/// before it is done waits for it. Does nothing once a device exists or is
-/// being opened.
+/// Open the WebGPU device now, while the page is let in and opens the
+/// workspace, rather than once the first mount's canvas exists: the first
+/// surface then only configures its canvas on a device that is ready.
+/// Without a mount nothing else happens; the first mount takes what this
+/// opened, and one that comes before it is done waits for it. Does nothing
+/// once a device exists or is being opened.
 ///
-/// The entry page calls this once a host let it in, never before: the
-/// browser does not cancel the compiles of a page torn down meanwhile, and
-/// the next page's pipelines queue behind them on its compile threads. The conservative GPU profile (Safari)
-/// does not call it; its renderer starts only once the page's load settled.
+/// It opens the device and compiles nothing, so the entry page calls it as
+/// it starts, whether or not a host lets it in: the renderer's pipelines
+/// compile as a mount first draws, because the browser does not cancel the
+/// compiles of a page torn down meanwhile and the next page's pipelines
+/// queue behind them on its compile threads. The conservative GPU profile
+/// (Safari) does not call it; its renderer starts only once the page's load
+/// settled.
 #[wasm_bindgen]
 pub fn prepare_gpu() {
     let busy = PREPARED_GPU.with_borrow(Option::is_some)
@@ -2083,16 +2139,47 @@ impl Mount {
         }
     }
 
-    // ResizeObserver/winit is the sole source of viewport notifications.
-    // Reading the pair again at redraw also covers scale/size event ordering
-    // and changes that occurred while GPU initialization was pending.
+    /// The canvas's extent in device pixels at `scale`: what winit reported, unless that is not the
+    /// canvas's CSS box at this scale. winit reports the extent only when the box changes, so
+    /// after a change of the device pixel ratio alone (browser zoom, another display, an emulated
+    /// scale) every later read is the old ratio's extent, which laid a 1280-wide box out 2560
+    /// wide. The box itself, at the ratio of the moment, is the extent then.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "canvas boxes are small positive pixel counts"
+    )]
+    fn extent_of_box(&self, reported: winit::dpi::PhysicalSize<u32>, scale: f64) -> (u32, u32) {
+        let css = |name: &str| {
+            js_sys::Reflect::get(&self.canvas, &name.into())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .filter(|value| *value > 0.0)
+        };
+        let (Some(width), Some(height)) = (css("clientWidth"), css("clientHeight")) else {
+            return (reported.width, reported.height);
+        };
+        // The box is read in whole CSS pixels: a report within one of it is the browser's own,
+        // more exact, measure.
+        let near = |device: u32, box_px: f64| (f64::from(device) / scale - box_px).abs() <= 1.0;
+        if near(reported.width, width) && near(reported.height, height) {
+            return (reported.width, reported.height);
+        }
+        (
+            (width * scale).round().max(1.0) as u32,
+            (height * scale).round().max(1.0) as u32,
+        )
+    }
+
+    // ResizeObserver/winit is the sole source of window reports. Reading the
+    // pair again at redraw also covers scale/size event ordering and changes
+    // that occurred while GPU initialization was pending.
     fn queue_resize(&mut self) -> bool {
+        let scale = self.window.scale_factor();
         let size = self.window.inner_size();
-        let changed = self.viewport.request(Viewport {
-            width: size.width,
-            height: size.height,
-            dpr: self.window.scale_factor(),
-        });
+        let changed = self
+            .viewport
+            .observe(self.extent_of_box(size, scale), scale);
         self.pending |= changed;
         changed
     }
@@ -2100,6 +2187,11 @@ impl Mount {
     fn draw(&mut self) -> Result<(), String> {
         let start = self.metric_start();
         let before = self.frames;
+        // The canvas keeps what it presented and moves it: a scroll in a
+        // window copies what stays on screen and repaints the strip it
+        // exposed ([`ui::scroll_copy`]).
+        let _copies =
+            ui::scroll_copy::HostCopies::begin_scaled(true, self.viewport.requested().dpr);
         let result = self.draw_measured();
         self.metric_end(
             if self.frames > before {
@@ -2126,6 +2218,9 @@ impl Mount {
             self.held = "an empty canvas";
             return Ok(());
         }
+        // What a page waiting for its app's record showed arriving becomes the
+        // app here, before the frame reads what the window shows.
+        self.build_arriving()?;
         // A window the last frame opened shows what its open named.
         self.reveal_opened();
         self.follow_view();
@@ -2161,7 +2256,7 @@ impl Mount {
                 .load(std::sync::atomic::Ordering::Acquire)
         });
         if let Some(peer) = self.peer {
-            crate::replication::follow_answers(peer);
+            crate::replicated::follow_answers(peer);
         }
         self.pending |= desktop_woken
             || self.replica_changed.get()
@@ -2222,11 +2317,14 @@ impl Mount {
             }
             return Ok(());
         }
-        if !gpu.pacing.may_draw() {
-            // The GPU still draws earlier frames: what changed waits for
-            // the frame after it caught up, rather than queue behind them.
-            self.held = "the GPU drawing earlier frames";
-            self.window.request_redraw();
+        // The GPU's own answer, bounded: a completion the browser never
+        // reports stops holding the page back after
+        // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
+        // the device's own `lost` and errors say that, below.
+        if matches!(
+            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window),
+            pacing::Gate::Hold
+        ) {
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
@@ -2242,9 +2340,14 @@ impl Mount {
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
         if let Some(reason) = handle.loss_monitor().reason() {
-            return Err(format!(
-                "WebGPU device lost: {reason}; call recover to recreate the renderer"
-            ));
+            let lost =
+                format!("WebGPU device lost: {reason}; call recover to recreate the renderer");
+            // The device's own word: the GPU is what failed, and is made again.
+            shared
+                .failure
+                .lock_recover()
+                .get_or_insert_with(|| lost.clone());
+            return Err(lost);
         }
         // The target may show a frame the renderer drew with geometry
         // missing: this one repaints it whole. It still shows that frame
@@ -2316,6 +2419,8 @@ impl Mount {
             desktop.announce_agents_finished();
             desktop.follow_notice_choices();
             desktop.tell_mentions();
+            desktop.serve_activity();
+            desktop.follow_search();
             desktop.refresh_holders(self.peer.is_some())
         });
         // Desktop commands and peer changes need an update even when the
@@ -2412,7 +2517,7 @@ impl Mount {
         self.metric_end("save_desktop", stage);
         if let Some(peer) = self.peer {
             let stage = self.metric_start();
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
             self.metric_end("replicate", stage);
         }
         // A frame input or an idle pass ran and skipped reports here.
@@ -2472,7 +2577,7 @@ impl Mount {
         let parts = self.frame.scene_parts();
         // Compared with the frame the target shows, command by command: a
         // change no part proves is bounded (an unknown one) repaints it all.
-        let repaint = gpu.retained.frames.repaint(frame.scene, parts, key);
+        let (repaint, copies) = gpu.retained.frames.repaint_copying(frame.scene, parts, key);
         let (damage, full_redraw) = match &repaint {
             ui::retained_raster::Repaint::Full(_) => (&[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
@@ -2501,7 +2606,7 @@ impl Mount {
                 height: viewport.height,
                 base_color: frame.background,
                 damage_regions: damage,
-                scroll_copies: &[],
+                scroll_copies: &copies,
                 full_redraw,
                 backdrop: &ui::backdrop::BackdropFrame::default(),
             },
@@ -2633,7 +2738,9 @@ impl Mount {
         );
         let target = &gpu.surface.target_texture;
         crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
-        let done = gpu.pacing.submitted();
+        // The frame is handed over at the moment the GPU may start it, so the
+        // wait the pacing bounds is the wait for this frame's completion.
+        let done = gpu.pacing.submitted(ui::time::now());
         handle.queue.on_submitted_work_done(move || done.finished());
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
@@ -2708,8 +2815,7 @@ impl Mount {
             PresencePayload::Selection { start, end } => (start, end),
             _ => return None,
         };
-        let (anchor, head) =
-            tilo_browser_peer::presence_anchors::presence_anchors(&key, start, end)?;
+        let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, start, end)?;
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )
@@ -2768,6 +2874,45 @@ impl Mount {
             );
             *self.live_place.borrow_mut() = place;
         }
+    }
+
+    /// A frame failed with `error`. When the GPU is what failed (its device
+    /// lost, or an error from it), the device, surface and renderer are made
+    /// again and the desk redraws on them, keeping every document; anything
+    /// else, or a GPU that keeps failing ([`crate::gpu_recovery`]), stops the
+    /// desktop with `error`.
+    fn frame_failed(&mut self, id: u64, error: String) {
+        let gpu_failed = self.gpu.as_ref().and_then(Gpu::failure).is_some();
+        if gpu_failed && self.gpu_remakes.admit(ui::time::now()) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "Browser runtime: the GPU failed ({error}); making it again and drawing on"
+            )));
+            self.remake_gpu(id);
+            return;
+        }
+        self.error = Some(error);
+        self.publish(id);
+    }
+
+    /// A pressed key reaching the desk: how many frames were presented by then.
+    fn note_key(&mut self, event: &WindowEvent) {
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            self.frames_at_key = Some(self.frames);
+        }
+    }
+
+    /// Let go of the GPU this mount draws with and make a new device, surface
+    /// and renderer: the next generation, whose first frame draws the desk
+    /// whole.
+    fn remake_gpu(&mut self, id: u64) {
+        unconfigure(&self.canvas);
+        if let Some(gpu) = self.gpu.take() {
+            release_gpu(id, gpu);
+        }
+        self.generation = self.generation.saturating_add(1);
+        initialize_gpu(id, self.generation, Arc::clone(&self.window), self.caps);
     }
 
     fn publish(&mut self, id: u64) {
@@ -2851,9 +2996,7 @@ impl Mount {
             self.presented_ime = self.frame.ime_window();
         }
         let ime_window = self.presented_ime;
-        let ime = ime_window.as_ref().map(|i| {
-            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
-        });
+        let ime = ime_window.as_ref().map(ime_json);
         let unbuilt = self.tree_unbuilt(change, ime_window.as_ref())
             || (presented
                 && self
@@ -2866,7 +3009,11 @@ impl Mount {
             // A window a pan frame replayed instead of drawing has not noted
             // where it now paints what its semantics name.
             let stage = self.metric_start();
-            self.frame.settle_replayed_draws();
+            {
+                let _copies =
+                    ui::scroll_copy::HostCopies::begin_scaled(true, self.viewport.requested().dpr);
+                self.frame.settle_replayed_draws();
+            }
             self.metric_end("settle_replayed_draws", stage);
             let stage = self.metric_start();
             let semantics = self.frame.inspection();
@@ -2894,6 +3041,12 @@ impl Mount {
             "tab": format!("{id:x}"),
             "error": self.error,
             "frames": self.frames,
+            // How many frames were presented when the desk took the last key:
+            // the frame after it is the first that can show the key's effect.
+            "framesAtKey": self.frames_at_key,
+            // Frames the GPU never reported drawn since it last reported one:
+            // a page that freezes without an error says so here.
+            "gpuStalls": self.gpu.as_ref().map_or(0, |gpu| gpu.pacing.stalls()),
             "captureProtected": self.presented_capture_protected,
             "presentation": self.presentation.get(),
             "componentInstance": self.frame.component_instance_id(),
@@ -2915,18 +3068,13 @@ impl Mount {
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
-            "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
-            // Whether the open search still owes rows. A settled desk presents no
-            // frame until something changes, so a page that waits for the palette's
-            // answer reads this rather than counting presented frames: the answer
-            // is the desk's own, and a frame of it may wait for the next minute.
-            "searchSearching": self.desktop.as_ref().is_some_and(|d| d.handle.search_searching()),
             // The page titles its tab after it.
             "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
         let mut value = value;
+        self.add_desk_state(&mut value);
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }
@@ -2959,8 +3107,12 @@ impl Mount {
 ///
 /// Rejects an unknown kind or a closed mount.
 mod agent_notices;
+mod app_window;
+use app_window::AppPage;
+use app_window::present_component;
 mod desktop_exports;
 mod dom;
+mod prepare;
 pub(crate) use dom::draw_dom_frame;
 mod fonts;
 mod frame_loop;
@@ -2968,475 +3120,21 @@ mod here_exports;
 mod live_layout;
 mod live_signals;
 mod mention_notices;
+mod pacing;
+mod page_exports;
 pub(crate) mod presence;
 mod publication;
+mod scale;
+mod scene;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
+use prepare::{desktop_inputs, host_offers, serve_history, serve_session};
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
+use scene::scene_within_limits;
+pub(crate) use session_asks::Reveals;
 mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
 use retained::{Drawn, check_retained};
-
-/// Take accepted writes for the page to commit (`[{key, bytes, actor,
-/// revision}]`).
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
-    // The page persists after every presented status; storing what is
-    // written changes nothing the tree shows.
-    with_mount_quietly(id, |m| {
-        m.flush_records();
-        crate::storage::drain(&m.store)
-    })
-}
-
-/// Recreate the surface, renderer and device without recreating documents.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn recover(id: u64) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        unconfigure(&m.canvas);
-        if let Some(gpu) = m.gpu.take() {
-            release_gpu(id, gpu);
-        }
-        m.generation = m.generation.saturating_add(1);
-        // A GPU that failed drawing at full resolution recovers one size
-        // smaller, rather than failing the same way again.
-        if m.error.take().is_some() {
-            m.caps = m.caps.after_gpu_failure();
-            m.viewport.set_caps(m.caps);
-        }
-        initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
-        Ok(())
-    })
-}
-
-/// Run a copy, cut or paste inside the trusted DOM clipboard event.
-///
-/// # Errors
-///
-/// Rejects an unknown kind or a closed mount.
-#[wasm_bindgen]
-pub fn clipboard_event(
-    id: u64,
-    kind: &str,
-    transfer: JsValue,
-    shift: bool,
-) -> Result<bool, JsValue> {
-    let key = match kind {
-        "paste" => "v",
-        "copy" => "c",
-        "cut" => "x",
-        _ => return Err(error("invalid clipboard event")),
-    };
-    crate::clipboard::during(transfer, || {
-        with_mount(id, |m| {
-            let mut modifiers =
-                if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
-                    winit::keyboard::ModifiersState::SUPER
-                } else {
-                    winit::keyboard::ModifiersState::CONTROL
-                };
-            if shift {
-                modifiers |= winit::keyboard::ModifiersState::SHIFT;
-            }
-            m.frame.send_host_event(&WindowEvent::ModifiersChanged(
-                winit::event::Modifiers::from(modifiers),
-            ));
-            // A failed clipboard sink must never let a cut delete the selection.
-            if kind == "cut" {
-                m.frame.key("c");
-            }
-            if kind != "cut" || crate::clipboard::copied() {
-                m.frame.key(key);
-            }
-            m.frame.send_host_event(&WindowEvent::ModifiersChanged(
-                winit::event::Modifiers::default(),
-            ));
-            m.pending = true;
-            m.window.request_redraw();
-            Ok(kind == "paste" || crate::clipboard::copied())
-        })
-    })
-}
-
-/// Largest file a drop hands an app, as every app's own limit is below it.
-const MAX_DROPPED_FILE_BYTES: u32 = 64 * 1024 * 1024;
-/// Most files one drop hands over.
-const MAX_DROPPED_FILES: u32 = 16;
-
-/// Hand the files the person dropped on the page at physical `(x, y)` of
-/// the canvas to what is under it: `files` is `[{name, type, bytes}]`, each
-/// read by the page from the drop, or `{name, size, unread}` for one it did
-/// not read (`"tooLarge"` or `"tooMany"`), so what is under the pointer can
-/// say why it took none of it. The pointer moves there, then each file
-/// arrives as the `DroppedFile` a desktop sends, held for that dispatch
-/// (`ui::portal::dropped`), since a page's files have no path. Returns how
-/// many it handed over.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsValue> {
-    let files = js_sys::Array::from(files);
-    let read = |item: JsValue| {
-        let field = |name: &str| js_sys::Reflect::get(&item, &name.into()).ok();
-        let name = field("name")?.as_string().filter(|name| !name.is_empty())?;
-        let unread = |why| {
-            let size = field("size").and_then(|size| size.as_f64()).unwrap_or(0.0);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a file's size is a whole, non-negative number of bytes"
-            )]
-            let size = size.max(0.0) as u64;
-            Some(ui::portal::Dropped::NotRead {
-                name: name.clone(),
-                size,
-                why,
-            })
-        };
-        match field("unread").and_then(|why| why.as_string()).as_deref() {
-            Some("tooLarge") => return unread(ui::portal::NotRead::TooLarge),
-            Some("tooMany") => return unread(ui::portal::NotRead::TooMany),
-            _ => {}
-        }
-        let bytes = field("bytes")?.dyn_into::<js_sys::Uint8Array>().ok()?;
-        if bytes.length() > MAX_DROPPED_FILE_BYTES {
-            return unread(ui::portal::NotRead::TooLarge);
-        }
-        Some(ui::portal::Dropped::Contents(ui::portal::PickedContents {
-            name: name.clone(),
-            media_type: field("type")
-                .and_then(|kind| kind.as_string())
-                .filter(|kind| !kind.is_empty()),
-            bytes: bytes.to_vec(),
-            location: None,
-        }))
-    };
-    // Past the most a drop hands over, one more says so.
-    let dropped: Vec<_> = files
-        .iter()
-        .take(
-            usize::try_from(MAX_DROPPED_FILES)
-                .unwrap_or(usize::MAX)
-                .saturating_add(1),
-        )
-        .filter_map(read)
-        .collect();
-    with_mount(id, |m| {
-        let (x, y) = m.viewport.map_pointer(x, y);
-        m.frame.send_host_event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        });
-        let mut handed = 0_u32;
-        for file in dropped {
-            let path = std::path::PathBuf::from(match &file {
-                ui::portal::Dropped::Contents(contents) => &contents.name,
-                ui::portal::Dropped::NotRead { name, .. } => name,
-            });
-            ui::portal::dropping(file, || {
-                m.frame.send_host_event(&WindowEvent::DroppedFile(path));
-            });
-            handed = handed.saturating_add(1);
-        }
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(handed)
-    })
-}
-
-/// Image URLs the application asked for, as `[{loader, url, maxDimension}]`.
-/// The page fetches and decodes each with the browser's own image decoders,
-/// no larger than `maxDimension` on either side, and hands the pixels back
-/// through [`complete_asset`].
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn asset_requests(id: u64) -> Result<String, JsValue> {
-    // The page asks after every presented status; taking the image requests
-    // changes nothing the tree shows (a loaded image wakes its own frame).
-    with_mount_quietly(id, |m| {
-        let mut tickets = m.image_tickets.borrow_mut();
-        let mut loaders = m.images.borrow_mut();
-        let mut wanted: Vec<(usize, String)> = m.blob_waiting.take();
-        for (loader, images) in loaders.iter_mut().enumerate() {
-            wanted.extend(images.take_requests().into_iter().map(|url| (loader, url)));
-        }
-        let mut requests = Vec::new();
-        for (loader, url) in wanted {
-            // Content the page lacks is asked of the workspace; the request waits
-            // here until it has arrived.
-            if !crate::page_content::image_ready(&m.image_owners, loader, &url) {
-                m.blob_waiting.borrow_mut().push((loader, url));
-                continue;
-            }
-            let Some(ticket) = loaders
-                .get_mut(loader)
-                .and_then(|images| images.reserve(&url))
-            else {
-                continue;
-            };
-            requests.push(serde_json::json!({
-                "loader": loader,
-                "url": url,
-                "maxDimension": ticket.max_dimension(),
-            }));
-            tickets.insert((loader, url), ticket);
-        }
-        // What the page asked for goes to the workspace now, not on the next
-        // frame an idle page may never draw.
-        if !m.blob_waiting.borrow().is_empty()
-            && let Some(peer) = m.peer
-        {
-            crate::replication::ask_content(peer);
-        }
-        serde_json::to_string(&requests).map_err(error)
-    })
-}
-
-/// The bytes of a content-addressed image request ([`asset_requests`]
-/// hands one out only once they are here), for the page to decode.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn blob_asset(id: u64, loader: usize, url: &str) -> Result<Option<Vec<u8>>, JsValue> {
-    with_mount_quietly(id, |m| {
-        Ok(crate::page_content::image_bytes(
-            &m.image_owners,
-            loader,
-            url,
-        ))
-    })
-}
-
-/// Deliver a requested image the page decoded: `width` × `height` pixels of
-/// unpremultiplied 8-bit RGBA, or `None` when it could not be fetched or
-/// decoded. Resolves whether the image was accepted.
-///
-/// # Errors
-///
-/// Rejects a closed mount or an unknown loader.
-#[wasm_bindgen]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "wasm-bindgen receives JavaScript bytes only as an owned value"
-)]
-pub fn complete_asset(
-    id: u64,
-    loader: usize,
-    url: &str,
-    width: u32,
-    height: u32,
-    rgba: Option<Vec<u8>>,
-) -> Result<bool, JsValue> {
-    with_mount(id, |m| {
-        let Some(ticket) = m
-            .image_tickets
-            .borrow_mut()
-            .remove(&(loader, url.to_owned()))
-        else {
-            return Ok(false);
-        };
-        let complete = m
-            .images
-            .borrow_mut()
-            .get_mut(loader)
-            .ok_or_else(|| error("unknown image loader"))?
-            .complete_decoded(
-                &ticket,
-                rgba.map(|rgba| ui::image_store::DecodedImage {
-                    rgba,
-                    width,
-                    height,
-                }),
-            );
-        // A decoded image changes what widgets measure and draw. The next
-        // frame lays out once for every image that arrived before it: a page
-        // of thumbnails decodes dozens in a row, and laying out after each
-        // held the page's main thread for seconds.
-        m.frame.request_layout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(complete)
-    })
-}
-
-/// Publish the DOM event's modifier snapshot before winit dispatches its key.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "mirrors KeyboardEvent's four modifier flags"
-)]
-pub fn modifiers(
-    id: u64,
-    control: bool,
-    alt: bool,
-    shift: bool,
-    meta: bool,
-) -> Result<(), JsValue> {
-    use winit::keyboard::ModifiersState as M;
-    let mut flags = M::empty();
-    flags.set(M::CONTROL, control);
-    flags.set(M::ALT, alt);
-    flags.set(M::SHIFT, shift);
-    flags.set(M::SUPER, meta);
-    with_mount(id, |m| {
-        m.frame.send_host_event(&WindowEvent::ModifiersChanged(
-            winit::event::Modifiers::from(flags),
-        ));
-        Ok(())
-    })
-}
-
-/// Follow `document.visibilityState`.
-#[wasm_bindgen]
-pub fn visible(id: u64, visible: bool) -> Result<(), JsValue> {
-    admit_runtime()?;
-    crate::host_services::set_hidden(!visible);
-    MOUNTS.with_borrow_mut(|mounts| {
-        if let Some(m) = mounts.get_mut(&id) {
-            m.hidden = !visible;
-            if visible {
-                m.pending = true;
-                m.window.request_redraw();
-            }
-        }
-    });
-    Ok(())
-}
-
-/// Names applications requested through `ui::host_data` since the last
-/// call, as a JSON array, for the page to fetch from the bundle's `data/`.
-///
-/// # Errors
-///
-/// Propagates a serialization failure.
-#[wasm_bindgen]
-pub fn data_requests() -> Result<String, JsValue> {
-    admit_runtime()?;
-    serde_json::to_string(&ui::host_data::take_requests()).map_err(error)
-}
-
-/// Supply requested data, verified by the page against the bundle's
-/// manifest, and relayout every mount so the requester sees it.
-#[wasm_bindgen]
-pub fn install_data(name: &str, bytes: Vec<u8>) -> Result<(), JsValue> {
-    admit_runtime()?;
-    ui::host_data::install(name, bytes);
-    relayout_all();
-    Ok(())
-}
-
-/// Report that requested data cannot be fetched.
-#[wasm_bindgen]
-pub fn data_failed(name: &str, reason: &str) -> Result<(), JsValue> {
-    admit_runtime()?;
-    ui::host_data::fail(name, reason);
-    relayout_all();
-    Ok(())
-}
-
-fn relayout_all() {
-    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
-    for id in ids {
-        let result = with_mount(id, |mount| {
-            mount.frame.relayout();
-            mount.pending = true;
-            mount.window.request_redraw();
-            Ok(())
-        });
-        if let Err(error) = result {
-            web_sys::console::warn_1(&error);
-        }
-    }
-}
-
-/// Opt-in bounded diagnostic capture; disabled by default and never persisted.
-#[wasm_bindgen]
-pub fn configure_frame_metrics(enabled: bool) -> Result<(), JsValue> {
-    admit_runtime()?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        for mount in mounts.values_mut() {
-            mount.metrics.borrow_mut().configure(enabled);
-            if enabled {
-                mount.frame.begin_profiling();
-            } else {
-                mount.frame.end_profiling();
-            }
-        }
-    });
-    Ok(())
-}
-
-/// Drain captured stage timings and per-pass layout profiles, per mount.
-///
-/// # Errors
-///
-/// Propagates a serialization failure.
-#[wasm_bindgen]
-pub fn take_frame_metrics() -> Result<String, JsValue> {
-    admit_runtime()?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        let samples: Vec<_> = mounts
-            .iter_mut()
-            .map(|(id, mount)| {
-                let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "damage": metrics.take_damage(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
-            })
-            .collect();
-        serde_json::to_string(&samples).map_err(error)
-    })
-}
-
-/// The shared Chat controls' local media requests, scoped to retained owners.
-///
-/// # Errors
-///
-/// Rejects a closed mount or a failure to serialize its requests.
-#[wasm_bindgen]
-pub fn take_media_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |mount| {
-        serde_json::to_string(&mount.media.take(&mut mount.frame)).map_err(error)
-    })
-}
-
-/// Complete one exact retained component request; late replies are refused.
-///
-/// # Errors
-///
-/// Rejects malformed snapshots and closed mounts.
-#[wasm_bindgen]
-pub fn complete_media_request(id: u64, ticket: u64, response: &str) -> Result<bool, JsValue> {
-    let result: Result<ui::native_media::Snapshot, String> =
-        serde_json::from_str(response).map_err(error)?;
-    if result.as_ref().is_ok_and(|snapshot| !snapshot.valid()) {
-        return Err(error("invalid local media snapshot"));
-    }
-    with_mount(id, |mount| {
-        let completed = mount.media.complete(&mut mount.frame, ticket, result);
-        if completed {
-            mount.window.request_redraw();
-        }
-        Ok(completed)
-    })
-}

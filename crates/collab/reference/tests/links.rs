@@ -275,3 +275,45 @@ proptest! {
         }
     }
 }
+
+/// A link whose document id is damaged still names its workspace: the page
+/// opens that workspace and says what was not used, rather than nothing.
+#[test]
+fn a_link_with_a_damaged_document_opens_its_workspace_and_says_so() {
+    let entries = WebEntries::new(vec![WebEntry::new("https://tilo.sh/").unwrap()]);
+    let workspace = "6d1c1f36-0000-4000-8000-000000000001";
+    let url =
+        format!("https://tilo.sh/#/@eu1.tilo.sh/w/{workspace}/so.tilo.pdf-viewer/application.pdf");
+    assert_eq!(
+        Link::parse(&url, &entries).unwrap_err().code(),
+        "bad-record",
+        "the strict reader refuses it"
+    );
+    let (link, damaged) = Link::parse_or_workspace(&url, &entries).unwrap();
+    assert_eq!(damaged.map(|error| error.code()), Some("bad-record"));
+    assert_eq!(link.mode, Mode::Desktop);
+    let Scope::Room { host, id, .. } = &link.target.scope else {
+        panic!("the workspace: {link:?}")
+    };
+    assert_eq!(host.as_str(), "https://eu1.tilo.sh");
+    assert_eq!(id.hyphenated().to_string(), workspace);
+    assert_eq!(
+        link.target.app, None,
+        "nothing inside the workspace is kept"
+    );
+    assert_eq!(link.target.record, None);
+
+    // A link that reads is as it was; one whose workspace is damaged is refused.
+    let good = format!("https://tilo.sh/#/@eu1.tilo.sh/w/{workspace}");
+    assert_eq!(
+        Link::parse_or_workspace(&good, &entries).unwrap(),
+        (Link::parse(&good, &entries).unwrap(), None)
+    );
+    let broken = "https://tilo.sh/#/@eu1.tilo.sh/w/not-a-workspace/so.tilo.pdf-viewer/x";
+    assert_eq!(
+        Link::parse_or_workspace(broken, &entries)
+            .unwrap_err()
+            .code(),
+        "bad-room"
+    );
+}

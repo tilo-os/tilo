@@ -23,6 +23,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
+use crate::widget::DrawChild;
 
 #[path = "toolbar_component.rs"]
 mod component;
@@ -1747,7 +1748,7 @@ impl Widget for Toolbar {
                 }
                 Some(ToolbarItem::Element(_)) => {
                     if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
-                        element.draw(scene, transform, text, theme, presence);
+                        element.draw_child(scene, transform, text, theme, presence);
                     }
                 }
                 Some(ToolbarItem::Spacer) | None => {}

@@ -11,6 +11,7 @@
 use crate::time::SystemTime;
 
 use collab_types::ArtifactKind;
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::HistoryEntryId;
@@ -633,4 +634,28 @@ mod tests {
         format_relative_time_thresholds();
         hue_to_rgb_covers_every_sextant();
     }
+}
+
+/// A row led by an author's face: a person's round face, or the agent mark
+/// for software acting for someone — which is where what an author is shows,
+/// never words in the line beside it. Either wears the colour presence paints
+/// its author in.
+#[must_use]
+pub fn author_face(
+    mut row: crate::widget::ListRow,
+    author: &wire::Author,
+) -> crate::widget::ListRow {
+    row = row.avatar(author.name.clone(), author.identity.clone());
+    // An agent is its own face in its client's hue, as who is here draws it: never a glyph on
+    // the colour its run happened to carry.
+    if author.relation == wire::Relation::Software {
+        return row
+            .agent_face()
+            .avatar_hue(crate::tokens::colors::PresenceHue::of_agent(&author.name));
+    }
+    let [red, green, blue] = author.rgb;
+    if [red, green, blue] != [0; 3] {
+        row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
+    }
+    row
 }

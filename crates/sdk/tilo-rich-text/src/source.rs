@@ -330,12 +330,15 @@ impl RichTextField {
     /// Edit through `dispatcher` from now on.
     pub fn attach(&mut self, dispatcher: Dispatcher<RichText>) {
         let app = dispatcher.app_id();
+        // A paragraph is the record's paragraph, not the text package's: the caret sits in what
+        // actions and History name, so a viewer keys it the same way whoever wrote it.
+        let kind = dispatcher.anchored_kind();
         self.dispatch = Some(dispatcher);
         if self.presence.is_none() {
-            self.presence = Some(Rc::new(move |block: &str| {
-                ResourceSelection::Item(block.to_owned())
-                    .presence::<RichText>(app)
-                    .0
+            self.presence = Some(Rc::new(move |block: &str| PresenceKey::Resource {
+                app: app.to_owned(),
+                id: block.to_owned(),
+                kind: kind.to_owned(),
             }));
         }
     }

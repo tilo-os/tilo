@@ -480,3 +480,56 @@ fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
         "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
     );
 }
+
+#[test]
+fn a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let face = SectionHeaderFace::group("Overdue since Jun 29")
+        .count(2)
+        .action("Clear all");
+    let width = 400.0;
+    let height = face.height(&mut text, &theme, width);
+    let natural = Rect::new(0.0, 100.0, width, 100.0 + height);
+    // The room a finger needs: the box grows, as a list's heading band does on a touch screen.
+    let taller = Rect::new(0.0, 100.0, width, 100.0 + height + 20.0);
+    // How far the line stands above the foot of its box: the room between it and what follows.
+    let mut above_foot = |rect: Rect| {
+        face.action_rect(rect, &mut text, &theme)
+            .expect("the header has an action")
+            .y1
+            - rect.y1
+    };
+    assert!(
+        (above_foot(natural) - above_foot(taller)).abs() < 0.5,
+        "the header's line stands at the foot of its box, so room above it never comes between \
+         it and what it heads: {:.1} and {:.1} above the foot",
+        above_foot(natural),
+        above_foot(taller)
+    );
+}
+
+/// A heading counts its rows where the number says something they do not: one row restates
+/// itself with "1", while two say how many and a run cut short says how many it left out.
+#[test]
+fn a_heading_counts_one_row_as_nothing() {
+    assert_eq!(heading_count(1, None), None, "one row says nothing");
+    assert_eq!(heading_count(0, None), None, "no rows say nothing");
+    assert_eq!(heading_count(2, None), Some(2), "two rows say how many");
+    assert_eq!(heading_count(9, None), Some(9));
+    assert_eq!(
+        heading_count(1, Some(1)),
+        None,
+        "a run of one, all shown, says nothing"
+    );
+    assert_eq!(
+        heading_count(0, Some(1)),
+        Some(1),
+        "a run cut short says how many it left out, even at one"
+    );
+    assert_eq!(
+        heading_count(3, Some(20)),
+        Some(20),
+        "and how many it holds"
+    );
+}

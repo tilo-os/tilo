@@ -66,8 +66,11 @@ fn banners_stack_in_the_top_right_corner_newest_first() {
     let banners = named(&mut app, "banner:");
     assert_eq!(banners.len(), 3, "{banners:?}");
     let (width, _) = fixture::viewport(Some("banners"));
+    // Inside the corner margin the stack shares with the notification centre and quick settings,
+    // so the three hang by one trailing edge.
+    let inset = tilo_desktop::notifications::CORNER_INSET;
     for banner in &banners {
-        assert!(banner.x1 <= f64::from(width) - 20.0, "{banner:?} inset");
+        assert!(banner.x1 <= f64::from(width) - inset, "{banner:?} inset");
         assert!(
             banner.x0 > f64::from(width) / 2.0,
             "{banner:?} on the right"

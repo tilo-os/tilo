@@ -7,10 +7,11 @@
 
 use std::sync::Arc;
 
+use crate::platform::surfaces::WindowObserver;
 use tilo_app_launch::downloaded::{self, ObservedWindow, WindowArtwork};
 use tilo_compositor::{IconArtwork, WindowIcon, WindowInfo};
+
 use tilo_service::Service;
-use tilo_surface_host::WindowObserver;
 
 use crate::Options;
 

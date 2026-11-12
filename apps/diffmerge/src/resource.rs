@@ -25,7 +25,27 @@ use crate::app::DiffMergeApp;
 use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
 use crate::model::{BlockKind, MergeModel};
 
-#[resource(kind = "diffmerge.session", label = "Diff & Merge", children = Session::places)]
+impl Session {
+    /// What the record holds: the inputs compared, which side each change takes, and the merged
+    /// result.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "diffmerge.session",
+    children = Session::places,
+    read_content = Session::read_document
+)]
 impl Session {
     /// Compare two texts.
     #[action]

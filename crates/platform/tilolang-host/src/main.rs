@@ -1,9 +1,11 @@
 //! `tilolang-host`: the process the session starts as a tilolang host, for one workspace and author.
 //!
 //! It holds its door (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
-//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the door, its instances' windows
-//! and its own wake, and runs a frame of every instance when one of them has something for it.
-//! It ends when the session closes its door and its last window is gone.
+//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the door, its instances' windows,
+//! its own wake and a stop (`stop`), and runs a frame of every instance when one of them has
+//! something for it. It ends when the session closes its door and its last window is gone, or
+//! when it is asked to stop: both drop the instances, and every index they keep closes with them
+//! rather than being left for the next start to build anew.
 //!
 //! Every wait ends on something its owner then takes out: the door's message is received, the
 //! wake is drained ([`Wake::consume`]), the task's lines are served, a running window's input is
@@ -19,6 +21,7 @@ use runtime_portal::tilolang_host::{
     Descriptor, Handed, STORAGE_ENV, receive, send_ended, send_exiting, take_door,
 };
 use tilolang_host::TilolangHost;
+use tilolang_host::stop::Stop;
 use tilolang_host::wait::{Wake, wait};
 
 /// The door, for the panic hook to say why the host ends.
@@ -77,6 +80,61 @@ impl Exit {
             failed: true,
         }
     }
+
+    /// The end a stop asks for: the instances are dropped, and what they keep is closed with
+    /// them, as when the door closes.
+    fn stopped() -> Self {
+        Self {
+            reason: "it was asked to stop, and closed what it keeps".to_owned(),
+            failed: false,
+        }
+    }
+}
+
+/// The storage the session granted this host, its own compiled modules kept in it: what a later
+/// start of this host starts compiled. A package's directory is not one: those never start with a
+/// dot.
+fn granted_storage() -> Option<std::path::PathBuf> {
+    let storage = std::env::var_os(STORAGE_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from);
+    if let Some(storage) = &storage
+        && let Err(error) =
+            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
+    {
+        tracing::warn!(%error, "compiled tilolang modules are not kept");
+    }
+    storage
+}
+
+/// Run the host's frames until nothing changes: what a frame changed may ask for another (a view
+/// that read what it changed), so it settles.
+fn run_frames(host: &mut TilolangHost) {
+    let began = std::time::Instant::now();
+    let mut frames = 1_u32;
+    while host.turn() {
+        frames = frames.saturating_add(1);
+    }
+    tracing::debug!(
+        frames,
+        frames_us = began.elapsed().as_micros(),
+        "the host's frames settled"
+    );
+}
+
+/// The stop the host's loop ends on; nothing when its signals cannot be taken, which leaves every
+/// index it keeps to be built anew at its next start.
+fn stop_watching() -> Option<Stop> {
+    match Stop::install() {
+        Ok(stop) => Some(stop),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "the host does not stop on a signal: every index it keeps is built anew at its next start"
+            );
+            None
+        }
+    }
 }
 
 /// Run the host until it ends: why, and its door while it is still open.
@@ -85,34 +143,14 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         Ok(wake) => wake,
         Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(door)),
     };
-    let storage = std::env::var_os(STORAGE_ENV)
-        .filter(|dir| !dir.is_empty())
-        .map(std::path::PathBuf::from);
-    // The host's own compiled modules, in its own storage: what a later start of this host
-    // starts compiled. Not a package's directory: those never start with a dot.
-    if let Some(storage) = &storage
-        && let Err(error) =
-            tilolang_tilo::runtime::engine::keep_compiled_in(storage.join(".compiled"))
-    {
-        tracing::warn!(%error, "compiled tilolang modules are not kept");
-    }
+    let storage = granted_storage();
+    let stop = stop_watching();
     let mut host = TilolangHost::new(storage, wake.waker());
     let mut door = Some(door);
     // Why the door closed, when the session did not close it.
     let mut door_failed: Option<String> = None;
     loop {
-        // What a frame changed may ask for another (a view that read what it changed), until
-        // nothing changes: every change is a message taken in or a step made, so it settles.
-        let frames_began = std::time::Instant::now();
-        let mut frames = 1_u32;
-        while host.turn() {
-            frames = frames.saturating_add(1);
-        }
-        tracing::debug!(
-            frames,
-            frames_us = frames_began.elapsed().as_micros(),
-            "the host's frames settled"
-        );
+        run_frames(&mut host);
         // The session stops the host once its last instance ended.
         for instance in host.take_ended() {
             if let Some(open) = door.as_ref()
@@ -138,6 +176,7 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         let ready = match wait(
             door.as_ref().map(|door| door.as_fd()),
             wake.fd(),
+            stop.as_ref().map(Stop::fd),
             &host,
             timeout_ms,
         ) {
@@ -149,6 +188,9 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
             && let Err(error) = wake.consume()
         {
             return (Exit::failed(format!("its wake failed: {error}")), door);
+        }
+        if ready.stop || stop.as_ref().is_some_and(Stop::asked) {
+            return (Exit::stopped(), door);
         }
         if ready.task {
             host.serve_task();
@@ -164,6 +206,13 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         if let Err(error) = send_ended(open, instance) {
                             tracing::warn!(%error, instance, "the session was not told an instance ended");
                         }
+                    }
+                }
+                Ok(Some(Handed::Locale(locale))) => {
+                    // The person set another clock, date style or language: every instance
+                    // writes its times and its words again, and its window shows them.
+                    if host.set_locale(&locale) {
+                        tracing::info!("the person's formats or language changed");
                     }
                 }
                 Ok(Some(Handed::Task(request, fds))) => {

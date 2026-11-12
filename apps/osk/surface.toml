@@ -5,24 +5,90 @@ kind = "osk.keyboard"
 label = "On-screen keyboard"
 version = 1
 
+[[resources.verbs]]
+id = "set-layout"
+kind = "read"
+params = [
+  { name = "value", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-size"
+kind = "read"
+params = [
+  { name = "value", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-suggestions"
+kind = "read"
+params = [
+  { name = "value", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "set-autocorrect"
+kind = "read"
+params = [
+  { name = "value", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "set-typing-language"
+kind = "read"
+params = [
+  { name = "value", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-personalization"
+kind = "read"
+params = [
+  { name = "value", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "set-emoji-recents"
+kind = "read"
+params = [
+  { name = "value", type = { list = "text" }, required = true },
+]
+
 [[resources]]
 kind = "osk.learned"
 label = "What the keyboard learned"
 version = 1
 fields = [
-  { path = "transitions", type = "BTreeMap<String, BTreeMap<String, BTreeMap<String, Counter>>>", readonly = true },
-  { path = "kept", type = "Set<String>", readonly = true },
-  { path = "touch", type = "BTreeMap<String, KeyOffset>", readonly = true },
+  { path = "transitions", type = { map = { map = { map = "int" } } }, readonly = true },
+  { path = "kept", type = { set = "text" }, readonly = true },
+  { path = "touch", type = { map = { named = "KeyOffset" } }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "learn"
 kind = "undoable"
 params = [
-  { name = "lesson", required = true, schema = { type = "object", additionalProperties = false, properties = { kept = { type = "array", items = { type = "string" } }, language = { type = "string" }, touch = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } }, transitions = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } }, required = ["language", "transitions", "kept", "touch"] } },
+  { name = "lesson", type = { named = "Lesson" }, required = true, schema = { type = "object", additionalProperties = false, properties = { kept = { type = "array", items = { type = "string" } }, language = { type = "string" }, touch = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } }, transitions = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } }, required = ["language", "transitions", "kept", "touch"] } },
 ]
 
 [[resources.verbs]]
 id = "forget"
 kind = "undoable"
+
+[[resources.types]]
+name = "KeyOffset"
+fields = [
+  { name = "dx", type = "float" },
+  { name = "dy", type = "float" },
+  { name = "samples", type = "int" },
+]
+
+[[resources.types]]
+name = "Lesson"
+fields = [
+  { name = "language", type = "text" },
+  { name = "transitions", type = { list = "any" } },
+  { name = "kept", type = { list = "text" } },
+  { name = "touch", type = { list = "any" } },
+]
 

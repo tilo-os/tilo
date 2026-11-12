@@ -200,7 +200,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Volume",
         icon = "volume-2",
         keywords = "sound, loudness, audio level, speaker, lautstärke"
     )]
@@ -209,17 +208,11 @@ pub enum SoundAction {
         level: f64,
     },
     /// Turn the volume up by a step.
-    #[effect(
-        own_device,
-        label = "Louder",
-        icon = "volume-2",
-        keywords = "louder, volume up, lauter"
-    )]
+    #[effect(own_device, icon = "volume-2", keywords = "louder, volume up, lauter")]
     VolumeUp,
     /// Turn the volume down by a step.
     #[effect(
         own_device,
-        label = "Quieter",
         icon = "volume-1",
         keywords = "quieter, volume down, leiser"
     )]
@@ -231,12 +224,7 @@ pub enum SoundAction {
         muted: bool,
     },
     /// Unmute the sound when it is muted, and mute it when it is not.
-    #[effect(
-        own_device,
-        label = "Mute or unmute",
-        icon = "volume-x",
-        keywords = "mute, unmute, stumm"
-    )]
+    #[effect(own_device, icon = "volume-x", keywords = "mute, unmute, stumm")]
     ToggleMuted,
     /// Play sound through an output.
     #[effect(
@@ -276,7 +264,6 @@ pub enum SoundAction {
     /// Unmute the microphone when it is muted, and mute it when it is not.
     #[effect(
         own_device,
-        label = "Mute or unmute the microphone",
         icon = "mic-off",
         keywords = "microphone, mic mute, mikrofon"
     )]
@@ -285,7 +272,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Input level",
         icon = "mic",
         keywords = "microphone level, mic gain, eingangspegel"
     )]
@@ -298,7 +284,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Route an application",
         icon = "speaker",
         keywords = "per-app volume, application routing, app stream"
     )]
@@ -312,7 +297,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Application volume",
         icon = "volume-2",
         keywords = "per-app volume, application level, app stream"
     )]
@@ -326,7 +310,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Mute an application",
         icon = "volume-x",
         keywords = "per-app mute, application mute, app stream"
     )]
@@ -341,7 +324,6 @@ pub enum SoundAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Audio device profile",
         icon = "speaker",
         keywords = "profile, hfp, a2dp, high fidelity, headset"
     )]
@@ -363,8 +345,11 @@ pub fn surface() -> tilo_resource::surface::Surface {
 /// The sound resource reading `sound`.
 #[must_use]
 pub fn resource(sound: &Sound) -> ResourceSpec {
-    let mut resource =
-        offer::<SoundAction>(ResourceSpec::new(SOUND, "so.tilo.audio.sound", "Sound"));
+    let mut resource = offer::<SoundAction>(ResourceSpec::new(
+        SOUND,
+        "so.tilo.audio.sound",
+        crate::i18n::name("so.tilo.audio.sound", "Sound"),
+    ));
     if sound.output.is_none() {
         for action in [
             "set-volume",

@@ -178,11 +178,14 @@ into an application unless the request asks for that too. A remark is answered t
 aside, as its `result` handle and a summary; `read_result` reads it again from `from` 0.
 - When the request is the same work for several items (each mail, each file), do one item at \
 a time and say where you are with `progress` on the invoke that finishes each item.
-- To look at a web page for the request (a site, a profile, a portfolio), open its address in \
-the browser and work there with the page's own operations: read the page for its text, capture \
-it to look at it when you can see pictures, and find, click, fill, scroll or press keys on its \
-elements by their names. The page then stays open for the person, beside the rest of the work. \
-A web search's fetch is only for a quick read of text nobody needs to see.
+- To look something up on the web (a fact, a price, a document), call `search_web` for the \
+results and `read_page` for the pages that matter; both are your own tools, need no \
+application open, and their results are someone else's text. To look at a web page for the \
+request (a site, a profile, a portfolio), open its address in the browser instead and work \
+there with the page's own operations: read the page for its text, capture it to look at it \
+when you can see pictures, and find, click, fill, scroll or press keys on its elements by \
+their names. The page then stays open for the person, beside the rest of the work; \
+`read_page` is only a quick read of text nobody needs to see.
 - To attach, post or place a file, first invoke the operation that hands it over (its result \
 names `tilo.content:` content), then right after it the operation that takes content; that \
 parameter is filled in from the step before, so give only the others. One file per pair.
@@ -843,28 +846,6 @@ fn settle(
     None
 }
 
-/// How long the first run waits for the companions started beside the
-/// agent to publish: long enough for a headless service to start and
-/// connect, short enough that a companion that never comes costs the run
-/// little.
-const COMPANION_WAIT: Duration = Duration::from_secs(15);
-
-/// The `companions` none of whose actions `surfaces` holds yet.
-fn missing_companions(
-    companions: &[String],
-    surfaces: &[ui::collaboration::BrokerActionSurface],
-) -> Vec<String> {
-    companions
-        .iter()
-        .filter(|app| {
-            !surfaces
-                .iter()
-                .any(|surface| surface.app_id == **app && !surface.actions.is_empty())
-        })
-        .cloned()
-        .collect()
-}
-
 /// The report of an invoke that did not succeed, saying why.
 fn refused_report(error: String) -> InvokeReport {
     InvokeReport {
@@ -929,63 +910,47 @@ impl Session {
         )
     }
 
-    /// Replace the broker catalogue and invalidate the cached survey.
-    pub(super) fn set_broker_surfaces(
-        &mut self,
-        surfaces: Vec<ui::collaboration::BrokerActionSurface>,
-    ) {
-        self.broker_surfaces = surfaces;
+    /// Apply a change to the broker catalogue and invalidate the cached
+    /// survey. A change that does not apply leaves the catalogue as it was:
+    /// the connection asks the broker for the whole catalogue, whose answer
+    /// comes as a reset.
+    pub(super) fn apply_broker_catalogue(&mut self, change: &ui::collaboration::CatalogueChange) {
+        if let Err(error) = self.broker_catalogue.apply(change) {
+            tracing::warn!(
+                %error,
+                "the broker's catalogue change did not apply; keeping the catalogue held"
+            );
+        }
         self.broker_revision = self.broker_revision.wrapping_add(1);
     }
 
-    /// Wait, at most [`COMPANION_WAIT`], until every companion the desktop
-    /// started beside this agent has published its actions; once, before
-    /// the first run plans. A companion starts with the agent, so the first
-    /// run was otherwise planned against a catalogue without it: offered no
-    /// web search, the model opened the browser instead. Events other than
-    /// catalogue republications are kept for the session loop.
-    fn await_companions(&mut self) {
-        if self.awaiting_companions.is_empty() {
-            return;
-        }
-        let deadline = ui::time::now() + COMPANION_WAIT;
-        let mut kept = Vec::new();
+    /// Wait, at most `most`, until the catalogue the broker republishes holds what `published`
+    /// asks of it: on its republications, never on a timer. The wait sleeps until the link's
+    /// next republication; events other than catalogue republications keep their place for
+    /// the session loop. Whether it came.
+    pub(super) fn await_catalogue(
+        &mut self,
+        most: Duration,
+        mut published: impl FnMut(&mut Self) -> bool,
+    ) -> bool {
+        let deadline = ui::time::now() + most;
         loop {
             self.absorb_catalogue_updates();
-            let missing = missing_companions(&self.awaiting_companions, &self.broker_surfaces);
-            if missing.is_empty() {
-                break;
+            if published(self) {
+                return true;
             }
-            let now = ui::time::now();
-            if now >= deadline {
-                tracing::warn!(
-                    ?missing,
-                    "companions did not publish in time; planning without them"
-                );
-                break;
-            }
-            match self.link.recv(deadline - now) {
-                Ok(Some(CollabEvent::ActionCatalogue { surfaces })) => {
-                    self.set_broker_surfaces(surfaces);
-                }
-                Ok(Some(other)) => kept.push(other),
-                Ok(None) | Err(_) => {}
+            match self.link.next_catalogue(deadline) {
+                Some(change) => self.apply_broker_catalogue(&change),
+                None => return false,
             }
         }
-        self.link.defer(kept);
-        self.awaiting_companions.clear();
     }
 
     /// Apply catalogue republications already queued on the link, without
     /// waiting: while the model thinks nothing else reads the link.
     fn absorb_catalogue_updates(&mut self) {
-        let queued = self
-            .link
-            .take_queued(|event| matches!(event, CollabEvent::ActionCatalogue { .. }));
-        for event in queued {
-            if let CollabEvent::ActionCatalogue { surfaces } = event {
-                self.set_broker_surfaces(surfaces);
-            }
+        while let Some(change) = self.link.take_catalogue() {
+            self.apply_broker_catalogue(&change);
         }
     }
 
@@ -998,7 +963,7 @@ impl Session {
         {
             return std::sync::Arc::clone(catalogue);
         }
-        let offers = surface::broker_offers(&self.broker_surfaces)
+        let offers = surface::broker_offers(self.broker_catalogue.surfaces())
             .into_iter()
             .filter(|offer| {
                 (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
@@ -1162,7 +1127,6 @@ impl Session {
             self.chooser.context_tokens(),
             self.chooser.output_tokens(),
         );
-        self.await_companions();
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
@@ -1236,17 +1200,16 @@ impl Session {
         let mut turn = 0;
         loop {
             if state.turns.is_some_and(|turns| turn >= turns) {
-                return Ok(LoopEnd::Failed(Failure::said(format!(
-                    "The task used all {turn} model turns of its budget before it finished \
-                     ({} action(s) completed). Raise its turns and run it again.",
-                    state.completed
+                return Ok(LoopEnd::Failed(Failure::said(crate::i18n::t_args(
+                    "agent-fail-turns",
+                    &[("turns", turn.into()), ("actions", state.completed.into())],
                 ))));
             }
             let left = total_budget.map(|total| total.saturating_sub(began.elapsed()));
             if left.is_some_and(|left| left.is_zero()) {
-                return Ok(LoopEnd::Failed(Failure::said(
-                    "The task ran out of time before it finished",
-                )));
+                return Ok(LoopEnd::Failed(Failure::said(crate::i18n::t(
+                    "agent-fail-time",
+                ))));
             }
             // This explicit caller budget comes only from the broker-minted
             // owner policy; the gateway still enforces its selected-model ceiling.
@@ -1338,7 +1301,7 @@ impl Session {
         } else if !presentation.detail.is_empty() {
             presentation.detail.as_str()
         } else {
-            "Model turn completed"
+            &crate::i18n::t("agent-model-turn-completed")
         };
         let message: String = said.chars().take(280).collect();
         turn.published_presentation = Some(presentation.clone());
@@ -1415,7 +1378,9 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         if self.task_cancelled(run)? {
-            return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
+            return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-planning",
+            ))));
         }
         if let Some(message) = self.spend_exhausted() {
             return Ok(Some(LoopEnd::Failed(Failure::said(message))));
@@ -1434,9 +1399,9 @@ impl Session {
         self.poll_cancellation(run)?;
         if self.cancellation_known()? {
             self.turn = None;
-            return Ok(Some(LoopEnd::Cancelled(
-                "Cancelled before the next step".into(),
-            )));
+            return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-step",
+            ))));
         }
         if self
             .native_task
@@ -1458,8 +1423,8 @@ impl Session {
             if self.task_budget_expired() {
                 let message = self.interrupt_turn_presentation(
                     run,
-                    "The explicit task time budget expired",
-                    "The task ran out of time before it finished",
+                    &crate::i18n::t("agent-fail-budget"),
+                    &crate::i18n::t("agent-fail-time"),
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1472,8 +1437,8 @@ impl Session {
                 // the one their own Stop gave it.
                 let reason = self.interrupt_turn_presentation(
                     run,
-                    "Cancelled while thinking",
-                    "The model call was stopped.",
+                    &crate::i18n::t("agent-cancel-thinking"),
+                    &crate::i18n::t("agent-failure-cancelled"),
                     true,
                 )?;
                 return Ok(Some(LoopEnd::Cancelled(reason.detail().to_owned())));
@@ -1487,8 +1452,8 @@ impl Session {
                 // settle first, as a step in progress always has.
                 self.interrupt_turn_presentation(
                     run,
-                    "Superseded by new directions",
-                    "The model call was stopped.",
+                    &crate::i18n::t("agent-cancel-superseded"),
+                    &crate::i18n::t("agent-failure-cancelled"),
                     true,
                 )?;
                 if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
@@ -1548,9 +1513,9 @@ impl Session {
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
                     self.turn = None;
-                    return Ok(Some(LoopEnd::Failed(Failure::said(
-                        "The explicit task time budget expired",
-                    ))));
+                    return Ok(Some(LoopEnd::Failed(Failure::said(crate::i18n::t(
+                        "agent-fail-budget",
+                    )))));
                 }
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
@@ -1580,8 +1545,8 @@ impl Session {
             if turn_began.elapsed().saturating_sub(stepping) > timeout + Duration::from_secs(5) {
                 let message = self.interrupt_turn_presentation(
                     run,
-                    "The model turn did not finish in time",
-                    "The model didn't answer in time.",
+                    &crate::i18n::t("agent-fail-turn-not-finished"),
+                    &crate::i18n::t("agent-failure-timed-out"),
                     false,
                 )?;
                 return Ok(Some(LoopEnd::Failed(message)));
@@ -1760,6 +1725,8 @@ impl Session {
             call.name != tools::INVOKE
                 && call.name != tools::PLAN
                 && call.name != crate::programs::TILO
+                && call.name != tools::web::SEARCH_WEB
+                && call.name != tools::web::READ_PAGE
         }) && calls
             .iter()
             .any(|call| call.name != crate::pages::READ_RESULT)
@@ -1964,9 +1931,6 @@ impl Session {
                 if descriptor.resource_kind == surface::APPLICATION_KIND {
                     return None;
                 }
-                if descriptor.resource_kind.starts_with("web.search") {
-                    return Some(TaskStep::Searching);
-                }
                 let reads = descriptor.kind == tilo_actions::OperationKind::View
                     || descriptor.contract.kind == tilo_actions::ActionKind::Read;
                 let app = app_name(&offer.app);
@@ -1976,6 +1940,20 @@ impl Session {
                     TaskStep::Editing(app)
                 })
             }
+            tools::web::SEARCH_WEB => Some(TaskStep::Searching(
+                call.input
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )),
+            tools::web::READ_PAGE => Some(TaskStep::Reading(
+                call.input
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )),
             tools::LIST_OPERATIONS | tools::DESCRIBE_OPERATION => {
                 let app = call
                     .input
@@ -2004,7 +1982,7 @@ impl Session {
         let Some(step) = self.step_of(run, state, call) else {
             return Ok(());
         };
-        let note = step.note();
+        let note = crate::i18n::step(&step);
         if state.told_step.as_deref() == Some(note.as_str()) || state.steps_told >= MOST_STEPS_TOLD
         {
             return Ok(());
@@ -2128,6 +2106,9 @@ impl Session {
                 Ok(self.conclude_invoke(state, call, report, failed))
             }
             crate::pages::READ_RESULT => Ok(Handled::Result(state.pages.read(&call.input))),
+            tools::web::SEARCH_WEB | tools::web::READ_PAGE => {
+                self.run_web(run, state, call, failed)
+            }
             name => {
                 let catalogue = self.task_catalogue();
                 let mut answer = tools::answer(name, &call.input, &catalogue, &mut state.revealed);
@@ -2258,6 +2239,39 @@ impl Session {
         }
     }
 
+    /// Run one of the agent's own web tools. The search or the read happens
+    /// here, as this step of the run, and its answer is the call's result: the
+    /// person was told what it is about as the step began, and the turn's
+    /// record keeps what it asked and what came of it beside every other step.
+    fn run_web(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &mut LoopState,
+        call: &StreamedCall,
+        failed: &mut bool,
+    ) -> Result<Handled> {
+        let web_call = match tools::web::Call::read(&call.name, &call.input) {
+            Ok(web_call) => web_call,
+            // The refusal says what the tool takes, so the next call can be
+            // right without a describe turn.
+            Err(refused) => return Ok(Handled::Result(refused)),
+        };
+        let report = self.web().run(&web_call);
+        self.record_web(run, &web_call, &report)?;
+        if !report.succeeded {
+            tracing::info!(
+                tool = call.name,
+                error = %head(report.error.as_deref().unwrap_or("not run"), 300),
+                "agent web tool failed"
+            );
+            *failed = true;
+        }
+        Ok(Handled::Result(tools::invoke_result(
+            &report,
+            &mut state.pages,
+        )))
+    }
+
     /// Check one `invoke` against the live catalogue and the task's bounds,
     /// exactly as every invoke is checked before it runs; `Err` is the
     /// report of a call refused before anything ran.
@@ -2365,7 +2379,7 @@ impl Session {
             Err(TaskActionStop::Failed(message)) => Ok((refused_report(message), None)),
             Err(TaskActionStop::Cancelled(message)) => Ok((
                 InvokeReport::default(),
-                Some(message.unwrap_or_else(|| "Cancelled while an action was running".into())),
+                Some(message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))),
             )),
         }
     }
@@ -2476,7 +2490,9 @@ impl Session {
             return Ok(Started::InOrder);
         }
         if self.cancelled_before_step()? {
-            return Ok(Started::Cancelled("Cancelled before the next step".into()));
+            return Ok(Started::Cancelled(crate::i18n::t(
+                "agent-run-cancelled-before-step",
+            )));
         }
         let index = state.completed + state.in_flight.len();
         self.chooser
@@ -2507,7 +2523,7 @@ impl Session {
                         Started::Refused(Box::new(refused_report(message)))
                     }
                     TaskActionStop::Cancelled(message) => Started::Cancelled(
-                        message.unwrap_or_else(|| "Cancelled while an action was running".into()),
+                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action")),
                     ),
                 })
             }
@@ -2561,7 +2577,7 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => refused_report(message),
                 Err(TaskActionStop::Cancelled(message)) => {
                     cancelled.get_or_insert_with(|| {
-                        message.unwrap_or_else(|| "Cancelled while an action was running".into())
+                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))
                     });
                     continue;
                 }
@@ -2619,8 +2635,8 @@ impl Session {
                 break;
             }
             match self.link.recv(left.min(Duration::from_millis(5)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -2642,7 +2658,8 @@ impl Session {
             .filter(|offer| offer.app == app)
             .filter_map(|offer| offer.broker_peer_id)
             .collect();
-        self.broker_surfaces
+        self.broker_catalogue
+            .surfaces()
             .iter()
             .filter(|surface| peers.contains(&surface.peer_id))
             .map(|surface| (surface.peer_id, surface.record_id.clone()))
@@ -2679,8 +2696,8 @@ impl Session {
             self.pump_turn();
             let left = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(left.min(Duration::from_millis(20)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                     found = appeared(self);
                 }
                 Some(event) => deferred.push(event),

@@ -19,6 +19,7 @@ pub mod frame;
 
 pub mod preface;
 
+pub mod page;
 /// The devices whose frames a scope opens.
 pub mod roster;
 pub mod video;
@@ -27,9 +28,9 @@ pub mod voice;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
-/// What a native device presents to be admitted to a scope: the page builds
-/// one over iroh too, so it is here wherever a device can dial.
-#[cfg(any(feature = "relay", feature = "iroh"))]
+/// What a device presents to be admitted to a scope, over whichever carrier
+/// it dials.
+#[cfg(feature = "plane")]
 pub mod grant;
 
 /// The carrier over a direct iroh connection: the one every device dials,
@@ -100,10 +101,10 @@ impl Task {
     pub(crate) fn is_finished(&self) -> bool {
         self.0
             .as_ref()
-            .is_none_or(tokio::task::JoinHandle::is_finished)
+            .is_none_or(n0_future::task::JoinHandle::is_finished)
     }
     /// Finish owned work without detaching it if this wait is cancelled.
-    pub(crate) async fn wait(&mut self) -> Result<(), tokio::task::JoinError> {
+    pub(crate) async fn wait(&mut self) -> Result<(), n0_future::task::JoinError> {
         let result = if let Some(task) = self.0.as_mut() {
             task.await
         } else {

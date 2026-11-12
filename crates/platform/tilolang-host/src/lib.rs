@@ -17,10 +17,13 @@
 //!
 //! **Storage.** One directory per workspace and author, granted to the host at its start, keyed by
 //! package inside: `<storage>/<package>/documents` holds the workspace record's on-disk copy, and
-//! `<storage>/<package>/indexes` the workspace's indexes.
+//! `<storage>/<package>/indexes` the indexes its instances read the record through, one per
+//! record, shared by every window of it.
 
+pub mod files;
 pub mod hosted;
 pub mod phrases;
+pub mod stop;
 pub mod task;
 pub mod wait;
 pub mod web;
@@ -34,6 +37,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use collaboration::CommittedDocument;
 use collaboration::native_initial::PrimaryRead;
+/// The person's formats and language, as the session says them on the door
+/// ([`TilolangHost::set_locale`]).
+pub use runtime_portal::tilolang_host::Locale;
 use runtime_portal::tilolang_host::{InstanceFds, InstanceRequest, Module};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -75,6 +81,13 @@ pub fn route_under(
     }
 }
 
+/// Whether an instance joining `route` opens the record `asked`, as a launch names it: a member's
+/// own, by its id. The workspace's record of the app is no record a launch names.
+fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
+    collaboration::record::RecordId::parse(asked)
+        .is_some_and(|asked| asked.route() == route.record.as_deref().unwrap_or_default())
+}
+
 /// Why an instance the session handed over does not run.
 #[derive(Debug, thiserror::Error)]
 pub enum AdmitError {
@@ -92,6 +105,11 @@ pub enum AdmitError {
     Records { app: String, records: String },
     #[error("the workspace `{0}` is no workspace id")]
     Workspace(String),
+    #[error(
+        "the window was asked to open the record `{asked}`, but an instance of `{app}` opens \
+         only its own record of the workspace"
+    )]
+    OtherRecord { app: String, asked: String },
     #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
     #[error(transparent)]
@@ -127,6 +145,13 @@ struct Opening {
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
     reached: Vec<(&'static str, std::time::Duration)>,
+    /// The person's formats changed while it opened: its first frame writes its times again.
+    formats_changed: bool,
+    /// The language the person chose while it opened: its window reads in it from its first
+    /// frame.
+    language: Option<String>,
+    /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
+    reveal: Option<String>,
 }
 
 impl Opening {
@@ -172,7 +197,13 @@ enum Step {
 /// The host: its storage, what wakes it, and its instances.
 pub struct TilolangHost {
     storage: Option<PathBuf>,
+    /// The words this host's own process speaks, which dates and clocks read in where a session
+    /// names no language for a window: every window's words are chosen from it and the languages
+    /// its package ships ([`hosted::Spec::language`]).
     phrases: Rc<Phrases>,
+    /// The person's formats, which every instance's clock and dates read by: the session hands
+    /// them over the door, and says again when they change in Settings.
+    formats: hosted::Formats,
     wake: Waker,
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
@@ -198,6 +229,7 @@ impl TilolangHost {
         Self {
             storage,
             phrases: Rc::new(Phrases::from_env()),
+            formats: hosted::Formats::default(),
             wake,
             scope,
             running: Vec::new(),
@@ -266,6 +298,51 @@ impl TilolangHost {
         })
     }
 
+    /// The person's formats, as the session set them: what an instance opened here writes its
+    /// times and days by.
+    #[must_use]
+    pub fn formats(&self) -> &hosted::Formats {
+        &self.formats
+    }
+
+    /// The person's formats changed (they set another clock or date style in Settings): the
+    /// instances write their times again in it and show what they wrote. Whether it was a change:
+    /// the same formats said again are nothing to do.
+    pub fn set_formats(&mut self, formats: tilo_formats::RegionFormats) -> bool {
+        if self.formats.get() == formats {
+            return false;
+        }
+        self.formats.set(formats);
+        for running in &mut self.running {
+            running.hosted.formats_changed();
+        }
+        for opening in &mut self.opening {
+            // An instance still opening reads them when it runs: what it already wrote is
+            // written again on its first frame.
+            opening.formats_changed = true;
+        }
+        true
+    }
+
+    /// The person's formats or language changed in Settings ([`Locale`]): the instances write
+    /// their times again in the formats, and their windows read their words in the language,
+    /// where they stand. Whether anything changed.
+    pub fn set_locale(&mut self, locale: &Locale) -> bool {
+        let mut changed = self.set_formats(locale.formats);
+        if locale.language.is_empty() {
+            return changed;
+        }
+        self.phrases.speak(&locale.language);
+        for running in &mut self.running {
+            changed |= running.hosted.speak(&locale.language);
+        }
+        for opening in &mut self.opening {
+            // An instance still opening speaks it on its first frame.
+            opening.language = Some(locale.language.clone());
+        }
+        changed
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -304,9 +381,14 @@ impl TilolangHost {
                 None,
             )
         };
+        // The formats the session hands with any instance are the person's: the same for all of
+        // them, so the last one said holds for the host, and the instances already running
+        // write their times again if they changed.
+        self.set_formats(request.formats);
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);
+        let reveal = request.reveal.clone();
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -329,6 +411,9 @@ impl TilolangHost {
             origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
+            formats_changed: false,
+            language: None,
+            reveal,
         });
         Ok(())
     }
@@ -357,6 +442,9 @@ impl TilolangHost {
             origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
+            formats_changed: false,
+            language: None,
+            reveal: None,
         });
     }
 
@@ -501,21 +589,31 @@ impl TilolangHost {
             .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
+        let route = route_under(&bundle.meta, &records, workspace, &request.person);
+        // A window asked for a record: its instance opens the one its route names, and only that
+        // one is what it was asked for.
+        if let Some(asked) = request.record.as_deref()
+            && !opens_record(&route, asked)
+        {
+            return Err(AdmitError::OtherRecord {
+                app: request.app,
+                asked: asked.to_owned(),
+            });
+        }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            route_under(&bundle.meta, &records, workspace, &request.person),
+            route,
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
         Ok(Stage::Joining {
             spec: Spec {
-                app: request.app,
-                workspace: request.room,
-                instance: request.instance,
-                person: request.person,
+                installed: request.installed,
+                language: request.language,
+                ..Spec::new(request.app, request.room, request.instance, request.person)
             },
             bundle: Arc::new(bundle),
             manager,
@@ -574,19 +672,31 @@ impl TilolangHost {
             .try_clone_to_owned()
             .map_err(AdmitError::Window)?;
         let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-        let hosted = Hosted::with_record(
+        let mut hosted = Hosted::with_record(
             spec,
             record,
             bundle,
             &kept,
             Box::new(transport),
             &self.phrases,
+            &self.formats,
             Arc::clone(&self.wake),
         );
+        if opening.formats_changed {
+            hosted.formats_changed();
+            opening.formats_changed = false;
+        }
+        if let Some(language) = opening.language.take() {
+            hosted.speak(&language);
+        }
         let mut hosted = match opening.identity.take() {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        // The item its window was asked to open on, shown as its `open` shows one.
+        if let Some(anchor) = opening.reveal.take() {
+            hosted.reveal(anchor);
+        }
         // Its types with a mail server as origin are kept in step through the app's connector,
         // which holds the network and the credentials this process has none of.
         if let Some(origin) = opening.origin.take() {
@@ -851,6 +961,7 @@ impl TilolangHost {
                     app,
                     record,
                     mutation,
+                    document: None,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -940,4 +1051,27 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     // nonblocking query.
     let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
     ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window asked for the workspace's record, or a member's own, opens on an instance whose
+    /// route names that record, and on no other.
+    #[test]
+    fn an_instance_opens_only_the_record_its_route_names() {
+        let workspace = uuid::Uuid::from_u128(7);
+        let own = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(9));
+        let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
+        let owns = collaboration::RouteSpec::record("so.tilo.lang.notes", workspace, own.route());
+        assert!(opens_record(&owns, own.as_str()));
+        assert!(
+            !opens_record(&workspaces, own.as_str()),
+            "the workspace's record is never named: a launch that names one names another"
+        );
+        let other = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
+        assert!(!opens_record(&owns, other.as_str()));
+        assert!(!opens_record(&owns, "not a record"));
+    }
 }

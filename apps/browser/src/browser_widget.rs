@@ -20,6 +20,7 @@
 use automerge::{AutoCommit, ObjId};
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -45,6 +46,7 @@ use ui::widget::{
     paint_rule,
 };
 
+use crate::CATALOG;
 use crate::actions::history_resource_id;
 use crate::address_overlay::AddressSuggestions;
 use crate::browsing_mode::BrowsingMode;
@@ -68,6 +70,9 @@ mod continuity;
 mod dialog;
 mod download_read;
 mod engine_runtime;
+mod holds;
+#[cfg(test)]
+mod holds_tests;
 mod http_fallback;
 mod library;
 #[cfg(test)]
@@ -521,6 +526,8 @@ pub struct BrowserWidget {
     /// The reader view a running page operation asked for.
     reader_request: Option<bool>,
     title: String,
+    /// What the window is called when no page names it, in the desktop's language.
+    window_name: String,
     favicon: Option<vello::peniko::ImageData>,
     /// The favicon as the engine sent it, for the window's bar
     /// (`ui::window_toolbar::ToolbarImage`).
@@ -542,8 +549,10 @@ pub struct BrowserWidget {
     /// load-finished.
     current_uri: String,
     /// What the window's bar slots were last declared from
-    /// (`window_bar::BarInputs`), so an unchanged frame declares nothing.
-    declared_bar: Option<window_bar::BarInputs>,
+    /// (`window_bar::BarInputs`), and the window they were declared on
+    /// ([`ui::window_toolbar::current_window`]), so an unchanged frame declares
+    /// nothing and a window that shows the app later gets them.
+    declared_bar: Option<(Option<u64>, window_bar::BarInputs)>,
     /// The press that selected the whole address: its release is the
     /// address bar's too, so the selection it made stays.
     swallow_address_release: bool,
@@ -669,6 +678,9 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// What the page is not allowed to send yet: the person answers each
+    /// request before it leaves ([`holds`]).
+    holds: holds::Holds,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1425,6 +1437,11 @@ impl BrowserWidget {
         let settings_presentation = SettingsPresentation::from_settings(&settings);
         let search_index = crate::search_provider::BrowserSearchIndex::default();
         search_index.sync_all(&history, &downloads);
+        // A window opened for an agent browses as a visitor, and nothing it
+        // reaches leaves without the person's answer.
+        if browsing_mode.holds_departures() {
+            engine.hold_departures();
+        }
         Self {
             rect: Rect::ZERO,
             engine,
@@ -1488,6 +1505,7 @@ impl BrowserWidget {
             reader_view: false,
             reader_request: None,
             title: String::new(),
+            window_name: crate::resource::CATALOG.t("browser-window-name"),
             favicon: None,
             favicon_png: None,
             bar_query: None,
@@ -1571,6 +1589,7 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            holds: holds::Holds::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -2026,6 +2045,9 @@ impl BrowserWidget {
             BrowserOperation::ReadDownload { .. } | BrowserOperation::AnswerDownload { .. } => {
                 return Err("downloads read and answered through their resource action".into());
             }
+            BrowserOperation::AnswerHeldRequest { .. } => {
+                return Err("a held request is answered through its resource action".into());
+            }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
@@ -2329,9 +2351,7 @@ impl BrowserWidget {
             && let Err(error) =
                 record.invoke(&crate::history::BrowsingHistory::CLEAR_HISTORY.with(()))
         {
-            let message =
-                "Couldn’t clear history because Browser could not save the change. Previous history was kept."
-                    .to_string();
+            let message = CATALOG.t("browser-history-clear-failed");
             tracing::warn!("browser history clear was not persisted: {error}");
             self.history_clear_error = Some(message.clone());
             self.structure_dirty = true;
@@ -2762,7 +2782,7 @@ impl BrowserWidget {
         }
         let aspect = (region.width() / region.height()).clamp(0.4, 2.8);
         let title = if self.title.trim().is_empty() {
-            "Browser page".to_string()
+            CATALOG.t("browser-page-untitled")
         } else {
             self.title.clone()
         };
@@ -2920,16 +2940,15 @@ impl BrowserWidget {
         }
         if self.close_blocked {
             notices.push(
-                crate::notice::Notice::warning("This tab has an active download").with_message(
-                    "Finish or cancel it in Downloads in the library, then close the tab.",
-                ),
+                crate::notice::Notice::warning("This tab has an active download")
+                    .with_message(CATALOG.t("browser-download-active-hint")),
             );
         }
         // The history notice would only repeat the Library's own control.
         if self.history_paused() && !self.show_library {
             notices.push(
                 crate::notice::Notice::neutral("History paused")
-                    .with_message("Pages in this window are not saved to browsing history."),
+                    .with_message(CATALOG.t("browser-history-paused-hint")),
             );
         }
         if !on_page {
@@ -2986,7 +3005,7 @@ impl BrowserWidget {
             // Assistive technology reads the document by its title, as in
             // any browser; an untitled page keeps the generic name.
             let page_name = if self.title.trim().is_empty() {
-                "Web content".to_owned()
+                CATALOG.t("browser-page-content-name")
             } else {
                 self.title.clone()
             };
@@ -3239,6 +3258,18 @@ impl BrowserWidget {
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }
                 | WebViewEvent::ExtensionDownloadOpen { .. }) => {
+                    // In a window an agent operates, a download the page
+                    // starts waits for the person like every other departure:
+                    // the hold asks, so no prompt of the window's own is put
+                    // beside it.
+                    if let WebViewEvent::NativeDownloadRequested { id, url, name } = &event
+                        && self.browsing_mode.holds_departures()
+                    {
+                        self.hold_download(*id, url, name);
+                        self.keep_native_download(&event);
+                        self.structure_dirty = true;
+                        continue;
+                    }
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
@@ -3496,6 +3527,8 @@ impl BrowserWidget {
                         self.settle_page_operation_on_question();
                     }
                 }
+                WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
+                WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
@@ -4574,7 +4607,7 @@ impl Widget for BrowserWidget {
             ui::paint::fill_rect(scene, transform, rect, theme.tokens.colors.overlay_medium);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.paint_side_panel_edge(scene, transform, theme);
         // One hairline under the toolbar row separates it from the page;
@@ -4635,9 +4668,9 @@ impl Widget for BrowserWidget {
 
         self.page_menu
             .menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.back_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(dialog) = self.page_dialogs.widget_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -5061,7 +5094,7 @@ impl Widget for BrowserWidget {
                 .collect();
             return (!nodes.is_empty()).then(|| {
                 AccessNode::new(Role::Group)
-                    .with_name("Browser")
+                    .with_name(crate::resource::CATALOG.t("browser-window-name"))
                     .with_children(nodes)
             });
         }
@@ -5092,8 +5125,8 @@ impl Widget for BrowserWidget {
             })
             .collect();
         let name = match direction {
-            NavigationDirection::Back => "Back history",
-            NavigationDirection::Forward => "Forward history",
+            NavigationDirection::Back => CATALOG.t("browser-history-back"),
+            NavigationDirection::Forward => CATALOG.t("browser-history-forward"),
         };
         Some(AccessNode::new(Role::Group).with_children(vec![
                 AccessNode::new(Role::Menu)
@@ -5352,9 +5385,9 @@ impl BrowserWidget {
             "browser.page",
             "browser.page",
             if self.title.is_empty() {
-                "Web page"
+                CATALOG.t("browser-page-untitled")
             } else {
-                &self.title
+                self.title.clone()
             },
         );
         if self.person_bookmarks.is_some()
@@ -5376,20 +5409,23 @@ impl BrowserWidget {
         page.actions.push(if self.can_go_back {
             back
         } else {
-            back.unavailable("history_boundary", "No previous page")
+            back.unavailable(
+                "history_boundary",
+                CATALOG.t("browser-action-no-previous-page"),
+            )
         });
         let forward = E::Forward.bound();
         page.actions.push(if self.can_go_forward {
             forward
         } else {
-            forward.unavailable("history_boundary", "No next page")
+            forward.unavailable("history_boundary", CATALOG.t("browser-action-no-next-page"))
         });
         page.actions.push(E::Reload.bound());
         let stop = E::Stop.bound();
         page.actions.push(if self.progress < 1.0 {
             stop
         } else {
-            stop.unavailable("history_boundary", "Page is idle")
+            stop.unavailable("history_boundary", CATALOG.t("browser-action-page-idle"))
         });
         page.actions
             .push(E::Navigate { url: String::new() }.bound_asking(&["url"]));
@@ -5402,24 +5438,61 @@ impl BrowserWidget {
         );
         let mut pip = E::PictureInPicture.bound();
         if self.active_pip {
-            pip.type_mut().label = "Close Picture in Picture".into();
+            pip.type_mut().label = CATALOG.t("browser-action-close-picture-in-picture");
         }
         page.actions.push(pip);
         let web_page = is_supported_web_url(&self.current_uri);
         let mut reader = E::ReaderView.bound();
         if self.reader_view {
-            reader.type_mut().label = "Close reader view".into();
+            reader.type_mut().label = CATALOG.t("browser-action-close-reader-view");
         }
         page.actions.push(if web_page {
             reader
         } else {
-            reader.unavailable("no_web_page", "Open a web page first")
+            reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
         page.actions.extend(self.daily.zoom_actions());
         // A page waiting on a permission asks in the page's own actions too:
         // whoever reads the page answers it there, next to the page's other
         // buttons, and never has to find the prompt in the chrome.
         page.actions.extend(self.capabilities.permission_answers());
+        // A request the page started on its own waits on the person: whoever
+        // may ask the page answers it here, by the id it holds, and nothing
+        // leaves until they do. The id is stated on the action, so a caller
+        // that is not the person at this window — the host holding a window
+        // in a VM of theirs — answers that one departure among several. The
+        // departure itself is stated beside it — the page it leaves from,
+        // what it does, the method and where it goes, and the picture of the
+        // filled page — so the person the host asks sees what leaves and not
+        // only a name for it.
+        for held in self.holds.waiting() {
+            let id = held.request.id.to_string();
+            let mut bound: Vec<(String, serde_json::Value)> = held
+                .facts()
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.into()))
+                .collect();
+            bound.push(("id".to_owned(), id.clone().into()));
+            let mut send = E::SendHeldRequest { id: id.clone() }
+                .bound()
+                .with_bound(bound)
+                .stating_bound("id", "The held request's id")
+                .stating_bound("page", "The page it leaves from")
+                .stating_bound("kind", "What the page does")
+                .stating_bound("method", "The method it leaves with")
+                .stating_bound("destination", "Where it goes")
+                .stating_bound("picture", "The filled page, as content");
+            send.type_mut().label = CATALOG.t_args(
+                "browser-action-let-leave",
+                &[("request", ui::i18n::ArgValue::Text(held.describing()))],
+            );
+            page.actions.push(send);
+            let mut keep = E::KeepHeldRequest { id }
+                .bound()
+                .stating_bound("id", "The held request's id");
+            keep.type_mut().label = CATALOG.t("browser-action-keep-page");
+            page.actions.push(keep);
+        }
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage { frame: None }, &["frame"][..]),
@@ -5574,7 +5647,7 @@ impl BrowserWidget {
             page.actions.push(if web_page {
                 spec
             } else {
-                spec.unavailable("no_web_page", "Open a web page first")
+                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
 
@@ -5582,14 +5655,14 @@ impl BrowserWidget {
             "browser.session",
             "browser.history-pause",
             if self.history_paused() {
-                "History paused"
+                CATALOG.t("browser-history-paused")
             } else {
-                "History recording"
+                CATALOG.t("browser-history-recording")
             },
         );
         let mut pause = E::TogglePause.bound();
         if self.history_paused() {
-            pause.type_mut().label = "Resume history in this window".into();
+            pause.type_mut().label = CATALOG.t("browser-action-resume-history");
         }
         session.actions.push(pause);
 
@@ -5597,10 +5670,14 @@ impl BrowserWidget {
         // row's: a view on these rows would be their disclosure in the
         // action directory, a private one an agent is never shown, and with
         // it every action here (clear history, start a download).
-        let mut history = ResourceSpec::new("browser.history", "browser.history", "History");
+        let mut history = ResourceSpec::new(
+            "browser.history",
+            "browser.history",
+            CATALOG.t("browser-resource-history"),
+        );
         let clear = E::ClearHistory.bound();
         history.actions.push(if self.history.is_empty() {
-            clear.unavailable("already_empty", "Browsing history is already empty")
+            clear.unavailable("already_empty", CATALOG.t("browser-history-already-empty"))
         } else {
             clear
         });
@@ -5640,8 +5717,11 @@ impl BrowserWidget {
             history.children.push(row);
         }
 
-        let mut bookmarks =
-            ResourceSpec::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        let mut bookmarks = ResourceSpec::new(
+            "browser.bookmarks",
+            "browser.bookmarks",
+            CATALOG.t("browser-resource-bookmarks"),
+        );
         bookmarks.actions.push(E::ShowBookmarks.bound());
         // Each bookmark is an item of the document; this window adds opening
         // its page to it.
@@ -5665,8 +5745,11 @@ impl BrowserWidget {
             })
             .collect();
 
-        let mut downloads =
-            ResourceSpec::new("browser.downloads", "browser.downloads", "Downloads");
+        let mut downloads = ResourceSpec::new(
+            "browser.downloads",
+            "browser.downloads",
+            CATALOG.t("browser-resource-downloads"),
+        );
         downloads
             .actions
             .push(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
@@ -5712,8 +5795,11 @@ impl BrowserWidget {
             downloads.children.push(child);
         }
 
-        let mut extensions =
-            ResourceSpec::new("browser.extensions", "browser.extensions", "Extensions");
+        let mut extensions = ResourceSpec::new(
+            "browser.extensions",
+            "browser.extensions",
+            CATALOG.t("browser-resource-extensions"),
+        );
         extensions.actions.push(E::ShowExtensions.bound());
         extensions.actions.extend(self.extensions.add_action());
         // Each installed extension, as the window last read the profile,
@@ -5724,7 +5810,11 @@ impl BrowserWidget {
         // unaddressable collection of tabs.  This lets keyboard users,
         // assistive technology, global action search, and agents all use the
         // same section operations as the visible surface.
-        let mut library = ResourceSpec::new("browser.library", "browser.library", "Library");
+        let mut library = ResourceSpec::new(
+            "browser.library",
+            "browser.library",
+            CATALOG.t("browser-resource-library"),
+        );
         for effect in [
             E::ShowHistory,
             E::ShowBookmarks,
@@ -5743,18 +5833,23 @@ impl BrowserWidget {
         library
             .actions
             .push(if self.library_filter.get().trim().is_empty() {
-                clear_filter.unavailable("already_clear", "Library filter is already clear")
+                clear_filter
+                    .unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
             } else {
                 clear_filter
             });
 
-        let mut settings = ResourceSpec::new("browser.settings", "browser.settings", "Settings");
+        let mut settings = ResourceSpec::new(
+            "browser.settings",
+            "browser.settings",
+            CATALOG.t("browser-resource-settings"),
+        );
         settings.actions.push(E::RequestSiteDataClear.bound());
 
         let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
             crate::resource::Browser::KIND,
-            "Browser",
+            crate::resource::CATALOG.t("browser-window-name"),
         );
         browser.actions = E::specs();
         browser.children = vec![
@@ -5770,7 +5865,7 @@ impl BrowserWidget {
             ResourceSpec::new(
                 "browser.service-sessions",
                 "browser.service-sessions",
-                "Accounts",
+                CATALOG.t("browser-resource-accounts"),
             )
             .with_action({
                 let list = E::ListServiceSessions.bound();
@@ -5779,7 +5874,7 @@ impl BrowserWidget {
                 } else {
                     list.unavailable(
                         "no_account_custody",
-                        crate::browsing_mode::NO_ACCOUNT_CUSTODY,
+                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY),
                     )
                 }
             }),
@@ -5793,7 +5888,7 @@ impl BrowserWidget {
                 ResourceSpec::new(
                     "browser.service-status",
                     "browser.service-status",
-                    "Account",
+                    CATALOG.t("browser-resource-account"),
                 )
                 .with_action(E::ReadServiceSession.bound()),
             );
@@ -6042,6 +6137,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.expire_holds();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
@@ -6106,9 +6202,19 @@ impl BrowserWidget {
                 let value = self.answer_download(id, *allow)?;
                 return Ok(ui::framework::Effected::value(value));
             }
+            BrowserOperation::AnswerHeldRequest { id, allow } => {
+                let value = self.answer_hold(id, *allow)?;
+                return Ok(ui::framework::Effected::value(value));
+            }
             _ => {}
         }
         if let BrowserOperation::Page(request) = operation {
+            // The person allowed the departure this invocation reached: it
+            // leaves now, and the page action is not run a second time.
+            if let Some((id, kind)) = self.holds.release_for(invocation) {
+                self.release_held(id, kind, true);
+                return Ok(ui::framework::Effected::Pending);
+            }
             self.start_page_operation(invocation, request)?;
             return Ok(ui::framework::Effected::Pending);
         }
@@ -6260,7 +6366,7 @@ impl AppWidget for BrowserWidget {
     }
     fn app_title(&self) -> &str {
         if self.title.is_empty() {
-            "Browser"
+            &self.window_name
         } else {
             &self.title
         }

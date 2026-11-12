@@ -36,6 +36,13 @@ pub fn slide_resource_id(slide: &str) -> String {
     items::item_resource_id::<Deck>("slides", &Id::from(slide))
 }
 
+/// The resource a text box's words are published as: its element's own
+/// field, so two boxes on one slide are two resources.
+#[must_use]
+pub fn text_resource_id(slide: &str, element: &str) -> String {
+    format!("{}/body", element_resource_id(slide, element))
+}
+
 /// The resource an element is published as: its item, within its slide.
 #[must_use]
 pub fn element_resource_id(slide: &str, element: &str) -> String {

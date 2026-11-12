@@ -40,14 +40,17 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
     let sink = sink.clone();
     Box::new(
         // It opens the form; the collection it creates is its own action.
-        Button::icon_only("api.new-collection", Icon::Plus, "New collection").on_own_device_effect(
-            move || {
-                sink.borrow_mut().push(Cmd::OpenForm(
-                    FormMode::NewCollection,
-                    FormTarget::default(),
-                ));
-            },
-        ),
+        Button::icon_only(
+            "api.new-collection",
+            Icon::Plus,
+            &crate::locales::CATALOG.t("api-tester-new-collection-button"),
+        )
+        .on_own_device_effect(move || {
+            sink.borrow_mut().push(Cmd::OpenForm(
+                FormMode::NewCollection,
+                FormTarget::default(),
+            ));
+        }),
     )
 }
 
@@ -179,7 +182,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
     let select_sink = sink.clone();
     let menu_sink = sink.clone();
     let mut list = NavList::new(sections(view))
-        .with_accessible_name("Requests")
+        .with_accessible_name(crate::locales::CATALOG.t("api-tester-requests"))
         .on_view("api.nav", move |id| {
             let cmd = if let Some((ci, ri)) = parse_request(&id) {
                 Cmd::LoadRequest(ci, ri)

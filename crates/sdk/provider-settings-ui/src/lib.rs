@@ -107,16 +107,16 @@ fn chosen_model(
 #[effect(operation = "settings.effect")]
 pub enum ProviderEffect {
     /// Reload the authoritative profiles and credential status.
-    #[effect(job, label = "Refresh providers")]
+    #[effect(job, label = "agent-provider-refresh")]
     RefreshProviders,
     /// The providers that can be added, each with its `preset` name, what
     /// it is, how it signs in, its protocol, endpoint and documentation.
-    #[effect(returns, kind = "read", label = "List providers to add")]
+    #[effect(returns, kind = "read")]
     ListPresets,
     /// Add a provider from a known one, which fills its name, endpoint,
     /// protocol and key header; its key and model are set afterwards. Add
     /// the same one again for a second account.
-    #[effect(job, label = "Add provider")]
+    #[effect(job)]
     AddProvider {
         #[param(
             "A `preset` name from list-presets: `openrouter`, `anthropic`, `openai-compatible` or `anthropic-compatible` for any other"
@@ -126,14 +126,14 @@ pub enum ProviderEffect {
     /// Ask the provider which models it offers, with its stored key or
     /// sign-in: shows whether the connection works, and answers the models
     /// to choose from with what each can do.
-    #[effect(job, row, returns, label = "Test connection")]
+    #[effect(job, row, returns, label = "agent-test-connection")]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
     },
     /// Make one model the one agents use from this provider: one it listed,
     /// or any other id.
-    #[effect(job, row, idempotent, label = "Use model")]
+    #[effect(job, row, idempotent)]
     SetProviderModel {
         #[param("The provider's id")]
         provider: String,
@@ -182,7 +182,7 @@ pub enum ProviderEffect {
     /// Say what one model can do, over what its provider's list or Tilo's
     /// table of model families says; omit both to let them decide again.
     /// An agent plans only with a model that calls tools.
-    #[effect(job, row, idempotent, label = "Set model capabilities")]
+    #[effect(job, row, idempotent)]
     SetModelCapabilities {
         #[param("The provider's id")]
         provider: String,
@@ -194,7 +194,7 @@ pub enum ProviderEffect {
         tool_calling: Option<bool>,
     },
     /// Make a provider the one agents use unless told otherwise.
-    #[effect(job, row, idempotent, label = "Use by default")]
+    #[effect(job, row, idempotent, label = "agent-use-default")]
     SetDefaultProvider {
         #[param("The provider's id")]
         provider: String,
@@ -222,14 +222,14 @@ pub enum ProviderEffect {
         model: Option<String>,
     },
     /// Remove a provider and its stored API key.
-    #[effect(job, row, destructive, label = "Remove provider")]
+    #[effect(job, row, destructive, label = "agent-remove-provider")]
     RemoveProvider {
         #[param("The provider's id")]
         provider: String,
     },
     /// Store a provider's API key in this device's vault: a hosted
     /// provider that roamed here from another device needs its own.
-    #[effect(job, row, label = "Save API key")]
+    #[effect(job, row)]
     SaveProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -237,7 +237,7 @@ pub enum ProviderEffect {
         key: Option<String>,
     },
     /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(job, row, label = "Confirm original endpoint and migrate key")]
+    #[effect(job, row, label = "agent-migrate-key")]
     MigrateProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -245,13 +245,13 @@ pub enum ProviderEffect {
         original_endpoint: String,
     },
     /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(job, row, destructive, label = "Remove unbound legacy key")]
+    #[effect(job, row, destructive, label = "agent-remove-legacy-key")]
     RemoveLegacyProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
     /// Remove a provider's stored API key.
-    #[effect(job, row, destructive, label = "Remove API key")]
+    #[effect(job, row, destructive)]
     RemoveProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -1102,7 +1102,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 let (provider, id) = (profile.id.clone(), model.id.clone());
                 let toggle = Toggle::from_state(&ui::LocalState::new(on))
                     .with_id(&format!("agent-model-{name}-{widget_id}"))
-                    .with_accessible_name(&t(label))
                     .with_enabled(can_admin);
                 body.push(widgets::setting_row(
                     &t(label),
@@ -1550,7 +1549,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             let label = t(&format!("agent-kind-{}", kind.id().replace('_', "-")));
             let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
                 .with_id(&format!("agent-kind-choose-{}", kind.id()))
-                .with_accessible_name(&label)
+                .with_resolved_accessible_name(&label)
                 .with_placeholder(&t("agent-kind-model-default"))
                 .with_enabled(can_admin);
             chooser.set_value_options(offered.clone());

@@ -22,7 +22,7 @@ use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
     SpeakerReply, SurfaceDelta, TaskRunEnvelope, TaskRunUpdate, WifiContinuityCommand,
     WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
-    committed_document, file_clipboard, native_media, open_selected,
+    committed_document, file_clipboard, native_media,
 };
 use crate::{
     MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
@@ -705,91 +705,6 @@ impl ChannelHandle {
         serde_json::from_slice(&reply).map_err(|error| refused(error.to_string()))
     }
 
-    /// Submit selected-open routing under its original semantic invocation.
-    /// The receipt confirms admission only; it does not confirm app startup.
-    pub async fn local_file_open_selected(
-        &self,
-        command: &open_selected::Request,
-        parent: Option<[u8; 16]>,
-    ) -> Result<open_selected::RootReceipt, NotAvailable> {
-        let parent =
-            parent.ok_or_else(|| refused("selected open requires its action invocation"))?;
-        if parent == [0; 16] || !command.valid() {
-            return Err(refused("invalid selected open request"));
-        }
-        let bytes = serde_json::to_vec(command).map_err(|error| refused(error.to_string()))?;
-        if bytes.len() > open_selected::MAX_WIRE_BYTES {
-            return Err(refused("selected open request exceeds bound"));
-        }
-        let reply = self.local_file(bytes, &parent).await?;
-        if reply.len() > open_selected::MAX_WIRE_BYTES {
-            return Err(refused("selected open receipt exceeds bound"));
-        }
-        let receipt: open_selected::RootReceipt =
-            serde_json::from_slice(&reply).map_err(|error| refused(error.to_string()))?;
-        if !receipt.valid() || receipt.request_id != command.request.request_id {
-            return Err(refused("selected open receipt differs from its request"));
-        }
-        Ok(receipt)
-    }
-
-    /// Read current selected-file target presentation on the Files lane. No
-    /// response conveys a file grant or an observed launch outcome.
-    pub async fn local_file_selected_discovery(
-        &self,
-        command: &open_selected::discovery::Request,
-        parent: Option<[u8; 16]>,
-    ) -> Result<open_selected::discovery::Reply, NotAvailable> {
-        if !command.valid()
-            || parent.is_some() != command.invocation.is_some()
-            || parent == Some([0; 16])
-        {
-            return Err(refused("invalid selected discovery request"));
-        }
-        let bytes = serde_json::to_vec(command).map_err(|e| refused(e.to_string()))?;
-        if bytes.len() > open_selected::discovery::MAX_BYTES {
-            return Err(refused("selected discovery exceeds limit"));
-        }
-        let reply = self
-            .local_file(bytes, parent.as_ref().map_or(&[], |id| id.as_slice()))
-            .await?;
-        let value =
-            open_selected::discovery::decode_reply(&reply).map_err(|e| refused(e.to_string()))?;
-        if !value.matches(command) {
-            return Err(refused("selected discovery response scope differs"));
-        }
-        Ok(value)
-    }
-
-    /// Open with explicit access through original semantic action custody.
-    /// The observed result requires namespace admission and normal launch
-    /// readiness.
-    pub async fn local_file_open_selected_v2(
-        &self,
-        command: &open_selected::v2::Request,
-        parent: Option<[u8; 16]>,
-    ) -> Result<open_selected::v2::ObservedReply, NotAvailable> {
-        let parent =
-            parent.ok_or_else(|| refused("selected open requires its action invocation"))?;
-        if parent == [0; 16] || !command.valid() {
-            return Err(refused("invalid selected open v2 request"));
-        }
-        let bytes = serde_json::to_vec(command).map_err(|error| refused(error.to_string()))?;
-        if bytes.len() > open_selected::MAX_WIRE_BYTES {
-            return Err(refused("selected open request exceeds bound"));
-        }
-        let reply = self.local_file(bytes, &parent).await?;
-        let observed = open_selected::v2::decode_observed(&reply)
-            .map_err(|error| refused(error.to_string()))?;
-        if observed.reply.request_id != command.request.request_id
-            || observed.reply.target.app_id != command.request.app_id
-            || observed.access != command.request.access
-        {
-            return Err(refused("selected open result differs from actual request"));
-        }
-        Ok(observed)
-    }
-
     /// Submit an already encoded local Files envelope (write attribution,
     /// external moderation) and return the host's raw answer.
     pub(crate) async fn local_file_envelope(
@@ -1088,12 +1003,12 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the host refuses the surface.
     pub async fn publish_actions(&self, actions: &[ExportedAction]) -> Result<(), NotAvailable> {
-        let json = serde_json::to_string(actions).map_err(|error| refused(error.to_string()))?;
-        self.publish(Publication::Actions(json)).await
+        let whole = crate::SurfacePublication::next(None, actions).0;
+        let json = serde_json::to_string(&whole).map_err(|error| refused(error.to_string()))?;
+        self.publish(Publication::Surface(json)).await
     }
 
-    /// [`Self::publish_actions`] as a delta against what this channel has
-    /// already published.
+    /// A change to what this channel has already published.
     ///
     /// # Errors
     ///
@@ -2024,9 +1939,11 @@ impl ContextStream {
             ContextUpdate::Snapshot {
                 collaborators,
                 permissions,
+                apps,
             } => {
                 context.collaborators = collaborators;
                 context.permissions = permissions;
+                context.apps = apps;
             }
             ContextUpdate::FollowChanged { peer_id } => context.follow_changed = Some(peer_id),
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,

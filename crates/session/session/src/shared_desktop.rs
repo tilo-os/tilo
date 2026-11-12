@@ -8,6 +8,16 @@
 //! desktop see one desk. What is this device's alone — which strip it shows, how wide its windows
 //! are, which window is in front — is never written, and folding keeps it
 //! ([`tilo_desktop_model::shared_record::device::Kept`]).
+
+// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
+// its own host.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the page's session reads these with its own wiring"
+    )
+)]
 //! The record is read from the engine's copy of the workspace, which admits every member's writes
 //! as its governance lets them and holds what they wrote before this device joined. Nothing here
 //! decides whether a write may land: that is the workspace's, decided where the engine takes it in.
@@ -20,7 +30,7 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, peer_salt_of};
 
-use tilo_action_broker::owner_commits::OwnerCustody as _;
+use tilo_broker_core::custody::OwnerCustody as _;
 
 use crate::engine::{Engine, SealKeys};
 use crate::sync::Client as Sync;
@@ -39,6 +49,10 @@ pub(crate) struct SharedDesktops {
     /// window there.
     notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The heads each workspace's record was folded in at, by workspace.
+    /// The agent run that opened each window an agent opened, by workspace and tab, as each
+    /// workspace's record last said ([`Self::opened_by`]).
+    opened_by:
+        RefCell<HashMap<WorkspaceId, BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy>>>,
     folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
     /// The revision each workspace's record was last captured at: the next read asks for the record
     /// against it, so a record that did not move between passes is answered from the admitted heads
@@ -65,9 +79,12 @@ pub(crate) struct SharedDesktops {
     /// when the device writes again rather than the fold laying it back into the desk, where no
     /// window fills it.
     written_windows: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
-    /// The windows this device's desk shows that the workspace's record does not hold yet: what it
-    /// opened since the last write, and what the next write adds.
-    unrecorded: RefCell<BTreeSet<u64>>,
+    /// The windows each workspace's record held when this desk was last laid out from it: a window
+    /// of this device's that is not among them is one it opened since, which the record has not
+    /// taken in yet — its write may still be on its way to the workspace and back — and the fold
+    /// keeps it where it stands. One that is among them and the record no longer holds is one
+    /// someone closed.
+    recorded: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// Every workspace whose record this device has read: while each of the workspaces it holds is
     /// among them and neither the engine's revision nor this desk's own moved since, there is
     /// nothing to read again.
@@ -81,13 +98,30 @@ pub(crate) struct SharedDesktops {
     refused: RefCell<Option<(WorkspaceId, String)>>,
     /// The last failure the person heard: the same one again is not said twice.
     told: RefCell<Option<String>>,
+    /// The session's loop, which a write of a desk under way wakes as it moves on.
+    wake: tilo_service::LoopWake,
+    /// The write of a workspace's desk under way: no desk is read or written until it is done.
+    publishing: RefCell<Option<Publishing>>,
+}
+
+/// A write of a workspace's desk under way, with what [`SharedDesktops::published`] takes from it.
+struct Publishing {
+    room: WorkspaceId,
+    writing: crate::engine_write::Writing,
+    candidate: automerge::AutoCommit,
+    replaced: (Written, Option<[u8; 32]>),
 }
 
 impl SharedDesktops {
-    /// This session's shared desktops, writing what its windows note of themselves (`notes`).
-    pub(crate) fn new(notes: std::sync::Arc<crate::continuations::Continuations>) -> Self {
+    /// This session's shared desktops, writing what its windows note of themselves (`notes`), on
+    /// the loop `wake` wakes.
+    pub(crate) fn new(
+        notes: std::sync::Arc<crate::continuations::Continuations>,
+        wake: tilo_service::LoopWake,
+    ) -> Self {
         Self {
             notes,
+            wake,
             ..Self::default()
         }
     }
@@ -131,6 +165,10 @@ impl SharedDesktops {
     /// revision `revision` nor this desk has moved since: nothing of the workspaces' desks can have
     /// changed, so no record is read or written again. Notes what was looked at.
     pub(crate) fn settled(&self, revision: u64, tree: &DesktopTree) -> bool {
+        // A write under way is taken first, and while it is no desk is read or written.
+        if !self.settle_publishing() {
+            return true;
+        }
         let read = self.read.borrow();
         let settled = self.seen.get() == Some((revision, tree.external_revision))
             && tree
@@ -194,18 +232,31 @@ impl SharedDesktops {
                 continue;
             }
             folded.insert(room, heads);
-            if shared_record::read(&doc, None).is_none() {
+            let Some(desk) = shared_record::read(&doc, None) else {
                 // A record that holds no desktop yet: nothing of it to show.
                 continue;
-            }
+            };
+            self.opened_by.borrow_mut().insert(room, desk.opened_by);
             let mine = |id: u64| local != 0 && peer_salt_of(id) == local;
             let closed = self.closed_since_written(room, workspace);
+            let recorded = self.recorded.borrow_mut().insert(room, tabs_of(&desk.tree));
+            // A desk this session has not laid out from the record yet keeps nothing apart: what it
+            // holds that the record does not may be what someone closed while it was away.
+            let opened_here = |id: u64| {
+                mine(id)
+                    && recorded
+                        .as_ref()
+                        .is_some_and(|recorded| !recorded.contains(&id))
+            };
             let kept = device::Kept {
                 // A strip this device made and left empty stays on its own desk: the record never
                 // holds an empty strip it made, and an empty row arriving here is nobody else's to
                 // see.
                 mine: &mine,
-                private: &|_: u64| false,
+                // A window this device opened that the record does not hold yet stays: another
+                // member's change that arrives before this device's own write comes back is no
+                // close of it.
+                private: &opened_here,
                 // A window this device closed is not laid back into its desk from the record: the
                 // write that follows takes its entry out instead.
                 closed: &|id| closed.contains(&id),
@@ -214,6 +265,16 @@ impl SharedDesktops {
             changed |= device::fold(&doc, workspace, device, &kept);
         }
         changed
+    }
+
+    /// The agent run that opened each window an agent opened, by tab, across the workspaces this
+    /// device shows: what each window's bar names ([`tilo_desktop_surface::DesktopHandle::set_opened_by`]).
+    pub(crate) fn opened_by(&self) -> BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy> {
+        self.opened_by
+            .borrow()
+            .values()
+            .flat_map(|runs| runs.iter().map(|(tab, run)| (*tab, run.clone())))
+            .collect()
     }
 
     /// Write what this device changed about the workspace in front's desk into the workspace's
@@ -310,7 +371,7 @@ impl SharedDesktops {
         // anyone else moved is undone by it. This device's own layout stays: it is what the write
         // adds, and a fold that dropped it would write nothing at all.
         let laid_out = self.laid_into(room, &held, workspace);
-        let mine = |id: u64| peer_salt_of(id) == local || self.is_unrecorded(id);
+        let mine = |id: u64| peer_salt_of(id) == local;
         let by_tab: BTreeMap<u64, String> = notes.iter().cloned().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
         let mut candidate = held.clone();
@@ -327,10 +388,11 @@ impl SharedDesktops {
             },
         );
         if wrote.is_ok() {
-            // What the record now holds of this desk: the windows a later fold may lay back into it.
-            self.written_windows
-                .borrow_mut()
-                .insert(room, windows_of(&laid_out));
+            // What the record now holds of this desk: the windows it showed when it wrote. A window
+            // only the record holds is not on this desk yet, and the fold lays it in rather than
+            // reading it as one this device closed.
+            let written = &windows_of(&laid_out) & &windows_of(workspace);
+            self.written_windows.borrow_mut().insert(room, written);
         }
         match wrote {
             Ok(false) => {
@@ -356,7 +418,7 @@ impl SharedDesktops {
                 &person,
                 candidate,
                 ((heads, own, notes), revision),
-                sealed.as_ref(),
+                sealed,
             ),
         }
     }
@@ -375,12 +437,12 @@ impl SharedDesktops {
     /// account for and a desk they could never read.
     fn publish(
         &self,
-        engine: &Engine,
+        engine: &std::sync::Arc<Engine>,
         room: WorkspaceId,
         person: &str,
         mut candidate: automerge::AutoCommit,
-        ((heads, own, notes), revision): (Written, Option<[u8; 32]>),
-        sealed: Option<&channel_crypto::ChannelContentKeys>,
+        replaced: (Written, Option<[u8; 32]>),
+        sealed: Option<channel_crypto::ChannelContentKeys>,
     ) -> bool {
         // Every change a device signs says what it is and who made it: the edit of the record this
         // person just made here.
@@ -388,52 +450,72 @@ impl SharedDesktops {
             automerge::transaction::CommitOptions::default()
                 .with_message(shared_record::change_message(Some(person))),
         );
-        let changes = candidate.save_after(&heads);
+        let heads = &replaced.0.0;
+        let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
-        let founding = heads.is_empty();
-        let artifact =
-            collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD);
-        let key = engine.identity().device_signing_key.clone();
-        let committed = engine.owner().commit_document_with_current(
+        let (engine, founding) = (std::sync::Arc::clone(engine), heads.is_empty());
+        let mut writing = crate::engine_write::Writing::new(self.wake.handle(), async move {
+            let route = (DESKTOP_APP, DESKTOP_RECORD);
+            engine
+                .write_record(room, route, &changes, founding, sealed.as_ref())
+                .await
+        });
+        if let Some(written) = writing.done() {
+            return self.published(room, written, candidate, replaced);
+        }
+        *self.publishing.borrow_mut() = Some(Publishing {
             room,
-            |view| {
-                let message = match sealed {
-                    None => view.peer().clone().publication_mut().publish_incremental(
-                        DESKTOP_APP,
-                        DESKTOP_RECORD,
-                        changes.clone(),
-                        &key,
-                        std::time::SystemTime::now(),
-                    )?,
-                    Some(keys) => {
-                        sealed_write(view.peer(), keys, artifact, &changes, founding, &key)?
-                    }
-                };
-                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
-                    return Err("a desktop write is not a document write".to_owned());
-                };
-                Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: room.to_string(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                        app: DESKTOP_APP.to_owned(),
-                        record: DESKTOP_RECORD.to_owned(),
-                        envelope,
-                    },
-                })
-            },
-            std::time::SystemTime::now(),
-        );
-        match committed {
-            Ok(_receipt) => {
+            writing,
+            candidate,
+            replaced,
+        });
+        false
+    }
+
+    /// Take what the write under way came to, once it is done; whether none is under way now.
+    fn settle_publishing(&self) -> bool {
+        let mut publishing = self.publishing.borrow_mut();
+        let Some(written) = publishing
+            .as_mut()
+            .map(|under_way| under_way.writing.done())
+        else {
+            return true;
+        };
+        let Some(written) = written else {
+            return false;
+        };
+        let Some(Publishing {
+            room,
+            candidate,
+            replaced,
+            ..
+        }) = publishing.take()
+        else {
+            return true;
+        };
+        drop(publishing);
+        self.published(room, written, candidate, replaced);
+        true
+    }
+
+    /// What the workspace did with `candidate`, this device's write of `room`'s desk: what it took
+    /// is the record the next look writes on, and what it refused is dropped. Returns whether it
+    /// took it.
+    fn published(
+        &self,
+        room: WorkspaceId,
+        written: crate::engine_write::Written,
+        mut candidate: automerge::AutoCommit,
+        ((_, own, notes), revision): (Written, Option<[u8; 32]>),
+    ) -> bool {
+        match written {
+            Ok(_write) => {
                 // What the workspace took is the record this device wrote: the next look at the
                 // heads it now holds, this desk where it stands, and these notes, writes nothing.
                 self.written
                     .borrow_mut()
                     .insert(room, (candidate.get_heads(), own, notes));
                 self.keep(room, candidate, revision);
-                // What was just committed is this device's outgoing custody: the workspace's other
-                // devices read it as any member's change.
-                engine.schedule_publication(room);
                 true
             }
             Err(error) => {
@@ -525,55 +607,11 @@ impl SharedDesktops {
         }
         base
     }
+}
 
-    /// Every window the desk of `tree` shows, this device's own, that a write made since the fold
-    /// would add to the record: what [`tilo_desktop_model::shared_record::device::Writer::mine`]
-    /// has to name as the record's next write.
-    pub(crate) fn note_unrecorded(&self, engine: &Engine, tree: &DesktopTree) {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
-            return;
-        };
-        let room = workspace.id();
-        let Some(doc) = Self::record(engine, room, self.revision.borrow().get(&room).copied())
-            .ok()
-            .flatten()
-            .map(|(doc, _)| doc)
-        else {
-            return;
-        };
-        let Some(shared) = shared_record::read(&doc, None) else {
-            return;
-        };
-        let held: BTreeSet<u64> = shared
-            .tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        let mut unrecorded = self.unrecorded.borrow_mut();
-        unrecorded.clear();
-        for tab in tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-        {
-            if !held.contains(&tab.id) && peer_salt_of(tab.id) == tree.salt {
-                unrecorded.insert(tab.id);
-            }
-        }
-    }
-
-    /// Whether `tab` is one this device opened and the record does not hold yet: what makes it this
-    /// device's to add there.
-    #[must_use]
-    pub(crate) fn is_unrecorded(&self, tab: u64) -> bool {
-        self.unrecorded.borrow().contains(&tab)
-    }
+/// Every window `desk`, a record's desktop, holds.
+fn tabs_of(desk: &DesktopTree) -> BTreeSet<u64> {
+    desk.workspaces.iter().flat_map(windows_of).collect()
 }
 
 /// Every window the desk of `workspace` shows.
@@ -585,49 +623,4 @@ fn windows_of(workspace: &Workspace) -> BTreeSet<u64> {
         .flat_map(|group| &group.tabs)
         .map(|tab| tab.id)
         .collect()
-}
-
-/// `changes` to the desk published into `peer` as this device's own write,
-/// sealed under the record's channel `keys`: a checkpoint of the whole record
-/// when the write founds it, so the record is sealed from the start, and a
-/// change of it after that.
-fn sealed_write(
-    peer: &tilo_peer_state::StatePeer,
-    keys: &channel_crypto::ChannelContentKeys,
-    artifact: collab_types::ArtifactId,
-    changes: &[u8],
-    founding: bool,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<neighbour_wire::NeighbourMsg, String> {
-    let mut write = peer.clone();
-    let now = std::time::SystemTime::now();
-    let publication = write.publication_mut();
-    if !founding {
-        return publication.publish_sealed_incremental(
-            DESKTOP_APP,
-            DESKTOP_RECORD,
-            changes.to_vec(),
-            &mut |plaintext: &[u8]| {
-                keys.seal_content(artifact, collab_types::ContentRetention::Delta, plaintext)
-                    .map_err(|error| error.to_string())
-            },
-            key,
-            now,
-        );
-    }
-    publication.publish_sealed_checkpoint(
-        DESKTOP_APP,
-        DESKTOP_RECORD,
-        changes.to_vec(),
-        &mut |plaintext: &[u8]| {
-            keys.seal_content(
-                artifact,
-                collab_types::ContentRetention::Checkpoint,
-                plaintext,
-            )
-            .map_err(|error| error.to_string())
-        },
-        key,
-        now,
-    )
 }

@@ -14,7 +14,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
-pub const VERSION: u16 = 5;
+///
+/// 8 is the deployment's routes listener announced once it serves beside the
+/// browser one: 7 was read by builds that know no such event, so a reader of
+/// that one decodes no line of it.
+pub const VERSION: u16 = 8;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -245,6 +249,16 @@ pub enum OperatorEvent {
         /// A secret (hex) that takes the entry off the list, for the mail's
         /// removal link; the workspace keeps only its SHA-256.
         removal: String,
+    },
+    /// The deployment's own routes answer: the health check at `GET /mode`,
+    /// the avatars bots publish at `/avatars/<name>` and Discord's sign-in
+    /// callback, on the plain listener `--http` names. Sent after
+    /// [`OperatorEvent::Started`], and only by a room started with one, so a
+    /// deployment reaches the address the room bound rather than one it
+    /// guessed.
+    DeploymentRoutes {
+        /// `http://host:port` of the listener the room bound.
+        origin: String,
     },
 }
 
@@ -482,12 +496,15 @@ mod tests {
                 link: "https://tilo.example/?invite=AAEC".into(),
                 removal: "cd".repeat(32),
             },
+            OperatorEvent::DeploymentRoutes {
+                origin: "http://127.0.0.1:8790".into(),
+            },
         ]
     }
 
     #[test]
-    fn protocol_five_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 5);
+    fn protocol_eight_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 8);
         let wait = OperatorCommand::WaitList {
             request: "12".repeat(32),
             contact: "Ada@example.org".into(),

@@ -30,44 +30,44 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 pub enum BackupsEffect {
     /// Create one new checksummed local snapshot, then keep only what the
     /// retention policy keeps.
-    #[effect(job, returns, label = "Run backup now")]
+    #[effect(job, returns)]
     BackupNow,
     /// Choose a local source and a destination outside it.
-    #[effect(attended, job, label = "Set up backups")]
+    #[effect(attended, job)]
     Setup,
     /// Read every file in this stored snapshot and verify its checksum.
-    #[effect(job, returns, kind = "read", label = "Verify snapshot")]
+    #[effect(job, returns, kind = "read")]
     Verify {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
     /// Choose a new or empty local folder, then restore and verify the whole
     /// snapshot.
-    #[effect(attended, job, label = "Restore snapshot into a new or empty folder…")]
+    #[effect(attended, job)]
     RestoreSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
     /// Show one backup source.
-    #[effect(view, label = "Show source")]
+    #[effect(view)]
     ShowSource {
         #[param("Id of the source")]
         source_id: String,
     },
     /// Show one backup destination.
-    #[effect(view, label = "Show destination")]
+    #[effect(view)]
     ShowDestination {
         #[param("Id of the destination")]
         destination_id: String,
     },
     /// Show one stored snapshot in the timeline.
-    #[effect(view, label = "Show snapshot")]
+    #[effect(view)]
     ShowSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
     /// List the snapshots newest or oldest first.
-    #[effect(view, idempotent, label = "Order snapshots")]
+    #[effect(view, idempotent)]
     OrderSnapshots {
         #[param("How to list them", choices = ORDERS.iter().copied())]
         order: String,
@@ -79,13 +79,13 @@ pub enum BackupsEffect {
     /// snapshot row's read: what discloses the row, so restoring and
     /// verifying it are offered to whoever may read it, an agent too, where
     /// the row's Show view is this window's own.
-    #[effect(view, returns, label = "Read snapshot")]
+    #[effect(view, returns)]
     ReadSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
     /// Show the retention policy a source's snapshots follow.
-    #[effect(view, label = "Show global retention policy")]
+    #[effect(view)]
     ShowSchedule {
         #[param("Id of the source")]
         source_id: String,

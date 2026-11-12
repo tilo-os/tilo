@@ -7,6 +7,7 @@
 #include "document_scripts.h"
 #include "startup_diagnostics.h"
 #include "capabilities.h"
+#include "departures.h"
 #include "site_info.h"
 #include "navigation_history.h"
 #include "include/cef_drag_handler.h"
@@ -322,6 +323,9 @@ int next_pipe_call=0;
 std::map<std::string,tilo::ExtensionTabs::PipeListener> pipe_listeners;
 void PipeCall(const std::string& method,CefRefPtr<CefDictionaryValue> params,const std::string& session,tilo::ExtensionTabs::PipeDone done);
 CefRefPtr<tilo::Downloads> downloads;
+// The requests a window opened for an agent holds before they leave
+// (departures.h): answered by the app, by the id each was held under.
+std::shared_ptr<tilo::Departures> departures;
 tilo::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
@@ -358,6 +362,36 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     output->SendAudio(CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString(),packet);
   }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+  // Whether this window holds what its page sends (departures.h).
+  bool HoldsPage() const { return holds_; }
+  // A window an agent operates (holds_): a request the page makes of its own
+  // that leaves with data is paused here, and answered by the app. A
+  // navigation is held where Chromium starts it (HoldsNavigation), and every
+  // other request goes as it always has, through the session's filter.
+  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,
+      CefRefPtr<CefRequest> request,bool navigation,bool,const CefString&,bool&) override {
+    if(!holds_ || navigation || !departures || transfer_owner_ || closing) return nullptr;
+    if(!tilo::LeavesWithData(request->GetMethod().ToString()) ||
+       !tilo::WebAddress(request->GetURL().ToString())) return nullptr;
+    return new tilo::HoldResourceHandler(id_,departures);
+  }
+  // The page asks to go somewhere: a form leaving waits for the person, as a
+  // request of the page's own does. Anything else goes as it always has.
+  bool HoldsNavigation(CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request) {
+    if(!holds_ || !departures || transfer_owner_ || closing) return false;
+    const auto url=request->GetURL().ToString();
+    if(!tilo::WebAddress(url) || !tilo::Submission(request)) return false;
+    const auto method=request->GetMethod().ToString();
+    // One the person just allowed comes back through here: it leaves, and
+    // the allowance is spent.
+    if(departures->TakesAllowance(id_,method,url)) return false;
+    tilo::Departure departure;
+    departure.tab=id_;departure.kind="submit";
+    departure.method=method;departure.origin=tilo::Origin(url);
+    departure.frame=frame;departure.request=request;
+    departures->Hold(std::move(departure));
+    return true;
+  }
   void OpenTab(const CefString& url,bool background) {
     if(url.length()>8192) return;auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetBool("background",background);Event("open_tab",d);
   }
@@ -423,15 +457,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
-#if defined(OS_MAC)
     Event("file_dialog");
     // An agent's page action cannot drive a native panel, so while it is
     // driving the chooser is held for fill-page-files instead. A person's
-    // own click keeps the platform panel.
+    // own click keeps the platform panel where the host has one.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+#if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
-    return false;
+    // Every page is offscreen here and no panel exists to show: the chooser is
+    // answered with nothing rather than left waiting for a person who is shown
+    // no way to answer it.
+    callback->Cancel();
+    return true;
 #endif
   }
   void PublishZoom() {
@@ -798,6 +836,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     composition_scripts_=nullptr;
     if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
+    if(departures) departures->Closed(id_);
     download_owners.Destroy(id_);
     // Its popups go with it: nothing is left for them to answer.
     std::vector<CefRefPtr<Client>> popups;
@@ -807,6 +846,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // What a person allows is issued again from the answer (departures.h): a
+    // redirect of a request already let go is not held a second time.
+    if(!redirect && HoldsNavigation(frame,request)) return true;
     // A sign-in panel going to its extension's own address ends the sign-in
     // there: the page goes no further, and the panel closes.
     if(extension_panel_ && frame->IsMain() && extension_tabs && extension_tabs->SignInNavigating(id_,request->GetURL().ToString())) return true;
@@ -1201,6 +1243,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!js_dialogs_ && dialog_callback_) AnswerDialog(dialog_id_,dialog_unload_,CefString());
     }
     else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
+    // A window opened for an agent holds what its page sends: the app is
+    // told once, and answers each held request by its id.
+    else if(op=="hold_departures") holds_=true;
     else if(op=="context_action") {
       // Choosing an item is the person's own act, as a click is: a copy
       // from the menu reaches the clipboard.
@@ -1461,13 +1506,24 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!browser_) return;
     if(read.purpose==tilo::ClipboardReads::Purpose::Read) {ClipboardText(browser_->GetFrameByIdentifier(read.frame),read.renderer,std::move(text));return;}
     if(read.renderer!=paste_prime_) return;
-    // The system clipboard's text, kept in the focused frame for the paste
-    // the key makes; without it the key pastes Chromium's own.
-    auto frame=browser_->GetFocusedFrame();if(!frame) frame=browser_->GetMainFrame();
-    if(!text || !frame) {ReleaseKeys();return;}
+    // The system clipboard's text goes to every document of the tab, so the
+    // paste keeps it wherever the caret is: a click can put the caret in a
+    // frame within the page, and the browser process does not always learn
+    // which document holds it, so the text is kept by all of them rather than
+    // by the one frame it believes has the focus. Without it the key pastes
+    // Chromium's own.
+    if(!text || !browser_) {ReleaseKeys();return;}
     auto message=CefProcessMessage::Create("tilo.clipboard_prime");
     message->GetArgumentList()->SetInt(0,paste_prime_);message->GetArgumentList()->SetString(1,*text);
-    frame->SendProcessMessage(PID_RENDERER,message);
+    std::vector<CefString> identifiers;browser_->GetFrameIdentifiers(identifiers);
+    int documents=0;
+    for(const auto& identifier:identifiers) {
+      auto frame=browser_->GetFrameByIdentifier(identifier);
+      if(!frame) continue;
+      frame->SendProcessMessage(PID_RENDERER,message);
+      ++documents;
+    }
+    if(!documents) ReleaseKeys();
     CefPostDelayedTask(TID_UI,base::BindOnce([](int tab,int prime){auto found=clients.find(tab);if(found!=clients.end())found->second->PrimeLate(prime);},id_,paste_prime_),tilo::kClipboardPrimeMs);
   }
   void PrimeLate(int prime) {if(prime==paste_prime_)ReleaseKeys();}
@@ -1528,6 +1584,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
 #endif
+    // A capital letter is the shifted key of the letter below it, so a caller
+    // that writes `A` gets the key it wrote: Chromium reads a letter's case
+    // off the modifiers, and a press of `A` without shift would reach the page
+    // as `a`, a key nobody asked for. A chord is not a letter and is left as
+    // written: the extension's own shortcuts matched above, and Control+A
+    // stays Control+A.
+    if(latin && std::isupper(static_cast<unsigned char>(key[0])) && !d->GetBool("ctrl") && !d->GetBool("alt") && !d->GetBool("meta")) {
+      e.modifiers|=EVENTFLAG_SHIFT_DOWN;
+      key_modifiers_=e.modifiers;
+    }
     const auto mapping=tilo::MapKey(key,code);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
@@ -2063,6 +2129,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The page's open question, if any, and whether the embedder answers them.
   static constexpr size_t kMaxDialogText=16*1024;
   CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
+  // A window opened for an agent holds what its page sends (departures.h):
+  // changed by the app on the UI thread, and read where Chromium asks about a
+  // request, on its IO thread.
+  std::atomic<bool> holds_{false};
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
@@ -2150,6 +2220,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
     return;
   }
   if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
+  // The app answered a request the page held: it leaves now, or not at all.
+  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow")); return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
@@ -2276,6 +2348,8 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     }
     ApplyPrivacyDefaults(shared_context);
     StartExtensionTabs();
+    departures=std::make_shared<tilo::Departures>(
+      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);});
     downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
@@ -2284,7 +2358,8 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads() && download_owners.CanAdmit(id);},
       [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
       [](int id){DownloadOwnerIdle(id);},
-      []{PublishDownloadRuntime();});
+      []{PublishDownloadRuntime();},
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->HoldsPage();});
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -2433,6 +2508,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
+  if(op=="hold_departures") return no_payload();
+  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);

@@ -34,7 +34,26 @@ pub struct PlaceDetails {
     pub timezone: Option<String>,
 }
 
-#[resource(kind = "weather.locations", label = "Weather", search = Weather::search)]
+impl Weather {
+    /// What the record holds: the saved places, their order and the default place.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "weather.locations",
+    search = Weather::search,
+    read_content = Weather::read_document
+)]
 impl Weather {
     /// Save a place to follow.
     ///

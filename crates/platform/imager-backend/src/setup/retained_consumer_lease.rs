@@ -300,208 +300,16 @@ impl RetainedConsumerLease {
         selection.check(cancel)
     }
 
-    /// Admit only the genuine Files task inside THIS canonical namespace and
-    /// the exact target endpoint retained by this original source lease.
-    pub(super) fn check_selected_origin(
-        &self,
-        cancel: &AtomicBool,
-        input: &Arc<InstalledRetainedLaunchInput>,
-        files: &runtime_portal::process_binding::ExecutingPeer,
-        endpoint: &Arc<launcher::owned_service::TargetProjectionEndpoint>,
-    ) -> io::Result<()> {
-        self.check(cancel)?;
-        let current = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let selected = self.selection.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let projection = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?;
-        if !Arc::ptr_eq(current, input)
-            || selected.binding().app_id != "so.tilo.file-explorer"
-            || !selected.binding().writable
-            || !projection.uses_selected_endpoint(endpoint)
-            || endpoint.projection_mode()
-                != launcher::owned_service::TargetProjectionMode::HomeDirectory
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let (uid, gid) = current.target_credentials(cancel)?;
-        if (files.uid(), files.gid()) != (uid, gid) {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        self.consumer
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .validate_member(files, selected.launcher())?;
-        endpoint.check()?;
-        self.check(cancel)
-    }
-
-    /// Admit an actual Files-selected object against THIS held consumer/source.
-    /// Received relative names are routing hints; both descriptors must match
-    /// the root's own bounded beneath-view resolution before custody is minted.
-    pub(super) fn admit_open_selection(
-        &self,
-        cancel: &AtomicBool,
-        files: Arc<runtime_portal::process_binding::ExecutingPeer>,
-        objects: super::retained_open_selection::SelectedObjects,
-    ) -> io::Result<super::retained_open_selection::RetainedOpenSelection> {
-        self.check_open_origin(cancel, &files)?;
-        let input = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let projection = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?;
-        let mut selected = None;
-        projection.with_consumer_view(|view| {
-            selected = Some(
-                super::retained_open_selection::RetainedOpenSelection::admit(
-                    self,
-                    cancel,
-                    Arc::clone(input),
-                    files,
-                    view.try_clone()?,
-                    objects,
-                )?,
-            );
-            Ok(())
-        })?;
-        let selected = selected.ok_or(io::ErrorKind::NotConnected)?;
-        selected.check(self, cancel)?;
-        Ok(selected)
-    }
-
-    pub(super) fn check_open_origin(
-        &self,
-        cancel: &AtomicBool,
-        files: &runtime_portal::process_binding::ExecutingPeer,
-    ) -> io::Result<()> {
-        self.check(cancel)?;
-        let selection = self.selection.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        if selection.binding().app_id != "so.tilo.file-explorer" {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        let input = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let (uid, gid) = input.target_credentials(cancel)?;
-        if files.uid() != uid || files.gid() != gid {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        self.consumer
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .validate_member(files, selection.launcher())?;
-        self.check(cancel)
-    }
-
-    pub(super) fn check_open_view(&self, view: &std::fs::File) -> io::Result<()> {
-        use std::os::unix::fs::MetadataExt;
-        let proposed = view.metadata()?;
-        self.projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .with_consumer_view(|current| {
-                let actual = current.metadata()?;
-                if (actual.dev(), actual.ino()) != (proposed.dev(), proposed.ino()) {
-                    return Err(io::ErrorKind::PermissionDenied.into());
-                }
-                Ok(())
-            })
-    }
-
-    pub(super) fn pin_selected_origin(
-        &self,
-        cancel: &AtomicBool,
-        input: &Arc<InstalledRetainedLaunchInput>,
-        files: &runtime_portal::process_binding::ExecutingPeer,
-        endpoint: &Arc<launcher::owned_service::TargetProjectionEndpoint>,
-        components: &[runtime_fs::EntryName],
-    ) -> io::Result<Arc<super::retained_source_relay::SourceSelectedOrigin>> {
-        self.check_selected_origin(cancel, input, files, endpoint)?;
-        let pin = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .pin_selected_origin(components)?;
-        if !pin.uses_input(input) {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        pin.check_named()?;
-        self.check_selected_origin(cancel, input, files, endpoint)?;
-        Ok(pin)
-    }
-
-    pub(super) fn selected_origin_endpoint(
-        &self,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<launcher::owned_service::TargetProjectionEndpoint>> {
-        self.check(cancel)?;
-        let endpoint = self
-            .projection
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .retained_selected_endpoint()?;
-        self.check(cancel)?;
-        Ok(endpoint)
-    }
-
-    pub(super) fn uses_open_input(&self, input: &Arc<InstalledRetainedLaunchInput>) -> bool {
-        self.input
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, input))
-    }
-
-    /// Backend discovery only: actual sealed source RW consent and live Files
-    /// Author namespace. Target package/person/Author admission stays fresh at stage.
-    pub(super) fn selected_edit_support(&self, cancel: &AtomicBool) -> io::Result<String> {
-        self.check(cancel)?;
-        let input = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        input.check_selected_parent_write(cancel)?;
-        let selection = self.selection.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        let endpoint = self.selected_origin_endpoint(cancel)?;
-        if selection.binding().app_id != "so.tilo.file-explorer"
-            || !selection.binding().writable
-            || endpoint.projection_mode()
-                != launcher::owned_service::TargetProjectionMode::HomeDirectory
-        {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        endpoint.check()?;
-        super::retained_selected_editor_owner::check_installed_edit_backend()?;
-        self.check(cancel)?;
-        input.check_selected_parent_write(cancel)?;
-        Ok(input.binding().operation_id.clone())
-    }
-
-    /// Cancellation observation only. No proof IO/check is performed while
-    /// acquiring this handle, so the request fence precedes first proof read.
-    pub(super) fn original_proof_interrupt(
-        &self,
-    ) -> io::Result<Arc<super::installed_retained_actor::InstalledProofInterrupt>> {
-        Ok(self
-            .input
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .proof_interrupt())
-    }
-
-    pub(super) fn open_target_uid(&self, cancel: &AtomicBool) -> io::Result<u32> {
-        self.check(cancel)?;
-        self.input
-            .as_ref()
-            .ok_or(io::ErrorKind::NotConnected)?
-            .target_credentials(cancel)
-            .map(|(uid, _)| uid)
-    }
-
-    /// Shared actual Files custody plus independently supervised editor owners.
-    /// Files exit/role retirement ends only its own namespace; adopted editors
-    /// retain fresh source/person proofs. The root helper cannot return while
-    /// any registry worker still lacks positively observed native retirement.
-    pub(super) fn supervise_shared_with_open_requests(
+    /// Watch the Files role until its consuming namespace stops, then retire
+    /// its source. Live custody is rechecked between the stops; the launcher's
+    /// control channel ending retires Files, as does cancellation or a lost
+    /// custody check. The root helper cannot return while the original actor
+    /// lacks positively observed native retirement.
+    pub(super) fn supervise(
         lease: &Arc<Mutex<Self>>,
         cancel: &Arc<AtomicBool>,
         grace: Duration,
-        dispatcher: &mut super::retained_open_dispatch::RetainedOpenDispatcher,
+        control: &UnixStream,
         original_actor: &mut Option<
             Arc<super::installed_retained_actor::ReviewedInstalledRetainedLaunch>,
         >,
@@ -532,24 +340,22 @@ impl RetainedConsumerLease {
                 match inspection {
                     Ok(stopped) => files_stopped = stopped,
                     Err(error) => {
-                        // The old Files role is not an independent editor's
-                        // authority. Each editor continuously checks its own
-                        // certified person/source/namespace custody.
                         refusal.get_or_insert(error);
                         stop_files = true;
                     }
                 }
             }
-            if dispatcher.intake_closed() {
-                stop_files = true;
+            match launcher_control_ended(control) {
+                Ok(false) => {}
+                Ok(true) => stop_files = true,
+                Err(error) => {
+                    refusal.get_or_insert(error);
+                    stop_files = true;
+                }
             }
             if cancel.load(Ordering::Acquire) {
                 refusal.get_or_insert_with(|| io::ErrorKind::Interrupted.into());
                 stop_files = true;
-                dispatcher.cancel_editors();
-            }
-            if stop_files || files_stopped {
-                dispatcher.close_files_admissions();
             }
             if stop_files && !files_stopped {
                 let mut owner = lease
@@ -562,11 +368,9 @@ impl RetainedConsumerLease {
                     files_stopped = true;
                 }
             }
-            dispatcher.supervise_editors();
-            // Unadopted workers may still hold original-source pins. Their
-            // actual cleanup must precede main retirement; adopted editors
-            // retain independently checked derivatives and continue below.
-            if files_stopped && !files_retired && dispatcher.unadopted_observed_stopped() {
+            // Workers may still hold original-source pins: their actual cleanup
+            // must land before the original actor retires.
+            if files_stopped && !files_retired {
                 let mut owner = lease
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -580,45 +384,30 @@ impl RetainedConsumerLease {
                     .as_ref()
                     .is_some_and(|actor| Arc::strong_count(actor) == 1);
                 if unique {
-                    dispatcher.retire_files_proof();
                     let Some(actor) = original_actor.take() else {
                         original_retirement_unknown = true;
                         cancel.store(true, Ordering::Release);
-                        dispatcher.cancel_editors();
                         continue;
                     };
                     match actor.retire() {
                         Ok(()) => original_retired = true,
                         Err(error) => {
                             // A consuming retirement refusal can retain mounted
-                            // native custody. Drain editor owners, then remain
-                            // the live root process owner; never retry a DTO or
-                            // turn an empty slot into observed retirement.
+                            // native custody, so remain the live root process
+                            // owner; never retry a DTO or turn an empty slot into
+                            // observed retirement.
                             refusal.get_or_insert(error);
                             original_retirement_unknown = true;
                             cancel.store(true, Ordering::Release);
-                            dispatcher.cancel_editors();
                         }
                     }
                 }
             }
-            if files_retired && original_retired && dispatcher.editors_observed_stopped() {
+            if files_retired && original_retired {
                 break;
-            }
-            if !cancel.load(Ordering::Acquire) && !dispatcher.intake_closed() {
-                if let Err(error) = dispatcher.poll(lease, !files_stopped && !stop_files) {
-                    // Partial/malformed frames and authenticated control
-                    // failures remain global. Clean boundary EOF is latched
-                    // by the mux and never reaches this error branch.
-                    refusal.get_or_insert(error);
-                    cancel.store(true, Ordering::Release);
-                    dispatcher.cancel_editors();
-                    stop_files = true;
-                }
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        dispatcher.retire();
         *terminal = Some(RetirementGate { _private: () });
         refusal.map_or(Ok(()), Err)
     }
@@ -689,6 +478,24 @@ impl RetainedConsumerLease {
         self.input.take();
         Ok(())
     }
+}
+
+/// Nothing is asked of the launcher's control channel once the app runs, so a
+/// byte on it or its end means the launcher's role here is over.
+fn launcher_control_ended(control: &UnixStream) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut ready = libc::pollfd {
+        fd: control.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLRDHUP,
+        revents: 0,
+    };
+    if unsafe { libc::poll(&raw mut ready, 1, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if ready.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    }
+    Ok(ready.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLRDHUP) != 0)
 }
 
 impl Drop for RetainedConsumerLease {

@@ -13,7 +13,7 @@ use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt,
 use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// What the record holds: the new-container draft.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
@@ -22,7 +22,25 @@ pub struct Containers {
     pub draft: CreateDraft,
 }
 
-#[resource(kind = "containers.engine", label = "Containers")]
+impl Containers {
+    /// What the record holds: the new-container draft.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "containers.engine",
+    read_content = Containers::read_document
+)]
 impl Containers {
     /// Clear new container
     ///
@@ -68,7 +86,7 @@ pub enum ContainersEffect {
     /// its labels and its latest resource use. It is the container row's
     /// read: what discloses the row, so starting, stopping and its other
     /// verbs are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read container")]
+    #[effect(view, row, returns, idempotent)]
     ReadContainer {
         #[param("Container id")]
         container: String,
@@ -568,5 +586,33 @@ mod agent_disclosure_tests {
         assert_eq!(read["id"], id, "{read:#}");
         assert_eq!(read["name"], name, "{read:#}");
         assert!(read["status"].is_string(), "{read:#}");
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(
+            catalogue.t("containers-create-draft-name"),
+            "Den neuen Container benannt"
+        );
+        catalogue.set_locale("en-US");
+        assert_eq!(
+            catalogue.t("containers-create-draft-name"),
+            "Named the new container"
+        );
     }
 }

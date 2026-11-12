@@ -26,18 +26,9 @@ fn char_press(c: &str) -> WindowEvent {
 
 fn seed_pages() -> Vec<PageEntry> {
     vec![
-        PageEntry {
-            id: uuid::Uuid::from_u128(1),
-            title: "Welcome".into(),
-        },
-        PageEntry {
-            id: uuid::Uuid::from_u128(2),
-            title: "Roadmap".into(),
-        },
-        PageEntry {
-            id: uuid::Uuid::from_u128(3),
-            title: "Tips".into(),
-        },
+        PageEntry::page(uuid::Uuid::from_u128(1), "Welcome"),
+        PageEntry::page(uuid::Uuid::from_u128(2), "Roadmap"),
+        PageEntry::page(uuid::Uuid::from_u128(3), "Tips"),
     ]
 }
 
@@ -98,7 +89,7 @@ fn link_popover_filters_and_commits_page_links() {
         block.line.set_text(&new_text);
         block.line.add_mark(tilo_ui::widget::marks::MarkSpan::new(
             0..7,
-            Mark::Link(chosen.id),
+            Mark::Link(chosen.id.expect("a page")),
         ));
         assert_eq!(block.line.value(), "Welcome");
         assert_eq!(block.line.marks().len(), 1);

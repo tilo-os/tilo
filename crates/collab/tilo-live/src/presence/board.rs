@@ -15,6 +15,12 @@ use collab_types::presence::{
 };
 
 use super::publish::{KEEPALIVE_MS, Schedule};
+
+/// How long a member may say nothing before this device forgets them: every
+/// device here says itself again each [`KEEPALIVE_MS`], so this is two of
+/// those words missed with room for a late timer, which a device still
+/// connected does not miss and one that is gone always does.
+pub const SILENT_MS: f64 = KEEPALIVE_MS * 2.0 + 2_000.0;
 use super::smooth::Smoother;
 
 /// A device here, as the workspace names it: its endpoint key.
@@ -58,6 +64,16 @@ pub struct Call {
     pub screen: bool,
 }
 
+/// What someone is doing, as their device says it: their own words, or the
+/// line the device read off the steps they took.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Status {
+    /// One line, e.g. "Editing ‘Launch plan’ in Notes".
+    pub text: String,
+    /// The device read it off what they did; `false` for their own words.
+    pub automatic: bool,
+}
+
 /// What one device says of itself here.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Own {
@@ -67,8 +83,12 @@ pub struct Own {
     pub device: String,
     /// The person this device belongs to, their root key as hex.
     pub user: Option<String>,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
+    /// When the person last changed their profile, as this device knows it (Unix milliseconds,
+    /// `0` while it knows none).
+    pub profile_ms: u64,
+    /// What they are doing: their own words, or what this device read off
+    /// their steps.
+    pub status: Option<Status>,
     /// How available they say they are.
     pub availability: Availability,
     /// The call this device is in here, if any.
@@ -142,8 +162,11 @@ pub struct Member {
     /// The name everyone here calls them, as their presence says it: the
     /// person's, never the device's.
     pub label: String,
-    /// What they say they are doing, in their own words.
-    pub status: Option<String>,
+    /// When the person last changed their profile, as their device says it (Unix milliseconds,
+    /// `0` while it said none).
+    pub profile_ms: u64,
+    /// What they are doing, as their device says it.
+    pub status: Option<Status>,
     /// How available they say they are.
     pub availability: Availability,
     /// Whose view they follow, by that member's publisher.
@@ -155,6 +178,10 @@ pub struct Member {
     /// Their own view of their desktop, as a shell — or an agent, which says
     /// its face, where it works and what it is doing the same way — said it.
     pub shell: Option<Box<ShellPresence>>,
+    /// The sequence of the view in `shell` for a run the host speaks for: a
+    /// view at or below it is one already taken, or one that came late, and
+    /// taking it would say what the run was doing before.
+    shell_seq: u32,
     /// Every other app's last word under its own key.
     pub apps: Vec<(PresenceKey, Payload)>,
     /// They said they are here and have not left: what makes them a member.
@@ -162,7 +189,17 @@ pub struct Member {
     /// When this stay here began: it moves each time the device comes back
     /// after leaving, so a surface tells a member from the one before it.
     pub epoch: u64,
+    /// The device that executes this member and speaks for it
+    /// ([`Presence::on_behalf`]): the workspace's host for a run it serves,
+    /// or a member's device for an agent its person admitted there. The agent
+    /// says nothing itself.
+    pub spoken_by: Option<Device>,
+    /// The run it is, as the device that speaks for it names it.
+    run: Option<String>,
     pointer: Smoother,
+    /// When this device last heard them say anything, on the clock the
+    /// caller hands [`Board::hear`]: `None` while only the roster named them.
+    heard_ms: Option<f64>,
 }
 
 impl Member {
@@ -172,16 +209,21 @@ impl Member {
             user: None,
             device: String::new(),
             label: String::new(),
+            profile_ms: 0,
             status: None,
             availability: Availability::Available,
             following: None,
             wave: None,
             call: None,
             shell: None,
+            shell_seq: 0,
             apps: Vec::new(),
             here: false,
             epoch: 0,
+            spoken_by: None,
+            run: None,
             pointer: Smoother::default(),
+            heard_ms: None,
         }
     }
 
@@ -214,14 +256,22 @@ impl Member {
         }
     }
 
-    /// What they are doing: what their shell says, else their own word.
+    /// What they are doing: what their shell says (an agent's line), else
+    /// their status, and whether their device read it off their steps rather
+    /// than anyone saying it.
     #[must_use]
-    pub fn activity(&self) -> Option<&str> {
+    pub fn activity(&self) -> Option<(&str, bool)> {
         self.shell
             .as_deref()
             .and_then(|shell| shell.activity.as_deref())
-            .or(self.status.as_deref())
             .filter(|activity| !activity.trim().is_empty())
+            .map(|activity| (activity, false))
+            .or_else(|| {
+                self.status
+                    .as_ref()
+                    .map(|status| (status.text.as_str(), status.automatic))
+            })
+            .filter(|(activity, _)| !activity.trim().is_empty())
     }
 
     /// Where within its focus the member works, as its shell says.
@@ -283,6 +333,12 @@ pub struct Board {
     shell_seq: u32,
     members: Vec<Member>,
     revision: u64,
+    /// The device the workspace's governance pins as its host: a device that
+    /// is no member here, whose word for the runs it executes is taken
+    /// ([`Self::set_host`]).
+    host: Option<Device>,
+    /// When this device last took a pass over the board, hearing or saying.
+    listened_ms: Option<f64>,
 }
 
 impl Board {
@@ -300,7 +356,125 @@ impl Board {
             shell_seq: 0,
             members: Vec::new(),
             revision: 0,
+            host: None,
+            listened_ms: None,
         }
+    }
+
+    /// Take `host` as the workspace's host, as the workspace's governance
+    /// pins it on this device: what it says for the runs it executes is
+    /// heard as one member per run, as a member's word for its own runs is.
+    /// Runs a former host spoke for leave. Whether what is known here changed.
+    pub fn set_host(&mut self, host: Option<Device>) -> bool {
+        if self.host == host {
+            return false;
+        }
+        let former = std::mem::replace(&mut self.host, host);
+        let before = self.members.len();
+        self.members
+            .retain(|member| member.spoken_by.is_none() || member.spoken_by != former);
+        let changed = self.members.len() != before;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Who `frame`, heard from `from`, speaks for: `from` itself, or the run
+    /// it says the frame for, as that run's own member. A run is the
+    /// workspace's host's, or a member's here: its member is keyed by the
+    /// device that speaks for it, so nobody speaks for another device's runs.
+    /// `None` for a word on a run from a device that is neither.
+    fn speaker(&mut self, from: Device, frame: &Presence) -> Option<Device> {
+        let Some(run) = &frame.on_behalf else {
+            return Some(from);
+        };
+        let member_here = self
+            .member(from)
+            .is_some_and(|member| member.here && member.spoken_by.is_none());
+        if self.host != Some(from) && !member_here {
+            return None;
+        }
+        let stand_in = collab_types::presence::stand_in(from, run);
+        if !self
+            .members
+            .iter()
+            .any(|member| member.publisher == stand_in)
+        {
+            let mut member = Member::new(stand_in);
+            member.spoken_by = Some(from);
+            member.run = Some(run.clone());
+            // The run is said on its speaker's device: it lists as that device.
+            if let Some(speaker) = self.member(from) {
+                member.device.clone_from(&speaker.device);
+            }
+            self.members.push(member);
+        }
+        Some(stand_in)
+    }
+
+    /// Speak for `runs` here: the runs this device executes (an agent its
+    /// person admitted at this device's door), each with its face. Each is a
+    /// member of its own on this board, as another device's runs are, and is
+    /// said on the presence track for everyone here; a run spoken for before
+    /// and missing from `runs` leaves. Whether what is known here changed.
+    pub fn speak_for(&mut self, runs: &[(String, ShellPresence)]) -> bool {
+        let own = Some(self.publisher);
+        let gone: Vec<String> = self
+            .members
+            .iter()
+            .filter(|member| member.spoken_by == own)
+            .filter_map(|member| member.run.clone())
+            .filter(|run| runs.iter().all(|(held, _)| held != run))
+            .collect();
+        let mut changed = !gone.is_empty();
+        for run in gone {
+            self.members
+                .retain(|member| member.spoken_by != own || member.run.as_ref() != Some(&run));
+            self.schedule
+                .push(Presence::desktop(self.workspace.clone(), Payload::Left).spoken_for(run));
+        }
+        for (run, view) in runs {
+            let stand_in = collab_types::presence::stand_in(self.publisher, run);
+            if !self
+                .members
+                .iter()
+                .any(|member| member.publisher == stand_in)
+            {
+                let mut member = Member::new(stand_in);
+                member.spoken_by = own;
+                member.run = Some(run.clone());
+                member.device.clone_from(&self.own.device);
+                self.members.push(member);
+            }
+            let Some(member) = self
+                .members
+                .iter_mut()
+                .find(|member| member.publisher == stand_in)
+            else {
+                continue;
+            };
+            if member.arrive() {
+                self.schedule.push(
+                    Presence::desktop(self.workspace.clone(), Payload::Arrived).spoken_for(run),
+                );
+                changed = true;
+            }
+            if member.shell.as_deref().map(without_clock) != Some(without_clock(view)) {
+                member.shell_seq = member.shell_seq.wrapping_add(1);
+                let mut view = Box::new(view.clone());
+                view.seq = member.shell_seq;
+                member.shell = Some(view.clone());
+                self.schedule.push(
+                    Presence::desktop(self.workspace.clone(), Payload::Shell(view)).spoken_for(run),
+                );
+                changed = true;
+            }
+        }
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 
     /// How many times what is known here changed: a surface drawing its
@@ -342,6 +516,14 @@ impl Board {
             self.schedule
                 .push(Presence::desktop(workspace.clone(), Payload::Arrived));
         }
+        if own.profile_ms != 0 && (first || said.profile_ms != own.profile_ms) {
+            self.schedule.push(Presence::desktop(
+                workspace.clone(),
+                Payload::Profile {
+                    changed_ms: own.profile_ms,
+                },
+            ));
+        }
         // How available a device is rides with its arrival: someone who came
         // in after the last change still hears it.
         if first || said.availability != own.availability || said.call != own.call {
@@ -355,14 +537,17 @@ impl Board {
                 },
             ));
         }
-        if said.status != own.status
-            && let Some(status) = &own.status
-        {
+        // A status taken back is said as an empty one, or everyone keeps
+        // showing the last.
+        if said.status != own.status {
             self.schedule.push(Presence::desktop(
                 workspace.clone(),
                 Payload::Status {
-                    text: status.clone(),
-                    automatic: false,
+                    text: own
+                        .status
+                        .as_ref()
+                        .map_or_else(String::new, |status| status.text.clone()),
+                    automatic: own.status.as_ref().is_some_and(|status| status.automatic),
                 },
             ));
         }
@@ -425,12 +610,33 @@ impl Board {
         self.arrived = false;
         let own = self.own.clone();
         self.say(&own);
+        // The runs this device speaks for are said after it, so a reader
+        // already hears this device here when their word arrives.
+        let own = Some(self.publisher);
+        for member in self.members.iter().filter(|member| member.spoken_by == own) {
+            let Some(run) = &member.run else {
+                continue;
+            };
+            self.schedule.push(
+                Presence::desktop(self.workspace.clone(), Payload::Arrived).spoken_for(run.clone()),
+            );
+            if let Some(shell) = &member.shell {
+                self.schedule.push(
+                    Presence::desktop(self.workspace.clone(), Payload::Shell(shell.clone()))
+                        .spoken_for(run.clone()),
+                );
+            }
+        }
     }
 
     /// The burst due at `now_ms`: the frames to say, with the object each is
     /// on the presence track. One burst at most per call; nothing before the
     /// rate ceiling has passed.
+    ///
+    /// The members heard from no longer are forgotten on the same pass
+    /// ([`SILENT_MS`]), so a caller reads [`Self::revision`] after it.
     pub fn due(&mut self, now_ms: f64) -> Option<Vec<(u32, Presence)>> {
+        self.forget_silent(now_ms);
         if self.keepalive_at.is_some_and(|at| now_ms >= at) {
             self.keepalive_at = Some(now_ms + KEEPALIVE_MS);
             self.restate();
@@ -467,9 +673,64 @@ impl Board {
     /// Take one member's frame: theirs, as its key and payload say it.
     /// Whether what is known here changed.
     pub fn hear(&mut self, from: Device, frame: &Presence, now_ms: f64) -> bool {
+        self.listen(now_ms);
         if from == self.publisher {
             return false;
         }
+        let Some(from) = self.speaker(from, frame) else {
+            return false;
+        };
+        let changed = self.take(from, frame, now_ms);
+        if let Some(member) = self
+            .members
+            .iter_mut()
+            .find(|member| member.publisher == from)
+        {
+            member.heard_ms = Some(now_ms);
+        }
+        changed
+    }
+
+    /// Forget every member nothing was heard from for [`SILENT_MS`]: a
+    /// device whose page closed without saying it left, or whose link
+    /// dropped, keeps no row here. Whether what is known here changed.
+    pub fn forget_silent(&mut self, now_ms: f64) -> bool {
+        self.listen(now_ms);
+        let before = self.members.len();
+        self.members.retain(|member| {
+            member
+                .heard_ms
+                .is_none_or(|heard| now_ms - heard < SILENT_MS)
+        });
+        let changed = self.members.len() != before;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// A pass over the board at `now_ms`. A device takes one at least every [`KEEPALIVE_MS`],
+    /// when its own word is due; a longer gap is time it could hear nobody, such as a page busy
+    /// drawing one slow frame, while what the others said waited for it. That time is not their
+    /// silence: a member is forgotten for [`SILENT_MS`] this device listened without hearing them.
+    fn listen(&mut self, now_ms: f64) {
+        if let Some(last) = self.listened_ms {
+            let deaf = now_ms - last - KEEPALIVE_MS;
+            if deaf > 0.0 {
+                for heard in self
+                    .members
+                    .iter_mut()
+                    .filter_map(|member| member.heard_ms.as_mut())
+                {
+                    *heard += deaf;
+                }
+            }
+        }
+        self.listened_ms = Some(self.listened_ms.map_or(now_ms, |last| last.max(now_ms)));
+    }
+
+    /// Take one member's frame into what is known of them.
+    fn take(&mut self, from: Device, frame: &Presence, now_ms: f64) -> bool {
         if frame.app != DESKTOP_APP {
             return self.keep(from, &frame.key, &frame.payload);
         }
@@ -504,8 +765,16 @@ impl Board {
                 Payload::Left => {
                     self.touch(from, |member| std::mem::replace(&mut member.here, false))
                 }
-                Payload::Status { text, .. } => self.touch(from, |member| {
-                    let status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
+                Payload::Profile { changed_ms } => self.touch(from, |member| {
+                    std::mem::replace(&mut member.profile_ms, *changed_ms) != member.profile_ms
+                }),
+                Payload::Status { text, automatic } => self.touch(from, |member| {
+                    let status = Some(text.trim())
+                        .filter(|text| !text.is_empty())
+                        .map(|text| Status {
+                            text: text.to_owned(),
+                            automatic: *automatic,
+                        });
                     std::mem::replace(&mut member.status, status) != member.status
                 }),
                 Payload::Availability {
@@ -552,7 +821,17 @@ impl Board {
                 }),
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
+                // A run says each step it takes with a higher sequence: a view
+                // at or below the one already taken is a repeat of it, sent
+                // again or arrived late, and taking it would say what the run
+                // was doing before the step it is on now.
                 Payload::Shell(shell) => self.touch(from, |member| {
+                    if member.spoken_by.is_some()
+                        && shell.seq.wrapping_sub(member.shell_seq) >= u32::MAX / 2
+                    {
+                        return false;
+                    }
+                    member.shell_seq = shell.seq;
                     let changed = member.arrive() || member.shell.as_deref() != Some(&**shell);
                     member.shell = Some(shell.clone());
                     changed
@@ -576,12 +855,9 @@ impl Board {
         if heard {
             // The same place said again: the pointer rests. It is still said,
             // though — a member restates what did not change on every
-            // keepalive, and a surface draws only a pointer said lately.
-            self.touch(from, |member| {
-                member.pointer.restated(now_ms);
-                false
-            });
-            return false;
+            // keepalive, and a surface draws only a pointer said lately. A
+            // pointer that was moving is drawn where it stopped from now on.
+            return self.touch(from, |member| member.pointer.restated(now_ms));
         }
         self.touch(from, |member| {
             // A pointer over a tile is the device saying it is here: it is
@@ -641,14 +917,27 @@ impl Board {
 
     /// Take one member's frame as the presence track carried it: the body is
     /// opened here, so a host never keeps a second copy of the wire's shape.
-    /// Whether what is known here changed.
+    /// An empty body is the plane saying their presence ended with their
+    /// session ([`crate::plane::Heard::left`]): they left. Whether what is
+    /// known here changed.
     pub fn heard(&mut self, from: Device, body: &[u8], now_ms: f64) -> bool {
+        if body.is_empty() {
+            return from != self.publisher && self.depart(from);
+        }
         super::decode(body).is_some_and(|frame| self.hear(from, &frame, now_ms))
     }
 
     /// The roster's word on `from`: a certificate this device verified named
     /// the person and the device. Whether what is known here changed.
     pub fn certify(&mut self, from: Device, user: String, device: &str) -> bool {
+        // The runs a device speaks for list as that device.
+        for run in self
+            .members
+            .iter_mut()
+            .filter(|member| member.spoken_by == Some(from))
+        {
+            device.trim().clone_into(&mut run.device);
+        }
         self.touch(from, |member| {
             let changed = member.user.as_deref() != Some(user.as_str()) || member.device != device;
             member.user = Some(user);
@@ -657,10 +946,12 @@ impl Board {
         })
     }
 
-    /// They left the workspace.
+    /// They left the workspace, and the runs they spoke for.
     pub fn depart(&mut self, publisher: Device) -> bool {
         let before = self.members.len();
-        self.members.retain(|member| member.publisher != publisher);
+        // The runs a device spoke for leave with it.
+        self.members
+            .retain(|member| member.publisher != publisher && member.spoken_by != Some(publisher));
         let changed = self.members.len() != before;
         if changed {
             self.revision = self.revision.wrapping_add(1);
@@ -687,8 +978,8 @@ impl Board {
             .find(|member| member.publisher == publisher)
     }
 
-    /// Everyone whose pointer is over `tab` now, by publisher, smoothed at
-    /// `now_ms`.
+    /// Everyone whose pointer is over `tab` now, by publisher, smoothed at `now_ms`: the point is
+    /// in that tile's own pixels, and a surface places it where that tile stands.
     #[must_use]
     pub fn pointers(&self, tab: u64, now_ms: f64) -> Vec<(Device, f64, f64)> {
         self.here()

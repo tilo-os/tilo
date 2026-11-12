@@ -24,6 +24,7 @@ use ui::window_toolbar::{
 };
 
 use crate::app::{ActionKind, Tab};
+use crate::locales::CATALOG;
 use crate::map::{MapEntry, PartitionMap};
 use crate::model::{
     AttrSeverity, Drive, DriveKind, Partition, SmartAttr, SmartInfo, SmartStatus, fmt_hours,
@@ -101,7 +102,7 @@ fn action_name(action: ActionKind, offer: Offer) -> String {
         // A glyph in the row is named by what it does; a menu entry by its
         // verb.
         Offer::Available | Offer::Hidden if in_row(action) => action.describe().to_owned(),
-        Offer::Available | Offer::Hidden => action.label().to_owned(),
+        Offer::Available | Offer::Hidden => action.label(),
     }
 }
 
@@ -134,11 +135,11 @@ pub(crate) fn window_toolbar(
     actions.push(ToolbarAction::new(
         RESCAN,
         Icon::Refresh.name(),
-        "Rescan drives",
+        crate::locales::CATALOG.t("disks-rescan-drives"),
     ));
     ui::widget::NavShell::push_window_actions(&mut shell, actions);
     shell.views = (!location.drive.is_empty()).then(|| ToolbarViews {
-        name: "View".to_owned(),
+        name: crate::locales::CATALOG.t("disks-views"),
         choices: Tab::all()
             .into_iter()
             .map(|tab| ToolbarView {
@@ -193,14 +194,14 @@ fn operations_menu(
         if mounted {
             let open = intents.clone();
             entries.push(
-                MenuEntry::new("Open in Files", move || {
+                MenuEntry::new(CATALOG.t("disks-open-in-files"), move || {
                     open.push(Intent::OpenInFiles(partition));
                 })
                 .with_icon(Icon::Folder),
             );
             let usage = intents.clone();
             entries.push(
-                MenuEntry::new("How much space is left?", move || {
+                MenuEntry::new(CATALOG.t("disks-space-left"), move || {
                     usage.push(Intent::DiskUsage(partition));
                 })
                 .with_icon(Icon::BarChart),
@@ -266,7 +267,7 @@ pub(crate) fn drive_list(
     let section = NavSection::untitled("drives", items).pending(u8::from(loading));
     NavList::new(vec![section])
         .selected(&drive_id(selected))
-        .with_accessible_name("Drives")
+        .with_accessible_name(crate::locales::CATALOG.t("disks-a11y-drives"))
         .on_view("disks.drives", move |id| {
             if let Some(index) = id.strip_prefix("drive:").and_then(|n| n.parse().ok()) {
                 intents.push(Intent::SelectDrive(index));
@@ -288,7 +289,7 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
             .with_message(reason),
         None => EmptyState::new("No drives found")
             .with_icon(Icon::HardDrive)
-            .with_message("Attach a drive, then rescan."),
+            .with_message(CATALOG.t("disks-empty-drives-hint")),
     };
     Box::new(
         state
@@ -308,11 +309,11 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
         .with_no_padding()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(Section::titled(
-            "Partition map",
+            CATALOG.t("disks-section-partition-map"),
             vec![Box::new(PartitionMap::pending(since))],
         )))
         .push(Box::new(Section::titled(
-            "Filesystems",
+            CATALOG.t("disks-section-filesystems"),
             vec![ui::widget::ArrivingView::placeholder_since(
                 local(),
                 since,
@@ -325,7 +326,7 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -
             )],
         )))
         .push(Box::new(Section::titled(
-            "Details",
+            CATALOG.t("disks-section-details"),
             vec![ui::widget::ArrivingView::placeholder_since(
                 local(),
                 since,
@@ -437,19 +438,19 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .with_no_padding()
         .with_rhythm(Rhythm::Group);
     page = page.push(Box::new(Section::titled(
-        "Partition map",
+        CATALOG.t("disks-section-partition-map"),
         vec![Box::new(map)],
     )));
     page = page.push(Box::new(filesystems(drive, model.partition, intents)));
     if let Some(part) = model.partition.and_then(|i| drive.partitions.get(i)) {
         page = page.push(Box::new(partition_details(drive, part)));
         page = page.push(Box::new(Section::titled(
-            "Drive",
+            CATALOG.t("disks-section-drive"),
             vec![Box::new(PropertyList::new(drive_facts(drive)))],
         )));
     } else {
         page = page.push(Box::new(Section::titled(
-            "Details",
+            CATALOG.t("disks-section-details"),
             vec![Box::new(PropertyList::new(drive_facts(drive)))],
         )));
     }
@@ -471,7 +472,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
         .collect();
     if items.is_empty() {
         items.push(Box::new(
-            Text::new("No filesystems are mounted.")
+            Text::new(&crate::locales::CATALOG.t("disks-none-mounted"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ));
@@ -488,7 +489,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
             Row::new()
                 .push(Box::new(mounted_action(
                     "disks-open-in-files",
-                    "Open in Files",
+                    &CATALOG.t("disks-open-in-files"),
                     Icon::Folder,
                     &mount,
                     Intent::OpenInFiles(Some(target)),
@@ -496,7 +497,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 )))
                 .push(Box::new(mounted_action(
                     "disks-space-left",
-                    "How much space is left?",
+                    &CATALOG.t("disks-space-left"),
                     Icon::BarChart,
                     &mount,
                     Intent::DiskUsage(Some(target)),
@@ -504,7 +505,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 ))),
         ));
     }
-    Section::titled("Filesystems", items)
+    Section::titled(CATALOG.t("disks-section-filesystems"), items)
 }
 
 /// The mounted partition the drive page's two ways on act for: the chosen
@@ -555,9 +556,18 @@ const FULL: f64 = 0.97;
 fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents) -> ListRow {
     let pick = intents.clone();
     let secondary = match (part.mount_display(), &part.fstype) {
-        (Some(mount), _) if mount == "Swap" => "Swap space".to_owned(),
-        (Some(mount), Some(fstype)) if !fstype.is_empty() => format!("{fstype} at {mount}"),
-        (Some(mount), _) => format!("At {mount}"),
+        (Some(mount), _) if mount == "Swap" => CATALOG.t("disks-swap"),
+        (Some(mount), Some(fstype)) if !fstype.is_empty() => CATALOG.t_args(
+            "disks-filesystem-at",
+            &[
+                ("filesystem", ui::i18n::ArgValue::Text(fstype.clone())),
+                ("path", ui::i18n::ArgValue::Text(mount)),
+            ],
+        ),
+        (Some(mount), _) => CATALOG.t_args(
+            "disks-mounted-at",
+            &[("path", ui::i18n::ArgValue::Text(mount))],
+        ),
         (None, _) => String::new(),
     };
     let mut row = ListRow::new(format!("disks-filesystem-{index}"), part.display_label())
@@ -566,7 +576,13 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
         .selected(selected)
         .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
     if let Some(used) = part.used {
-        row = row.meta(format!("{} free", size(part.size.saturating_sub(used))));
+        row = row.meta(CATALOG.t_args(
+            "disks-partition-free",
+            &[(
+                "room",
+                ui::i18n::ArgValue::Text(size(part.size.saturating_sub(used))),
+            )],
+        ));
     }
     match part.used_frac() {
         Some(used) if used >= FULL => row.error(),
@@ -587,13 +603,17 @@ fn interface_name(drive: &Drive) -> String {
 
 fn drive_facts(drive: &Drive) -> Vec<Property> {
     let mut facts = vec![
-        Property::new("Device", format!("/dev/{}", drive.name)).with_kind(TextKind::Identifier),
-        Property::new("Type", drive.kind.long()),
-        Property::new("Capacity", size(drive.size)).with_kind(TextKind::Numeric),
-        Property::new("Interface", interface_name(drive)),
+        Property::new(CATALOG.t("disks-device"), format!("/dev/{}", drive.name))
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("disks-type"), drive.kind.long()),
+        Property::new(CATALOG.t("disks-capacity"), size(drive.size)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("disks-interface"), interface_name(drive)),
     ];
     if let Some(serial) = &drive.serial {
-        facts.push(Property::new("Serial number", serial.clone()).with_kind(TextKind::Identifier));
+        facts.push(
+            Property::new(CATALOG.t("disks-serial"), serial.clone())
+                .with_kind(TextKind::Identifier),
+        );
     }
     facts
 }
@@ -634,7 +654,7 @@ fn health(drive: &Drive) -> Element {
         }
         if !smart.attrs.is_empty() {
             page = page.push(Box::new(Section::titled(
-                "Attributes",
+                CATALOG.t("disks-section-attributes"),
                 vec![Box::new(attribute_table(&smart.attrs))],
             )));
         }
@@ -711,120 +731,146 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
             .with_kind(TextKind::Numeric)
             .with_text(|attr: &SmartAttr| attr.value.clone()),
         ColumnDef::new("status", "Status", ColumnWidth::Auto)
-            .with_text(|attr: &SmartAttr| severity_label(attr.severity).to_owned()),
+            .with_text(|attr: &SmartAttr| severity_label(attr.severity)),
     ]);
     let mut table = DataTable::new(columns)
         .with_id("disks-attributes")
-        .with_accessible_name("SMART attributes");
+        .with_accessible_name(crate::locales::CATALOG.t("disks-a11y-smart"));
     table.set_rows(attrs.to_vec());
     table
 }
 
-fn severity_label(severity: AttrSeverity) -> &'static str {
-    match severity {
-        AttrSeverity::Ok => "OK",
-        AttrSeverity::Warn => "Warning",
-        AttrSeverity::Crit => "Critical",
-    }
+fn severity_label(severity: AttrSeverity) -> String {
+    let message = match severity {
+        AttrSeverity::Ok => "disks-severity-healthy",
+        AttrSeverity::Warn => "disks-severity-warning",
+        AttrSeverity::Crit => "disks-severity-critical",
+    };
+    crate::locales::CATALOG.t(message)
 }
 
 /// What a partition is for, in words, when it serves something the person
-/// knows by name.
-fn purpose(drive: &Drive, part: &Partition) -> Option<&'static str> {
+/// knows by name. Everything but a foreign system's own name comes from the
+/// catalogue.
+fn purpose(drive: &Drive, part: &Partition) -> Option<String> {
     use crate::model::PartRole;
     let windows = |name: &str| {
         let name = name.to_ascii_lowercase();
         name.contains("microsoft") || name.contains("windows")
     };
-    match part.role() {
-        PartRole::Root => Some("Running system"),
-        PartRole::Home => Some("Home folders"),
-        PartRole::Efi | PartRole::Boot if drive.is_system_drive() => Some("Starts this device"),
-        PartRole::Swap => Some("Swap space"),
+    let message = match part.role() {
+        PartRole::Root => "disks-purpose-root",
+        PartRole::Home => "disks-purpose-home",
+        PartRole::Efi | PartRole::Boot if drive.is_system_drive() => "disks-purpose-boot",
+        PartRole::Swap => "disks-swap",
         _ if part
             .fstype
             .as_deref()
             .is_some_and(|fs| fs.eq_ignore_ascii_case("ntfs"))
             || part.part_type_name.as_deref().is_some_and(windows) =>
         {
-            Some("Windows")
+            return Some("Windows".to_owned());
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(crate::locales::CATALOG.t(message))
 }
 
 /// What a partition's row says under its name: what it is for, its state
-/// and its room, in words ("Home folders, encrypted, 134.2 GB free", "Not
-/// in use"). The facts
-/// behind it are on the partition's own page.
+/// and its room, in words ("Home folders, encrypted, 134 GB free", "Not in
+/// use"), joined the way this language writes a list. The facts behind it are
+/// on the partition's own page.
 fn partition_summary(drive: &Drive, part: &Partition) -> String {
-    let locked = part
-        .encryption
-        .as_ref()
-        .map(|encryption| encryption.unlocked_as.is_none());
+    let cat = &crate::locales::CATALOG;
+    let lock = part.encryption.as_ref().map(|encryption| {
+        if encryption.unlocked_as.is_none() {
+            "disks-partition-encrypted-locked"
+        } else {
+            "disks-partition-encrypted"
+        }
+    });
     // A purpose the name already says ("Windows" called "Windows") gives
     // way to the state.
     let purpose = purpose(drive, part)
         .filter(|purpose| !purpose.eq_ignore_ascii_case(part.display_label().trim()));
-    let mut summary = match purpose {
-        Some(purpose) => purpose.to_owned(),
-        None if part.mountpoint.is_some() => "In use".to_owned(),
-        None => "Not in use".to_owned(),
+    let state = match purpose {
+        Some(purpose) => purpose,
+        None if part.mountpoint.is_some() => cat.t("disks-in-use"),
+        None => cat.t("disks-not-in-use"),
     };
-    match locked {
-        Some(true) => summary.push_str(", encrypted and locked"),
-        Some(false) => summary.push_str(", encrypted"),
-        None => {}
+    let mut facts = vec![state];
+    if let Some(lock) = lock {
+        facts.push(cat.t(lock));
     }
     if let Some(used) = part.used {
-        summary = format!("{summary}, {} free", size(part.size.saturating_sub(used)));
+        facts.push(cat.t_args(
+            "disks-partition-free",
+            &[(
+                "room",
+                ui::i18n::ArgValue::Text(size(part.size.saturating_sub(used))),
+            )],
+        ));
     }
-    summary
+    ui::format::list(&facts)
 }
 
 /// The partition's facts: its device, size, type, filesystem, encryption,
 /// where it is mounted and its room, and what of the running system it holds.
 fn partition_details(drive: &Drive, part: &Partition) -> Section {
     let mut facts = vec![
-        Property::new("Device", format!("/dev/{}", part.name)).with_kind(TextKind::Identifier),
-        Property::new("Size", size(part.size)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("disks-device"), format!("/dev/{}", part.name))
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("disks-size"), size(part.size)).with_kind(TextKind::Numeric),
     ];
     if let Some(kind) = part.part_type_name.clone().filter(|kind| !kind.is_empty()) {
-        facts.push(Property::new("Type", kind));
+        facts.push(Property::new(CATALOG.t("disks-type"), kind));
     }
     if let Some(fstype) = part.fstype.clone().filter(|fs| !fs.is_empty()) {
-        facts.push(Property::new("Filesystem", fstype));
+        facts.push(Property::new(CATALOG.t("disks-filesystem"), fstype));
     }
     if let Some(encryption) = &part.encryption {
-        let state = match &encryption.unlocked_as {
-            Some(_) => format!("{}, unlocked", encryption.scheme),
-            None => format!("{}, locked", encryption.scheme),
+        let message = match &encryption.unlocked_as {
+            Some(_) => "disks-encryption-unlocked",
+            None => "disks-encryption-locked",
         };
-        facts.push(Property::new("Encryption", state));
+        let state = CATALOG.t_args(
+            message,
+            &[(
+                "scheme",
+                ui::i18n::ArgValue::Text(encryption.scheme.clone()),
+            )],
+        );
+        facts.push(Property::new(CATALOG.t("disks-encryption"), state));
     }
     facts.push(Property::new(
-        "Mounted at",
+        CATALOG.t("disks-mounted-at"),
         part.mount_display()
-            .unwrap_or_else(|| "Not mounted".to_owned()),
+            .unwrap_or_else(|| CATALOG.t("disks-not-mounted")),
     ));
     if let Some(used) = part.used {
-        facts.push(Property::new("Used", size(used)).with_kind(TextKind::Numeric));
+        facts.push(Property::new(CATALOG.t("disks-used"), size(used)).with_kind(TextKind::Numeric));
         facts.push(
-            Property::new("Free", size(part.size.saturating_sub(used)))
-                .with_kind(TextKind::Numeric),
+            Property::new(
+                CATALOG.t("disks-free"),
+                size(part.size.saturating_sub(used)),
+            )
+            .with_kind(TextKind::Numeric),
         );
     }
     if let Some(purpose) = purpose(drive, part) {
-        facts.push(Property::new("Used for", purpose));
+        facts.push(Property::new(CATALOG.t("disks-used-for"), purpose));
     }
-    Section::titled("Details", vec![Box::new(PropertyList::new(facts))])
+    Section::titled(
+        CATALOG.t("disks-section-details"),
+        vec![Box::new(PropertyList::new(facts))],
+    )
 }
 
 fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let drive = model.drive;
     if drive.partitions.is_empty() {
         return Box::new(Section::new(vec![Box::new(
-            Text::new("This drive has no partitions.")
+            Text::new(&crate::locales::CATALOG.t("disks-drive-empty"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         )]));

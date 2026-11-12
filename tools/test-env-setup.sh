@@ -18,7 +18,8 @@
 #          recorded with, and so TILO_REQUIRE_GPU=1; TILO_REQUIRE_MEDIA=1, as
 #          the image carries the codecs; TILO_PDFIUM_LIB when the image
 #          installed PDFium; and TILO_TEST_CACHE_DIR (default
-#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env), so fixtures a test
+#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env, the test user's
+#          where tests run as one, tools/as-test-user.sh), so fixtures a test
 #          generates itself (the media decode clip) are made once and shared
 #          by every test process instead of once per process in its fresh HOME;
 #          and TILO_REQUIRE_* of every capability .config/nextest-capabilities.toml
@@ -26,6 +27,12 @@
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
 #          machine that sets TILO_REQUIRE_GPU=0 (it promises no GPU) runs
 #          without lavapipe rather than failing.
+#          The pinned font catalog is prepared in TILO_FONT_ASSET_CACHE
+#          (default $CARGO_TARGET_DIR/font-artifacts, else the test cache's),
+#          where the toolkit's catalog roots find it, and TILO_REQUIRE_FONTS=1
+#          says every frame is to be set in it: a test job that reuses a build
+#          from elsewhere carries no catalog of its own, and a frame drawn in
+#          the host's faces is worse than a failure.
 # audio    a private software audio endpoint (tools/with-headless-audio.sh),
 #          and so TILO_REQUIRE_AUDIO=1. It lives as long as the process
 #          TILO_TEST_ENV_OWNER names (default: the caller, which under nextest
@@ -38,15 +45,24 @@
 #          An existing TILO_NTFS_FIXTURES is kept. nextest runs this step only
 #          when the run selects a tilo-ntfs-helper test, as only those read
 #          the images, which take minutes to build.
+# root     TILO_TEST_AS_ROOT=1: the few tests that need root say so with this
+#          step, and keep it where the others run as the test user
+#          (tools/as-test-user.sh). In a container's own cgroup root, its
+#          processes move to a leaf so the root delegates its controllers.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|audio|ntfs ..." >&2
+    echo "usage: $0 runtime|audio|ntfs|root ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
+home=$(bash "$repo/tools/as-test-user.sh" --home)
+if [[ $home == "$HOME" ]]; then
+    cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
+else
+    cache_dir="${TILO_TEST_CACHE_DIR:-$home/.cache/tilo/test-env}"
+fi
 
 provide() { # KEY VALUE: the variable, for the tests and for the later steps
     printf '%s=%s\n' "$1" "$2" >>"$env_file"
@@ -78,8 +94,25 @@ runtime() {
     elif [[ -r /usr/lib64/libpdfium.so ]]; then
         provide TILO_PDFIUM_LIB /usr/lib64/libpdfium.so
     fi
-    mkdir -p "$cache_dir"
+    bash "$repo/tools/as-test-user.sh" mkdir -p "$cache_dir"
     provide TILO_TEST_CACHE_DIR "$cache_dir"
+    # The pinned font catalog every frame is set in. A build prepares its own into the cargo
+    # output directory of the crate that owns it, and that is not what a build directory carries
+    # from the job that built to the job that tests, so a test job that reuses a build elsewhere
+    # finds none and draws its frames in the host's faces: pixels that look almost right, judged
+    # against baselines recorded in the product's. Preparing it here, in the artifact cache the
+    # builder image seeds, puts it where the tests run — the first job on a machine copies it from
+    # the image and the rest verify what is there — and the toolkit's catalog roots read it. The
+    # build directory is the cache a job shares with the build; a run outside one keeps it in the
+    # test cache, where it outlives the run rather than being written into the tree. A machine
+    # without the image's seed has the jobs that share the cache take turns (the cache's lock), so
+    # one fetches the catalog and the rest verify what it left rather than each fetching it.
+    provide TILO_FONT_ASSET_CACHE "${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$cache_dir}/font-artifacts}"
+    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
+        --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
+    # And a run promised the catalog stops where one is missing, rather than comparing frames set
+    # in whatever faces the machine happens to have.
+    provide TILO_REQUIRE_FONTS "${TILO_REQUIRE_FONTS:-1}"
 }
 
 audio() {
@@ -167,9 +200,38 @@ ntfs() {
     provide TILO_NTFS_FIXTURES "$dir"
 }
 
+root() {
+    provide TILO_TEST_AS_ROOT 1
+    delegate_cgroups
+}
+
+# The limits tests give jobs cgroups of their own, under one that hands its
+# children the controllers. A cgroup holding processes cannot: a container's
+# own root, where every process of the run starts, is one. As root there, its
+# processes move into a leaf and the root hands its children every controller
+# it is given, as a container that starts containers does.
+delegate_cgroups() {
+    local cg=/sys/fs/cgroup pids pid controller
+    [[ $(id -u) == 0 && $(cat /proc/self/cgroup) == 0::/ && -w $cg/cgroup.subtree_control ]] || return 0
+    [[ -z $(cat "$cg/cgroup.subtree_control") ]] || return 0
+    mkdir -p "$cg/init"
+    # Again while any is left: a process may fork while the others move.
+    for _ in 1 2 3 4 5; do
+        pids=$(cat "$cg/cgroup.procs")
+        [[ -n $pids ]] || break
+        for pid in $pids; do
+            echo "$pid" >"$cg/init/cgroup.procs" 2>/dev/null || true
+        done
+    done
+    for controller in $(cat "$cg/cgroup.controllers"); do
+        echo "+$controller" >"$cg/cgroup.subtree_control" ||
+            echo "the cgroup root does not delegate $controller" >&2
+    done
+}
+
 for step; do
     case $step in
-        runtime | audio | ntfs) "$step" ;;
+        runtime | audio | ntfs | root) "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac
 done

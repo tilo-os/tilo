@@ -17,8 +17,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -27,7 +25,7 @@ use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
-use common::{
+use crate::common::{
     CANVAS_ENTRY, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen,
     place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
     seeded_session, show_preset, until,
@@ -36,7 +34,7 @@ use common::{
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and one note in it titled [`NOTE_TITLE`], made through the app's own actions.
 fn notebook() -> (RecordService, String) {
-    let (service, notes) = common::notebook(&[NOTE_TITLE]);
+    let (service, notes) = crate::common::notebook(&[NOTE_TITLE]);
     (service, notes.into_iter().next().expect("a note"))
 }
 
@@ -274,7 +272,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -482,7 +480,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         &mut session,
         "the notebook placed by its German name",
         |session| {
-            common::places(session)
+            crate::common::places(session)
                 .iter()
                 .any(|place| place.record.contains(NOTES))
         },
@@ -502,11 +500,16 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         placed_by_german,
         "the English word finds no notebook on a German desk"
     );
-    until(&mut session, "the ask conversation", |session| {
-        common::places(session)
-            .iter()
-            .any(|place| place.record.contains("chat.workspace/channels/"))
+    let sent = crate::common::wait_for(&mut session, "the ask to be sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.last().cloned())
     });
+    assert_eq!(
+        sent["text"], "notebooks",
+        "the agent is asked the words: {sent}"
+    );
 }
 
 /// How many of the seeded notes app's resources stand on the arrangement.
@@ -606,7 +609,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -634,7 +637,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     );
     assert!(!failed, "the program ran: {answer}");
     until(&mut session, "the note's text on the canvas", |session| {
-        session.shell_says("Oat milk, eggs, sourdough")
+        session.shell_says("Oat milk, eggs, two lemons.")
     });
 
     // A text naming a resource that many actions name too finds the resource: "Inbox" is the
@@ -681,7 +684,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -821,9 +824,9 @@ fn an_app_no_place_shows_is_unloaded() {
     let mut session = seeded_session(root.path());
     place_the_inbox(&mut session, root.path());
     assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
-    let places: Vec<u64> = common::places(&session)
+    let places: Vec<u64> = crate::common::places(&session)
         .iter()
-        .map(|place| common::number(&place.key))
+        .map(|place| crate::common::number(&place.key))
         .collect();
     for place in places {
         session
@@ -1071,7 +1074,7 @@ impl tilo_service::Service for Withholding {
 fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let program = std::env::current_exe().expect("this test's program");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
@@ -1161,7 +1164,7 @@ fn the_repl_finds_what_place_found_places() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -1255,4 +1258,54 @@ fn the_repl_finds_what_place_found_places() {
             placed_resources(session).is_empty()
         });
     }
+}
+
+/// An installed tilolang app the session does not run itself is named by what its package
+/// declares: its actions by their names (`notes.new_note`), never the ids they are stored under,
+/// and its record's root (`notes.notebook`), which those actions are called on.
+#[test]
+fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
+    let _settled = ui::motion::testing::settled();
+    crate::common::app_store();
+    let root = private_home();
+    let program = std::env::current_exe().expect("this test's program");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (listed, failed) = repl.call(&mut session, "tilo", &json!({"program": "catalogue"}));
+    assert!(!failed, "{listed}");
+    let catalogue: Value = serde_json::from_str(&listed).expect("the catalogue is JSON");
+    let notes = catalogue["notes"]["signatures"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the notes app is listed: {catalogue:#}"));
+    let named = |kind: &str, name: &str| {
+        notes
+            .iter()
+            .find(|signature| signature["kind"] == kind && signature["name"] == name)
+            .cloned()
+    };
+    let new_note = named("action", "new_note")
+        .unwrap_or_else(|| panic!("notes names its action new_note: {notes:#?}"));
+    assert!(
+        new_note["call"]
+            .as_str()
+            .is_some_and(|call| call.starts_with("notes.new_note(")),
+        "{new_note:#}"
+    );
+    assert!(
+        named("root", "notebook").is_some(),
+        "notes names its root notebook: {notes:#?}"
+    );
 }

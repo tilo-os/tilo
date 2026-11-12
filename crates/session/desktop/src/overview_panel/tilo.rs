@@ -10,17 +10,52 @@
 
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
-use ui::widget::{Button, ButtonFace, Interaction, ListRowFace, RowLeading, TextLineFace};
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, Interaction, ListRowFace, RowLeading, TextBlockFace,
+    TextLineFace,
+};
 use vello::kurbo::{Point, Rect};
 
 use super::OverviewPanel;
+use crate::i18n::t;
 use crate::overview_panel::OverviewPick;
-use crate::overview_tilo::{TiloItem, TiloRow};
+use crate::overview_tilo::{TiloFace, TiloItem, TiloMark, TiloRow};
 
 /// The controls' width before they were first measured: enough for "Manage billing" in every
 /// language the desktop speaks.
 const ACTION_WIDTH: f64 = 148.0;
 const ACTION_HEIGHT: f64 = 28.0;
+
+/// A face at a row's leading edge, drawn by presence so it looks as that person or agent does in
+/// every stack: a person's circle or an agent's rounded square, in the colour it wears.
+fn worn_face(worn: &TiloFace) -> ui::presence::Face<'_> {
+    ui::presence::Face {
+        is_agent: worn.is_agent,
+        ..ui::presence::Face::new(
+            &worn.name,
+            &worn.identity,
+            ui::presence::presence_colour(worn.colour),
+        )
+    }
+}
+
+/// A row's leading mark: the glyph it names itself with, or the face presence draws for it. Both
+/// stand in the icon's slot, so a row's name keeps the column every row's does.
+pub(super) fn tilo_leading(item: &TiloItem) -> Option<RowLeading<'_>> {
+    match &item.mark {
+        Some(TiloMark::Icon(icon)) => Some(RowLeading::Icon(*icon)),
+        Some(TiloMark::Face(worn)) => Some(RowLeading::Face(worn_face(worn))),
+        None => None,
+    }
+}
+
+/// The face of a row's question: the caption the rows' facts are set in, wrapped evenly so a
+/// question of two lines does not leave one word on the last.
+fn question_style(theme: &ui::theme::Theme) -> ui::text_render::TextStyle {
+    theme
+        .text(TextRole::Caption)
+        .with_wrap_mode(ui::text_render::TextWrapMode::Balance)
+}
 
 impl OverviewPanel {
     /// The slots of the "go to" list before the rows: the other workspaces,
@@ -36,12 +71,35 @@ impl OverviewPanel {
             .saturating_add(usize::from(self.desk.can_join))
     }
 
-    /// A row's height: a section's name stands in the gap that opens the section, a row is as tall
-    /// as its two lines.
-    fn tilo_height(&self, row: &TiloRow) -> f64 {
-        match row {
-            TiloRow::Caption(_) => self.metrics.section_gap + self.metrics.caption_h,
-            TiloRow::Item(_) => self.metrics.tilo_row_h,
+    /// The row with `key`, when the desk shows one.
+    pub(super) fn tilo_row(&self, key: &str) -> Option<&TiloItem> {
+        self.tilo_rows.iter().find_map(|row| match row {
+            TiloRow::Item(item) if item.key == key => Some(item),
+            _ => None,
+        })
+    }
+
+    /// Whether `item`'s irreversible control is asking, so nothing is carried out until the
+    /// person answers on its row.
+    fn tilo_asks(&self, item: &TiloItem) -> bool {
+        item.confirm.is_some() && self.tilo_asking.as_deref() == Some(item.key.as_str())
+    }
+
+    /// A row's height: a section's name stands in the gap that opens the section, a row is as
+    /// tall as its two lines, and a row asking about an irreversible control keeps the question
+    /// and its two answers under them.
+    fn tilo_height(&self, index: usize) -> f64 {
+        match self.tilo_rows.get(index) {
+            Some(TiloRow::Caption(_)) => self.metrics.section_gap + self.metrics.caption_h,
+            Some(TiloRow::Item(item)) => {
+                self.metrics.tilo_row_h
+                    + if self.tilo_asks(item) {
+                        self.metrics.s2 + self.tilo_question_h + self.metrics.s2 + ACTION_HEIGHT
+                    } else {
+                        0.0
+                    }
+            }
+            None => 0.0,
         }
     }
 
@@ -61,7 +119,9 @@ impl OverviewPanel {
     pub(super) fn tilo_slots(&self) -> usize {
         let m = self.metrics;
         let pitch = m.workspace_row_h + m.workspace_row_gap;
-        let height: f64 = self.tilo_rows.iter().map(|row| self.tilo_height(row)).sum();
+        let height: f64 = (0..self.tilo_rows.len())
+            .map(|index| self.tilo_height(index))
+            .sum();
         // Whole slots, rounded up: a fraction left over is air under the last row.
         if pitch <= 0.0 {
             return 0;
@@ -69,19 +129,17 @@ impl OverviewPanel {
         ui::num::usize_of_f64((height / pitch).ceil())
     }
 
+    /// The column the rows stand in, whatever their heights: from the first row's place to the
+    /// list's trailing edge.
+    fn tilo_band(&self) -> Rect {
+        self.list_slot_rect(self.go_to_slots())
+    }
+
     /// Row `index`'s rect: below the "go to" list, after the rows before it.
-    fn tilo_rect(&self, index: usize) -> Rect {
-        let first = self.list_slot_rect(self.go_to_slots());
-        let above: f64 = self
-            .tilo_rows
-            .iter()
-            .take(index)
-            .map(|row| self.tilo_height(row))
-            .sum();
-        let height = self
-            .tilo_rows
-            .get(index)
-            .map_or(0.0, |row| self.tilo_height(row));
+    pub(super) fn tilo_rect(&self, index: usize) -> Rect {
+        let first = self.tilo_band();
+        let above: f64 = (0..index).map(|before| self.tilo_height(before)).sum();
+        let height = self.tilo_height(index);
         Rect::new(
             first.x0,
             first.y0 + above,
@@ -90,14 +148,29 @@ impl OverviewPanel {
         )
     }
 
-    fn tilo_item(&self, index: usize) -> Option<&TiloItem> {
+    /// Where a row's own text starts: the column its name and its facts keep, past the slot its
+    /// leading mark stands in. What the row says under its name — the question its irreversible
+    /// control asks — starts here too.
+    pub(super) fn tilo_text_x(&self, index: usize) -> f64 {
+        self.tilo_rect(index).x0 + self.metrics.row_text_inset
+    }
+
+    /// Where a row's question ends: the rows' trailing edge, where their controls stand.
+    fn tilo_question_right(&self, index: usize) -> f64 {
+        self.tilo_rect(index).x1 - self.metrics.row_pad
+    }
+
+    /// The row at `index`, when it is one that says something: how the pointer over it reads.
+    pub(super) fn tilo_item(&self, index: usize) -> Option<&TiloItem> {
         match self.tilo_rows.get(index)? {
             TiloRow::Item(item) => Some(item),
             TiloRow::Caption(_) => None,
         }
     }
 
-    /// Fit the controls to their widest label, so each says it whole and they stand in one column.
+    /// Fit the controls to their widest label, so each says it whole and they stand in one
+    /// column; and measure the question an irreversible control is asking, which wraps in the
+    /// row's text column.
     pub(super) fn measure_tilo_actions(
         &mut self,
         text: &mut ui::text_render::TextRenderer,
@@ -112,6 +185,48 @@ impl OverviewPanel {
             })
             .map(|(label, _)| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme))
             .fold(0.0, f64::max);
+        let asking = self.tilo_asking.as_deref().and_then(|key| {
+            let index = (0..self.tilo_rows.len())
+                .find(|&index| self.tilo_item(index).is_some_and(|item| item.key == key))?;
+            Some((index, self.tilo_row(key)?.confirm.clone()?))
+        });
+        let style = question_style(theme);
+        // The question wraps in the rows' text column, from where a row's name starts to the edge
+        // its control stands on.
+        let question_h = asking.as_ref().map(|(index, confirm)| {
+            TextBlockFace::new(&confirm.question, &style).height(
+                text,
+                (self.tilo_question_right(*index) - self.tilo_text_x(*index)).max(0.0),
+            )
+        });
+        self.tilo_question_h = question_h.unwrap_or(0.0);
+        let answers_w = asking.as_ref().map(|(_, confirm)| {
+            let mut width =
+                |label: &str| ButtonFace::new(Rect::ZERO, label).intrinsic_width(text, theme);
+            (width(&t("overview-tilo-keep")), width(&confirm.answer))
+        });
+        self.tilo_answers_w = answers_w.unwrap_or((0.0, 0.0));
+        // A question makes its row taller than the one it stood on: a list whose foot would cut
+        // it scrolls, so the person reads what they are asked and answers there.
+        if asking.is_some() {
+            self.reveal_asking();
+        }
+    }
+
+    /// Bring the row asking its question whole into the list's band, so the person reads what
+    /// they are asked and answers there.
+    fn reveal_asking(&mut self) {
+        let asking = (0..self.tilo_rows.len()).find(|&index| {
+            self.tilo_item(index)
+                .is_some_and(|item| self.tilo_asks(item))
+        });
+        let Some(index) = asking else {
+            return;
+        };
+        let row = self.tilo_rect(index);
+        if self.reveal(row) {
+            self.bump();
+        }
     }
 
     fn action_width(&self) -> f64 {
@@ -122,9 +237,14 @@ impl OverviewPanel {
         }
     }
 
-    /// Row `index`'s control, at its trailing edge.
+    /// Row `index`'s control, at its trailing edge: none while it is asking, because the two
+    /// answers stand in its place.
     fn tilo_action_rect(&self, index: usize) -> Option<Rect> {
-        self.tilo_item(index)?.action.as_ref()?;
+        let item = self.tilo_item(index)?;
+        item.action.as_ref()?;
+        if self.tilo_asks(item) {
+            return None;
+        }
         let row = self.tilo_rect(index);
         let pad = self.metrics.row_pad;
         let h = ACTION_HEIGHT.min(row.height() - 8.0).max(0.0);
@@ -135,6 +255,40 @@ impl OverviewPanel {
             row.x1 - pad,
             cy + h / 2.0,
         ))
+    }
+
+    /// The question an asking row stands on, and its two answers: Keep, and the answer that goes
+    /// ahead, at the row's trailing edge under what is lost. The question's words stand in the
+    /// column the row's name does, so a row reads as one block rather than two edges.
+    fn tilo_ask_rects(&self, index: usize) -> Option<(Rect, Rect, Rect)> {
+        let item = self.tilo_item(index)?;
+        if !self.tilo_asks(item) {
+            return None;
+        }
+        let row = self.tilo_rect(index);
+        let question = Rect::new(
+            self.tilo_text_x(index),
+            row.y0 + self.metrics.tilo_row_h + self.metrics.s2,
+            self.tilo_question_right(index),
+            row.y0 + self.metrics.tilo_row_h + self.metrics.s2 + self.tilo_question_h,
+        );
+        let buttons = Rect::new(
+            question.x0,
+            question.y1 + self.metrics.s2,
+            question.x1,
+            question.y1 + self.metrics.s2 + ACTION_HEIGHT,
+        );
+        let (keep_w, go_w) = self.tilo_answers_w;
+        // Keep and the answer stand at the trailing edge, the answer last: the one that goes
+        // ahead never crowds the row's edge, however long its label is in a language.
+        let keep = Rect::new(
+            (buttons.x1 - go_w - self.metrics.s2 - keep_w).max(buttons.x0),
+            buttons.y0,
+            (buttons.x1 - go_w - self.metrics.s2).max(buttons.x0),
+            buttons.y1,
+        );
+        let going = Rect::new(buttons.x1 - go_w, buttons.y0, buttons.x1, buttons.y1);
+        Some((question, keep, going))
     }
 
     /// The row under `p`, where it can be seen, and whether `p` is on its
@@ -161,18 +315,77 @@ impl OverviewPanel {
 
     /// What a press on row `index`, or on its control, chooses: nothing for
     /// a row that only says something.
-    pub(super) fn tilo_pick(&self, index: usize, on_action: bool) -> Option<OverviewPick> {
-        let item = self.tilo_item(index)?;
-        if on_action {
-            item.action.as_ref().map(|(_, pick)| pick.clone())
+    ///
+    /// An irreversible control asks first: its first press asks on the row and carries nothing
+    /// out, Shift or not, because nothing takes a revocation back.
+    pub(super) fn tilo_press(&mut self, index: usize, on_action: bool) {
+        let Some(item) = self.tilo_item(index) else {
+            return;
+        };
+        let (key, press, action, asks) = (
+            item.key.clone(),
+            item.press.clone(),
+            item.action.clone(),
+            item.confirm.is_some(),
+        );
+        if !on_action {
+            if let Some(pick) = press {
+                self.choose(pick);
+            }
+            return;
+        }
+        let Some((_, pick)) = action else {
+            return;
+        };
+        if asks && self.tilo_asking.as_deref() != Some(key.as_str()) {
+            self.tilo_asking = Some(key);
+            self.bump();
         } else {
-            item.press.clone()
+            self.choose(pick);
         }
     }
 
-    /// What the semantic target `target` names among the rows: a row's
-    /// key presses it, `<key>:action` its control.
-    pub(super) fn tilo_target(&self, target: &str) -> Option<OverviewPick> {
+    /// Put a question away, keeping things as they are: what a press elsewhere, Escape and the
+    /// answer Keep all do. Whether one was asking.
+    pub(super) fn tilo_keep(&mut self) -> bool {
+        let asking = self.tilo_asking.take().is_some();
+        if asking {
+            self.bump();
+        }
+        asking
+    }
+
+    /// A press at `p` while a row asks: its own two answers answer it, and a press anywhere else
+    /// keeps things as they are and is spent there, so it cannot also act on what it landed on.
+    /// Whether anything was asking.
+    pub(super) fn tilo_asking_answer(&mut self, p: Point) -> bool {
+        let Some(key) = self.tilo_asking.clone() else {
+            return false;
+        };
+        let asking = (0..self.tilo_rows.len())
+            .find(|&index| self.tilo_item(index).is_some_and(|item| item.key == key));
+        let Some((_, _, going)) = asking.and_then(|index| self.tilo_ask_rects(index)) else {
+            return false;
+        };
+        let pick = going
+            .contains(p)
+            .then(|| {
+                self.tilo_row(&key)
+                    .and_then(|item| item.action.as_ref())
+                    .map(|(_, pick)| pick.clone())
+            })
+            .flatten();
+        self.tilo_keep();
+        if let Some(pick) = pick {
+            self.choose(pick);
+        }
+        true
+    }
+
+    /// What the semantic target `target` names among the rows: a row's key presses it,
+    /// `<key>:action` its control. What cannot be undone asks first: [`Self::activate`] puts the
+    /// question before it hands this back.
+    pub(crate) fn tilo_target(&self, target: &str) -> Option<OverviewPick> {
         let (key, action) = match target.strip_suffix(":action") {
             Some(key) => (key, true),
             None => (target, false),
@@ -225,14 +438,16 @@ impl OverviewPanel {
         item: &TiloItem,
     ) {
         let action = self.tilo_action_rect(index);
+        let asking = self.tilo_asks(item);
         let mut face = ListRowFace::new(&item.title);
-        if !item.facts.is_empty() {
+        if !asking && !item.facts.is_empty() {
             face = face.facts(&item.facts);
         }
-        if let Some(icon) = item.icon {
-            face = face.leading(RowLeading::Icon(icon));
+        let mut face = match tilo_leading(item) {
+            Some(leading) => face.leading(leading),
+            None => face,
         }
-        let mut face = face.interaction(Interaction {
+        .interaction(Interaction {
             hovered: item.press.is_some()
                 && self.cursor.is_some_and(|cursor| rect.contains(cursor)),
             ..Interaction::default()
@@ -240,7 +455,45 @@ impl OverviewPanel {
         if let Some(action) = action {
             face = face.trailing_width(action.width() + self.metrics.s3);
         }
-        face.paint(ctx, rect);
+        // A row that asks keeps its name where it stands, and its question under it: the name
+        // is drawn in the room a row takes, not centred in the taller row the question makes.
+        let head = if asking {
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + self.metrics.tilo_row_h)
+        } else {
+            rect
+        };
+        face.paint(ctx, head);
+        if let Some((question, keep, going)) = self.tilo_ask_rects(index)
+            && let Some(confirm) = &item.confirm
+        {
+            // What the person loses, under the name they are about to lose it from.
+            let style = question_style(ctx.theme);
+            TextBlockFace::new(&confirm.question, &style).paint(
+                ctx,
+                question,
+                ctx.theme.tokens.colors.text_primary,
+            );
+            let keep_label = t("overview-tilo-keep");
+            Button::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ButtonFace::new(keep, &keep_label)
+                    .hovered(self.cursor.is_some_and(|p| keep.contains(p))),
+            );
+            // The one place a destructive face is filled: the answer that goes ahead.
+            Button::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ButtonFace::new(going, &confirm.answer)
+                    .role(ButtonRole::Destructive)
+                    .confirming()
+                    .hovered(self.cursor.is_some_and(|p| going.contains(p))),
+            );
+        }
         if let (Some(rect), Some((label, _))) = (action, item.action.as_ref()) {
             Button::paint(
                 ctx.scene,
@@ -268,6 +521,7 @@ impl OverviewPanel {
                         .with_bounds(rect),
                 ),
                 TiloRow::Item(item) => {
+                    let asking = self.tilo_asks(item);
                     let role = if item.press.is_some() {
                         Role::Button
                     } else {
@@ -278,7 +532,13 @@ impl OverviewPanel {
                         .with_name(item.title.clone())
                         .with_bounds(rect)
                         .with_state(AccessState::new().focusable(item.press.is_some()));
-                    if !item.facts.is_empty() {
+                    if asking {
+                        // A row that asks says what would be lost, and offers the two answers in
+                        // the order they stand: Keep first, the one that goes ahead last.
+                        if let Some(confirm) = &item.confirm {
+                            node = node.with_description(confirm.question.clone());
+                        }
+                    } else if !item.facts.is_empty() {
                         node = node.with_description(
                             item.facts
                                 .iter()
@@ -287,7 +547,24 @@ impl OverviewPanel {
                                 .join(", "),
                         );
                     }
-                    if let (Some((label, _)), Some(bounds)) =
+                    if let Some((_question, keep, going)) = self.tilo_ask_rects(index)
+                        && let Some(confirm) = &item.confirm
+                    {
+                        node.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_action_target(format!("{}:keep", item.key))
+                                .with_name(t("overview-tilo-keep"))
+                                .with_bounds(keep)
+                                .with_state(AccessState::new().focusable(true)),
+                        );
+                        node.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_action_target(format!("{}:action", item.key))
+                                .with_name(format!("{}: {}", confirm.answer, item.title))
+                                .with_bounds(going)
+                                .with_state(AccessState::new().focusable(true)),
+                        );
+                    } else if let (Some((label, _)), Some(bounds)) =
                         (&item.action, self.tilo_action_rect(index))
                     {
                         node.children.push(
@@ -316,6 +593,11 @@ impl OverviewPanel {
                 rects.push((item.key.clone(), self.tilo_rect(index)));
                 if let Some(action) = self.tilo_action_rect(index) {
                     rects.push((format!("{}:action", item.key), action));
+                }
+                if let Some((question, keep, going)) = self.tilo_ask_rects(index) {
+                    rects.push((format!("{}:question", item.key), question));
+                    rects.push((format!("{}:keep", item.key), keep));
+                    rects.push((format!("{}:action", item.key), going));
                 }
             }
         }

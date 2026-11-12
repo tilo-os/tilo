@@ -41,11 +41,22 @@ impl Present {
 
     /// What the kernel lists on this device now: a few directory listings,
     /// no D-Bus and no subprocess.
+    #[cfg(feature = "tilo-os")]
     fn of_device() -> Self {
         Self {
             bluetooth: os_actions::bluez::has_adapter(),
             wifi: os_actions::network::has_wifi_radio(),
             wwan: os_actions::network::has_wwan_modem(),
+        }
+    }
+
+    /// No radio: a build without the device panes (`tilo-os`) reaches none.
+    #[cfg(not(feature = "tilo-os"))]
+    fn of_device() -> Self {
+        Self {
+            bluetooth: false,
+            wifi: false,
+            wwan: false,
         }
     }
 }

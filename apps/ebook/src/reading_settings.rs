@@ -8,6 +8,7 @@ use automerge::ObjId;
 use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
@@ -18,6 +19,7 @@ use ui::widget::{
 
 use crate::input_controls::{InputEventCtx, NumberControls, NumberField};
 use crate::model::{ColorScheme, CompositionStyle, FontEntry, ReadMode, ReadTheme, Settings};
+use crate::resource::CATALOG;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ReadingSettingsAction {
@@ -85,16 +87,16 @@ pub(crate) struct Appearance<'a> {
 
 /// One choice pill: its label, whether it is the current choice, and the
 /// action it registers. The current choice swallows its click.
-struct Choice<'a> {
-    label: &'a str,
+struct Choice {
+    label: String,
     active: bool,
     action: ReadingSettingsAction,
 }
 
-impl<'a> Choice<'a> {
-    fn new(label: &'a str, active: bool, action: ReadingSettingsAction) -> Self {
+impl Choice {
+    fn new(label: &str, active: bool, action: ReadingSettingsAction) -> Self {
         Self {
-            label,
+            label: label.to_owned(),
             active,
             action: if active {
                 ReadingSettingsAction::Swallow
@@ -108,61 +110,15 @@ impl<'a> Choice<'a> {
 impl ReadingSettings {
     pub(crate) fn accessibility_nodes(
         &self,
-        settings: &Settings,
+        appearance: &Appearance<'_>,
         focused: Option<&str>,
     ) -> Vec<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, AccessState};
         let mut nodes = self
             .hits
             .iter()
             .filter_map(|hit| {
-                let (target, name, role, checked) = match &hit.action {
-                    ReadingSettingsAction::OpenManager => (
-                        "books.reader.settings.manage".into(),
-                        "Manage fonts and colour themes".into(),
-                        Role::Button,
-                        None,
-                    ),
-                    ReadingSettingsAction::Dismiss => (
-                        "books.reader.settings.close".into(),
-                        "Close reading appearance".into(),
-                        Role::Button,
-                        None,
-                    ),
-                    ReadingSettingsAction::SetMode(mode) => (
-                        format!("books.reader.settings.mode:{}", mode.as_str()),
-                        format!("{} layout", mode.label()),
-                        Role::RadioButton,
-                        Some(settings.mode == *mode),
-                    ),
-                    ReadingSettingsAction::SetComposition(style) => (
-                        format!("books.reader.settings.composition:{}", style.as_str()),
-                        format!("{} text", style.label()),
-                        Role::RadioButton,
-                        Some(settings.composition == *style),
-                    ),
-                    ReadingSettingsAction::SetFont(id) => (
-                        format!("books.reader.settings.font:{id}"),
-                        format!("Use {id} font"),
-                        Role::RadioButton,
-                        Some(settings.font_id == *id),
-                    ),
-                    ReadingSettingsAction::SetReadTheme(theme) => (
-                        format!("books.reader.settings.theme:{}", theme.as_str()),
-                        format!("{} reading theme", theme.label()),
-                        Role::RadioButton,
-                        Some(settings.theme == *theme && settings.scheme_id.is_empty()),
-                    ),
-                    ReadingSettingsAction::SetScheme(id) => (
-                        format!("books.reader.settings.scheme:{id}"),
-                        format!("Use {id} colour theme"),
-                        Role::RadioButton,
-                        Some(settings.scheme_id == *id),
-                    ),
-                    ReadingSettingsAction::Swallow
-                    | ReadingSettingsAction::SetFontScale(_)
-                    | ReadingSettingsAction::SetLineSpacing(_) => return None,
-                };
+                let (target, name, role, checked) = Self::control(&hit.action, appearance)?;
                 let mut state = AccessState::new()
                     .focusable(true)
                     .focused(focused == Some(target.as_str()));
@@ -191,6 +147,91 @@ impl ReadingSettings {
         nodes.reverse();
         nodes.extend(self.numbers.accessibility_nodes());
         nodes
+    }
+
+    /// What one control of the popover is called, its stable target, its role
+    /// and whether it is the one in use; `None` for the parts that say
+    /// nothing to a screen reader (the panel's own background).
+    fn control(
+        action: &ReadingSettingsAction,
+        appearance: &Appearance<'_>,
+    ) -> Option<(String, String, ui::a11y::Role, Option<bool>)> {
+        use ui::a11y::Role;
+        let settings = appearance.settings;
+        let font = |id: &str| {
+            appearance
+                .fonts
+                .iter()
+                .find(|font| font.id == id)
+                .map_or_else(|| id.to_owned(), FontEntry::title)
+        };
+        let scheme = |id: &str| {
+            appearance
+                .schemes
+                .iter()
+                .find(|scheme| scheme.id == id)
+                .map_or_else(|| id.to_owned(), ColorScheme::title)
+        };
+        let (target, name, role, checked) = match action {
+            ReadingSettingsAction::OpenManager => (
+                "books.reader.settings.manage".into(),
+                CATALOG.t("ebook-manage-fonts"),
+                Role::Button,
+                None,
+            ),
+            ReadingSettingsAction::Dismiss => (
+                "books.reader.settings.close".into(),
+                CATALOG.t("ebook-close-appearance"),
+                Role::Button,
+                None,
+            ),
+            ReadingSettingsAction::SetMode(mode) => (
+                format!("books.reader.settings.mode:{}", mode.as_str()),
+                CATALOG.t_args(
+                    "ebook-action-mode",
+                    &[("mode", ArgValue::Text(mode.as_str().to_owned()))],
+                ),
+                Role::RadioButton,
+                Some(settings.mode == *mode),
+            ),
+            ReadingSettingsAction::SetComposition(style) => (
+                format!("books.reader.settings.composition:{}", style.as_str()),
+                CATALOG.t_args(
+                    "ebook-action-composition",
+                    &[("style", ArgValue::Text(style.as_str().to_owned()))],
+                ),
+                Role::RadioButton,
+                Some(settings.composition == *style),
+            ),
+            ReadingSettingsAction::SetFont(id) => (
+                format!("books.reader.settings.font:{id}"),
+                CATALOG.t_args("ebook-use-font", &[("font", ArgValue::Text(font(id)))]),
+                Role::RadioButton,
+                Some(settings.font_id == *id),
+            ),
+            ReadingSettingsAction::SetReadTheme(theme) => (
+                format!("books.reader.settings.theme:{}", theme.as_str()),
+                CATALOG.t_args(
+                    "ebook-reading-theme",
+                    &[("theme", ArgValue::Text(theme.as_str().to_owned()))],
+                ),
+                Role::RadioButton,
+                Some(settings.theme == *theme && settings.scheme_id.is_empty()),
+            ),
+            ReadingSettingsAction::SetScheme(id) => (
+                format!("books.reader.settings.scheme:{id}"),
+                CATALOG.t_args(
+                    "ebook-use-scheme",
+                    &[("scheme", ArgValue::Text(scheme(id)))],
+                ),
+                Role::RadioButton,
+                Some(settings.scheme_id == *id),
+            ),
+            ReadingSettingsAction::Swallow
+            | ReadingSettingsAction::SetFontScale(_)
+            | ReadingSettingsAction::SetLineSpacing(_) => return None,
+        };
+        Some((target, name, role, checked))
     }
 
     pub(crate) fn perform_number_semantic_action(
@@ -354,12 +395,12 @@ impl ReadingSettings {
             ctx,
             &layout,
             y,
-            "Layout",
+            &CATALOG.t("ebook-appearance-layout"),
             &ReadMode::ALL
                 .iter()
                 .map(|mode| {
                     Choice::new(
-                        mode.label(),
+                        &CATALOG.t(mode.message()),
                         settings.mode == *mode,
                         ReadingSettingsAction::SetMode(*mode),
                     )
@@ -370,32 +411,46 @@ impl ReadingSettings {
             ctx,
             &layout,
             y,
-            "Alignment",
+            &CATALOG.t("ebook-appearance-alignment"),
             &CompositionStyle::ALL
                 .iter()
                 .map(|style| {
                     Choice::new(
-                        style.label(),
+                        &CATALOG.t(style.message()),
                         settings.composition == *style,
                         ReadingSettingsAction::SetComposition(*style),
                     )
                 })
                 .collect::<Vec<_>>(),
         );
-        let fonts: Vec<Choice<'_>> = layout
+        let fonts: Vec<Choice> = layout
             .font_pills
             .iter()
             .map(|(id, label, _, active)| {
                 Choice::new(label, *active, ReadingSettingsAction::SetFont(id.clone()))
             })
             .collect();
-        y = self.draw_chips(ctx, &layout, y, "Typeface", &fonts, &layout.font_widths);
-        let schemes: Vec<Choice<'_>> = layout
+        y = self.draw_chips(
+            ctx,
+            &layout,
+            y,
+            &CATALOG.t("ebook-appearance-typeface"),
+            &fonts,
+            &layout.font_widths,
+        );
+        let schemes: Vec<Choice> = layout
             .scheme_pills
             .iter()
             .map(|pill| Choice::new(&pill.label, pill.active, pill.action.clone()))
             .collect();
-        y = self.draw_chips(ctx, &layout, y, "Colours", &schemes, &layout.scheme_widths);
+        y = self.draw_chips(
+            ctx,
+            &layout,
+            y,
+            &CATALOG.t("ebook-appearance-colours"),
+            &schemes,
+            &layout.scheme_widths,
+        );
         self.draw_manage(ctx, &layout, y);
     }
 
@@ -511,14 +566,9 @@ impl ReadingSettings {
         let font_pills: Vec<_> = shown
             .into_iter()
             .map(|font| {
-                let width =
-                    ChipFace::intrinsic_width(&font.name, ChipLead::None, false, text, theme);
-                (
-                    font.id.clone(),
-                    font.name.clone(),
-                    width,
-                    font.id == active_id,
-                )
+                let name = font.title();
+                let width = ChipFace::intrinsic_width(&name, ChipLead::None, false, text, theme);
+                (font.id.clone(), name, width, font.id == active_id)
             })
             .collect();
         let font_widths: Vec<_> = font_pills.iter().map(|pill| pill.2).collect();
@@ -541,13 +591,13 @@ impl ReadingSettings {
                 if scheme.builtin {
                     let read_theme = ReadTheme::from_str(&scheme.id);
                     SchemePill {
-                        label: scheme.name.clone(),
+                        label: scheme.title(),
                         action: ReadingSettingsAction::SetReadTheme(read_theme),
                         active: settings.scheme_id.is_empty() && settings.theme == read_theme,
                     }
                 } else {
                     SchemePill {
-                        label: scheme.name.clone(),
+                        label: scheme.title(),
                         action: ReadingSettingsAction::SetScheme(scheme.id.clone()),
                         active: settings.scheme_id == scheme.id,
                     }
@@ -573,12 +623,12 @@ impl ReadingSettings {
         let (x0, x1, height) = (layout.ix0, layout.ix1, layout.row_h);
         let rows = [
             (
-                "Text size",
+                &CATALOG.t("ebook-appearance-text-size"),
                 f64::from(settings.font_scale) * 100.0,
                 NumberField::FontScale,
             ),
             (
-                "Line spacing",
+                &CATALOG.t("ebook-appearance-line-spacing"),
                 f64::from(settings.line_spacing),
                 NumberField::LineSpacing,
             ),
@@ -618,7 +668,7 @@ impl ReadingSettings {
         layout: &Layout,
         mut y: f64,
         title: &str,
-        choices: &[Choice<'_>],
+        choices: &[Choice],
     ) -> f64 {
         let theme = ctx.theme;
         y = Self::section_label(ctx, Point::new(layout.ix0, y), title);
@@ -630,7 +680,7 @@ impl ReadingSettings {
                 Rect::new(x, y, x + width, y + layout.segment_h)
             })
             .collect();
-        let labels: Vec<&str> = choices.iter().map(|choice| choice.label).collect();
+        let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
         let selected = choices
             .iter()
             .position(|choice| choice.active)
@@ -658,7 +708,7 @@ impl ReadingSettings {
         layout: &Layout,
         mut y: f64,
         title: &str,
-        choices: &[Choice<'_>],
+        choices: &[Choice],
         widths: &[f64],
     ) -> f64 {
         let theme = ctx.theme;
@@ -670,7 +720,7 @@ impl ReadingSettings {
                 y += layout.chip_h + layout.chip_gap;
             }
             let rect = Rect::new(x, y, (x + width).min(layout.ix1), y + layout.chip_h);
-            ChipFace::new(rect, choice.label)
+            ChipFace::new(rect, &choice.label)
                 .selected(choice.active)
                 .hovered(rect.contains(self.cursor))
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
@@ -683,14 +733,14 @@ impl ReadingSettings {
     /// "Fonts and schemes", which opens their managers in Settings.
     fn draw_manage(&mut self, ctx: &mut PaintCtx<'_>, layout: &Layout, y: f64) {
         let theme = ctx.theme;
-        let label = "Fonts and schemes";
+        let label = CATALOG.t("ebook-appearance-manage");
         let size = ControlSize::Small;
-        let width = ButtonFace::new(Rect::ZERO, label)
+        let width = ButtonFace::new(Rect::ZERO, &label)
             .icon(Icon::Settings)
             .control_size(size)
             .intrinsic_width(ctx.text, theme);
         let rect = Rect::new(layout.ix0, y, layout.ix0 + width, y + size.height(theme));
-        let face = ButtonFace::new(rect, label)
+        let face = ButtonFace::new(rect, &label)
             .icon(Icon::Settings)
             .control_size(size)
             .role(ButtonRole::Plain)

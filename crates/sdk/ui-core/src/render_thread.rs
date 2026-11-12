@@ -455,6 +455,10 @@ pub(crate) fn spawn_render_thread_deferred(
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
             let mut had_backdrop = false;
+            // Whether a frame's layers already failed to rasterize: a frame that fails while the
+            // ones before it did says nothing new, so the log says it once until a frame draws
+            // its layers again.
+            let mut layers_failed = false;
             loop {
                 let gpu_poll = gpu_trace
                     .as_ref()
@@ -732,8 +736,14 @@ pub(crate) fn spawn_render_thread_deferred(
                         cache,
                         &|| true,
                     );
-                    if let Err(error) = warmed {
-                        tracing::warn!(%error, "the frame's layers could not be rasterised");
+                    match warmed {
+                        Err(error) => {
+                            if !layers_failed {
+                                layers_failed = true;
+                                tracing::warn!(%error, "the frame's layers could not be rasterised");
+                            }
+                        }
+                        Ok(_) => layers_failed = false,
                     }
                 }
                 holds = (outcome == FrameOutcome::Presented).then_some(frame_ix);

@@ -130,10 +130,23 @@ impl WindowGroup {
         true
     }
 
-    /// Place the search control after the tabs, and let it reach up to the
-    /// window's own controls.
+    /// Place the search control where the window's bar shows it: after the tabs, or, while the
+    /// app's own row holds the bar, in that row before the window's controls, from where its open
+    /// search reaches back over the row.
     pub(super) fn place_search(&mut self) {
-        if !self.navigation_bar_visible() {
+        if self.held_bar.is_some() {
+            let furniture = self.held;
+            if furniture.search.area() > 0.0 {
+                self.search
+                    .place_trailing(furniture.search, furniture.row.x0, furniture.row.x0);
+            } else {
+                self.search.place(Rect::ZERO, 0.0);
+            }
+            return;
+        }
+        // A card's header names what the window is about and offers the card's controls: the
+        // window's search is the window's, in its strip.
+        if !self.navigation_bar_visible() || self.is_floating() {
             self.search.place(Rect::ZERO, 0.0);
             return;
         }

@@ -68,6 +68,14 @@ impl ResourceRef {
             ty: ty.into(),
         })
     }
+
+    /// Whether this names the same resource as `other`: the document and the item, which is
+    /// what a reference is. The type is what the store holds of it, read where the item is, so
+    /// two references of one resource written with and without it are the one resource.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        self.doc == other.doc && self.item == other.item
+    }
 }
 
 /// The document and the item (if any) of a resource written as [`ResourceRef::id_string`], or
@@ -414,9 +422,11 @@ pub enum Value {
     /// parameter it stands for gets its default when the action is invoked
     /// ([`crate::Core::complete_args`]), which happens before anything else reads the action.
     /// It holds no value: nothing makes one but the code of a call that left the parameter out.
-    /// It stays last: a value's compact encoding names a variant by its place
-    /// (`tools/policy/check_wire_enums.py`).
     Missing,
+    /// A file (`File`): the address of its content in the device's content store, with what it
+    /// is called and how large it is ([`crate::blob::FileValue`]). The bytes are never in the
+    /// value, so a record, an argument and a history entry carry the file by reference.
+    File(Rc<crate::blob::FileValue>),
 }
 
 impl Value {
@@ -484,6 +494,7 @@ impl Value {
             Self::Response(_) => "web response",
             Self::Json(_) => "json value",
             Self::AtEvent { .. } => "argument computed at the event",
+            Self::File(_) => "file",
             Self::Missing => "argument left out",
         }
     }
@@ -558,6 +569,11 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
         Value::Picture(src) => tagged("picture", Json::String(src.clone())),
+        // A file: its address and what it is, never its bytes.
+        Value::File(file) => tagged(
+            "file",
+            serde_json::to_value(file.as_ref()).map_err(|e| e.to_string())?,
+        ),
         // Text read as a document, which is what it is.
         Value::Json(json) => (**json).clone(),
         Value::Node(_)
@@ -589,6 +605,46 @@ fn items_to_json(items: &[Value]) -> Result<Json, String> {
         .map(to_json)
         .collect::<Result<Vec<_>, _>>()
         .map(Json::Array)
+}
+
+/// `v` as an action's argument, as any caller (a view, a program, an agent) hands it to an app's
+/// door: plain JSON (a list an array, a map an object, an option its value or `null`, a resource
+/// its id), never the runtime's own tagged encoding ([`to_json`]).
+///
+/// # Errors
+/// A value that is no argument (a view's node, a pending event).
+pub fn to_argument(v: &Value) -> Result<Json, String> {
+    Ok(match v {
+        Value::Opt(None) => Json::Null,
+        Value::Opt(Some(inner)) => to_argument(inner)?,
+        Value::List(items) | Value::Tuple(items) => Json::Array(
+            items
+                .iter()
+                .map(to_argument)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Map(entries) => Json::Object(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    let key = match key {
+                        Value::Text(text) => text.clone(),
+                        other => to_argument(other)?.to_string(),
+                    };
+                    Ok((key, to_argument(value)?))
+                })
+                .collect::<Result<Map<_, _>, String>>()?,
+        ),
+        Value::Ref(r) => Json::String(r.target.id_string()),
+        Value::Principal(p) => match p.0.strip_prefix("agent:") {
+            Some(agent) => serde_json::json!({ "agent": agent }),
+            None => serde_json::json!({ "person": p.0 }),
+        },
+        Value::Rich(r) if crate::rich::RichValue::from_text(&r.written_text()) == *r => {
+            Json::String(r.written_text())
+        }
+        other => to_json(other)?,
+    })
 }
 
 /// Decode what [`to_json`] produced.
@@ -672,6 +728,10 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     if let Some(inner) = m.get("some") {
         return Ok(Value::some(from_json(inner)?));
     }
+    if let Some(file) = m.get("file") {
+        let file = serde_json::from_value(file.clone()).map_err(|e| e.to_string())?;
+        return Ok(Value::File(Rc::new(file)));
+    }
     if m.contains_key("none") {
         return Ok(Value::none());
     }
@@ -724,7 +784,9 @@ pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
                 .all(|(one, other)| same_value(one, other))
     };
     match (lhs, rhs) {
-        (Value::Ref(left), Value::Ref(right)) => left.target == right.target,
+        // A reference is the resource it names: its type is read from where it is, so two
+        // references of one resource are one, whichever of them was read with its type.
+        (Value::Ref(left), Value::Ref(right)) => left.target.same(&right.target),
         (Value::List(left), Value::List(right)) | (Value::Tuple(left), Value::Tuple(right)) => {
             all(left, right)
         }
@@ -784,6 +846,31 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_is_the_resource_it_names_whichever_type_it_was_read_with() {
+        // A reference read where its type is known, and the same one read from an id alone (a
+        // row's item, a press): they name one resource, so they compare as one.
+        let typed = ResourceRef {
+            ty: "U".into(),
+            ..ResourceRef::root("d1", "T").item("i-1", "U")
+        };
+        let bare = ResourceRef::parse_id("d1/i-1", "").expect("an id");
+        assert_ne!(typed, bare, "the type is what the store holds of it");
+        assert!(typed.same(&bare), "and the resource is the one it names");
+        assert!(same_value(
+            &Value::Ref(RefValue {
+                target: Rc::new(typed.clone()),
+                author: None,
+            }),
+            &Value::Ref(RefValue {
+                target: Rc::new(bare),
+                author: Some(ModuleHash("m".into())),
+            }),
+        ));
+        let other = ResourceRef::parse_id("d1/i-2", "").expect("an id");
+        assert!(!typed.same(&other), "another item is another resource");
+    }
+
+    #[test]
     fn reference_ids_parse_back() {
         let r = ResourceRef::root("d1", "T").item("i-1", "U");
         assert_eq!(r.id_string(), "d1/i-1");
@@ -808,5 +895,18 @@ mod tests {
         assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
+    }
+
+    #[test]
+    fn an_argument_is_plain_json_however_deep_its_lists_and_maps() {
+        let to = Value::List(vec![Value::Map(vec![(
+            Value::text("id"),
+            Value::some(Value::Int(2)),
+        )])]);
+        let none = to_argument(&Value::none()).unwrap();
+        assert_eq!(
+            (to_argument(&to).unwrap(), none),
+            (serde_json::json!([{"id": 2}]), Json::Null)
+        );
     }
 }

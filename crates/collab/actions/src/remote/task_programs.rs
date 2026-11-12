@@ -10,6 +10,8 @@
 use super::RemoteActionTarget;
 use crate::door::ActionAddress;
 
+/// The application whose step a task's program is: the agent a run works as.
+pub const APP: &str = "so.tilo.agent";
 /// The provider the session answers a task's programs under.
 pub const PROVIDER: &str = "tilo.task-programs";
 /// The resource the step is an action of.

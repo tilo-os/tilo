@@ -74,11 +74,14 @@ pub enum Label {
     /// The signed bytes of an invitation, sealed under a key that travels in
     /// the link's fragment: what a site holds in their place.
     SealedInvitation,
+    /// Content a record references, sealed under the key its reference
+    /// carries.
+    RecordContent,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -106,6 +109,7 @@ impl Label {
         Self::SignInRecovery,
         Self::TpmLockoutAuth,
         Self::SealedInvitation,
+        Self::RecordContent,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -139,6 +143,7 @@ impl Label {
             Self::SignInRecovery => "tilo-seal/v1/sign-in-recovery",
             Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
+            Self::RecordContent => "tilo-seal/v1/record-content",
         }
     }
 

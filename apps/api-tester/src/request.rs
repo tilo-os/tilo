@@ -106,7 +106,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         &sink.method,
     )
     .with_id("api.method")
-    .with_accessible_name("Method");
+    .with_accessible_name(crate::locales::CATALOG.t("api-tester-method"));
     let field = Workspace::paths().request.method;
     let method = sink.bind_field(method, field.clone().cast::<String>(), move |_, method| {
         field.set(HttpMethod::from_str(&method))
@@ -115,8 +115,8 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         TextInput::local()
             .with_kind(TextInputKind::Url)
             .with_id("api.url")
-            .with_placeholder("Enter a URL")
-            .with_accessible_name("Request URL"),
+            .with_placeholder(crate::locales::CATALOG.t("api-tester-url-placeholder"))
+            .with_accessible_name(crate::locales::CATALOG.t("api-tester-request-url")),
         sink,
         &sink.url.borrow(),
         Workspace::paths().request.url,
@@ -135,21 +135,33 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
 /// Save and Send — or Cancel, while a request is on its way, so a server
 /// that never answers is never a locked app.
 pub(crate) fn request_actions(sink: &Sink, sending: bool) -> Element {
-    let save = Button::icon_only("api.save-request", Icon::Check, "Save request")
-        .tooltip("Save this request to a collection")
-        // It opens the save form; the save it leads to is its own action.
-        .on_own_device_effect(pusher(
-            sink,
-            Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
-        ));
+    let save = Button::icon_only(
+        "api.save-request",
+        Icon::Check,
+        &crate::locales::CATALOG.t("api-tester-save-request-button"),
+    )
+    .tooltip("Save this request to a collection")
+    // It opens the save form; the save it leads to is its own action.
+    .on_own_device_effect(pusher(
+        sink,
+        Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
+    ));
     let action = if sending {
         sink.effect(
-            Button::icon_only("api.cancel-send", Icon::X, "Cancel request")
-                .tooltip("Stop waiting for the server"),
+            Button::icon_only(
+                "api.cancel-send",
+                Icon::X,
+                &crate::locales::CATALOG.t("api-tester-cancel-request"),
+            )
+            .tooltip("Stop waiting for the server"),
             &crate::actions::ApiTesterEffect::CancelSend,
         )
     } else {
-        sink.send(Button::icon_only("api.send", Icon::Send, "Send"))
+        sink.send(Button::icon_only(
+            "api.send",
+            Icon::Send,
+            &crate::locales::CATALOG.t("api-tester-send"),
+        ))
     };
     Box::new(Row::new().push(Box::new(save)).push(Box::new(action)))
 }
@@ -172,12 +184,10 @@ pub(crate) fn variable_hint(
                 .filter(|name| !env.contains_key(*name))
                 .collect();
             if unresolved.is_empty() {
-                ui::i18n::I18nManager::format(
-                    "api-variables-resolved",
-                    &[("count", refs.len().into())],
-                )
+                crate::locales::CATALOG
+                    .t_args("api-variables-resolved", &[("count", refs.len().into())])
             } else {
-                ui::i18n::I18nManager::format(
+                crate::locales::CATALOG.t_args(
                     "api-variables-unresolved",
                     &[
                         ("count", unresolved.len().into()),
@@ -214,7 +224,7 @@ pub(crate) fn section(
     let tabs = ui::widget::ViewTabs::new(
         RequestTab::ALL
             .iter()
-            .map(|t| Segment::new(t.label()))
+            .map(|t| Segment::new(crate::locales::CATALOG.t(t.message())))
             .collect(),
         RequestTab::ALL.iter().position(|t| *t == tab).unwrap_or(0),
     )
@@ -242,14 +252,18 @@ pub(crate) fn panel(request: &Request, tab: RequestTab, blanks: &BlankRows, sink
     match tab {
         RequestTab::Params => table_panel(
             Table::Params,
-            "Query parameters",
+            &crate::locales::CATALOG.t("api-tester-query-parameters"),
             &request.params,
             blanks,
             sink,
         ),
-        RequestTab::Headers => {
-            table_panel(Table::Headers, "Headers", &request.headers, blanks, sink)
-        }
+        RequestTab::Headers => table_panel(
+            Table::Headers,
+            &crate::locales::CATALOG.t("api-tester-headers"),
+            &request.headers,
+            blanks,
+            sink,
+        ),
         RequestTab::Auth => auth_panel(request, sink),
         RequestTab::Body => body_panel(request, blanks, sink),
     }
@@ -270,7 +284,7 @@ fn table_panel(
     blanks: &BlankRows,
     sink: &Sink,
 ) -> Panel {
-    let built = kv::build(table, label, rows, blanks.of(table), sink);
+    let built = kv::build_table(table, label, rows, blanks.of(table), sink);
     Panel {
         element: scrolling(built.element),
         inner: None,
@@ -283,9 +297,9 @@ fn table_panel(
 // ---------------------------------------------------------------------------
 
 fn auth_kind_index(auth: &Auth) -> usize {
-    Auth::LABELS
+    Auth::SCHEMES
         .iter()
-        .position(|label| *label == auth.label())
+        .position(|scheme| *scheme == auth.scheme())
         .unwrap_or(0)
 }
 
@@ -323,32 +337,66 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
 fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
     let column = Column::new().with_no_padding().with_intrinsic_height();
     match auth {
-        Auth::SecretRef { .. } => Box::new(column.push(body("Stored authentication"))),
-        Auth::None => Box::new(column.push(body("This request does not use authentication."))),
+        Auth::SecretRef { .. } => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-stored"))))
+        }
+        Auth::None => {
+            Box::new(column.push(body(&crate::locales::CATALOG.t("api-tester-auth-not-used"))))
+        }
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
             "Token",
-            auth_input(sink, AuthField::Token, token, true, "Token"),
+            auth_input(
+                sink,
+                AuthField::Token,
+                token,
+                true,
+                &crate::locales::CATALOG.t("api-tester-token"),
+            ),
         )))),
         Auth::Basic { username, password } => Box::new(
             column
                 .push(Box::new(Field::new(
                     "Username",
-                    auth_input(sink, AuthField::Username, username, false, "Username"),
+                    auth_input(
+                        sink,
+                        AuthField::Username,
+                        username,
+                        false,
+                        &crate::locales::CATALOG.t("api-tester-username"),
+                    ),
                 )))
                 .push(Box::new(Field::new(
                     "Password",
-                    auth_input(sink, AuthField::Password, password, true, "Password"),
+                    auth_input(
+                        sink,
+                        AuthField::Password,
+                        password,
+                        true,
+                        &crate::locales::CATALOG.t("api-tester-password"),
+                    ),
                 ))),
         ),
         Auth::ApiKey { header, value } => Box::new(
             column
                 .push(Box::new(Field::new(
                     "Header name",
-                    auth_input(sink, AuthField::Header, header, false, "Header name"),
+                    auth_input(
+                        sink,
+                        AuthField::Header,
+                        header,
+                        false,
+                        &crate::locales::CATALOG.t("api-tester-header-name"),
+                    ),
                 )))
                 .push(Box::new(Field::new(
                     "Value",
-                    auth_input(sink, AuthField::Value, value, true, "Value"),
+                    auth_input(
+                        sink,
+                        AuthField::Value,
+                        value,
+                        true,
+                        &crate::locales::CATALOG.t("api-tester-value"),
+                    ),
                 ))),
         ),
     }
@@ -362,9 +410,9 @@ pub(crate) fn auth_inner(auth: &Auth, sink: &Sink) -> Element {
 fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     let kind_sink = sink.clone();
     let kind = ToggleGroup::new(
-        Auth::LABELS
+        Auth::SCHEMES
             .iter()
-            .map(|label| Segment::new(*label))
+            .map(|scheme| Segment::new(crate::locales::CATALOG.t(Auth::scheme_message(scheme))))
             .collect(),
         auth_kind_index(&request.auth),
     )
@@ -395,14 +443,17 @@ pub(crate) fn body_inner(
     sink: &Sink,
 ) -> (Element, Option<(Table, KvQueue)>) {
     match request.body_mode {
-        BodyMode::None => (body("This request does not have a body."), None),
+        BodyMode::None => (
+            body(&crate::locales::CATALOG.t("api-tester-body-absent")),
+            None,
+        ),
         BodyMode::Json | BodyMode::Raw => (
             request_text(
                 TextInput::local()
                     .multiline(true)
                     .with_mono()
                     .with_id("api.body")
-                    .with_accessible_name("Request body"),
+                    .with_accessible_name(crate::locales::CATALOG.t("api-tester-request-body")),
                 sink,
                 &request.body_text,
                 Workspace::paths().request.body,
@@ -410,9 +461,9 @@ pub(crate) fn body_inner(
             None,
         ),
         BodyMode::Form => {
-            let built = kv::build(
+            let built = kv::build_table(
                 Table::Form,
-                "Form fields",
+                &crate::locales::CATALOG.t("api-tester-form-fields"),
                 &request.form,
                 blanks.of(Table::Form),
                 sink,
@@ -427,7 +478,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
     let modes = ToggleGroup::new(
         BodyMode::ALL
             .iter()
-            .map(|mode| Segment::new(mode.label()))
+            .map(|mode| Segment::new(crate::locales::CATALOG.t(mode.message())))
             .collect(),
         BodyMode::ALL
             .iter()

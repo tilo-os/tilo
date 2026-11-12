@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
-use tilo_clock::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 use tilo_messaging::SendError;
 use zeroize::Zeroizing;
 

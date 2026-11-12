@@ -36,7 +36,12 @@ fn field(edits: &crate::Intents<Fired>) -> RichInput {
     input
         .line
         .inner_mut()
-        .set_mention_candidates(vec![MentionCandidate::new("u_ada", "Ada Lovelace", false)]);
+        .set_mention_candidates(vec![MentionCandidate::new(
+            "u_ada",
+            "Ada Lovelace",
+            false,
+            crate::tokens::PresenceHue::of_identity("u_ada"),
+        )]);
     Widget::set_focus(&mut input, true);
     input
 }
@@ -113,6 +118,7 @@ fn a_person_from_the_workspace_goes_in_as_a_mention_of_their_participant_id() {
 
 fn person(identity: &str, name: &str) -> Person {
     Person {
+        hue: crate::tokens::PresenceHue::of_identity(identity),
         identity: identity.into(),
         name: name.into(),
     }

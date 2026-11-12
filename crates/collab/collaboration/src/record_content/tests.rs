@@ -87,8 +87,21 @@ fn a_window_that_closed_leaves_the_next_one_its_own_lane() {
 fn stored_content_is_offered_on_the_record_route() {
     let (store, lane) = record_store("offered");
     let hash = store.put(b"a picture").unwrap();
+    assert!(
+        tilo_content::is_sealed(&hash),
+        "a record's content is sealed"
+    );
+    let address = tilo_content::content_address(&hash).unwrap();
     let requests = lane.take_requests();
-    assert_eq!(requests.offers, vec![(hash.clone(), b"a picture".to_vec())]);
+    let [(offered, sealed)] = requests.offers.as_slice() else {
+        panic!("one offer, got {:?}", requests.offers.len());
+    };
+    assert_eq!(offered, &address, "offered by the ciphertext's address");
+    assert!(tilo_content::verify(&address, sealed));
+    assert!(
+        !sealed.windows(9).any(|w| w == b"a picture"),
+        "never in the clear"
+    );
     assert!(requests.wants.is_empty());
     assert_eq!(store.read(&hash).as_deref(), Some(&b"a picture"[..]));
 }
@@ -143,9 +156,13 @@ fn a_record_that_is_not_the_windows_own_keeps_its_content_on_its_route() {
         panic!("one routed lane, got {}", routed.len());
     };
     assert_eq!(route, &person);
+    let offers = lane.take_requests().offers;
     assert_eq!(
-        lane.take_requests().offers,
-        vec![(hash, b"a poster".to_vec())]
+        offers
+            .iter()
+            .map(|(address, _)| address.clone())
+            .collect::<Vec<_>>(),
+        vec![tilo_content::content_address(&hash).unwrap()]
     );
     assert!(
         ContentLane::routed("so.tilo.record-content-test").is_empty(),

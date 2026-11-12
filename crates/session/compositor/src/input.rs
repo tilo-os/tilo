@@ -432,39 +432,3 @@ fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f6
 
 /// Logical pixels one wheel notch scrolls.
 const WHEEL_STEP: f64 = 15.0;
-
-/// A key as a hosted surface receives it: the compositor's keymap already applied, so hosts need no
-/// keyboard state of their own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostKey {
-    /// The evdev code.
-    pub keycode: u32,
-    /// Pressed or released.
-    pub pressed: bool,
-    /// A press repeated while the key is held, not a new one.
-    pub repeat: bool,
-    /// The keysym with the active modifiers and layout applied.
-    pub keysym: u32,
-    /// The keysym of the key's first level (no Shift), for shortcuts.
-    pub unmodified_keysym: u32,
-    /// The keysym another configured layout puts on this key when the active one has none in Latin:
-    /// a shortcut is named by it, so Ctrl+C copies while a Cyrillic, Greek or Hebrew layout types.
-    pub latin_keysym: u32,
-    /// The text the key types, if it types any: the character the layout gives it, or what a dead
-    /// key's or the Compose key's sequence finishes with, which is a character of its own or
-    /// several.
-    pub text: Option<String>,
-    /// The modifiers held as the key changed.
-    pub modifiers: KeyModifiers,
-}
-
-/// Modifier state accompanying a [`HostKey`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools, reason = "one flag per modifier key")]
-pub struct KeyModifiers {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub logo: bool,
-    pub caps_lock: bool,
-}

@@ -100,9 +100,9 @@ fn the_bar_shows_and_hides_the_media_and_the_inspector() {
     assert_eq!(
         toggle.name,
         if open {
-            "Show inspector"
+            crate::resource::CATALOG.t("video-editor-show-inspector")
         } else {
-            "Hide inspector"
+            crate::resource::CATALOG.t("video-editor-hide-inspector")
         }
     );
 }
@@ -118,13 +118,23 @@ fn the_bar_splits_exports_and_imports_through_the_editors_handlers() {
     app.selection.clear();
     app.playhead = clip.start + clip.duration() / 2.0;
     assert!(
-        !bar_action(&app, "Split at playhead").enabled,
+        !bar_action(
+            &app,
+            &crate::resource::CATALOG.t("video-editor-shortcut-split")
+        )
+        .enabled,
         "with nothing selected, Split has nothing to cut"
     );
     app.selection.select_only(clip.id);
-    assert!(bar_action(&app, "Split at playhead").enabled);
+    assert!(
+        bar_action(
+            &app,
+            &crate::resource::CATALOG.t("video-editor-shortcut-split")
+        )
+        .enabled
+    );
     let before = app.project.clips.len();
-    app.press_bar("Split at playhead");
+    app.press_bar(&crate::resource::CATALOG.t("video-editor-shortcut-split"));
     assert!(
         app.project.clips.len() > before,
         "Split cut the selected clip at the playhead"
@@ -373,7 +383,7 @@ fn timeline_empty_button(
     else {
         panic!("the empty timeline offers {label}");
     };
-    assert_eq!(action.label(), label);
+    assert_eq!(crate::resource::CATALOG.t(action.label_message()), label);
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -488,7 +498,10 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     let (_, action) = compact
         .timeline_empty_action_rect(&r)
         .expect("the empty timeline offers an action");
-    assert_eq!(action.label(), "Show media");
+    assert_eq!(
+        crate::resource::CATALOG.t(action.label_message()),
+        "Show media"
+    );
     let route = [
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY),
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_ACTION_KEY),

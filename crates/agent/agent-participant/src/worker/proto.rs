@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 5;
+pub(crate) const PROTOCOL_VERSION: u32 = 7;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -89,6 +89,36 @@ pub(crate) enum Request {
     },
     /// Every operation the held record publishes now.
     Survey,
+    /// Every operation the held record publishes now, each in the row of the
+    /// resource holding it: what a caller listing one resource of the record
+    /// reads its children by.
+    SurveyRows,
+    /// One page of what the held record publishes, as a catalogue query
+    /// lists it: the operations the JSON `CatalogueQuery` admits, from the
+    /// `offset`th on, at most `take` of them, with how many it admits in
+    /// all ([`Reply::Page`]). Operations this host cannot render are left
+    /// out first (`can_render`). A page costs its rows, never the
+    /// encoding of every operation the record holds.
+    SurveyPage {
+        query: String,
+        can_render: bool,
+        offset: u64,
+        take: u64,
+    },
+    /// The keys `mutation` writes in `record`, as the worker holds that record
+    /// now: what a host checks a caller's change against without reading the
+    /// record whole for every action.
+    ChangedKeys {
+        record: String,
+        snapshot: bool,
+        bytes: Vec<u8>,
+    },
+    /// The one operation `address` names, or none: an answer to a host that
+    /// already knows what it runs, without listing the record's resources.
+    Resolve {
+        /// JSON `ActionAddress`.
+        address: String,
+    },
     /// Perform one published operation.
     Invoke {
         /// JSON `ActionAddress`.
@@ -120,6 +150,13 @@ pub(crate) enum Request {
     TakeRecordMutations,
     /// Where the last operation left the participant.
     Presence,
+    /// Take the held record's store to come from its workspace's hosts
+    /// ([`crate::Replica::ask_workspace_for_missing`]).
+    AskWorkspace,
+    /// What the held record's store asks its workspace's hosts for.
+    Wanted,
+    /// The workspace's hosts hold none of `record`, which it asked for.
+    Answered { record: String },
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
     ViewsLoad { app_id: String, doc: Vec<u8> },
@@ -186,6 +223,13 @@ pub(crate) enum Reply {
     Opened { record: String },
     /// JSON `Vec<ActionDescriptor>`.
     Descriptors(String),
+    /// One page of a survey: how many operations the query admits in all,
+    /// and the JSON `Vec<CatalogueRow>` of those on the page, each in the
+    /// row of the resource holding it.
+    Page { total: u64, rows: String },
+    /// JSON `Option<Vec<Vec<String>>>`: the keys a change writes, or none for
+    /// a record the worker holds nothing of.
+    Keys(String),
     /// JSON `ActionOutput`.
     Output(String),
     /// The resource's door refused or the action failed.
@@ -197,6 +241,8 @@ pub(crate) enum Reply {
     RecordMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
+    /// Record ids the held record's store asks its workspace's hosts for.
+    Wanted(Vec<String>),
     /// What a document is called, when its app names it.
     Title(Option<String>),
     /// A picture written out again as a PNG or JPEG. Not trusted: its

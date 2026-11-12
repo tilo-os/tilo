@@ -7,12 +7,13 @@
 //! and the empty state. The file's name, the edit mode, the inspector's
 //! toggle, a failure's notice, search and History are the window bar's.
 
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{PropertyListFace, PropertyRow, Widget};
+use ui::widget::{PropertyListFace, PropertyRow};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -21,6 +22,7 @@ use super::Editor;
 use super::layout::Geo;
 use crate::inspector::{self, Interpretation};
 use crate::model::Column;
+use crate::resource::CATALOG;
 
 /// Hex digits, so a cell's two characters need no allocation.
 const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
@@ -377,7 +379,13 @@ impl Editor {
     ) {
         use ui::chrome::status_bar::{StatusReadout, draw_readouts};
         let cursor = self.model.cursor();
-        let offset = format!("Offset 0x{cursor:08X} ({cursor})");
+        let offset = CATALOG.t_args(
+            "hex-offset-readout",
+            &[
+                ("offset", ArgValue::Text(format!("{cursor:08X}"))),
+                ("cursor", ArgValue::Text(cursor.to_string())),
+            ],
+        );
         let selected = self.model.selection_len();
         let selected = (selected > 0).then(|| format!("{} selected", byte_count(selected)));
         let edited = self.model.dirty_count();
@@ -433,7 +441,7 @@ impl Editor {
         let (_, line) = tr.measure_style("Inspector", None, &style);
         tr.draw_style(
             scene,
-            "Inspector",
+            &crate::resource::CATALOG.t("hex-editor-inspector"),
             colors.text_primary,
             transform
                 * Affine::translate(Vec2::new(
@@ -446,7 +454,7 @@ impl Editor {
 
         self.endian_group
             .set_selected(super::layout::endian_index(self.model.endian()));
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             &mut self.endian_group,
             scene,
             transform,
@@ -495,7 +503,7 @@ impl Editor {
         presence: &PresenceCtx,
     ) {
         self.empty.apply_layout_external(self.rect);
-        Widget::draw(&mut self.empty, scene, transform, tr, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.empty, scene, transform, tr, theme, presence);
         // "New empty file" under "Open file": a second way in, secondary to
         // opening one.
         let open = self.empty.action_rect();
@@ -503,15 +511,16 @@ impl Editor {
             self.new_file = Rect::ZERO;
             return;
         }
-        let face = ui::widget::ButtonFace::new(Rect::ZERO, "New empty file")
-            .role(ui::widget::ButtonRole::Plain);
+        let new_file = CATALOG.t("hex-editor-new-file");
+        let face =
+            ui::widget::ButtonFace::new(Rect::ZERO, &new_file).role(ui::widget::ButtonRole::Plain);
         let width = face.intrinsic_width(tr, theme);
         let height = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let top = open.y1 + f64::from(theme.tokens.spacing.s2);
         let x0 = open.center().x - width / 2.0;
         let rect = Rect::new(x0, top, x0 + width, top + height);
         self.new_file = rect;
-        let face = ui::widget::ButtonFace::new(rect, "New empty file")
+        let face = ui::widget::ButtonFace::new(rect, &new_file)
             .role(ui::widget::ButtonRole::Plain)
             .hovered(rect.contains(self.last_mouse));
         ui::widget::Button::paint(scene, transform, tr, theme, &face);

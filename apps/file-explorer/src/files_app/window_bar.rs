@@ -143,6 +143,7 @@ impl FilesState {
                 go_name: String::new(),
                 segments,
                 image: None,
+                avatar: None,
                 suggestions: self.bar_suggestions(),
                 choices: Vec::new(),
                 anchor: None,
@@ -299,9 +300,10 @@ impl FilesState {
         }
     }
 
-    /// Tell the bar the slots, when what they are made from changed.
+    /// Tell the bar the slots, when what they are made from changed, or the
+    /// app is shown in another window than the one they were declared on.
     fn declare_window_toolbar(&mut self, chrome: &Chrome) {
-        let key = self.bar_key(chrome);
+        let key = (ui::window_toolbar::current_window(), self.bar_key(chrome));
         if self.declared_bar.as_ref() != Some(&key) {
             ui::window_toolbar::declare(Some(self.window_toolbar(chrome)));
             self.declared_bar = Some(key);
@@ -371,14 +373,16 @@ impl FilesState {
                 None => None,
             },
             // The bar's own search and History control are run by the
-            // framework on the app's widgets, never handed to its slots.
+            // framework on the app's widgets, and whether the window floats
+            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
             | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
-            | ToolbarEvent::History => return,
+            | ToolbarEvent::History
+            | ToolbarEvent::Floating { .. } => return,
         };
         if let Some(command) = command {
             self.apply_command(command);

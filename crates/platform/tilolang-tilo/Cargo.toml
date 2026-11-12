@@ -24,6 +24,8 @@ tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-service = { path = "../../session/service" }
+# The one notice type, and the seam a device shows it through.
+tilo-session-core = { path = "../../session/core" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
@@ -36,39 +38,47 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
-# The collab client an instance commits to its workspace through, without the toolkit.
-collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
+# The collab client an instance commits to its workspace through, without the toolkit, and the
+# history verbs every record answers (`history`).
+collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The workspace record's on-disk copy and its writer, and who wrote a step (`instance::record`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 # The platform's history sentences, which the host's history verbs speak in.
-tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history", optional = true }
+tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 
 [features]
 # The instance's commit path to its workspace record through the collab client
 # (`instance::record`), without the toolkit.
 record = [
-    "dep:collaboration",
     "collaboration/native",
     "dep:tilo-app-state",
     "dep:durable-store",
     "dep:collab-types",
-    "dep:tilo-history",
 ]
 [dev-dependencies]
+# The tests drive the instance's commit path (`instance::record`) whatever else the build has
+# turned on.
+tilolang-tilo = { path = ".", features = ["record"] }
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The fake broker a workspace's committed read is served from in the tests.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+# The archives an app exports, read back as a person who unzips them finds them.
+bounded-zip = { path = "../../doc/bounded-zip" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tempfile.workspace = true
 uuid.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
 # types are labelled in.
 tilo-ui-host = { version = "0.1.0", path = "../tilo-ui-host" }
+# The palette, and a native app whose actions it lists beside a tilolang app's.
+tilo-desktop-search = { path = "../../session/desktop-search" }
+calculator = { path = "../../../apps/calculator" }
 
 [[test]]
 name = "it"

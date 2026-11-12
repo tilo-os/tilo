@@ -21,6 +21,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{Button, Widget};
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -114,9 +115,9 @@ impl Default for Chrome {
 /// The Problems toggle's name: the count of problems, when there are any.
 fn problems_name(problems: usize) -> String {
     if problems == 0 {
-        ui::i18n::I18nManager::lookup_plain("typst-problems")
+        crate::resource::CATALOG.t("typst-problems")
     } else {
-        ui::i18n::I18nManager::format("typst-problems-count", &[("count", problems.into())])
+        crate::resource::CATALOG.t_args("typst-problems-count", &[("count", problems.into())])
     }
 }
 
@@ -127,7 +128,7 @@ impl Chrome {
             close_problems: Button::icon_only(
                 "typst.close-problems",
                 Icon::X,
-                &ui::i18n::I18nManager::lookup_plain("typst-close-problems"),
+                &crate::resource::CATALOG.t("typst-close-problems"),
             )
             .on_view({
                 let queue = Rc::clone(&queue);
@@ -149,7 +150,7 @@ impl Chrome {
             Button::icon_only(
                 "typst.close-problems",
                 Icon::X,
-                &ui::i18n::I18nManager::lookup_plain("typst-close-problems"),
+                &crate::resource::CATALOG.t("typst-close-problems"),
             ),
             &crate::actions::TypstEffect::Problems,
         );
@@ -170,7 +171,7 @@ impl Chrome {
 
     /// The window bar's slots for what the editor holds now.
     fn toolbar(&self) -> WindowToolbar {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::resource::CATALOG.t(key);
         let editor = ToolbarView {
             id: EDITOR_PANE.to_owned(),
             label: lookup("typst-view-editor"),
@@ -321,7 +322,7 @@ impl Chrome {
         presence: &PresenceCtx,
     ) {
         for child in self.children_mut() {
-            child.draw(scene, transform, tr, theme, presence);
+            child.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

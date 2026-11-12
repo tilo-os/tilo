@@ -98,16 +98,19 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
             envelopes::Record::Profile,
             relay.state_root().join("profiles"),
         )),
-        here: Arc::new(here::Here::new(None)),
         fetch: None,
         grants: Arc::default(),
         presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::default(),
+        shelf: shelf::Shelf::opening(
+            relay.state_root().join("invitations"),
+            tilo_clock::unix_now_ns(),
+        ),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
         stand_ins: Arc::new(stand_in::StandIns::new(
             relay.state_root().join("stand-ins"),
         )),
+        door: None,
     }
 }
 
@@ -126,7 +129,6 @@ async fn stop(relay: Relay, serving: tokio::task::JoinHandle<()>) {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
-#[cfg(feature = "agents")]
 async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
     let header = format!(
@@ -167,6 +169,28 @@ async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
     } else {
         (status, body.to_vec())
     }
+}
+
+#[test]
+fn a_link_origin_naming_port_zero_takes_the_port_the_listener_bound() {
+    assert_eq!(
+        named_port("https://127.0.0.1:0", 43123),
+        "https://127.0.0.1:43123"
+    );
+    assert_eq!(
+        named_port("https://[::1]:0/some/path", 443),
+        "https://[::1]:443/some/path"
+    );
+    // A published origin is reached exactly as written, whatever port the
+    // listener behind the ingress bound.
+    assert_eq!(
+        named_port("https://link.tilo.so", 43123),
+        "https://link.tilo.so"
+    );
+    assert_eq!(
+        named_port("https://link.tilo.so:8443", 43123),
+        "https://link.tilo.so:8443"
+    );
 }
 
 #[test]
@@ -249,15 +273,65 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     stop(relay, serving).await;
 }
 
+/// A workspace its owner deleted is said to be deleted to any device that
+/// names it, though the host no longer lets in who was in it; a workspace that
+/// stays, or that the host never held, is not.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay governs the workspaces until it shuts down at the end"
+)]
+async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
+    let root = SigningKey::from_bytes(&[131; 32]);
+    let host = host(
+        &root,
+        132,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let deleted = workspaces.create("Applicant").await.unwrap().workspace;
+    let kept = workspaces
+        .create("Other applicant")
+        .await
+        .unwrap()
+        .workspace;
+    workspaces.delete(&deleted).await.unwrap();
+    let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
+
+    let path = tilo_relay_protocol::web::WORKSPACE_DELETED_PATH;
+    let asked = |workspace: &str| post(addr, path, postcard::to_allocvec(workspace).unwrap());
+    for (workspace, said) in [
+        (deleted.as_str(), true),
+        (kept.as_str(), false),
+        ("00000000-0000-4000-8000-000000000000", false),
+        ("not a workspace", false),
+    ] {
+        let (status, body) = asked(workspace).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            postcard::from_bytes::<bool>(&body).unwrap(),
+            said,
+            "{workspace}"
+        );
+    }
+    let (status, _) = post(addr, path, vec![0xff]).await;
+    assert_eq!(status, 400, "a body that names nothing is malformed");
+
+    stop(relay, serving).await;
+}
+
 /// The public directory and its doors answer any site's page without
-/// credentials, and a full door says when to come back: what a page on
-/// another origin reads and does without going through a proxy.
+/// credentials: what a page on another origin reads and does without going
+/// through a proxy. Nobody is let in over HTTP: a device enters through the
+/// door on its session with the host, so the door has no `join` route.
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the relay governs the workspace until it shuts down at the end"
 )]
-async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
+async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
     let host = host(
         &root,
@@ -265,15 +339,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let state = tempfile::tempdir().unwrap();
-    let relay = relay_at(
-        &state,
-        host.identity(),
-        RelayConfig {
-            max_workspace_grants: Some(1),
-            ..Default::default()
-        },
-    )
-    .await;
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
@@ -309,50 +375,31 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
     assert_eq!(page.workspaces.len(), 1);
     assert_eq!(page.workspaces[0].description, "Coffee and tea");
 
-    let ask = |person: [u8; 32]| {
-        let body = serde_json::json!({
-            "userPublicKey": hex::encode(person),
-            "displayName": "Cy",
-        })
-        .to_string();
-        let head = format!(
-            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        async move { exchange(addr, &head, body.as_bytes()).await }
-    };
-    let (status, head, body) = ask([31; 32]).await;
-    assert_eq!(status, 200, "{head}");
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*")
-    );
-    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&body).unwrap();
-    assert!(!answer.invitation.is_empty());
-
-    // The door keeps one open grant: the next person is told when to come back,
-    // and the page may read that header cross-origin.
-    let (status, head, body) = ask([32; 32]).await;
-    assert_eq!(status, 503, "{head}");
-    assert!(
-        header_value(&head, "retry-after").is_some(),
-        "no Retry-After: {head}"
-    );
-    assert!(
-        header_value(&head, "access-control-expose-headers")
-            .unwrap_or_default()
-            .contains("retry-after"),
-        "{head}"
-    );
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*")
-    );
-    eprintln!("full door: {}", String::from_utf8_lossy(&body));
-
-    // The preflight a page on another site sends before asking.
+    // Asking the door to let someone in over HTTP finds no such route.
+    let body = serde_json::json!({
+        "userPublicKey": hex::encode([31; 32]),
+        "displayName": "Cy",
+    })
+    .to_string();
     let head = format!(
-        "OPTIONS {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
+        "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let (status, head, _) = exchange(addr, &head, body.as_bytes()).await;
+    assert_eq!(status, 404, "{head}");
+    assert!(
+        !workspaces
+            .membership(&workspace)
+            .await
+            .unwrap()
+            .1
+            .contains_key(&hex::encode([31; 32])),
+        "nobody became a member over HTTP"
+    );
+
+    // The preflight a page on another site sends before reporting.
+    let head = format!(
+        "OPTIONS {API_PREFIX}/directory/{workspace}/report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
     );
     let (status, head, _) = exchange(addr, &head, b"").await;
     assert_eq!(status, 204, "{head}");
@@ -517,6 +564,118 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     );
 
     stop(relay, serving).await;
+}
+
+/// A link is pasted into a message and read days later, so what it names
+/// outlives the relay that was handed it: an invitation left before a restart
+/// is fetched back, and taken back, on the relay that comes up next on the same
+/// state — and one that lapsed while nothing was running says so.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the first relay holds the shelf until it shuts down halfway"
+)]
+async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
+    use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
+
+    let root = SigningKey::from_bytes(&[133; 32]);
+    let signer = host(
+        &root,
+        134,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let keeping = "abcdefghijklmnop";
+    let lapsing = "ponmlkjihgfedcba";
+    let delete = "a".repeat(43);
+    let sealed = "c2VhbGVkIGludml0YXRpb24";
+    let now = tilo_clock::unix_now_ns();
+    let lapse_at = now + 1_000_000_000;
+
+    let leaving = |expires_at_ns| {
+        serde_json::to_vec(&Stored {
+            sealed: sealed.to_owned(),
+            expires_at_ns,
+            delete: delete.clone(),
+            host: Some("https://relay.example".to_owned()),
+        })
+        .unwrap()
+    };
+    let post = |handle: &str, body: &[u8]| {
+        format!(
+            "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+    };
+    let get = |handle: &str| {
+        format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    };
+
+    // The relay this site reached first, with one invitation that outlasts it
+    // and one that lapses while it is down.
+    let first = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
+    for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
+        let body = leaving(expires_at_ns);
+        let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
+        assert_eq!(status, 204, "{head}");
+    }
+    stop(first, serving).await;
+
+    // The relay that comes up next, on the state the first one kept.
+    let next = relay_at(&state, signer.identity(), RelayConfig::default()).await;
+    let (addr, serving) = serve_web(Arc::new(web_of(&next, &signer))).await;
+
+    let (status, head, body) = exchange(addr, &get(keeping), b"").await;
+    assert_eq!(status, 200, "{head}");
+    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
+    assert_eq!(fetched.sealed, sealed);
+    assert_eq!(fetched.host.as_deref(), Some("https://relay.example"));
+    assert!(
+        !String::from_utf8_lossy(&body).contains(&delete),
+        "the site gives back no delete secret"
+    );
+
+    // The secret it was left with still takes it back, and the disk lets go.
+    let take_back = serde_json::to_vec(&TakeBack {
+        delete: delete.clone(),
+    })
+    .unwrap();
+    let head = format!(
+        "DELETE /i/{keeping} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        take_back.len()
+    );
+    let (status, head, _) = exchange(addr, &head, &take_back).await;
+    assert_eq!(status, 204, "{head}");
+    assert!(
+        !state
+            .path()
+            .join("invitations")
+            .join(format!("{keeping}.json"))
+            .exists(),
+        "a taken-back invitation is off the state disk"
+    );
+
+    // What lapsed while the relay was down is gone, and gone from the disk.
+    while tilo_clock::unix_now_ns() <= lapse_at {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let (status, head, body) = exchange(addr, &get(lapsing), b"").await;
+    assert_eq!(status, 410, "{head}");
+    assert!(
+        String::from_utf8_lossy(&body).contains("gone"),
+        "the refusal says the invitation is gone"
+    );
+    assert!(
+        !state
+            .path()
+            .join("invitations")
+            .join(format!("{lapsing}.json"))
+            .exists(),
+        "a lapsed invitation is collected"
+    );
+
+    stop(next, serving).await;
 }
 
 /// One request to the listener at `addr`: its status, its header block
@@ -1279,6 +1438,476 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
             .is_none(),
         "the key is forgotten"
     );
+
+    stop(relay, serving).await;
+}
+
+/// The tab that wrote a setting-up link, answering as its person's root: what
+/// the page asks the host, in process, once it may.
+struct TabRoot(crate::certification::CertificationProtocol);
+
+impl tilo_relay_client::MemberHost for TabRoot {
+    async fn ask(
+        &self,
+        approval: &tilo_relay_protocol::certify::MemberApproval,
+    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
+        Ok(self
+            .0
+            .member_approve(approval.clone(), tilo_clock::unix_now_ns()))
+    }
+}
+
+/// A computer that types the code a person's tab shows, the moment the tab
+/// shows it: the tab is not yet let into a workspace this host serves, so the
+/// host knows nothing of that person but the code they handed their agent.
+/// The request waits for the tab, which certifies it, instead of being
+/// refused as "another user identity". A request no code names is still
+/// refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the routes until it shuts down at the end"
+)]
+async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
+    use tilo_relay_client::certify::CertificationOutcome;
+    use tilo_relay_protocol::login_code as wire;
+    use tilo_user_identity::CertificationRequest;
+
+    let owner = SigningKey::from_bytes(&[171; 32]);
+    let host = host(&owner, 172, DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let web = Arc::new(web_of(&relay, &host));
+    web.serve_stand_ins();
+    let (addr, serving) = serve_web(Arc::clone(&web)).await;
+
+    // The person's first tab: its root, and the link it writes into the code
+    // its agent's prompt carries.
+    let person = SigningKey::from_bytes(&[173; 32]);
+    let user = person.verifying_key().to_bytes();
+    let invite = [0x5e; 16];
+    let link = format!(
+        "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
+        hex::encode(user),
+        hex::encode(invite)
+    );
+    let (_, _, created) = call_json(
+        addr,
+        wire::CREATE_ROUTE,
+        &serde_json::json!({ "link": link }),
+        None,
+    )
+    .await;
+    let created: wire::Created = serde_json::from_value(created).unwrap();
+    let (_, _, resolved) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        None,
+    )
+    .await;
+    let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
+    assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
+
+    let computer = SigningKey::from_bytes(&[174; 32]);
+    let request_for = |device: &SigningKey, invite: [u8; 16]| {
+        let now = tilo_clock::unix_now_ns();
+        CertificationRequest {
+            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Claude Code on build-box".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: rand::random(),
+            invite,
+            issued_at_ns: now,
+            expires_at_ns: now + 30_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(device)
+        .unwrap()
+    };
+    let ask = |device: SigningKey, invite: [u8; 16], pending: tokio::sync::oneshot::Sender<()>| {
+        let host_addr = relay.node_addr();
+        let request = request_for(&device, invite);
+        async move {
+            let endpoint = endpoint(&device).await;
+            let outcome = tilo_relay_client::certify::request_certification(
+                &endpoint,
+                host_addr,
+                request,
+                |_| {
+                    let _ = pending.send(());
+                },
+            )
+            .await
+            .unwrap();
+            endpoint.close().await;
+            outcome
+        }
+    };
+
+    // A code nobody typed names nothing, so a request it never named is
+    // refused, as before.
+    let (refused, _) = tokio::sync::oneshot::channel();
+    let outcome = tilo_test_env::within(
+        "a refusal",
+        ask(SigningKey::from_bytes(&[175; 32]), [0x5f; 16], refused),
+    )
+    .await;
+    assert!(
+        matches!(outcome, CertificationOutcome::Denied(_)),
+        "{outcome:?}"
+    );
+
+    // The computer the prompt names runs `tilo login` at once: its request
+    // waits for the tab rather than being turned away.
+    let (queued, queued_rx) = tokio::sync::oneshot::channel();
+    let asking = ask(computer.clone(), invite, queued);
+    tokio::pin!(asking);
+    tokio::select! {
+        outcome = &mut asking => panic!("answered before the tab could: {outcome:?}"),
+        sent = queued_rx => assert!(sent.is_ok(), "the host refused the computer, not queued it"),
+    };
+
+    // The tab is let in and answers the request it wrote the link for.
+    let tab = TabRoot(web.context.certification.clone());
+    let waiting = tilo_relay_client::pending_pairings(&tab, &person)
+        .await
+        .unwrap();
+    let [request] = waiting.as_slice() else {
+        panic!("one request waits for the tab: {waiting:?}")
+    };
+    assert_eq!(request.request.invite, invite);
+    let issued = tilo_relay_client::answer_pairing(&tab, &person, request.request_digest, true)
+        .await
+        .unwrap()
+        .expect("a certificate");
+    let outcome = tilo_test_env::within("the tab's answer", asking).await;
+    let CertificationOutcome::Issued { cert, .. } = outcome else {
+        panic!("the computer is certified: {outcome:?}")
+    };
+    assert_eq!(cert, issued);
+    assert_eq!(cert.device_public_key, computer.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, user);
+
+    stop(relay, serving).await;
+}
+
+/// The secret `mail` carries for `parameter`, as the page it lands on reads
+/// it: the hex after `?<parameter>=` (or `&<parameter>=`) in the mail's text.
+fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
+    let at = mail
+        .text
+        .find(&format!("{parameter}="))
+        .unwrap_or_else(|| panic!("no {parameter} in the mail: {}", mail.text));
+    let rest = &mail.text[at.saturating_add(parameter.len()).saturating_add(1)..];
+    let end = rest
+        .find(|character: char| !character.is_ascii_hexdigit())
+        .unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+/// The mails `mailer` took, once it has `count` of them: the door's outbox
+/// sends in its own task, so a check waits for it rather than reading once.
+async fn mails_taken(
+    mailer: &crate::door::mail::FakeMailer,
+    count: usize,
+) -> Vec<crate::door::mail::Mail> {
+    for _ in 0..200 {
+        let taken = mailer.sent.lock().unwrap().clone();
+        if taken.len() >= count {
+            return taken;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    mailer.sent.lock().unwrap().clone()
+}
+
+/// A relay serving one workspace, listed and taking people by invitation
+/// only, with the door's wait list keeping `max` addresses.
+async fn invitation_only_host(
+    root: &SigningKey,
+    seed: u8,
+) -> (Relay, Host, String, tempfile::TempDir) {
+    let host = host(
+        root,
+        seed,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &workspace,
+            &host.cert,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces
+        .list_invitation_only(&workspace, &host.cert, true)
+        .await
+        .unwrap();
+    (relay, host, workspace, state)
+}
+
+/// The door of `workspace`, keeping `max` addresses and mailing them through
+/// `mailer`.
+fn wait_list_door(
+    relay: &Relay,
+    workspace: &str,
+    max: usize,
+    mailer: Arc<crate::door::mail::FakeMailer>,
+) -> Arc<crate::door::WaitListDoor> {
+    let workspaces = relay.workspaces().unwrap();
+    let door = Arc::new(crate::door::WaitListDoor::with_mailer(
+        workspaces,
+        workspace,
+        max,
+        Some("hello@tilo.example"),
+        mailer,
+        "https://site.example/",
+    ));
+    let _ = workspaces.offer_wait_list(door.offered());
+    door
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its workspaces serve the door until the relay shuts down at the end"
+)]
+async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off() {
+    use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+
+    let root = SigningKey::from_bytes(&[150; 32]);
+    let (relay, host, workspace, _state) = invitation_only_host(&root, 151).await;
+    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mut web = web_of(&relay, &host);
+    web.door = Some(wait_list_door(&relay, &workspace, 4, mailer.clone()));
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    // Someone the door turns away is told it keeps a wait list, where the
+    // contact is, and that it mails: the refusal their entry hears on its
+    // session.
+    let workspaces = relay.workspaces().unwrap();
+    let refusal = workspaces
+        .admit_listed(
+            &workspace,
+            &tilo_relay_protocol::directory::DoorJoin {
+                user_public_key: hex::encode([41u8; 32]),
+                display_name: "Ada".into(),
+            },
+        )
+        .await
+        .expect_err("an invitation-only door turns a stranger away");
+    let refused: DoorRefused = refusal.answer_with(workspaces.wait_list_door());
+    assert_eq!(refused.code, DoorRefusalCode::InvitationOnly);
+    assert!(refused.wait_list, "{refused:?}");
+    assert_eq!(refused.contact.as_deref(), Some("hello@tilo.example"));
+    assert!(refused.mail, "{refused:?}");
+
+    let ask = |step: &str, body: serde_json::Value| {
+        let body = body.to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/{step} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+
+    // The address is kept, and the confirmation link mailed to it.
+    let (status, head, body) = ask(
+        "wait-list",
+        serde_json::json!({"email": "Ada@Example.org", "language": "de-DE"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{head} {}", String::from_utf8_lossy(&body));
+    let kept: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(kept["email"], "Ada@Example.org", "kept as typed");
+    assert_eq!(kept["mail"], true);
+    let removal = kept["removal"].as_str().unwrap().to_owned();
+    assert_eq!(removal.len(), 64);
+    let sent = mails_taken(&mailer, 1).await;
+    assert_eq!(sent.len(), 1, "one confirmation: {sent:?}");
+    let (to, confirm, remove_link) = (
+        sent[0].to.clone(),
+        link_secret(&sent[0], "wait-list-confirm"),
+        link_secret(&sent[0], "wait-list-remove"),
+    );
+    assert_eq!(to, "Ada@Example.org");
+    assert_eq!(
+        remove_link, removal,
+        "the mail's removal link carries the secret the door handed out"
+    );
+    // The mail is in the language the door was read in.
+    assert_eq!(confirm.len(), 64);
+
+    // Until the link is opened the address waits, and is listed to nobody.
+    let (status, head, body) =
+        ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "pending"
+    );
+
+    let (status, head, body) =
+        ask("wait-list/confirm", serde_json::json!({"token": confirm})).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["confirmed"],
+        true
+    );
+    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "listed"
+    );
+    // Opened again, the same link confirms nothing new and is no error.
+    let (status, _, _) = ask("wait-list/confirm", serde_json::json!({"token": confirm})).await;
+    assert_eq!(status, 200);
+
+    // Whoever may invite reads it on the workspace's wait list, as the member
+    // panel does.
+    let listed = relay
+        .workspaces()
+        .unwrap()
+        .page_rooms(
+            &host.cert,
+            tilo_relay_protocol::workspaces::WorkspacesRequest::WaitList {
+                workspace: workspace.clone(),
+            },
+        )
+        .await;
+    let tilo_relay_protocol::workspaces::WorkspacesReply::WaitList(entries) = listed else {
+        panic!("the owner reads the wait list: {listed:?}");
+    };
+    assert_eq!(
+        entries.len(),
+        1,
+        "the confirmed address is listed: {entries:?}"
+    );
+    assert_eq!(entries[0].contact, "Ada@Example.org");
+
+    // Taking the address off answers alike, and mails word that it left.
+    let (status, head, body) =
+        ask("wait-list/remove", serde_json::json!({"secret": removal})).await;
+    assert_eq!(status, 200, "{head} {}", String::from_utf8_lossy(&body));
+    let left = mails_taken(&mailer, 2).await;
+    assert_eq!(left.len(), 2, "a removal is mailed: {left:?}");
+    assert_eq!(left[1].to, "Ada@Example.org");
+    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "gone"
+    );
+    // A secret no entry has is answered as one that took an entry off.
+    let (status, _, _) = ask(
+        "wait-list/remove",
+        serde_json::json!({"secret": hex::encode([9u8; 32])}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // A key this door never handed out is refused, not guessed at.
+    let (status, _, body) = ask(
+        "wait-list/standing",
+        serde_json::json!({"secret": "not-a-secret"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "invalid-secret"
+    );
+
+    // Nothing that is not an address is no address.
+    let (status, _, body) = ask("wait-list", serde_json::json!({"email": "nope"})).await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "invalid-email"
+    );
+
+    stop(relay, serving).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its workspaces keep their state until the relay shuts down at the end"
+)]
+async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network() {
+    let root = SigningKey::from_bytes(&[152; 32]);
+    let (relay, host, workspace, _state) = invitation_only_host(&root, 153).await;
+    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mut web = web_of(&relay, &host);
+    web.door = Some(wait_list_door(&relay, &workspace, 1, mailer));
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    let ask = |step: &str, body: serde_json::Value| {
+        let body = body.to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/{step} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+
+    // The workspace keeps one address: a second one is told the list is full.
+    let (status, head, _) = ask("wait-list", serde_json::json!({"email": "ada@example.org"})).await;
+    assert_eq!(status, 200, "{head}");
+    let (status, head, body) =
+        ask("wait-list", serde_json::json!({"email": "bo@example.org"})).await;
+    assert_eq!(status, 503, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "wait-list-full"
+    );
+
+    // One address cannot fill the door's windows either: six asks in the
+    // window are one too many, and the answer says when to come back.
+    let mut limited = None;
+    for index in 0..6 {
+        let (status, head, body) = ask(
+            "wait-list",
+            serde_json::json!({"email": format!("someone{index}@example.org")}),
+        )
+        .await;
+        if status == 429 {
+            limited = Some((head, body));
+            break;
+        }
+    }
+    let (head, body) = limited.expect("the sixth ask from one address is refused");
+    assert!(head.contains("retry-after:"), "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "too-many"
+    );
+
+    // A workspace this door does not serve keeps no wait list.
+    let other = relay
+        .workspaces()
+        .unwrap()
+        .create("Elsewhere")
+        .await
+        .unwrap()
+        .workspace;
+    let body = serde_json::json!({"email": "cy@example.org"}).to_string();
+    let head = format!(
+        "POST {API_PREFIX}/directory/{other}/wait-list HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let (status, head, _) = exchange(addr, &head, body.as_bytes()).await;
+    assert_eq!(status, 404, "{head}");
 
     stop(relay, serving).await;
 }

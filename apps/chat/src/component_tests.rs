@@ -32,6 +32,7 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
+use ui::headless::fixture_runner_inputs;
 
 #[test]
 fn browser_media_reply_enables_voice_without_native_attachment_access() {
@@ -456,10 +457,24 @@ fn component_mount_as(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
+    let (component, records) = component_as(cache, author, instance, workspace, role);
+    let checkout = component.record().clone();
+    let frame =
+        ui::headless::FrameHarness::from_component(component, (1280, 720), fixture_runner_inputs())
+            .unwrap();
+    (frame, records, checkout)
+}
+
+/// One mount of the workspace's Chat, not yet in a window.
+fn component_as(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+    workspace: &str,
+    role: ui::permissions::Role,
+) -> (ui::application::AppComponent, ui::record::RecordStore) {
     use std::rc::Rc;
-    use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
+    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -497,19 +512,7 @@ fn component_mount_as(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let checkout = component.record().clone();
-    let font_root = ui::font_catalog::checkout_root();
-    let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
-    let frame = ui::headless::FrameHarness::from_component(
-        component,
-        (1280, 720),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
-        },
-    )
-    .unwrap();
-    (frame, records, checkout)
+    (component, records)
 }
 
 fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
@@ -1032,12 +1035,12 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    let read = invoke(&mut agent, &question, "read-message", serde_json::json!({}));
-    let read = read.value.unwrap();
-    assert_eq!(read["text"], "Where does Odysseus wake up?");
-    assert_eq!(read["author"], "Visitor");
-    assert_eq!(read["agent"], false);
-    assert_eq!(read["mine"], false);
+    // An agent reads the conversation from the chat's record and its parts.
+    let asked = crate::testing::messages_in(&records, "c_chat")
+        .pop()
+        .unwrap();
+    assert_eq!(asked.text, "Where does Odysseus wake up?");
+    assert_eq!(asked.author, "Visitor");
 
     // Its work is recorded on the message itself, in the part of the
     // chat's messages that holds it.
@@ -1062,15 +1065,22 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     let reply = messages(&agent).last().unwrap().clone();
     assert_ne!(reply, question);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
+    // The agent's work is recorded on its reply.
+    let said_text = "On Scheria, on the shore of the Phaeacians.";
+    let work = |records: &ui::record::RecordStore| {
+        let said = crate::testing::messages_in(records, "c_chat");
+        let reply = said
+            .iter()
+            .find(|message| message.text == said_text)
+            .unwrap();
+        serde_json::to_value(&reply.work).unwrap()
+    };
+    let answered = crate::testing::messages_in(&records, "c_chat")
+        .pop()
         .unwrap();
-    assert_eq!(read["author"], "agent-task:reading");
-    assert_eq!(read["text"], "On Scheria, on the shore of the Phaeacians.");
-    assert_eq!(read["authorName"], "Reading agent");
-    assert_eq!(read["agent"], true);
-    assert_eq!(read["work"]["state"]["state"], "done");
-    assert_eq!(read["work"]["trace"][0]["label"], "Add note");
+    assert_eq!(answered.text, said_text);
+    assert_eq!(work(&records)["state"]["state"], "done");
+    assert_eq!(work(&records)["trace"][0]["label"], "Add note");
 
     let (author, agents) = records
         .read(&checkout.id, |doc| {
@@ -1103,11 +1113,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"work": {"state": "refused"}}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
-        .unwrap();
     assert_eq!(
-        read["work"]["state"]["state"], "done",
+        work(&records)["state"]["state"],
+        "done",
         "a person cannot rewrite an agent's work"
     );
     visitor.close_components();
@@ -1705,4 +1713,219 @@ fn a_new_message_leaves_the_window_at_rest() {
     }
     frame.close_components();
     eprintln!("{report}");
+}
+
+/// A newcomer's page in a public workspace holds none of the workspace's chat
+/// until it opens it, the workspace sending it then. Opening Chat before it
+/// arrived waits for it, however often it is asked, and opens the
+/// workspace's chat once it is here: never a fresh chat of the page's own,
+/// whose first publication would have replaced or forked everyone's.
+#[test]
+fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() {
+    use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+    use std::rc::Rc;
+    use ui::application::LaunchTarget;
+    use ui::record::{RecordCheckout, RecordOpenError, RecordOwners};
+
+    let definition = crate::definition();
+    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
+    let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+    // The workspace's chat, as a member's device started it.
+    let elsewhere = RecordOwners::with_store(Rc::new(MemoryStore::queued()))
+        .open(definition.app_id(), workspace)
+        .unwrap();
+    let identity = LocalIdentity::demo();
+    elsewhere
+        .reserve_record(&primary)
+        .unwrap()
+        .initialize(|doc| {
+            crate::testing::starter(doc, &identity.id, &identity.name, &identity.initials);
+            Ok(())
+        })
+        .unwrap();
+    let (theirs, heads) = elsewhere.replication_snapshot(&primary.id).unwrap();
+
+    let memory = Rc::new(MemoryStore::queued());
+    let page = RecordOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>)
+        .open(definition.app_id(), workspace)
+        .unwrap();
+    page.ask_workspace_for_missing();
+    for _ in 0..2 {
+        assert!(
+            matches!(
+                definition.unsaved_target(&page),
+                Err(RecordOpenError::Arriving)
+            ),
+            "a chat not here yet is on its way, not a new one"
+        );
+    }
+    assert!(!page.is_ready(&primary.id), "no chat was founded");
+
+    // The workspace sends its chat, which the page keeps for whoever opens it.
+    memory
+        .write(
+            &StorageKey::workspace_index(definition.app_id(), workspace),
+            WriteOp::Replace(theirs),
+            None,
+        )
+        .unwrap();
+    page.note_kept();
+    assert!(matches!(
+        definition.unsaved_target(&page),
+        Ok(LaunchTarget::Record { .. })
+    ));
+    let opened = page
+        .read(&primary.id, |doc| {
+            let mut doc = doc.clone();
+            heads
+                .iter()
+                .all(|head| doc.get_change_by_hash(head).is_some())
+        })
+        .unwrap();
+    assert!(opened, "the page opened the workspace's chat");
+}
+
+/// A Chat with no window publishes what a window of it does: its resource's
+/// actions and the effects its view answers (send, open an agent).
+#[test]
+fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
+    let cache = ui::portable_storage::PortableStorage::new("unshown", "device").unwrap();
+    let (component, _) = component_as(
+        &cache,
+        "author",
+        1,
+        "workspace",
+        ui::permissions::Role::Owner,
+    );
+    let mut app = ui::App::from_component(component, fixture_runner_inputs()).unwrap();
+    let catalogue = |app: &mut ui::App| {
+        for _ in 0..3 {
+            app.controlled_hosted_model_for_test();
+        }
+        let mut actions: Vec<String> = app
+            .collect_resources()
+            .iter()
+            .flat_map(|resource| {
+                (resource.actions.iter()).map(|action| format!("{}#{}", resource.kind, action.id))
+            })
+            .collect();
+        actions.sort();
+        actions
+    };
+    let unshown = catalogue(&mut app);
+    for effect in ["chat.workspace#send", "chat.workspace#open-agent"] {
+        assert!(
+            unshown.iter().any(|action| action == effect),
+            "{effect} in {unshown:?}"
+        );
+    }
+    app.init_layout();
+    assert_eq!(
+        unshown,
+        catalogue(&mut app),
+        "a window of it publishes the same"
+    );
+}
+
+/// A secondary click in the composer is the field's own: its text menu opens
+/// on the words there, read where the menu stands, and not the surface's menu
+/// for the place.
+#[test]
+fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
+    use ui::winit::dpi::PhysicalPosition;
+    use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-text-menu");
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .expect("the composer is drawn")
+        .center();
+    frame.click_at(composer.x, composer.y);
+    frame.type_text("copy these words");
+    // The pointer rests where the person right-clicks, then the press and its
+    // release: what a browser sends for a secondary click.
+    for event in [
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(composer.x, composer.y),
+        },
+        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+    ] {
+        frame.send(&event);
+    }
+    frame.relayout();
+    let nodes: Vec<(ui::accesskit::Role, String, ui::accesskit::Rect)> = frame
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| Some((node.role(), node.label()?.to_owned(), node.bounds()?)))
+        .collect();
+    let rows: Vec<&(ui::accesskit::Role, String, ui::accesskit::Rect)> = nodes
+        .iter()
+        .filter(|(role, ..)| *role == ui::accesskit::Role::MenuItem)
+        .collect();
+    let (_, row, bounds) = *rows
+        .iter()
+        .find(|(_, label, _)| matches!(label.as_str(), "Cut" | "Copy" | "Paste" | "Select all"))
+        .unwrap_or_else(|| {
+            panic!("a secondary click in the field offers the text menu's rows: {rows:?}")
+        });
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "the row {row} is drawn where it is read: {bounds:?}"
+    );
+    // The menu stands beside the pointer on the page: its rows stack from
+    // where the press landed, never in the page's corner.
+    let top = rows
+        .iter()
+        .map(|(_, _, box_)| box_.y0)
+        .fold(f64::INFINITY, f64::min);
+    let bottom = rows
+        .iter()
+        .map(|(_, _, box_)| box_.y1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let left = rows
+        .iter()
+        .map(|(_, _, box_)| box_.x0)
+        .fold(f64::INFINITY, f64::min);
+    let right = rows
+        .iter()
+        .map(|(_, _, box_)| box_.x1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        left >= 0.0 && top >= 0.0 && right <= 1280.0 && bottom <= 720.0,
+        "the text menu stands on the page: {top}..{bottom} by {left}..{right}"
+    );
+    assert!(
+        composer.x >= left - 40.0
+            && composer.x <= right + 40.0
+            && ((composer.y - bottom).abs() < 60.0 || (composer.y - top).abs() < 60.0),
+        "the text menu opens at the words the press landed on ({composer:?}), \
+         not the corner: {top}..{bottom} by {left}..{right}"
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, label, _)| label != "New category" && label != "New channel"),
+        "the press was the field's, not the surface's: {rows:?}"
+    );
+    frame.close_components();
+}
+
+/// An agent's send is the action the composer's send button presses: the
+/// marker drawn for it rests on that button, never on a place it guessed. An
+/// agent names the action the way its listing shows it — `send` on the chat's
+/// own record — so that is the address the button has to answer.
+#[test]
+fn an_agents_send_lands_on_the_composers_send_button() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-agent-send");
+    let button = semantic_target_rect(&frame.inspection().root, "chat.send")
+        .expect("the composer's send button is drawn");
+    let locus = frame
+        .semantic_locus(&ui::headless::agent_acting("chat.workspace", "send"))
+        .expect("an agent's send finds the send button");
+    assert!(
+        button.contains(locus.center()),
+        "the agent sends at the send button: {locus:?} in {button:?}"
+    );
+    frame.close_components();
 }

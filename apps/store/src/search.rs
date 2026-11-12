@@ -8,6 +8,7 @@
 //! app as it is now and an app that disappeared is refused rather than
 //! navigating to a stale package identity.
 
+use crate::resource::CATALOG;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -111,16 +112,16 @@ impl StoreDirectory {
 /// An app with no build for this device says so instead; its page says why.
 fn app_entry(item: &StoreItem) -> SearchEntry {
     let subtitle = if item.not_built_for_this_device() {
-        ui::i18n!("store-not-for-this-device")
+        CATALOG.t("store-not-for-this-device")
     } else if item.summary().is_empty() {
         crate::catalogue::source_label(item)
     } else {
         item.summary().to_owned()
     };
     let group = if crate::catalogue::is_bot(item) {
-        ui::i18n!("store-view-bots")
+        CATALOG.t("store-view-bots")
     } else {
-        ui::i18n!("store-search-apps")
+        CATALOG.t("store-search-apps")
     };
     SearchEntry::new(item.name.clone(), searchable_text(item))
         .anchored(resource_id(item))
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn catalogue_paging_and_stale_addresses_are_refused() {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         {
             let items = (0..2_048).map(item).collect::<Vec<_>>();
             let directory = StoreDirectory::default();

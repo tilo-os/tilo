@@ -8,7 +8,10 @@
 //! launch is refused; nothing here starts an app unconfined.
 //!
 //! Only a process this runtime launched, for exactly that app and workspace and
-//! still the same process, is attested to the broker.
+//! still the same process, is attested to the broker, and the endpoints the
+//! runtime serves from its own process: the Files app of each workspace whose
+//! files it holds, with no window, as the desktop session attests its files
+//! daemon.
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
 
@@ -34,11 +37,11 @@ use tilo_action_broker::{
 use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
-mod creation;
-#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod original;
 
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
@@ -54,6 +57,9 @@ pub struct Apps {
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    /// The apps this runtime's own process is the windowless endpoint of,
+    /// by app and workspace.
+    own: Mutex<std::collections::BTreeSet<(String, String)>>,
     /// Who may capture from which device, in `state/device-grants` of the
     /// profile; opened on the first macOS launch.
     #[cfg(target_os = "macos")]
@@ -98,9 +104,35 @@ impl Apps {
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
+            own: Mutex::default(),
             #[cfg(target_os = "macos")]
             device_grants: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attest this runtime's own process as the windowless endpoint of `app`
+    /// in `workspace` from now on, until [`Self::stop_serving`].
+    pub(crate) fn serve_endpoint(&self, app: &str, workspace: &str) {
+        self.own
+            .lock_recover()
+            .insert((app.to_owned(), workspace.to_owned()));
+    }
+
+    /// No longer attest this process as `app`'s endpoint in `workspace`.
+    pub(crate) fn stop_serving(&self, app: &str, workspace: &str) {
+        self.own
+            .lock_recover()
+            .remove(&(app.to_owned(), workspace.to_owned()));
+    }
+
+    /// Whether `pid` is this runtime's own process serving `app` in
+    /// `workspace`.
+    fn serves(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        pid == std::process::id()
+            && self
+                .own
+                .lock_recover()
+                .contains(&(app.to_owned(), workspace.to_owned()))
     }
 
     /// This profile's device grants.
@@ -234,14 +266,7 @@ impl Apps {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        #[cfg(target_os = "linux")]
-        let creation = original.creation;
-        #[cfg(not(target_os = "linux"))]
-        let creation = None;
-        if !self
-            .launched
-            .record(launch.pid, &app.package_id, workspace, creation)
-        {
+        if !self.launched.record(launch.pid, &app.package_id, workspace) {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -336,7 +361,7 @@ impl LauncherServices for Apps {
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.launched.attest(pid, app, workspace)
+        self.launched.attest(pid, app, workspace) || self.serves(pid, app, workspace)
     }
     fn authenticated_launch(
         &self,
@@ -345,23 +370,21 @@ impl LauncherServices for Apps {
         workspace: &str,
         _window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        if self.serves(pid, app, workspace) {
+            return Ok(Some(AuthenticatedApplicationLaunch {
+                continuation_instance: None,
+                launch_ticket: None,
+                windowless: true,
+            }));
+        }
         if !self.launched.attest(pid, app, workspace) {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
-            creation: self.launched.creation(pid, app, workspace),
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
             windowless: false,
         }))
-    }
-    fn application_creation_evidence(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
-        Ok(self.launched.creation(pid, app, workspace))
     }
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
@@ -455,7 +478,6 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     workspace: String,
-    creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
     /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
     /// for the broker to tie the process's connection back to it.
     ticket: u64,
@@ -464,13 +486,7 @@ struct LaunchRecord {
 impl Launched {
     /// Record `pid` as `app` in `workspace`; `false` when its start time cannot
     /// be read.
-    fn record(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-        creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
-    ) -> bool {
+    fn record(&self, pid: u32, app: &str, workspace: &str) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -481,7 +497,6 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
-                creation,
                 ticket,
             },
         );
@@ -506,27 +521,6 @@ impl Launched {
         );
         drop(launches);
         same && process_start_time(pid) == Some(recorded)
-    }
-
-    /// Original declarations belong to this live launch, never to a later
-    /// package replacement or a process that reused the same pid.
-    fn creation(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
-        let start = process_start_time(pid)?;
-        let launches = self.0.lock_recover();
-        let record = launches.get(&pid)?;
-        let creation =
-            (record.start_time == start && record.app == app && record.workspace == workspace)
-                .then(|| record.creation.clone())
-                .flatten();
-        drop(launches);
-        (process_start_time(pid) == Some(start))
-            .then_some(creation)
-            .flatten()
     }
 
     /// Forget `pid`, once its process has been reaped.

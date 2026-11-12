@@ -88,6 +88,15 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 
 ## Language choices
 
+- **A package's own declaration takes the name it declares, over a type the language provides.**
+  `type File`, `enum Date` and `type Text = T` are types of the package's, and every use of the
+  bare name in the package is that one (`resolve::named_type` checks the package's types, enums
+  and aliases before `types::language_type`). The language's one is `std.File`, `std.Date`,
+  `std.Text`: `types::named` reads `std.` as the language's, so shadowing takes nothing away.
+  Metadata writes such a record with its app id (`so.tilo.notes.File`), since the bare name reads
+  back as the language's. Declaring a name that writes a type (`List`, `Option`, `Result`, …) is
+  refused at the declaration: `List<T>` is the grammar's, not a name.
+
 - Declaration ids come from `app.ids` by qualified name: `Album`, `Album.title`, `play`,
   `view#anchor`. Types start uppercase, everything else lowercase, so names never collide. UI call
   keys are not in the lock; they derive from the parse-order node id.

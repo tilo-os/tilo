@@ -10,7 +10,6 @@
 //! [`NoCustody`], where that variant cannot occur, and the toolkit fills in
 //! its own custody type.
 
-use crate::BrokerActionSurface;
 use crate::route::{ChannelAccessState, RouteSpec};
 use collab_types::DocumentMutation;
 use collab_types::SignedOp;
@@ -39,19 +38,6 @@ impl EndpointCustody for NoCustody {
     reason = "the layout every app matches on; boxing a payload would change each of those matches"
 )]
 pub enum CollabEvent<C: EndpointCustody = NoCustody> {
-    SelectedDiscoveryResult {
-        request_id: u64,
-        result: Result<crate::open_selected::discovery::Reply, String>,
-    },
-    OpenSelectedV2Result {
-        request_id: u64,
-        result: Result<crate::open_selected::v2::ObservedReply, String>,
-    },
-    OpenSelectedResult {
-        request_id: u64,
-        result: Result<crate::open_selected::RootReceipt, String>,
-    },
-
     LocalFileClipboardResult {
         request_id: u64,
         result: Result<crate::file_clipboard::Reply, String>,
@@ -64,6 +50,10 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     Context {
         collaborators: Vec<Collaborator>,
         permissions: Vec<String>,
+        /// What each app installed on this device is called, in each language
+        /// its package names it in: what a history row names another app's
+        /// change by, never an id. Session-local presentation.
+        apps: Vec<collab_types::history::NamedApp>,
     },
     /// The delegated agents on `cluster_id`'s roster whose person's root
     /// signed the delegation for exactly that device, as the session
@@ -186,8 +176,10 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
     },
+    /// The next change to the action catalogue this endpoint follows, to
+    /// apply to its [`crate::ActionCatalogue`].
     ActionCatalogue {
-        surfaces: Vec<BrokerActionSurface>,
+        change: crate::CatalogueChange,
     },
     /// Private admission/status or refusal, never a document publication permit.
     LocalDocumentActionReported {

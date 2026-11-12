@@ -30,7 +30,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
         let _env = scoped_env(&[
             ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", None),
-            ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
         ]);
 
@@ -51,7 +50,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
             let _env = scoped_env(&[
                 ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
                 ("TILO_USER_ID", Some("alice")),
-                ("TILO_PRESENCE_HANDLE", None),
                 ("TILO_USER_IDENTITY", None),
             ]);
             local_user_id()
@@ -60,7 +58,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
             let _env = scoped_env(&[
                 ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
                 ("TILO_USER_ID", Some("bob")),
-                ("TILO_PRESENCE_HANDLE", None),
                 ("TILO_USER_IDENTITY", None),
             ]);
             local_user_id()
@@ -79,7 +76,6 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
         let _env = scoped_env(&[
             ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", None),
-            ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
         ]);
 

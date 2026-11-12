@@ -98,3 +98,23 @@ snippets-record-use = { $item } kopiert
 snippets-rename-folder = Ordner { $folder } in { $to } umbenannt
 snippets-rename-tag = Tag { $tag } in { $to } umbenannt
 snippets-remove-tag = Tag { $tag } von allen Snippets entfernt
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+snippets-a11y-tag = Schlagwort: { $tag }
+snippets-a11y-folder = Ordner: { $folder }
+
+## What the window shows
+
+## Actions
+
+snippets-view-reveal = Snippets anzeigen
+snippets-view-reveal-folder = Ordner anzeigen
+snippets-view-search = Snippets durchsuchen
+snippets-view-read-tag = Tag lesen
+snippets-view-read-folder = Ordner lesen
+snippets-library-duplicate = Snippet duplizieren
+snippets-library-delete = Snippet löschen
+snippets-library-record-use = Verwendung vermerken
+snippets-library-rename-folder = Ordner umbenennen
+snippets-library-rename-tag = Tag umbenennen
+snippets-library-remove-tag = Tag entfernen

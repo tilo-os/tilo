@@ -6,7 +6,9 @@ terminal-target-manage = Umgebungen verwalten…
 terminal-target-choose = Wählen, wo dies läuft
 terminal-start-failed-title = Die Shell konnte nicht starten
 terminal-start-retry = Erneut versuchen
+terminal-prompt = Befehlszeile
 terminal-restart = Shell neu starten
+terminal-runs-elsewhere = Die Shell dieser Sitzung läuft auf einem anderen Gerät oder für jemand anderen. „Shell neu starten“ startet hier eine.
 terminal-reconnecting = Verbindung wird wiederhergestellt…
 terminal-held-title = Dafür braucht es eine Linux-Maschine.
 terminal-held-add-card-message = Füge eine Karte hinzu, um fortzufahren.
@@ -47,5 +49,58 @@ terminal-claim-pane = Ein neuer Prozess hat die Sitzung übernommen
 terminal-run = Die Sitzung gebeten, { $command } auszuführen
 terminal-rerun = Die Sitzung gebeten, einen Befehl erneut auszuführen
 terminal-rerun-test = Die Sitzung gebeten, { $test } erneut auszuführen
+terminal-stop = Den laufenden Befehl der Sitzung gestoppt
 terminal-record-run = { $command } ausgeführt
 terminal-remember = { $command } gemerkt
+terminal-used = Die zuletzt von diesem Gerät geöffnete Umgebung gemerkt
+terminal-recent-environments-devices = Die zuletzt von jedem Gerät geöffnete Umgebung gemerkt
+terminal-link-in-output = Link in der sichtbaren Terminalausgabe
+terminal-a11y-description = Gemeinsames Terminal. Tippen geht an die Shell auf diesem Gerät.
+terminal-a11y-graphics = { $count ->
+    [one] Ein Bild wird im Terminal gezeigt.
+   *[other] { $count } Bilder werden im Terminal gezeigt.
+}
+terminal-session-ended = Sitzung beendet. Die Shell wurde beendet, Tippen erreicht sie nicht mehr.
+terminal-session-exit-unknown = Sitzung beendet. Der Exit-Status der Shell war nicht lesbar.
+terminal-session-input-unavailable = Sitzung beendet. Eingabe ist nicht möglich.
+terminal-session-read-failed = Sitzung beendet. Das Terminal kann nichts mehr von der Shell lesen.
+
+## Das Schließen der eigenen Bereiche des Terminals
+terminal-a11y-close = Schließen
+
+## Actions
+
+terminal-history = Befehlsverlauf
+terminal-history-remember = Befehl merken
+terminal-effects-inspect-session = Sitzung prüfen
+terminal-effects-read-screen = Ausgabe lesen
+terminal-effects-inspect-editor = Feld prüfen
+terminal-effects-replace-editor-selection = Auswahl ersetzen
+terminal-effects-send = Text senden
+terminal-effects-interrupt = Prozess unterbrechen
+terminal-effects-clear = Bildschirm leeren
+terminal-effects-restart = Shell neu starten
+terminal-effects-paste = Einfügen
+terminal-effects-paste-primary = Auswahl einfügen
+terminal-effects-open-in = Öffnen in…
+terminal-effects-create-environment = Neue Umgebung
+terminal-effects-grant-folder = Ordner freigeben
+terminal-effects-rename-environment = Umgebung umbenennen
+terminal-effects-copy-visible = Sichtbare Ausgabe kopieren
+terminal-effects-copy-selection = Ausgewählte Ausgabe kopieren
+terminal-effects-select-all = Gesamte Ausgabe auswählen
+terminal-effects-history-top = Älteste Ausgabe anzeigen
+terminal-effects-history-live = Zurück zur laufenden Ausgabe
+terminal-effects-open-item = Eintrag anzeigen
+terminal-effects-open-link = Link öffnen
+terminal-session = Terminal
+terminal-session-run = Befehl ausführen
+terminal-session-rerun = Erneut ausführen
+terminal-session-rerun-test = Test erneut ausführen
+terminal-session-stop = Befehl stoppen
+terminal-session-record-run = Lauf erfassen
+terminal-session-record-target = Ausführungsort erfassen
+terminal-session-record-relay-session = Wieder verbundene Sitzung erfassen
+terminal-session-claim-pane = Bereich übernehmen
+terminal-recent-environments = Zuletzt verwendete Umgebungen
+terminal-recent-environments-used = Verwendete Umgebung erfassen

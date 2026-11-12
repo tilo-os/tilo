@@ -177,6 +177,8 @@ fn an_account_without_a_card_is_told_when_one_is_asked_for() {
     );
 }
 
+/// An agent's row is the agent: its face in its client's colour, what it may reach, what it is
+/// doing now, the way to its card, and Revoke — which asks first, naming what revoking loses.
 #[test]
 fn agents_let_in_can_each_be_revoked() {
     en();
@@ -189,6 +191,7 @@ fn agents_let_in_can_each_be_revoked() {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],
+                browser_pages: true,
                 ..Grant::default()
             }],
             ..Door::default()
@@ -199,10 +202,91 @@ fn agents_let_in_can_each_be_revoked() {
     assert_eq!(captions(&rows), ["Agents", "Account"]);
     let agent = items(&rows)[0];
     assert_eq!(agent.title, "Claude Code");
-    assert_eq!(facts(agent), ["All your workspaces", "working now"]);
+    assert_eq!(
+        facts(agent),
+        [
+            "All your workspaces",
+            "Operates web pages in Browser",
+            "Working now"
+        ],
+        "what its key operates in Browser says between what it reaches and what it is doing"
+    );
+    assert_eq!(
+        agent.mark,
+        Some(TiloMark::Face(TiloFace {
+            name: "Claude Code".into(),
+            identity: "g1".into(),
+            colour: ui::presence::identity_rgb(PresenceHue::Orange),
+            is_agent: true,
+        })),
+        "the row wears the agent's own face, in its client's hue"
+    );
+    assert_eq!(
+        agent.facts[2].mark,
+        Some(ui::widget::FactMark::Dot(Tone::Presence(
+            PresenceHue::Orange
+        ))),
+        "working now is the live state, dotted in the agent's colour"
+    );
+    assert_eq!(
+        agent.press,
+        Some(OverviewPick::OpenAgent("Claude Code".into())),
+        "the row itself opens the agent's card"
+    );
     assert_eq!(
         agent.action,
         Some(("Revoke".to_owned(), OverviewPick::RevokeGrant("g1".into())))
+    );
+    assert_eq!(
+        agent.confirm,
+        Some(Confirm {
+            question: "Claude Code loses access to all your workspaces and stops now".into(),
+            answer: "Revoke access".into(),
+        }),
+        "revoking cannot be undone, so the control says what it takes"
+    );
+}
+
+/// What a workspace's grant loses is that workspace, named in the question as the row names it.
+#[test]
+fn revoking_a_grant_into_one_workspace_names_that_workspace() {
+    en();
+    let desk = TiloDesk {
+        door: Some(Door {
+            grants: vec![Grant {
+                id: "g2".into(),
+                agent: "Cursor".into(),
+                reach: Reach::Workspace {
+                    id: "ws-build".into(),
+                    name: "Build box".into(),
+                },
+                ..Grant::default()
+            }],
+            ..Door::default()
+        }),
+        ..TiloDesk::default()
+    };
+    let rows = rows(&desk);
+    let agent = items(&rows)[0];
+    assert_eq!(facts(agent), ["Build box"], "nothing of work, at rest");
+    assert_eq!(
+        agent
+            .confirm
+            .as_ref()
+            .map(|confirm| confirm.question.as_str()),
+        Some("Cursor loses access to Build box and stops now")
+    );
+    // A client this build does not know keeps the hue its own name gives it, face and dot alike:
+    // the one its face wears everywhere ([`ui::presence::participant_hue`]), never its grant's id.
+    let hue = PresenceHue::of_identity("Cursor");
+    assert_eq!(
+        agent.mark,
+        Some(TiloMark::Face(TiloFace {
+            name: "Cursor".into(),
+            identity: "g2".into(),
+            colour: ui::presence::identity_rgb(hue),
+            is_agent: true,
+        }))
     );
 }
 

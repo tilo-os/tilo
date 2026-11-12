@@ -2771,10 +2771,7 @@ fn host_slash_commands_hand_the_block_to_the_host() {
     assert_eq!(request.block, editor.blocks()[0].id);
     assert!(editor.take_slash_request().is_none(), "once");
 
-    let page = PageEntry {
-        id: Uuid::from_u128(7),
-        title: "Trip ideas".into(),
-    };
+    let page = PageEntry::page(Uuid::from_u128(7), "Trip ideas");
     assert!(editor.link_block_to_page(&request.block, &page));
     assert_eq!(editor.blocks()[0].text(), "Trip ideas");
     assert!(
@@ -2782,7 +2779,7 @@ fn host_slash_commands_hand_the_block_to_the_host() {
             .line
             .marks()
             .iter()
-            .any(|span| span.mark == Mark::Link(page.id) && span.range == (0..10))
+            .any(|span| span.mark == Mark::Link(Uuid::from_u128(7)) && span.range == (0..10))
     );
 
     // Link to note opens the link picker where the slash was.
@@ -2956,3 +2953,36 @@ fn a_link_to_a_resource_offers_opening_it_where_it_lives() {
 
 #[path = "block_editor_selection_keys_tests.rs"]
 mod selection_keys;
+
+/// The image buttons the editor lists and the ones it hands out to change are the same buttons
+/// in block order: a route a person's assistive technology follows by index reaches the picture
+/// it was walked to, not whichever picture the attachments happened to be stored under.
+#[test]
+fn image_buttons_are_listed_and_handed_out_in_block_order() {
+    let bytes = crate::png::encode_rgba8(4, 2, &[255; 4 * 2 * 4]).unwrap();
+    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("![First](assets/first.png)"),
+        Block::paragraph("Text between the pictures"),
+        Block::paragraph("![Second](assets/second.png)"),
+    ]);
+    editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+    let mut renderer = TextRenderer::new();
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let listed: Vec<*const ()> = editor
+        .children()
+        .into_iter()
+        .map(|child| std::ptr::from_ref(child).cast::<()>())
+        .collect();
+    let handed: Vec<*const ()> = editor
+        .children_mut()
+        .into_iter()
+        .map(|child| std::ptr::from_ref(&*child).cast::<()>())
+        .collect();
+    assert_eq!(listed.len(), 2, "each picture stands as one button");
+    assert_eq!(
+        listed, handed,
+        "the buttons are handed out in the order the list walks them"
+    );
+}

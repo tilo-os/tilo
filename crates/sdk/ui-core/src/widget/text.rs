@@ -1,4 +1,5 @@
 use crate::i18n::ArgValue;
+use crate::i18n::widget_text;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
@@ -361,7 +362,7 @@ impl Text {
     /// supplied via [`with_arg`](Self::with_arg) / [`with_args`](Self::with_args).
     pub(crate) fn resolved_label(&self) -> String {
         if self.args.is_empty() {
-            crate::i18n!(&self.label)
+            widget_text(&self.label)
         } else {
             let args: Vec<(&str, ArgValue)> = self
                 .args
@@ -860,6 +861,7 @@ impl Text {
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
         let size_changed = self.face.resized(rect);
         self.rect = rect;
+        self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
         }
@@ -951,6 +953,22 @@ impl Widget for Text {
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence
     );
+
+    /// Its words, as a heading where it is one and a paragraph's run of
+    /// text otherwise, set the way it sets them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element(match self.accessible_heading_level() {
+            Some(1) => "h1",
+            Some(2) => "h2",
+            Some(3) => "h3",
+            Some(_) => "h4",
+            None => "p",
+        });
+        cx.text(
+            crate::composition::TextLook::new(self.resolved_label(), &self.style, self.drawn_color)
+                .with_max_lines(self.max_lines.or(self.truncate.then_some(1))),
+        );
+    }
 
     fn own_page_title(&self) -> Option<String> {
         (self.accessible_heading_level() == Some(1))
@@ -1116,10 +1134,15 @@ impl Widget for Text {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        // What a draw observes repaints the text; its size is the layout's to answer, where it
+        // measures (a draw that sees another renderer than the one it was measured with must not
+        // ask for a measure the next layout's renderer then reverses).
+        let layout_dirty = self.layout_dirty;
         self.observe_theme(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         self.observe_renderer_text_scale(text_renderer);
+        self.layout_dirty = layout_dirty;
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
             if let Some(tone) = self.tone {
@@ -1242,7 +1265,6 @@ impl Widget for Text {
     /// Clears the cache-stale flag after the App consumes the scene.
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        self.layout_dirty = false;
     }
 
     /// Text's intrinsic size is fixed at construction, so once
@@ -1253,6 +1275,12 @@ impl Widget for Text {
         (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
             || self.shows_stale_copy()
+    }
+
+    /// A label the solver measured has the size it asked for, whether or not
+    /// a frame draws it: a label in a shut container finds no `mark_drawn`.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1819,7 +1847,6 @@ mod tests {
             let (role_measure, role_scene) =
                 build_measure_draw(&mut role, &scaled, &mut role_renderer);
             assert!(Widget::needs_redraw(&role));
-            assert!(Widget::is_layout_dirty(&role));
             assert_close(role.text_style().size, 28.0, "public effective style");
             assert_close(role_measure.height, 28.0 * 1.45, "role remeasure");
             assert_scene_font_size(&role_scene, 28.0, "role cache redraw");

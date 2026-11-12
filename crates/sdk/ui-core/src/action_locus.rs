@@ -15,11 +15,16 @@ pub struct PaintedActionMarker {
 /// Paint semantic activity against this frame's exact action bindings. Both
 /// native and retained hosts use this projection; an unresolved action remains
 /// in the activity rail rather than guessing a control from its label.
+///
+/// `text_loci` say where a frame's own text widgets draw the actor of an
+/// invocation that has said where its caret or selection is: an agent editing
+/// text is there, whatever control its action is bound to.
 pub(crate) fn draw_action_presence(
     paint: &mut crate::paint::PaintCtx<'_>,
     presence: &mut crate::presence::PresenceCtx,
     tree: &crate::a11y_tree::SemanticTree,
     bindings: &[crate::widget::ControlBindingMetadata],
+    text_loci: &[(tilo_actions::InvocationId, vello::kurbo::Rect)],
     viewport: vello::kurbo::Rect,
     surface: &str,
     now: crate::time::Instant,
@@ -29,7 +34,12 @@ pub(crate) fn draw_action_presence(
     // landed in — are marks already: the rail would name them twice.
     let mut resolved = presence.take_shown();
     for interaction in presence.visible_interactions(now) {
-        let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
+        let Some(bounds) = text_loci
+            .iter()
+            .find(|(invocation, _)| *invocation == interaction.invocation)
+            .map(|(_, rect)| *rect)
+            .or_else(|| interaction_bounds(tree, bindings, &interaction))
+        else {
             continue;
         };
         let bounds = bounds.intersect(viewport);
@@ -37,25 +47,37 @@ pub(crate) fn draw_action_presence(
             continue;
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
-        let label = presence.interaction_status_label(&interaction);
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
-        presence.draw_action_outline_labeled_within(
-            paint,
+        // An agent's place is washed in its colour and framed in it, brighter the moment its step
+        // is taken; anyone else's outline is the selection's own. One fill either way, at the
+        // outline's own strength or stronger, never a second layer over the control's words.
+        let fill = presence
+            .agent_locus_tint(&interaction, now, paint.theme)
+            .unwrap_or(crate::presence::render::OUTLINE_FILL);
+        presence.draw_peer_outline_filled(
+            paint.scene,
+            paint.theme,
+            paint.transform,
             &user,
-            &label,
             bounds,
             f64::from(paint.theme.tokens.radii.detail),
-            viewport,
+            fill,
         );
-        if let Some(marker) = presence.draw_agent_action_marker(
-            paint,
-            &interaction,
-            bounds,
+        // An agent's marker wears the one tag that says who it is and what it
+        // is doing; anyone else's outline is labelled beside it.
+        let place = crate::presence::MarkerPlace {
+            locus: bounds,
             control,
-            viewport,
-            surface,
-            now,
-        ) && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
+            ink: ink_around(tree, bounds, viewport),
+        };
+        let marker =
+            presence.draw_agent_action_marker(paint, &interaction, &place, viewport, surface, now);
+        if marker.is_none() {
+            let label = presence.interaction_status_label(&interaction);
+            presence.draw_action_label_within(paint, &user, &label, bounds, viewport);
+        }
+        if let Some(marker) = marker
+            && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
         {
             painted.push(PaintedActionMarker {
                 interaction: interaction.clone(),
@@ -78,7 +100,40 @@ pub(crate) fn draw_action_presence(
         now,
         &resolved,
     );
+    // Every visible interaction was drawn by this frame (where it acts, or on the rail): what it
+    // shows counts from here.
+    for interaction in presence.visible_interactions(now) {
+        presence.note_drawn(interaction.invocation, now);
+    }
     painted
+}
+
+/// The text a marker's tag must leave readable: each worded line-sized node
+/// the frame shows within `viewport`, the control the marker rests on among
+/// them — its words stay readable too.
+fn ink_around(
+    tree: &crate::a11y_tree::SemanticTree,
+    locus: vello::kurbo::Rect,
+    viewport: vello::kurbo::Rect,
+) -> Vec<vello::kurbo::Rect> {
+    let line = locus.height().max(24.0);
+    tree.iter()
+        .filter(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+                || node
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        })
+        .filter_map(|node| node.bounds)
+        .map(|bounds| bounds.intersect(viewport))
+        .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
+        // A worded box no taller than a row is a line of words: a list or a
+        // window that names itself is no line its tag must leave.
+        .filter(|bounds| bounds.height() <= line * 2.0)
+        .collect()
 }
 
 /// One visible expression of a domain action in the retained UI. The action
@@ -177,10 +232,17 @@ fn visit_action_ui_routes<'tree>(
             );
             let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                 && tree.action(semantic_id, &address.action).is_some();
+            // A window the session keeps publishes its record under the
+            // toolkit's transport alias, while the same record's controls may
+            // be bound under another alias or the record's own id: the action
+            // one record exports is one action, whatever published it.
             let matches_address = semantic_address
                 || matches!(
                     &binding.kind,
-                    crate::widget::ControlBindingKind::Action(candidate) if candidate == address
+                    crate::widget::ControlBindingKind::Action(candidate)
+                        if candidate.action == address.action
+                            && tilo_actions::logical_resource_id(&candidate.resource)
+                                == address.resource
                 );
             if !matches_address {
                 continue;
@@ -191,6 +253,30 @@ fn visit_action_ui_routes<'tree>(
             visit(binding, path, node);
         }
     }
+}
+
+/// The action an interaction names, by the record's own id: a window the
+/// session keeps publishes its record under the toolkit's transport alias
+/// (`tilo-ui-bound:v1:…`), and the controls it binds may be published under the
+/// same alias, another window's, or the record's own id. All of them are the one
+/// record's one action, so the alias is decoded before either side is matched.
+fn interaction_address(
+    interaction: &tilo_actions::SemanticInteraction,
+) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(
+        tilo_actions::logical_resource_id(&interaction.resource.id).into_owned(),
+        interaction.action.id.clone(),
+    )
+}
+
+/// The record a semantic node names: its id without the `r:` of a published
+/// resource or the component a window mounts its record in, and without the
+/// transport alias a window published it under.
+fn record_of(id: &crate::a11y_tree::SemanticId) -> std::borrow::Cow<'_, str> {
+    let id = crate::a11y_tree::component_record(id)
+        .or_else(|| id.as_str().strip_prefix("r:"))
+        .unwrap_or(id.as_str());
+    tilo_actions::logical_resource_id(id)
 }
 
 /// Resolve only an unambiguous, currently bound control. Labels and positional
@@ -206,10 +292,13 @@ pub(crate) fn interaction_bounds(
     if let tilo_actions::InteractionAnchor::ListItems { ids } = &interaction.anchor {
         return item_bounds(tree, ids);
     }
-    let address = tilo_actions::ActionAddress::new(
-        interaction.resource.id.clone(),
-        interaction.action.id.clone(),
-    );
+    let address = interaction_address(interaction);
+    // The resource node is what makes this an action on a record rather than a
+    // guessed widget: it must export the very action the invocation names.
+    // It stands under the id its own window published it as — the record's own
+    // id, or that window's transport alias — which for an action the session
+    // keeps is not the alias the invocation carries, so the record is what the
+    // node is found by.
     let canonical_id = if let Some(encoded) = address.resource.strip_prefix("ui:") {
         crate::a11y_tree::SemanticId(
             percent_encoding::percent_decode_str(encoded)
@@ -220,14 +309,25 @@ pub(crate) fn interaction_bounds(
     } else {
         crate::a11y_tree::SemanticId(format!("r:{}", address.resource))
     };
-    // Resource publication and durable identity are separate from a control's
-    // retained binding. Component aliases require explicit owner translation;
-    // they cannot be inferred from a matching leaf address.
-    let resource = tree.node(&canonical_id)?;
-    if !resource.durable_identity || resource.action(&address.action).is_none() {
+    // A widget the projection names by its own laid-out id stands for a record
+    // only while that id is durable: a key under a layout id moves when the UI
+    // rebuilds. A record the invocation names by its published id is that
+    // record, whatever window published it.
+    let stands_for_record = |node: &crate::a11y_tree::SemanticNode| {
+        node.action(&address.action).is_some()
+            && (node.durable_identity || !address.resource.starts_with("ui:"))
+    };
+    // A window publishes its record under the record's own id, or mounts it
+    // in a component whose node names it; either way that record is what its
+    // node is found by, whatever alias the invocation carries.
+    let published = tree.node(&canonical_id).is_some_and(stands_for_record)
+        || tree
+            .iter()
+            .any(|node| stands_for_record(node) && record_of(&node.id) == address.resource);
+    if !published {
         return None;
     }
-    let mut candidates = action_ui_routes(tree, bindings, &address)
+    let candidates = action_ui_routes(tree, bindings, &address)
         .into_iter()
         .filter(|route| match &interaction.anchor {
             tilo_actions::InteractionAnchor::Resource => true,
@@ -239,29 +339,74 @@ pub(crate) fn interaction_bounds(
                 .is_some_and(|node| node.durable_identity),
             _ => false,
         })
-        .filter_map(|route| route.bounds)
-        .filter(|bounds| {
+        .filter_map(|route| {
+            let presses = route
+                .path
+                .last()
+                .and_then(|target| tree.node(target))
+                .is_some_and(|node| crate::a11y::activation_role(node.role));
+            Some((route.bounds?, presses))
+        })
+        .filter(|(bounds, _)| {
             [bounds.x0, bounds.y0, bounds.x1, bounds.y1]
                 .into_iter()
                 .all(f64::is_finite)
                 && bounds.width() > 0.0
                 && bounds.height() > 0.0
-        });
-    let only = candidates.next()?;
-    candidates.next().is_none().then_some(only)
+        })
+        .collect::<Vec<_>>();
+    if let [(only, _)] = candidates.as_slice() {
+        return Some(*only);
+    }
+    // An action a field takes the words of and a button runs (a title, then
+    // "New issue") is done where it is pressed.
+    let mut pressed = candidates.iter().filter(|(_, presses)| *presses);
+    let (only, _) = pressed.next()?;
+    pressed.next().is_none().then_some(*only)
 }
 
-/// The node [`interaction_bounds`] finds `interaction` on, the deepest one
-/// a widget owns: what following its actor brings into view.
+/// The node [`interaction_bounds`] finds `interaction` on, reached through the
+/// widget that draws it: a synthetic child a widget publishes (a terminal's
+/// prompt line) belongs to the widget above it. What following its actor
+/// brings into view.
 pub(crate) fn interaction_node<'tree>(
     tree: &'tree crate::a11y_tree::SemanticTree,
     bindings: &[crate::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<&'tree crate::a11y_tree::SemanticNode> {
     let bounds = interaction_bounds(tree, bindings, interaction)?;
-    tree.iter()
-        .filter(|node| node.bounds == Some(bounds) && node.widget_taffy_id.is_some())
-        .last()
+    let mut owned = None;
+    let mut behind = None;
+    for node in tree.iter().filter(|node| node.bounds == Some(bounds)) {
+        behind = Some(node);
+        if node.widget_taffy_id.is_some() {
+            owned = Some(node);
+        }
+    }
+    if owned.is_some() {
+        return owned;
+    }
+    // The node is a synthetic child of the widget that draws it: the nearest
+    // node above it that a widget owns is that widget.
+    let mut parents = std::collections::HashMap::new();
+    for node in tree.iter() {
+        for child in &node.children {
+            parents.insert(child.clone(), node.id.clone());
+        }
+    }
+    // An id two nodes share can lead the parents round in a circle; no node
+    // has more ancestors than the tree has nodes.
+    let mut cursor = &behind?.id;
+    for _ in 0..tree.len() {
+        let parent = parents.get(cursor)?;
+        if let Some(node) = tree.node(parent)
+            && node.widget_taffy_id.is_some()
+        {
+            return Some(node);
+        }
+        cursor = parent;
+    }
+    None
 }
 
 /// The control an invocation on `locus` is acted through: the one its address
@@ -273,10 +418,7 @@ fn control_bounds(
     interaction: &tilo_actions::SemanticInteraction,
     locus: vello::kurbo::Rect,
 ) -> Option<vello::kurbo::Rect> {
-    let address = tilo_actions::ActionAddress::new(
-        interaction.resource.id.clone(),
-        interaction.action.id.clone(),
-    );
+    let address = interaction_address(interaction);
     let mut inside = action_ui_routes(tree, bindings, &address)
         .into_iter()
         .filter_map(|route| route.bounds)

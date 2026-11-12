@@ -35,6 +35,11 @@ const APP_PROFILES: [&str; 4] = ["dev", "test", "release", "thin-app"];
 /// hakari's feature union spans the whole monorepo; an app uses the
 /// placeholder crate instead.
 const UNPATCHED: [&str; 1] = ["workspace-hack"];
+/// Crates only tests depend on. The lockfile lists a package's
+/// dev-dependencies beside its others, so walking it from the SDK would
+/// reach whatever an SDK crate's tests start (a relay host, its agents and
+/// their engines), which no app links.
+const TEST_ONLY: [&str; 1] = ["test-relay"];
 
 /// Where a standalone app gets the SDK.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,7 +176,7 @@ impl Baseline {
         let mut reached = BTreeSet::new();
         let mut pending: Vec<String> = SDK_ROOTS.iter().map(|root| (*root).to_owned()).collect();
         while let Some(name) = pending.pop() {
-            if !reached.insert(name.clone()) {
+            if TEST_ONLY.contains(&name.as_str()) || !reached.insert(name.clone()) {
                 continue;
             }
             let dependencies = packages

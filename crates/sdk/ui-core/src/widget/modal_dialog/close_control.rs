@@ -9,6 +9,7 @@
 //! close control are view actions, the primary and third answers effects,
 //! which the host admits under the invoker's grants.
 
+use crate::i18n::widget_text;
 use automerge::ObjId;
 
 use super::{ModalDialog, Slot};
@@ -130,7 +131,7 @@ impl ModalDialog<dyn Widget> {
             let action = self.slot_action(slot)?;
             Some(NativeControl::resource_of(
                 &self.footer_id(name),
-                &crate::i18n!(&action.label),
+                &widget_text(&action.label),
                 kind,
             ))
         });

@@ -172,3 +172,224 @@ video-editor-clear-effects = Removed every effect from a clip
 video-editor-unlink = Unlinked a clip
 video-editor-link-audio = Linked a clip's sound
 video-editor-link-with = Linked two clips
+
+## Accessibility
+video-editor-a11y-resize = Resize the preview and the timeline
+video-editor-a11y-window = Video editor
+video-editor-a11y-bin-empty = No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.
+video-editor-a11y-timeline-empty = Timeline is empty. Add media from the bin to start editing.
+video-editor-a11y-move-playhead = Activate to move the playhead here
+video-editor-a11y-export-progress = Export progress
+video-editor-a11y-export-finished = Export finished
+video-editor-a11y-export-failed = Export failed
+video-editor-a11y-export-output = Output
+video-editor-a11y-cancel-export = Cancel export
+video-editor-a11y-start-export = Start export
+video-editor-a11y-close-export = Close export
+video-editor-a11y-export-details = Export failure details
+video-editor-a11y-export-blocked = Why export cannot run
+video-editor-a11y-close-shortcuts = Close shortcuts
+video-editor-a11y-chroma-key = { $on ->
+    [true] Switch chroma key off
+   *[false] Switch chroma key on
+}
+video-editor-a11y-mask-shape = Mask shape { $shape }
+video-editor-a11y-match-media = Match media
+
+## The shortcut sheet
+video-editor-shortcuts-title = Keyboard shortcuts
+video-editor-shortcut-project = Project
+video-editor-shortcut-playback = Playback
+video-editor-shortcut-editing = Editing
+video-editor-shortcut-clipboard = Clipboard
+video-editor-shortcut-view = View
+video-editor-shortcut-open-project = Open a project file
+video-editor-shortcut-export-project = Export a project file
+video-editor-shortcut-import-media = Import media
+video-editor-shortcut-export-video = Export video
+video-editor-shortcut-play-pause = Play or pause
+video-editor-shortcut-shuttle = Shuttle back, stop, forward
+video-editor-shortcut-jump-start-end = Jump to start or end
+video-editor-shortcut-marker-step = Previous or next marker
+video-editor-shortcut-clipped = Go to where the mix clipped
+video-editor-shortcut-timecode = Go to timecode
+video-editor-shortcut-trim = Trim the clip's start or end
+video-editor-shortcut-mark-range = Mark the render range
+video-editor-shortcut-clear-range = Clear the render range
+video-editor-shortcut-split = Split at the playhead
+video-editor-shortcut-add-marker = Add a marker
+video-editor-shortcut-add-title = Add a title
+video-editor-shortcut-delete-clip = Delete the clip
+video-editor-shortcut-ripple-delete = Delete and close the gap
+video-editor-shortcut-nudge = Nudge, or step the playhead
+video-editor-shortcut-cut-copy-paste = Cut, copy, paste
+video-editor-shortcut-duplicate = Duplicate the selection
+video-editor-shortcut-select-all = Select all clips
+video-editor-shortcut-undo = Undo
+video-editor-shortcut-redo = Redo
+video-editor-shortcut-pane = Next or previous pane
+video-editor-shortcut-scroll-timeline = Scroll the timeline
+video-editor-shortcut-zoom-fit = Zoom to fit
+video-editor-shortcut-zoom = Zoom in or out
+video-editor-shortcut-bin = Toggle the media bin
+video-editor-shortcut-inspector = Toggle the inspector
+video-editor-shortcut-sheet = This sheet
+video-editor-shortcut-close = Esc or ? to close
+
+video-editor-a11y-mix-clipped = Go to the next place the mix clipped
+video-editor-a11y-mix-level = Mix level
+
+## Window and accessibility copy
+video-editor-a11y-timecode = Timecode
+
+## What the window shows
+video-editor-drop-import = Drop to import
+video-editor-scroll-more-shortcuts = Scroll for more shortcuts
+video-editor-scroll-earlier-shortcuts = Scroll up for earlier shortcuts
+video-editor-go-to-timecode = Go to timecode
+video-editor-finishing-file = Finishing the file
+video-editor-rendering = Rendering, { $percent }%
+video-editor-export-done = Done: { $path }
+video-editor-marker = Marker
+video-editor-pause = Pause
+video-editor-transition-named = Transition { $transition }
+video-editor-label-colour = Label colour { $slot }
+video-editor-link-audio-video = Link audio and video
+video-editor-reset-gain-pan = Reset gain and pan
+video-editor-reset-track = Reset { $track } to 0.0 dB, centre
+video-editor-media = Media
+video-editor-no-media = No media yet
+video-editor-remove-by-dragging = Drag out of the box to remove
+video-editor-drag-to-shape = Curve points
+video-editor-frame-rate = Frame rate
+video-editor-match = Match { $effect }
+video-editor-nothing-marked = Nothing marked yet.
+video-editor-transition = Transition
+video-editor-label = Label
+video-editor-picture-in-picture = Picture in picture
+video-editor-side-by-side = Side by side
+video-editor-crop = Crop
+video-editor-anchor = Anchor
+video-editor-lane-clip-only = Lane { $lane }, this clip only
+video-editor-lane-one-other = Lane { $lane }, with 1 other clip
+video-editor-lane-other-clips = Lane { $lane }, with { $count } other clips
+video-editor-key-colour = Key colour
+video-editor-words = Words
+video-editor-accept-cancel-keys = Ctrl+Enter to accept, Esc to cancel
+video-editor-type-title = Title text
+video-editor-font = Font
+video-editor-colour = Colour
+video-editor-preview-too-small = Not enough room for the preview
+video-editor-no-audio = No audio
+video-editor-mix = Mix
+video-editor-no-preview = No preview
+video-editor-unlink-audio-video = Unlink audio and video
+video-editor-split-off-audio = Split off audio
+video-editor-link-state-linked = Linked audio and video
+video-editor-link-state-unlinked = Not linked
+video-editor-link-state-no-audio = No linked audio clip
+video-clip-missing-media = Missing media
+
+## The export dialog
+video-editor-export-title = Export video
+
+## The export dialog's buttons
+video-editor-start-export = Export
+video-editor-close-export = Close
+video-editor-cancel-export = Cancel
+
+## The window bar's slots
+video-editor-hide-inspector = Hide inspector
+video-editor-show-inspector = Show inspector
+video-editor-open-project-file = Open project file…
+video-editor-export-project-file = Export project file…
+video-editor-choose-media = Choose media…
+
+## A project nobody has named yet
+video-editor-untitled = Untitled
+
+## The bin, the inspector and the timeline's own controls
+video-editor-title-button = Title
+video-editor-new-title = New title
+video-editor-import-media = Import media
+video-editor-fill-frame = Fill frame
+video-editor-reset-curve = Reset { $channel }
+video-editor-sample-centre = Sample centre
+video-editor-no-frame-to-sample = No frame to sample
+video-editor-fit-to-picture = Fit to picture
+video-editor-title-colour = Title colour
+video-editor-add-effect-button = Add effect
+video-editor-split = Split
+video-editor-delete-button = Delete
+video-editor-video-track = Video track
+video-editor-audio-track = Audio track
+
+## An empty timeline, and the marker list
+video-editor-timeline-empty-title = Nothing on the timeline
+video-editor-timeline-import-media = Import media, then drag it here.
+video-editor-timeline-drag-clip = Drag a clip from the media bin onto a track.
+video-editor-timeline-import = Import media
+video-editor-timeline-show-media = Show media
+video-editor-marker-add = Add marker at playhead
+video-editor-go-to-clip = Go to clip
+
+## Actions
+
+video-editor-mark-in-button = Mark in
+video-editor-mark-out-button = Mark out
+video-editor-effect-reveal-track = Reveal track
+video-editor-effect-reveal-clip = Reveal clip
+video-editor-effect-reveal-effect = Reveal effect
+video-editor-effect-reveal-marker = Reveal marker
+video-editor-effect-reveal-media = Reveal media
+video-editor-effect-open-project-file = Open project file
+video-editor-effect-export-project-file = Export project file
+video-editor-effect-import-content = Import content
+video-editor-effect-export-timeline-content = Export timeline
+video-editor-effect-show-export = Show export settings
+video-editor-effect-toggle-media = Show or hide media
+video-editor-effect-toggle-inspector = Show or hide the inspector
+video-editor-effect-split-selection = Split at playhead
+video-editor-effect-render-timeline = Render video
+video-editor-effect-export-video-content = Export video content
+video-editor-effect-export-video-status = Read export status
+video-editor-effect-cancel-video-export = Cancel video export
+video-editor-effect-view-frame-content = Read frame content
+video-editor-project = Project
+video-editor-project-set-frame-size = Set frame size
+video-editor-project-set-frame-rate = Set frame rate
+video-editor-project-set-render-range = Set render range
+video-editor-project-clear-marks = Clear marks
+video-editor-project-add-title = Add title
+video-editor-project-set-title = Restyle title
+video-editor-project-add-clip = Add clip
+video-editor-project-move-clip = Move clip
+video-editor-project-set-clip = Set clip properties
+video-editor-project-remove-clip = Remove clip
+video-editor-project-add-marker = Add marker
+video-editor-project-place-two-angles = Place two angles
+video-editor-project-unplace-two-angles = Unplace two angles
+video-editor-project-remove-marker = Remove marker
+video-editor-project-add-track = Add track
+video-editor-project-reset-mix = Reset track mix
+video-editor-project-trim-lanes = Trim lanes
+video-editor-project-delete-track = Delete track
+video-editor-project-place-clip = Place clip
+video-editor-project-delete-media = Delete media
+video-editor-project-use-as-project-format = Match project format
+video-editor-project-delete = Delete clip
+video-editor-project-ripple-delete = Ripple delete
+video-editor-project-split-clip = Split clip
+video-editor-project-trim-in-clip = Trim clip start
+video-editor-project-trim-out-clip = Trim clip end
+video-editor-project-set-speed = Set clip speed
+video-editor-project-toggle-reverse = Reverse clip
+video-editor-project-reset-speed = Reset clip speed
+video-editor-project-set-param = Set a value at a time
+video-editor-project-remove-effect = Remove effect
+video-editor-project-move-effect = Move effect
+video-editor-project-set-effect-amount = Set effect strength
+video-editor-project-clear-effects = Clear effects
+video-editor-project-unlink = Unlink clip
+video-editor-project-link-audio = Separate audio
+video-editor-project-link-with = Link clips

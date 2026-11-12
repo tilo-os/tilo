@@ -1,10 +1,14 @@
 counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
+tab-loading = Wird geladen
+tab-playing = Gibt Ton wieder
+tab-muted = Stummgeschaltet
+tab-close-named = { $title } schließen
+tab-mute-named = { $title } stummschalten
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
-tab-controls-desktop = Steuert deinen Desktop
-tab-dev-build = Entwicklungsversion von { $installer }
-tab-shared-with = Geteilt mit { $place }
+tab-opened-by = { $agent } hat dieses Fenster geöffnet
+tab-opened-by-run = { $run }
 standalone-search-title = Suchen
 
 history-mode-title = Verlauf
@@ -47,9 +51,13 @@ host-menu-front = Alle nach vorne bringen
 host-window-minimize = Minimieren
 host-window-maximize = Maximieren
 host-window-restore = Wiederherstellen
+host-window-snap = Zurück in den Streifen
+host-window-collapse = Einklappen
+host-window-expand = Ausklappen
 host-window-close = Schließen
 window-toolbar-back = Zurück
 window-toolbar-forward = Vorwärts
+window-toolbar-new-tab = Neuer Tab
 window-toolbar-go = Öffnen
 window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
@@ -235,6 +243,7 @@ history-local-action-retry = Erneut versuchen
 history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
 
 history-sync-refused = Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Alles andere wird weiter synchronisiert; die Änderung bleibt auf diesem Gerät.
+history-sync-unreadable = Die geteilte Fassung dieses Eintrags konnte hier nicht gelesen werden. Deine eigenen Änderungen bleiben auf diesem Gerät und werden weiter gespeichert.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
 
@@ -311,6 +320,7 @@ close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Da
 block-image-untitled = Bild
 # The title a row shows for an item nobody has named yet.
 list-row-untitled = Ohne Titel
+list-row-check = { $title } als erledigt markieren
 block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
@@ -544,6 +554,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "Jun 29 – Jul 5".
 format-range = { $start } – { $end }
+# Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
+format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The clock the language reads by default: 12 or 24 (here 24-hour).
@@ -592,6 +604,8 @@ participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
+interaction-editing-field = bearbeitet { $field }
+interaction-added-text = Text hinzugefügt
 interaction-working = arbeitet
 interaction-action-doing = { $name }: { $doing }
 # Dasselbe mit der Phase, wo sie nur ein Mensch klären kann.
@@ -603,11 +617,16 @@ interaction-committed = Übernommen
 interaction-failed = Fehlgeschlagen
 interaction-cancelled = Abgebrochen
 interaction-progress = { $label } - { $done }/{ $total }
+# Eine mitwirkende Person, deren Schreibmarke ein Textfeld zeichnet: wo sie
+# ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
+presence-writing-here = { $name } schreibt hier
+presence-selecting-here = { $name } markiert hier
 participant-unknown-agent = Unbekannter Agent
 
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
+palette-argument-name = Aktionsbestätigung
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
 palette-empty = Nichts anzuzeigen
@@ -655,10 +674,6 @@ widget-mention-shortcut = Kurzbefehl
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
-mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
-mention-notice-channel = { $name } hat dich in { $channel } erwähnt
-mention-notice = { $name } hat dich erwähnt
-mention-notice-someone = Jemand
 rich-text-reference-unreadable = Nicht mit dir geteilt
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
@@ -684,6 +699,7 @@ slash-numbered = Nummerierte Liste
 slash-checklist = Checkliste
 slash-page = Unternotiz
 slash-link-page = Notiz verlinken
+slash-embed-page = Notiz einbetten
 slash-image = Bild
 slash-quote = Zitat
 slash-code = Codeblock
@@ -744,6 +760,9 @@ framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier ges
 empty-state-details = Details
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
+# The page rail's title, above its thumbnails, unless the app names it.
+page-sidebar-title = Seiten
+widget-documents-in-workspace = In diesem Arbeitsbereich
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
 record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
@@ -756,6 +775,27 @@ display-arrangement-caption-status = { $status } · { $name }
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen
 search-no-matches = Keine Treffer
+# Was eine Gruppenüberschrift und ihr Chip über die Ergebnisse sagen
+search-kind-actions = Aktionen
+search-kind-apps = Apps
+search-kind-notes = Notizen
+search-kind-records = Datensätze
+search-kind-files = Dateien
+search-kind-folders = Ordner
+search-kind-creators = Creator
+search-kind-videos = Videos
+search-kind-playlists = Wiedergabelisten
+search-kind-tabs = Tabs
+search-kind-window-groups = Fenstergruppen
+window-root-name = Tilo-Anwendungsfenster
+# Was das leere Feld der Palette sagt, worüber die Suche geht, nicht wie es heißt.
+action-palette-query = Aktionen und Ergebnisse durchsuchen
+search-field-filter = Filtern
+search-field-placeholder = Suchen
+# Wie das Feld selbst heißt, abseits des Platzhalters darin.
+search-field-name = Suche
+search-field-filter-name = Filter
+presentation-window-title = Präsentationsfenster
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
@@ -951,6 +991,10 @@ text-menu-bold = Fett
 text-menu-italic = Kursiv
 text-menu-underline = Unterstrichen
 text-menu-strikethrough = Durchgestrichen
+text-menu-heading-1 = Überschrift 1
+text-menu-heading-2 = Überschrift 2
+text-menu-heading-3 = Überschrift 3
+text-menu-body-text = Fließtext
 text-menu-bulleted-list = Aufzählung
 text-menu-numbered-list = Nummerierte Liste
 
@@ -1072,6 +1116,8 @@ conversation-delivery-read = Gelesen
 conversation-delivery-failed = Nicht gesendet
 conversation-delivery-uncertain = Status unklar
 conversation-new-messages = Neue Nachrichten
+conversation-day-new = { $day }: Neue Nachrichten
+conversation-read-by = Bis hierher gelesen von { $names }
 conversation-jump-unread = Zu den ersten ungelesenen
 conversation-jump-present = Zum Neuesten
 conversation-earlier-unavailable = Frühere Nachrichten sind auf den Hosts dieses Geräts nicht verfügbar
@@ -1167,3 +1213,66 @@ quote-dismiss = Nicht mehr antworten
 quote-open = Zeigen, worauf dies antwortet
 
 toast-reply-placeholder = Antworten…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
+widget-dialog-close = Schließen
+widget-dialog-cancel = Abbrechen
+widget-dismiss = Ausblenden
+widget-hand-to-agent = An Agenten übergeben
+widget-more = Mehr
+widget-copy = Kopieren
+widget-hosted-applications = Gehostete Anwendungen
+widget-searching = Wird gesucht…
+widget-search-results = Suchergebnisse
+widget-loading = Wird geladen
+widget-timeline-name = Position im Zeitstrahl
+widget-timeline-hint = Chronologische Sammlung. Pfeiltasten bewegen, Bild auf und Bild ab bewegen einen Bildschirm, Pos1 und Ende springen zum Anfang oder Ende; Plus und Minus ändern die Dichte.
+widget-timeline-jump = Zu { $marker } springen
+widget-timeline-group = Chronologischer Index
+widget-timeline-group-hint = Nach Datum geordnete Bildlaufleiste
+widget-shortcut-change = Tastenkürzel ändern
+widget-shortcut-unavailable = Dieses Tastenkürzel ist nicht verfügbar. Aktivieren, um ein anderes zu wählen.
+widget-chart-series = { $name } Datenreihe
+widget-step-of = Schritt { $step } von { $total }
+widget-steps-count = { $count ->
+    [one] { $count } Schritt
+   *[other] { $count } Schritte
+  }
+widget-page-of = Seite { $page } von { $total }
+widget-preview-named = Vorschau von { $label }
+widget-type-to-confirm = Zum Bestätigen { $phrase } eingeben
+widget-color-name = Farbe
+widget-color-hex = Hex-Farbe
+widget-crop-name = Seite zuschneiden
+widget-crop-hint = Von { $left }% bis { $right }% in der Breite und { $top }% bis { $bottom }% in der Höhe
+widget-document-switch-blocked = Dokumentwechsel blockiert
+widget-qr-failed = QR-Code konnte nicht gezeichnet werden: { $error }
+media-volume = Lautstärke
+media-position = Position
+media-more-controls = Weitere Steuerungen
+media-play = Wiedergeben
+media-pause = Pausieren
+media-previous = Vorheriger Titel
+media-next = Nächster Titel
+media-mute = Stummschalten
+media-unmute = Ton einschalten
+media-like = Gefällt mir
+media-unlike = Gefällt mir nicht mehr
+media-lyrics = Songtext
+media-shuffle = Zufällige Wiedergabe
+media-repeat = Wiederholen
+media-repeat-one = Titel wiederholen
+media-repeat-all = Alle wiederholen
+media-queue = Warteschlange
+media-player = Videoplayer
+media-no-video = Kein Video geladen
+media-player-hint = Leertaste gibt wieder oder pausiert; Pfeil links und rechts springen; Pfeil hoch und runter ändern die Lautstärke; M schaltet stumm; F schaltet Vollbild
+media-key-play-pause = Leertaste
+media-position-value = { $position } von { $duration }
+media-fullscreen-enter = Vollbild öffnen
+media-fullscreen-exit = Vollbild verlassen
+media-playback-settings = Wiedergabeeinstellungen
+media-toggle-on = Ein
+media-toggle-off = Aus
+floating-window-title = Schwebendes Fenster

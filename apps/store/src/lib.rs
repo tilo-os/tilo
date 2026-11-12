@@ -47,9 +47,6 @@
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic; see the note above"
 )]
-// Argument-bearing ui::i18n! expansions construct fluent::FluentArgs here.
-extern crate fluent;
-
 pub mod actions;
 pub mod app;
 pub mod bindings;

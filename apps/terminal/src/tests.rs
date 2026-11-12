@@ -8,6 +8,7 @@ use tilo_test_env::hang_bound;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
+use ui::widget::DrawChild;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 
@@ -498,7 +499,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 fn session_record_at(target: &crate::target::SessionTarget) -> AutoCommit {
     let mut record = ui::tilo_resource::Replica::<crate::resource::Terminal>::new();
     record
-        .apply(crate::resource::Terminal::RECORD_TARGET.with(target.encode()))
+        .apply(crate::resource::Terminal::RECORD_TARGET.with((target.encode(), None::<String>)))
         .expect("the target is recorded");
     record.doc().clone()
 }
@@ -878,7 +879,7 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let theme = Theme::high_contrast().with_text_scale(2.0);
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
-        widget.draw(
+        widget.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
@@ -1991,7 +1992,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             widget.force_geometry(viewport, 10.0, 20.0);
             widget.force_grid(vec!["one".into(), "two".into()]);
             widget.open_context_menu_at(viewport.center());
-            widget.draw(
+            widget.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
@@ -2114,7 +2115,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        widget.draw(
+        widget.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
@@ -2750,7 +2751,10 @@ fn terminal_resource_identity_convergence_and_presence() {
         let mut right = left.fork();
         for replica in [&mut left, &mut right] {
             replica
-                .apply(crate::resource::Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+                .apply(
+                    crate::resource::Terminal::CLAIM_PANE
+                        .with((uuid::Uuid::new_v4().to_string(), None::<String>)),
+                )
                 .unwrap();
         }
         left.sync_with(&mut right)
@@ -3202,15 +3206,17 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
 
     // Case `default_shell_runs_typed_command_through_pty`.
     {
-        // Spawn the user's default shell in a real PTY, then type a command
-        // exactly the way a keystroke sends it (`write_input`), and prove the
-        // shell ran it and the output flowed back into the grid.
+        // Spawn a shell in a real PTY, then type a command exactly the way a
+        // keystroke sends it (`write_input`), and prove the shell ran it and
+        // the output flowed back into the grid. The shell is the test's own, a
+        // POSIX `sh`: what the person who runs the tests uses for a shell is
+        // not something a test can type into.
         #[cfg(unix)]
         let home = tempfile::tempdir().expect("scratch HOME");
         #[cfg(unix)]
-        let cmd = hermetic_default_shell_command(home.path());
+        let cmd = hermetic_shell_command("/bin/sh", home.path());
         #[cfg(windows)]
-        let cmd = crate::inner::login_shell_command();
+        let cmd = crate::CommandBuilder::new(tilo_process::login_shell::login_shell());
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
         let mut doc = AutoCommit::new();
         // Let the shell reach a prompt before typing.
@@ -3263,6 +3269,17 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         );
     }
 
+    // Case `the_default_login_shell_spawns_whatever_the_person_chose`.
+    {
+        // The terminal opens on the shell this account starts, also when the
+        // shell the person chose is gone: its order is `tilo_process`'s own
+        // test, this is the spawn a person gets.
+        let shell = tilo_process::login_shell::login_shell();
+        let cmd = crate::CommandBuilder::new(shell.clone());
+        TerminalWidget::spawn_command(cmd)
+            .unwrap_or_else(|error| panic!("a terminal opens on {shell}: {error}"));
+    }
+
     // Case `with_command_forces_xterm_256color_term`.
     {
         // fish (and terminfo) need $TERM to name a terminal they support. Run a
@@ -3278,26 +3295,14 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
     }
 }
 
-/// The user's default shell exactly as the Host target off Tilo resolves it, but
-/// started in a controlled environment: a scratch `HOME`, a minimal env and no
-/// system or user startup files. Host startup scripts may read the terminal's
-/// stdin (distrobox's `profile.d` hook runs `host-spawn` when no display
-/// variables are set, swallowing typed input), so a test that types into the
-/// shell must not let them run.
+/// `shell` started in a controlled environment: a scratch `HOME`, a minimal env
+/// and no system or user startup files. Host startup scripts may read the
+/// terminal's stdin (distrobox's `profile.d` hook runs `host-spawn` when no
+/// display variables are set, swallowing typed input), so a test that types
+/// into the shell must not let them run.
 #[cfg(unix)]
-fn hermetic_default_shell_command(home: &std::path::Path) -> portable_pty::CommandBuilder {
-    let mut cmd = crate::inner::login_shell_command();
-    let shell = cmd
-        .get_argv()
-        .first()
-        .map(std::path::PathBuf::from)
-        .expect("login shell command has a program");
-    match shell.file_name().and_then(|n| n.to_str()) {
-        Some("bash") => cmd.args(["--noprofile", "--norc"]),
-        Some("zsh") => cmd.arg("-f"),
-        Some("fish") => cmd.arg("--no-config"),
-        _ => {}
-    }
+fn hermetic_shell_command(shell: &str, home: &std::path::Path) -> portable_pty::CommandBuilder {
+    let mut cmd = crate::CommandBuilder::new(shell);
     let empty_rc = home.join("empty-rc");
     std::fs::write(&empty_rc, b"").expect("write empty rc file");
     cmd.env_clear();
@@ -4127,107 +4132,11 @@ fn real_pty_query_replies_and_fish_startup() {
     fish_starts_without_the_device_attribute_warning();
 }
 
-// ---------------------------------------------------------------
-// Default-shell resolution: honour $SHELL, then the passwd login shell,
-// then /bin/sh. fish must launch when it is the user's login shell.
-// ---------------------------------------------------------------
-
-/// Login-shell resolution order and the default spawn using it.
-#[test]
-#[cfg(unix)]
-fn login_shell_resolution_and_default_spawn() {
-    // Body of case `spawn_default_command_uses_the_resolved_login_shell` (a function so its early `return`/`?` stays local).
-    fn spawn_default_command_uses_the_resolved_login_shell() {
-        // The real resolver: when $SHELL is set (as it is in an interactive
-        // session), spawn_default launches exactly that shell. We assert on the
-        // resolver the spawn path calls, not a reimplementation.
-        if let Ok(shell) = std::env::var("SHELL")
-            && !shell.is_empty()
-        {
-            assert_eq!(
-                crate::inner::resolve_login_shell(),
-                shell,
-                "spawn_default's shell resolution must honour $SHELL"
-            );
-            return;
-        }
-        // No $SHELL in this environment: the resolver must still yield an
-        // absolute shell path from passwd (or /bin/sh), never an empty string.
-        let resolved = crate::inner::resolve_login_shell();
-        assert!(
-            resolved.starts_with('/'),
-            "resolved shell must be absolute, got {resolved:?}"
-        );
-    }
-
-    // Case `resolve_login_shell_prefers_shell_env`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(
-                Some("/usr/bin/fish".into()),
-                Some("/bin/bash".into())
-            ),
-            "/usr/bin/fish",
-            "$SHELL wins when it is set and non-empty"
-        );
-    }
-
-    // Case `resolve_login_shell_falls_back_to_passwd_when_shell_unset`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(None, Some("/usr/bin/zsh".into())),
-            "/usr/bin/zsh",
-            "with $SHELL unset the passwd login shell is used, not a hardcoded /bin/sh"
-        );
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(
-                Some(String::new()),
-                Some("/usr/bin/zsh".into())
-            ),
-            "/usr/bin/zsh",
-        );
-    }
-
-    // Case `resolve_login_shell_last_resort_is_sh`.
-    {
-        assert_eq!(
-            crate::inner::resolve_login_shell_with(None, None),
-            "/bin/sh",
-            "with neither source available the session still starts on /bin/sh"
-        );
-    }
-
-    // Case `passwd_lookup_resolves_a_real_login_shell`.
-    {
-        // Proves the getpwuid fallback actually reads a plausible shell for the
-        // account running the tests (an absolute path). This is the source the
-        // resolver uses when $SHELL is unset.
-        let shell = crate::inner::login_shell_from_passwd()
-            .expect("the current user must have a passwd entry with a login shell");
-        assert!(
-            shell.starts_with('/'),
-            "passwd login shell should be an absolute path, got {shell:?}"
-        );
-    }
-
-    // Case `spawn_default_command_uses_the_resolved_login_shell`.
-    spawn_default_command_uses_the_resolved_login_shell();
-}
-
 /// Locate a `fish` binary for the live-fish test. Returns `None` if fish is
 /// not installed (the test then skips — it exercises an external program).
 #[cfg(unix)]
 fn locate_fish() -> Option<std::path::PathBuf> {
-    for p in ["/usr/bin/fish", "/bin/fish", "/usr/local/bin/fish"] {
-        let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|d| d.join("fish"))
-        .find(|c| c.exists())
+    tilo_process::tools::ToolDirs::current().find("fish")
 }
 
 // ---------------------------------------------------------------
@@ -4541,7 +4450,7 @@ fn typing_damages_only_its_row_and_the_cursor() {
     let mut frame = |widget: &mut TerminalWidget| {
         let mut scene = Box::new(Scene::new());
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
-            widget.draw(
+            widget.draw_child(
                 scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -4605,7 +4514,7 @@ fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let mut frame = |widget: &mut TerminalWidget| {
-        widget.draw(
+        widget.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -4717,4 +4626,60 @@ fn copy_on_select_is_kept_for_the_next_terminal() {
         second.selects_to_copy_for_test(),
         "a new terminal opens with the choice already made"
     );
+}
+
+/// An agent's command run at this session is shown at the prompt — where a
+/// person types it — for everyone, and a page following the agent goes
+/// there. Nobody following moves nothing.
+#[test]
+#[serial_test::serial]
+fn an_agents_narrated_run_lands_at_the_prompt() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
+    app.settle();
+    let prompt = app
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.prompt_rect())
+        .expect("hosted terminal");
+    assert!(
+        prompt.width() > 0.0 && prompt.height() > 0.0,
+        "the prompt has a line: {prompt:?}"
+    );
+    // The session's record is where a command run is asked: its prompt is
+    // bound to that action, as a button is bound to the one it presses.
+    let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+    let run = bindings
+        .iter()
+        .find_map(|binding| match &binding.kind {
+            ui::widget::ControlBindingKind::Action(address) if address.action == "run" => {
+                Some(address.clone())
+            }
+            _ => None,
+        })
+        .expect("the prompt is bound to the session's run");
+    let event = ui::headless::agent_acting(&run.resource, &run.action);
+    // The cursor rests on the prompt, for a viewer following nobody.
+    let locus = app
+        .harness()
+        .semantic_locus(&event)
+        .expect("the run is shown at the prompt");
+    assert!(
+        (locus.center() - prompt.center()).length() < 0.5,
+        "the cursor is on the prompt's line: {locus:?} vs {prompt:?}"
+    );
+    // A follower's view goes there; a person following someone else moves
+    // nothing, and each action is gone to once.
+    app.harness()
+        .update_presence(|presence| presence.apply_interaction(event.clone()).is_ok());
+    let mut followed = ui::headless::FollowedView::default();
+    assert!(
+        !app.harness()
+            .follow_view("someone-else", &mut ui::headless::FollowedView::default()),
+        "not following moves nothing"
+    );
+    assert!(app.harness().follow_view("agent", &mut followed));
+    assert!(!app.harness().follow_view("agent", &mut followed));
+    // A control the frame cannot name an action for, or an action it cannot
+    // find, is the contract every native app is audited by.
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{audit:#?}");
 }

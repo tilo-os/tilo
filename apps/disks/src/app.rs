@@ -55,8 +55,8 @@ impl ActionKind {
         }
     }
     /// The action's name, for a status.
-    pub(crate) fn title(self) -> &'static str {
-        self.label().trim_end_matches('…')
+    pub(crate) fn title(self) -> String {
+        self.label().trim_end_matches('…').to_owned()
     }
     /// What the action would run on `dev`, reported on the sample machine.
     fn plan(self, dev: &str) -> String {
@@ -150,14 +150,15 @@ impl ActionKind {
             ActionKind::Eject => "eject",
         }
     }
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            ActionKind::Mount => "Mount",
-            ActionKind::Unmount => "Unmount",
-            ActionKind::Format => "Format…",
-            ActionKind::Benchmark => "Benchmark",
-            ActionKind::Eject => "Eject",
-        }
+    /// The action's name, as the menu and its status say it.
+    pub(crate) fn label(self) -> String {
+        crate::locales::CATALOG.t(match self {
+            ActionKind::Mount => "disks-action-mount",
+            ActionKind::Unmount => "disks-action-unmount",
+            ActionKind::Format => "disks-action-format",
+            ActionKind::Benchmark => "disks-action-benchmark",
+            ActionKind::Eject => "disks-action-eject",
+        })
     }
     /// What the action does, as the button's tooltip.
     pub(crate) fn describe(self) -> &'static str {
@@ -279,8 +280,9 @@ pub struct DisksApp {
     presented: Option<(u64, u64)>,
     shell: NavShell,
     built: Option<ViewKey>,
-    /// The slots last declared to the bar.
-    declared_bar: Option<ui::window_toolbar::WindowToolbar>,
+    /// The slots last declared to the bar, and the window they were declared
+    /// on ([`ui::window_toolbar::current_window`]).
+    declared_bar: Option<(Option<u64>, ui::window_toolbar::WindowToolbar)>,
 }
 
 impl Store {
@@ -1092,8 +1094,9 @@ impl DisksApp {
                 store.tab,
             )
         };
+        let bar = (ui::window_toolbar::current_window(), bar);
         if self.declared_bar.as_ref() != Some(&bar) {
-            ui::window_toolbar::declare(Some(bar.clone()));
+            ui::window_toolbar::declare(Some(bar.1.clone()));
             self.declared_bar = Some(bar);
         }
     }
@@ -1195,7 +1198,7 @@ impl ui::widget::Decorator for DisksApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Politeness, Role};
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Disks")
+            .with_name(crate::locales::CATALOG.t("disks-title"))
             .with_bounds(self.shell.get_rect());
         let status = self.store.borrow().status.clone();
         if !status.is_empty() {
@@ -1492,7 +1495,7 @@ mod tests {
             Framed::harness_mut(&mut app)
                 .inspection_json()
                 .unwrap()
-                .contains(&ui::i18n::I18nManager::lookup_plain("arriving-loading")),
+                .contains(&crate::locales::CATALOG.t("arriving-loading")),
             "the opening page says the drives are on their way"
         );
         app.state().show_reading(Ok(Topology::sample()));

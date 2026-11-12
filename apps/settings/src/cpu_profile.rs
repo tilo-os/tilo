@@ -45,11 +45,24 @@ fn dirty_leaves(widget: &dyn ui::Widget, out: &mut Vec<serde_json::Value>) {
     }
 }
 
+/// What a measured interaction does to the published resource, which decides
+/// whether the framework publishes it again inside the measured frames.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publication {
+    /// It changes what the resource holds or offers: the framework publishes
+    /// the resource again, so that work belongs to the measurement.
+    Changed,
+    /// It changes only how the frame is painted: the published tree is
+    /// reused, and the measurement covers the painting.
+    Unchanged,
+}
+
 fn measure(
     app: &mut TestApp<SettingsShell>,
     category: Category,
     operation: &str,
     sample: usize,
+    publication: Publication,
     act: impl FnOnce(&mut TestApp<SettingsShell>),
 ) {
     app.harness().clear_profile_samples();
@@ -71,11 +84,14 @@ fn measure(
         category.slug(),
         "the mounted canonical pane is the measured subject"
     );
-    assert!(
-        phases
-            .iter()
-            .any(|scope| scope.phase == "framework.publication")
-    );
+    if publication == Publication::Changed {
+        assert!(
+            phases
+                .iter()
+                .any(|scope| scope.phase == "framework.publication"),
+            "the interaction changes the resource, so the framework publishes it"
+        );
+    }
     {
         let layout = app.harness().last_relayout();
         if category == Category::Keyboard && operation == "pointer-hover" && sample >= 2 {
@@ -142,6 +158,7 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 category,
                 "pointer-pane-navigation",
                 sample,
+                Publication::Changed,
                 |app| {
                     app.harness().click_at(
                         f64::midpoint(bounds.x0, bounds.x1),
@@ -150,14 +167,30 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
                 },
             );
             let toggle = sidebar_toggle(&mut app);
-            measure(&mut app, category, "pointer-hover", sample, |app| {
-                app.harness().send(&cursor_moved(1190.0, 890.0));
-                app.harness()
-                    .send(&cursor_moved(toggle.center().x, toggle.center().y));
-            });
-            measure(&mut app, category, "sidebar-control-click", sample, |app| {
-                app.harness().click_at(toggle.center().x, toggle.center().y);
-            });
+            // Hovering the shared toggle repaints it and leaves the resource
+            // as it was, so the measured frames are the painting's.
+            measure(
+                &mut app,
+                category,
+                "pointer-hover",
+                sample,
+                Publication::Unchanged,
+                |app| {
+                    app.harness().send(&cursor_moved(1190.0, 890.0));
+                    app.harness()
+                        .send(&cursor_moved(toggle.center().x, toggle.center().y));
+                },
+            );
+            measure(
+                &mut app,
+                category,
+                "sidebar-control-click",
+                sample,
+                Publication::Changed,
+                |app| {
+                    app.harness().click_at(toggle.center().x, toggle.center().y);
+                },
+            );
             assert_eq!(
                 app.harness().native_input_snapshot().unwrap()["sidebar_open"],
                 false

@@ -51,17 +51,18 @@ pub const DIMENSIONS: [Dimension; 8] = [
 
 impl Dimension {
     /// The quantity's name: the chip's word and the page's heading.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Length => "Length",
-            Self::Mass => "Mass",
-            Self::Volume => "Volume",
-            Self::Time => "Time",
-            Self::Speed => "Speed",
-            Self::Area => "Area",
-            Self::Data => "Data",
-            Self::Temperature => "Temperature",
-        }
+    pub fn label(self) -> String {
+        let message = match self {
+            Self::Length => "calculator-quantity-length",
+            Self::Mass => "calculator-quantity-mass",
+            Self::Volume => "calculator-quantity-volume",
+            Self::Time => "calculator-quantity-time",
+            Self::Speed => "calculator-quantity-speed",
+            Self::Area => "calculator-quantity-area",
+            Self::Data => "calculator-quantity-data",
+            Self::Temperature => "calculator-quantity-temperature",
+        };
+        crate::resource::CATALOG.t(message)
     }
 
     /// A stable slug for the semantic addresses of this quantity's controls.

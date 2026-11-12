@@ -1467,7 +1467,11 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         ] {
             let control = track_control(&mut app, &mut doc, track, "offline", draw_once);
             send(&mut app, &cursor_at(control.center()), &mut doc);
-            assert_eq!(ui::widget::Widget::tooltip(&app), Some(name), "{track}");
+            assert_eq!(
+                ui::widget::Widget::tooltip(&app).as_deref(),
+                Some(name),
+                "{track}"
+            );
         }
         // Pressing the failed row's control retries it.
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
@@ -1492,7 +1496,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once_large_text);
         send(&mut app, &cursor_at(retry.center()), &mut doc);
         assert_eq!(
-            app.tooltip(),
+            app.tooltip().as_deref(),
             Some("connection reset while downloading"),
             "hover exposes the unelided transport failure"
         );
@@ -4721,6 +4725,7 @@ fn a_sidebar_section_starts_a_fresh_trail() {
 #[test]
 fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
     let (message, offers_search) = first_run_copy(false);
+    let message = crate::i18n::t(message);
     assert!(
         !offers_search,
         "search can't find anything without a catalogue"
@@ -4729,7 +4734,7 @@ fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
     assert!(!message.contains("backend"), "{message}");
     // It names the control by what it says on every host, where the window
     // bar shows it as a button or in its More actions menu.
-    for message in [message, super::HOME_EMPTY_MESSAGE] {
+    for message in [message, crate::i18n::t(super::HOME_EMPTY_MESSAGE)] {
         assert!(message.contains("Open audio file"), "{message}");
     }
     assert!(first_run_copy(true).1);

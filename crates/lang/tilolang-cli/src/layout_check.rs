@@ -196,6 +196,9 @@ pub struct Options {
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
     /// it, in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
+    /// Take the shots as a maximized window stands at rest: its bar hidden over the window's
+    /// top edge until the person reaches for it, the app's frame filling the window.
+    pub bar_at_rest: bool,
     /// The themes `shots` are taken in: a shipped theme by name (`glass`, `block`), in its
     /// light and dark variant, or a theme bundle's directory (`ui::theme_bundle`); none takes
     /// the stock light and dark.
@@ -211,8 +214,9 @@ pub struct Options {
     pub states: Vec<String>,
     /// Controls pressed by the words they carry, in order, before each window is read: what a
     /// person opens by pressing it (`--press "Since you looked"`, or the row of a task, which
-    /// opens where it stands), where a click is the only way to reach it. A label under
-    /// `keys`' rules: it reaches the window at the `dump` size.
+    /// opens where it stands, or the box beside that row's title, `Mark Buy oat milk done`),
+    /// where a click is the only way to reach it. A label under `keys`' rules: it reaches the
+    /// window at the `dump` size.
     pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
@@ -235,6 +239,7 @@ impl Default for Options {
             allow: None,
             dump: None,
             shots: None,
+            bar_at_rest: false,
             themes: Vec::new(),
             root: None,
             states: Vec::new(),
@@ -356,6 +361,52 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// dates.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    // Every worker below takes a core, so a second check at the same time only slows both: the
+    // machine is held for the whole check, the views it opens under the same lock.
+    let _machine = machine_lock()?;
+    let (apps, allow) = open(options)?;
+    let scenes = scenes_of(&apps);
+    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
+    for scene in &scenes {
+        planned.extend(scene.units());
+    }
+    let mut phase = run(&apps, &planned, options)?;
+    // The views nothing showed yet, opened on the scenario whose resources they take, with what
+    // every scene before it showed: the scenes of one app decide in order, as the check ran them
+    // one after another, while the apps decide at the same time.
+    let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
+    // A dump is read as a page of one layout after another: the units ran at the same time, and
+    // their pages are printed where the work stands, in the order the check would have done it
+    // alone.
+    for found in phase.iter().chain(opened.iter()) {
+        eprint!("{}", found.dump);
+    }
+    let (layouts, work, gathered) = gather(&scenes, &mut phase, &mut opened);
+    refuse_a_missing_press(&phase, &opened, options)?;
+    let mut findings: Vec<Finding> = gathered
+        .into_iter()
+        .flat_map(BTreeMap::into_values)
+        .collect();
+    let unreached = unreached_views(&apps, &shown);
+    let mut seen = BTreeSet::new();
+    for finding in &mut findings {
+        finding.id = finding.id();
+        finding.allowed = allow.contains(&finding.id);
+        seen.insert(finding.id.clone());
+    }
+    let stale = allow.difference(&seen).cloned().collect();
+    Ok(Report {
+        findings,
+        stale,
+        unreached,
+        layouts,
+        work,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+/// Every app `options` names, and the findings the allow-list holds.
+fn open(options: &Options) -> Result<(Vec<App>, BTreeSet<String>), String> {
     // Without the product's catalog this process's text falls back to the host's faces, so
     // every judgement about how it lays out would be about a typeface the product does not
     // ship. That is the environment, not the app: refuse rather than report on it.
@@ -376,10 +427,13 @@ pub fn check(options: &Options) -> Result<Report, String> {
         .iter()
         .map(|dir| App::read(dir, &options.search, options.root.as_deref()))
         .collect::<Result<_, String>>()?;
-    // Every scenario of every app, on every layer it has: the units of work, each a window and
-    // a frame pipeline of its own, so they run at the same time.
-    let scenes: Vec<Scene> = apps
-        .iter()
+    Ok((apps, allow))
+}
+
+/// Every scenario of every app, on every layer it has: the units of work, each a window and
+/// a frame pipeline of its own, so they run at the same time.
+fn scenes_of(apps: &[App]) -> Vec<Scene> {
+    apps.iter()
         .enumerate()
         .flat_map(|(app, held)| {
             held.roots.iter().flat_map(move |root| {
@@ -390,26 +444,20 @@ pub fn check(options: &Options) -> Result<Report, String> {
                 })
             })
         })
-        .collect();
-    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
-    for scene in &scenes {
-        planned.extend(scene.units());
-    }
-    let mut phase = run(&apps, &planned, options)?;
-    // The views nothing showed yet, opened on the scenario whose resources they take, with
-    // what every scene before it showed: the scenes of one app decide in order, as the check
-    // ran them one after another, while the apps decide at the same time.
-    let (mut opened, shown) = run_opens(&apps, &scenes, &phase, options)?;
-    // A dump is read as a page of one layout after another: the units ran at the same time, and
-    // their pages are printed where the work stands, in the order the check would have done it
-    // alone.
-    for found in phase.iter().chain(opened.iter()) {
-        eprint!("{}", found.dump);
-    }
-    let mut layouts_run: usize = 0;
+        .collect()
+}
+
+/// What every scene's units found: the layouts they ran, the work they did, and each app's
+/// findings, one per node.
+fn gather(
+    scenes: &[Scene],
+    phase: &mut [Found],
+    opened: &mut [Found],
+) -> (usize, Work, Vec<BTreeMap<Identity, Finding>>) {
+    let mut layouts: usize = 0;
     let mut work = Work::default();
     let mut gathered: Vec<BTreeMap<Identity, Finding>> = Vec::new();
-    gathered.resize_with(apps.len(), BTreeMap::new);
+    gathered.resize_with(scenes.len(), BTreeMap::new);
     for ((scene, units), opened) in scenes
         .iter()
         .zip(phase.chunks_mut(3))
@@ -418,7 +466,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         let [scenario, press, push] = units else {
             continue;
         };
-        layouts_run = layouts_run
+        layouts = layouts
             .saturating_add(scenario.layouts)
             .saturating_add(press.layouts)
             .saturating_add(push.layouts)
@@ -434,9 +482,17 @@ pub fn check(options: &Options) -> Result<Report, String> {
         merge(held, std::mem::take(&mut press.gathered));
         merge(held, std::mem::take(&mut push.gathered));
     }
-    // A label no window carried anywhere is the one the run reports: a control a scenario
-    // shows and the next does not — a window's change mark — is pressed where it stands,
-    // rather than leaving every scenario without it unpressed.
+    (layouts, work, gathered)
+}
+
+/// Refuse a `--press` label no window carried anywhere: a control a scenario shows and the next
+/// does not — a window's change mark — is pressed where it stands, rather than leaving every
+/// scenario without it unpressed.
+fn refuse_a_missing_press(
+    phase: &[Found],
+    opened: &[Found],
+    options: &Options,
+) -> Result<(), String> {
     let mut pressed = BTreeSet::new();
     for found in phase.iter().chain(opened.iter()) {
         pressed.extend(found.pressed.iter().cloned());
@@ -448,26 +504,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
     {
         return Err(format!("--press {missing:?}: no control carries it"));
     }
-    let mut findings: Vec<Finding> = gathered
-        .into_iter()
-        .flat_map(BTreeMap::into_values)
-        .collect();
-    let unreached = unreached_views(&apps, &shown);
-    let mut seen = BTreeSet::new();
-    for finding in &mut findings {
-        finding.id = finding.id();
-        finding.allowed = allow.contains(&finding.id);
-        seen.insert(finding.id.clone());
-    }
-    let stale = allow.difference(&seen).cloned().collect();
-    Ok(Report {
-        findings,
-        stale,
-        unreached,
-        layouts: layouts_run,
-        work,
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-    })
+    Ok(())
 }
 
 /// The views no layout showed a node of: a view its window draws off a call or from the
@@ -512,6 +549,127 @@ fn stage_person_locale(locale: &str) -> Result<(), String> {
     environment.locale = Some(language.to_string());
     tilo_process::environment::install_environment(environment);
     Ok(())
+}
+
+/// The columns whose header the window's view declares: a title that names what the column
+/// shows, or buttons that act on it. Each stands in its column's own header row at every time,
+/// never in the window's bar alone.
+fn declared_headers(shell: &tilo_ui_host::UiNode) -> Vec<&'static str> {
+    use tilo_render_protocol::patch::Value;
+    [
+        ("sidebar", "sidebar_title", "sidebar_actions"),
+        ("overview", "overview_title", "overview_actions"),
+        ("content", "title", "actions"),
+    ]
+    .into_iter()
+    .filter(|(_, title, actions)| {
+        let named = match shell.props.get(*title) {
+            Some(Value::Text(title)) => !title.trim().is_empty(),
+            Some(_) => true,
+            None => false,
+        };
+        named
+            || shell.children.iter().any(|child| {
+                child.kind == "slot"
+                    && child.props.get("name") == Some(&Value::text(*actions))
+                    && !child.children.is_empty()
+            })
+    })
+    .map(|(column, ..)| column)
+    .collect()
+}
+
+/// One control standing in a column's header row: what the person reads at the top of the
+/// column, and what pressing it does there.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct RowControl {
+    pub name: String,
+    pub id: String,
+    pub rect: [f64; 4],
+    /// The window's one main action, drawn on the accent.
+    pub primary: bool,
+    /// The row's own door to the actions that do not fit it.
+    pub menu: bool,
+    /// It says its words beside its icon, rather than standing as its icon alone.
+    pub labelled: bool,
+}
+
+/// The controls standing in the window's header rows, in reading order: every button whose
+/// middle stands in a column's header row where the person reaches it.
+#[cfg(test)]
+pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<RowControl> {
+    fn walk(
+        node: &ui::headless::InspectionNode,
+        rows: &[ui::kurbo::Rect],
+        root: &dyn ui::widget::Widget,
+        viewport: (u32, u32),
+        out: &mut Vec<RowControl>,
+    ) {
+        let [x, y, w, h] = node.rect;
+        let middle = ui::kurbo::Point::new(x + w / 2.0, y + h / 2.0);
+        if let Some(access) = &node.semantics
+            && access.role == ui::a11y::Role::Button
+            && reachable(node, viewport)
+            && rows.iter().any(|row| row.contains(middle))
+        {
+            let id = node.test_id.clone().unwrap_or_default();
+            let primary = ui::widget::find_test_id(root, &id).is_some_and(is_primary_button);
+            out.push(RowControl {
+                name: access.name.clone().unwrap_or_default(),
+                menu: node.widget == "OverflowDoor",
+                id,
+                rect: node.rect,
+                primary,
+                labelled: w > h * 1.5,
+            });
+            return;
+        }
+        for child in &node.children {
+            walk(child, rows, root, viewport, out);
+        }
+    }
+    fn is_primary_button(widget: &dyn ui::widget::Widget) -> bool {
+        if let Some(button) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::Button>())
+        {
+            return button.is_primary();
+        }
+        let mut found = false;
+        widget.for_each_child(&mut |child| found = found || is_primary_button(child));
+        found
+    }
+    let harness = staged.harness();
+    let rows: Vec<ui::kurbo::Rect> = harness
+        .column_frames()
+        .iter()
+        .map(|frame| frame.header)
+        .filter(|header| header.height() > 0.0)
+        .collect();
+    let mut out = Vec::new();
+    walk(
+        &harness.inspection().root,
+        &rows,
+        harness.root_widget(),
+        viewport,
+        &mut out,
+    );
+    out
+}
+
+/// The names of the buttons the window draws where the person reaches them.
+fn button_names(node: &ui::headless::InspectionNode, viewport: (u32, u32), out: &mut Vec<String>) {
+    if let Some(access) = &node.semantics
+        && access.role == ui::a11y::Role::Button
+        && reachable(node, viewport)
+        && let Some(name) = access.name.as_ref().filter(|name| !name.is_empty())
+    {
+        out.push(name.clone());
+    }
+    for child in &node.children {
+        button_names(child, viewport, out);
+    }
 }
 
 /// The words the window showed from a catalogue in a language other than the one it speaks,
@@ -691,6 +849,43 @@ enum What {
     Push,
 }
 
+/// What a staging costs against one layout of a window: the scenario is made and written down
+/// once, at several layouts' cost, before any layout runs.
+const STAGING: usize = 6;
+
+impl Unit {
+    /// What this unit will cost, in layouts of a window: every window it stages and every
+    /// layout it reads, so the units run costliest first.
+    fn weight(&self, apps: &[App]) -> usize {
+        let layouts = layouts().len();
+        let sizes = SIZES.len();
+        match &self.what {
+            // The scenario's window, and the views it opens on it: each one laid out every way.
+            What::Scenario => layouts.saturating_add(STAGING),
+            What::Opens { .. } => layouts.saturating_mul(2).saturating_add(STAGING),
+            // One window at each size, each pressed: only the sizes whose window carries the
+            // control are pressed again, of which none is known here.
+            What::Press => {
+                let labels = apps
+                    .get(self.scene.app)
+                    .map_or(0, |app| primary_labels(&app.meta).len());
+                let pressed = labels.saturating_mul(sizes).min(sizes);
+                sizes
+                    .saturating_add((pressed.saturating_add(1)).saturating_mul(STAGING))
+                    .saturating_add(pressed)
+            }
+            // A window at each size held in the hand, the row it opened tapped, and the sizes'
+            // layouts read after the tap and after the window's way back.
+            What::Push => {
+                let touch = SIZES.iter().filter(|size| size.touch).count();
+                touch
+                    .saturating_mul(STAGING + 1 + 2 * 2)
+                    .saturating_add(layouts)
+            }
+        }
+    }
+}
+
 /// What one unit of work found.
 #[derive(Default)]
 struct Found {
@@ -783,13 +978,16 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     if units.is_empty() {
         return Ok(Vec::new());
     }
-    // Every worker below takes a core, so a second check at the same time only slows both.
-    let _machine = machine_lock()?;
     let workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
         .min(units.len());
     let taken: Vec<Mutex<Option<Result<Found, String>>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
+    // The costliest units first: a worker takes the next one when it is free, so the sweep ends
+    // when its heaviest unit does, and leaving those for last would hold every other worker
+    // waiting. What each unit costs is read off what it lays out, not measured.
+    let mut order: Vec<usize> = (0..units.len()).collect();
+    order.sort_by_key(|&at| std::cmp::Reverse(units.get(at).map_or(0, |unit| unit.weight(apps))));
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
     let unstarted: Mutex<Option<String>> = Mutex::new(None);
@@ -805,6 +1003,9 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
                 };
                 while !stopped.load(Ordering::Relaxed) {
                     let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&at) = order.get(at) else {
+                        break;
+                    };
                     let Some(unit) = units.get(at) else {
                         break;
                     };
@@ -841,9 +1042,6 @@ fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, St
     Ok(out)
 }
 
-/// What opening the views of one scene found, under the index of the scene it was staged on.
-type Opened = Vec<(usize, Found)>;
-
 /// Run `chain` for each app of `busy` at once, each on a worker of its own, and write what it found
 /// in that app's slot. A worker that cannot start is reported, never left to leave its slot empty.
 fn opens_together(
@@ -875,6 +1073,9 @@ fn opens_together(
         None => Ok(()),
     }
 }
+
+/// What opening the views of one scene found, under the index of the scene it was staged on.
+type Opened = Vec<(usize, Found)>;
 
 /// Run the views no layout showed yet, on the scene whose resources they take, for every app:
 /// an app's scenes one after another, each seeing what the ones before it showed, and the apps
@@ -1004,6 +1205,7 @@ impl Worker<'_> {
             sources: &app.sources,
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
+            bar_at_rest: self.options.bar_at_rest,
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
@@ -1099,13 +1301,14 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
 }
 
 /// The resources the rows of the window's lists show: a row is keyed by the view that draws it,
-/// which ends in the item it draws.
+/// which ends in the item it draws. The rows come as the window lists them, so the first of a
+/// type is the first row of that type a person meets.
 fn row_items(
-    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    rows: &[(String, tilo_ui_host::UiNode)],
     resources: &[ResourceRef],
 ) -> Vec<ResourceRef> {
-    rows.keys()
-        .filter_map(|key| {
+    rows.iter()
+        .filter_map(|(key, _)| {
             resources
                 .iter()
                 .find(|resource| key.ends_with(&resource.id))
@@ -1122,6 +1325,15 @@ fn resource_of(listed: &[ResourceRef], named: &[ResourceRef], ty: &str) -> Optio
         .find(|resource| resource.ty == ty)
         .cloned()
         .or_else(|| named.iter().find(|resource| resource.ty == ty).cloned())
+}
+
+/// The resource [`resource_of`] picks for `ty` off `staged`'s window: the first row of that type
+/// the window's lists show, or else the first the window names. The same row in every process
+/// and at every size, so a page laid out here is the page another run lays out.
+fn listed_of(staged: &mut stage::Staged, ty: &str) -> Option<ResourceRef> {
+    let rows = staged.rows();
+    let named = staged.resources();
+    resource_of(&row_items(&rows, &named), &named, ty)
 }
 
 /// The views of `meta` the system shows on surfaces of its own: each action's proposal view,
@@ -1208,13 +1420,46 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
         .find_map(|child| button_named(child, label))
 }
 
-/// How a press by its words reaches a window: the control of that name, or where a menu row of
-/// that name stands — a row is painted by the menu that shows it, so only a press at where it
-/// stands reaches it.
+/// How a press by its words reaches a window: the control of that name, the box a widget
+/// publishes of its own, or where a menu row of that name stands — a row is painted by the menu
+/// that shows it, so only a press at where it stands reaches it.
 enum Pressing {
     /// A control, and whether a click reaches it rather than its semantic action.
     Control(String, bool),
+    /// A control a widget publishes as a semantic child of its own: the widget holding it, and
+    /// the child's target.
+    Child(String, String),
     At(ui::kurbo::Rect),
+}
+
+/// The box a widget publishes as a control of its own, named `label`: the box beside a row's
+/// title, which the row draws apart from its own words so that a person or a tool reaches the
+/// box and not the row (`Mark Buy oat milk done`). The widget's test id, and the child's target.
+fn checked_control_named(
+    node: &ui::headless::InspectionNode,
+    label: &str,
+) -> Option<(String, String)> {
+    let target = node.semantics.as_ref().and_then(|access| {
+        access.children.iter().find_map(|child| {
+            let presses = matches!(
+                child.role,
+                ui::a11y::Role::Checkbox | ui::a11y::Role::Switch | ui::a11y::Role::RadioButton
+            );
+            if presses && !child.state.disabled && child.name.as_deref() == Some(label) {
+                child.action_target.clone()
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(target) = target
+        && let Some(id) = &node.test_id
+    {
+        return Some((id.clone(), target));
+    }
+    node.children
+        .iter()
+        .find_map(|child| checked_control_named(child, label))
 }
 
 /// The box the row `label` of a menu stands at, under `node`, when the window shows one.
@@ -1329,25 +1574,25 @@ fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Optio
 }
 
 /// Whether the window shows its way back where a finger reaches it: how a person holding a
-/// narrow window comes back to the list it opened something from. The desktop's bar over the
-/// window carries it, as its own navigation or the shell's slot; an app in a window of its own
-/// draws a chip in its frame.
-fn back_chip(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
+/// narrow window comes back to the list it opened something from: the chip the shell's header
+/// row holds.
+fn back_chip(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
     fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
         (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
             || node.children.iter().any(|child| in_frame(child, viewport))
     }
-    if in_frame(&staged.harness().inspection().root, viewport) {
-        return true;
+    in_frame(&staged.harness().inspection().root, viewport)
+}
+
+/// Whether the window's header row carries its sidebar toggle where a finger reaches it: how a
+/// person holding a window whose list stands over what it shows as a drawer brings that list
+/// forward.
+fn sidebar_toggle(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
+    fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
+        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_SIDEBAR))
+            || node.children.iter().any(|child| in_frame(child, viewport))
     }
-    let bar = staged
-        .harness_mut()
-        .window_bar_layout(f64::from(viewport.0));
-    bar.controls.iter().any(|control| {
-        (control.slot == "back" || control.id == ui::widget::WINDOW_BACK)
-            && control.rect[2] > 0.0
-            && control.rect[3] > 0.0
-    })
+    in_frame(&staged.harness().inspection().root, viewport)
 }
 
 /// Where a finger taps to open a row of the list the window shows now: the row it keeps
@@ -1355,6 +1600,26 @@ fn back_chip(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
 fn tappable_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
     let root = &staged.harness().inspection().root;
     row_opened(root, viewport).or_else(|| first_row(root, viewport))
+}
+
+/// Where a finger taps to open a row of the list standing in front of what the window shows:
+/// the first row the list does not keep chosen, which opens what the window is not already
+/// showing, or else the chosen one.
+fn unchosen_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
+    fn unchosen(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
+        let selected = node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| access.state.selected);
+        if !selected && is_row(node) && reachable(node, viewport) {
+            return Some(row_centre(node));
+        }
+        node.children
+            .iter()
+            .find_map(|child| unchosen(child, viewport))
+    }
+    unchosen(&staged.harness().inspection().root, viewport)
+        .or_else(|| tappable_row(staged, viewport))
 }
 
 /// One app's check under way.
@@ -1365,6 +1630,8 @@ struct AppCheck<'a> {
     sources: &'a source::SourceMap,
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
+    /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
+    bar_at_rest: bool,
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
@@ -1427,9 +1694,6 @@ impl AppCheck<'_> {
         // A page a person meets from a list is one of that list's own rows, so a view staged over
         // the list opens a resource the list holds where it holds one, and a resource of a type
         // the list does not show where it holds none.
-        let rows = staged.rows();
-        let named = staged.resources();
-        let listed = row_items(&rows, &named);
         for default in &self.meta.default_views {
             let Some(view) = self.meta.views.iter().find(|v| v.id == default.view) else {
                 continue;
@@ -1440,11 +1704,21 @@ impl AppCheck<'_> {
             {
                 continue;
             }
-            let Some(resource) = resource_of(&listed, &named, &default.ty) else {
+            let Some(resource) = listed_of(staged, &default.ty) else {
                 continue;
             };
-            staged.open(resource);
+            staged.open(resource.clone());
             self.run(staged, &format!("{title}, then a {} opened", view.name))?;
+            // An app whose rows open where they stand (a task opened in its list) answers the
+            // record's own door with its place: its page is still a view the app draws, from
+            // the row's menu, so the run opens it by its name as that menu row does.
+            if !shows(&self.shown, &self.meta.app, &view.name) {
+                staged.open_with(&resource, &view.id);
+                self.run(
+                    staged,
+                    &format!("{title}, then a {} opened on its own", view.name),
+                )?;
+            }
         }
         for view in surface_views(self.meta) {
             if shows(&self.shown, &self.meta.app, &view.name) {
@@ -1457,9 +1731,13 @@ impl AppCheck<'_> {
             let Some(ty) = self.meta.types.iter().find(|t| t.name == param.ty) else {
                 continue;
             };
-            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
+            let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
+            // The window shows the item first, as a person's path does (a list's choice, a
+            // link): a named view opened over a window showing another item stages a screen
+            // nobody reaches, its list naming one thing and its page another.
+            staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
@@ -1470,9 +1748,13 @@ impl AppCheck<'_> {
             if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
-            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
+            let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
+            // The window shows the item first, as a person's path does (a list's choice, a
+            // link): a named view opened over a window showing another item stages a screen
+            // nobody reaches, its list naming one thing and its page another.
+            staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
@@ -1486,10 +1768,22 @@ impl AppCheck<'_> {
     /// lays the window out afresh. A layout that only a fresh pass puts right (a header row left
     /// where a frame of the motion put it) shows here.
     fn press(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
-        for label in primary_labels(self.meta) {
-            for size in SIZES {
+        let labels = primary_labels(self.meta);
+        if labels.is_empty() {
+            return Ok(());
+        }
+        // Which of the window's primary controls each size carries, read off one window laid
+        // out at every size in turn: a control the window does not show at a size is one
+        // nobody presses there, and a window staged for it would be a window thrown away.
+        let carried = self.controls_of_each_size(packages, unit, &labels)?;
+        for (index, label) in labels.iter().enumerate() {
+            for (at, size) in SIZES.iter().enumerate() {
+                if !carried.get(at).is_some_and(|here| here.contains(&index)) {
+                    continue;
+                }
+                let label = *label;
                 let layout = Layout {
-                    size,
+                    size: *size,
                     display_scale: 1.0,
                     text_scale: 1.0,
                 };
@@ -1530,11 +1824,57 @@ impl AppCheck<'_> {
         }
         Ok(())
     }
+
+    /// The indices of `labels` the window carries at each size, each read off the one window
+    /// laid out at that size: the scenario as staged, with the motion a press reaches it by.
+    fn controls_of_each_size(
+        &self,
+        packages: &Rc<stage::Packages>,
+        unit: &Unit,
+        labels: &[&str],
+    ) -> Result<Vec<BTreeSet<usize>>, String> {
+        let Some(first) = SIZES.first().copied() else {
+            return Ok(Vec::new());
+        };
+        let mut staged = stage::Staged::over(
+            &self.meta.app,
+            packages,
+            &unit.scene.scenario,
+            (first.width, first.height),
+            ui::Theme::light(),
+            unit.scene.root.as_deref(),
+            self.states,
+        )?;
+        let mut carried = Vec::with_capacity(SIZES.len());
+        for size in SIZES {
+            let layout = Layout {
+                size,
+                display_scale: 1.0,
+                text_scale: 1.0,
+            };
+            staged.lay_out_moving((size.width, size.height), layout.theme(), layout.input())?;
+            let root = &staged.harness().inspection().root;
+            carried.push(
+                labels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, label)| {
+                        button_named(root, label).is_some()
+                            || painted_button_named(root, label).is_some()
+                    })
+                    .map(|(index, _)| index)
+                    .collect(),
+            );
+        }
+        Ok(carried)
+    }
+
     /// What a person holding the window comes to after choosing what to read: at every size it
     /// is held in the hand, a row of the list the window shows tapped as a finger taps it,
-    /// which pushes what the row opens in front of that list, and the list itself brought back
-    /// by its Back chip where the state the app opened stands in front of it. A scene whose
-    /// window opened nothing has no such state, and no list to come back to.
+    /// which pushes what the row opens in front of that list. The list itself comes forward by
+    /// the window's Back chip where the state the app opened stands pressed over it, and by its
+    /// sidebar toggle where it stands over the page as a drawer. A scene whose window opened
+    /// nothing has no such state, and no list to come back to.
     fn push(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
         let all = layouts();
         for size in SIZES.iter().filter(|size| size.touch) {
@@ -1569,25 +1909,42 @@ impl AppCheck<'_> {
                 tappable_row(&staged, viewport)
             };
             if tapped.is_none() {
-                if !back_chip(&mut staged, viewport) {
-                    continue;
-                }
-                let shown = staged.front_target();
-                staged.press_bar_slot(ui::widget::WINDOW_BACK)?;
-                layer = format!("{layer}, then Back pressed");
-                for layout in of_size.iter().copied() {
-                    staged.lay_out(
-                        (layout.size.width, layout.size.height),
-                        layout.theme(),
-                        layout.input(),
-                        layout.display_scale,
-                    )?;
-                    self.audit(&mut staged, layout, &layer)?;
-                }
-                // A window that kept what it showed has no list behind it to tap.
-                page_in_front = page_in_front && staged.front_target() == shown;
-                if !page_in_front {
-                    tapped = tappable_row(&staged, viewport);
+                // A window whose list stands over what it shows as a drawer brings it forward
+                // by its sidebar toggle, which the app's page never covers: the list is a screen
+                // of the window's, not a page pressed over the page it opened.
+                if sidebar_toggle(&staged, viewport) {
+                    staged.press_shell(ui::widget::WINDOW_SIDEBAR)?;
+                    layer = format!("{layer}, then the sidebar");
+                    for layout in of_size.iter().copied() {
+                        staged.lay_out(
+                            (layout.size.width, layout.size.height),
+                            layout.theme(),
+                            layout.input(),
+                            layout.display_scale,
+                        )?;
+                        self.audit(&mut staged, layout, &layer)?;
+                    }
+                    // A row of the list arrives in front of what the window showed, which goes
+                    // behind it: the tap that opens the row brings that page back.
+                    tapped = unchosen_row(&staged, viewport);
+                } else if back_chip(&staged, viewport) {
+                    let shown = staged.front_target();
+                    staged.press_shell(ui::widget::WINDOW_BACK)?;
+                    layer = format!("{layer}, then Back pressed");
+                    for layout in of_size.iter().copied() {
+                        staged.lay_out(
+                            (layout.size.width, layout.size.height),
+                            layout.theme(),
+                            layout.input(),
+                            layout.display_scale,
+                        )?;
+                        self.audit(&mut staged, layout, &layer)?;
+                    }
+                    // A window that kept what it showed has no list behind it to tap.
+                    page_in_front = page_in_front && staged.front_target() == shown;
+                    if !page_in_front {
+                        tapped = tappable_row(&staged, viewport);
+                    }
                 }
             }
             // The row the window keeps chosen, or else the first of the list: what a person
@@ -1701,6 +2058,10 @@ impl AppCheck<'_> {
                                 painted_button_named(root, press)
                                     .map(|id| Pressing::Control(id, false))
                             })
+                            .or_else(|| {
+                                checked_control_named(root, press)
+                                    .map(|(id, target)| Pressing::Child(id, target))
+                            })
                             .or_else(|| painted_row_named(root, press).map(Pressing::At))
                     };
                     let Some(pressing) = found else {
@@ -1712,6 +2073,7 @@ impl AppCheck<'_> {
                             staged.press(&id, layout.size.touch)?;
                         }
                         Pressing::Control(id, _) => staged.press_action(&id)?,
+                        Pressing::Child(id, target) => staged.press_child(&id, &target)?,
                         Pressing::At(bounds) => {
                             let center = bounds.center();
                             staged.press_at(center.x, center.y)?;
@@ -1746,6 +2108,36 @@ impl AppCheck<'_> {
         Ok(())
     }
 
+    /// Write the bar and the frame `audit` read into the dump, with a capture at plain scale.
+    fn dump_frame(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+        bar: &ui::window_toolbar::BarLayout,
+        inspection: &ui::headless::InspectionSnapshot,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(bar).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            self.dumped,
+            "== {} {label} at {layout} — the bar\n{json}",
+            self.meta.app
+        );
+        let json = serde_json::to_string_pretty(inspection).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            self.dumped,
+            "== {} {label} at {layout} — the frame\n{json}",
+            self.meta.app
+        );
+        if let Some(dir) = self.shots
+            && (layout.display_scale - 1.0).abs() < f64::EPSILON
+            && (layout.text_scale - 1.0).abs() < f32::EPSILON
+        {
+            self.shoot(staged, layout, label, dir)?;
+        }
+        Ok(())
+    }
+
     /// Gather what is wrong with `staged` as it is laid out now, at `layout`, as staged by
     /// `label`.
     fn audit(
@@ -1757,7 +2149,27 @@ impl AppCheck<'_> {
         let theme = layout.theme();
         self.text.set_text_scale(theme.text_scale);
         self.text.apply_typography(&theme.tokens.typography);
+        self.require_built(staged, label)?;
+        self.ran = self.ran.saturating_add(1);
         let viewport = (layout.size.width, layout.size.height);
+        let inspection = staged.harness().inspection();
+        // The bar the desktop draws over the frame: the app's own slots merged with the window's
+        // navigation, its one "…" and its controls.
+        let bar = staged
+            .harness_mut()
+            .window_bar_layout(f64::from(viewport.0));
+        if self.dump == Some(viewport) {
+            self.dump_frame(staged, layout, label, &bar, &inspection)?;
+        }
+        let problems = self.problems(staged, layout, &inspection, &bar);
+        self.gather_all(problems, layout, label);
+        self.work.add(staged.take_work());
+        Ok(())
+    }
+
+    /// Refuse a window the app left broken: one that refused what the app sent, or whose
+    /// components did not build.
+    fn require_built(&self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         if let Some(why) = staged.failed() {
             return Err(format!(
                 "{}: {label}: the window refused what the app sent: {why}",
@@ -1772,33 +2184,19 @@ impl AppCheck<'_> {
                 broken.join("\n  ")
             ));
         }
-        self.ran = self.ran.saturating_add(1);
-        let inspection = staged.harness().inspection();
-        // The bar the desktop draws over the frame: the app's own slots merged with the window's
-        // navigation, its one "…" and its controls.
-        let bar = staged
-            .harness_mut()
-            .window_bar_layout(f64::from(viewport.0));
-        if self.dump == Some(viewport) {
-            let json = serde_json::to_string_pretty(&bar).map_err(|e| e.to_string())?;
-            let _ = writeln!(
-                self.dumped,
-                "== {} {label} at {layout} — the bar\n{json}",
-                self.meta.app
-            );
-            let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-            let _ = writeln!(
-                self.dumped,
-                "== {} {label} at {layout} — the frame\n{json}",
-                self.meta.app
-            );
-            if let Some(dir) = self.shots
-                && (layout.display_scale - 1.0).abs() < f64::EPSILON
-                && (layout.text_scale - 1.0).abs() < f32::EPSILON
-            {
-                self.shoot(staged, layout, label, dir)?;
-            }
-        }
+        Ok(())
+    }
+
+    /// What is wrong with the window: its frame's, its views' and its bar's, each read off where
+    /// the window shows it.
+    fn problems(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        inspection: &ui::headless::InspectionSnapshot,
+        bar: &ui::window_toolbar::BarLayout,
+    ) -> Vec<audit::Problem> {
+        let viewport = (layout.size.width, layout.size.height);
         self.note_shown(&inspection.root);
         // A view that ran but drew nothing has no widget; what the app sent still names it. What
         // it declared its controls do is read off the same trees.
@@ -1808,19 +2206,30 @@ impl AppCheck<'_> {
             declared.read(&composed);
         }
         let rows = staged.rows();
-        for row in rows.values() {
+        for (_, row) in &rows {
             self.note_shown_row(row);
             declared.read(row);
         }
-        let mut problems = audit::inspect(
+        let min_target = layout
+            .size
+            .touch
+            .then(|| f64::from(layout.input().minimum_target()));
+        let mut problems =
+            audit::inspect(&inspection.root, viewport, min_target, layout.display_scale);
+        // A heading keeps one rhythm to the rows it names: the room a finger's target takes
+        // stands over its line, never between the heading and its first row.
+        problems.extend(audit::heading_rooms(
             &inspection.root,
-            viewport,
-            layout
-                .size
-                .touch
-                .then(|| f64::from(layout.input().minimum_target())),
-            layout.display_scale,
-        );
+            &layout.theme(),
+            min_target,
+        ));
+        // A page's body keeps the room a control beside its heading leads it to only where the
+        // column has that room: a phone's screen starts it on the gutter.
+        problems.extend(audit::indented_bodies(
+            &inspection.root,
+            &layout.theme(),
+            min_target,
+        ));
         problems.extend(audit::clipped_text(
             staged.harness_mut().root_widget_mut(),
             self.text,
@@ -1831,19 +2240,70 @@ impl AppCheck<'_> {
             viewport,
             &declared,
             ui::chrome::disclosure_gutter(&layout.theme()),
+            bar.controls
+                .iter()
+                .find(|control| control.id == "window-toolbar-location")
+                .map(|control| control.name.as_str())
+                .filter(|name| !name.trim().is_empty()),
         ));
         problems.extend(mixed_language());
-        problems.extend(audit::bar(&bar));
-        // A window shows one bar: a header row under it is a second one.
+        // The bar the harness offers is the one bar of one app window, over its frame: what its
+        // app declares for it. A desk lays out other apps' places, each in a window with a bar
+        // of its own that the shell draws, so the slots a place's view declares are not the
+        // desk window's and its bar says nothing of them: the shell's own checks hold those
+        // bars (windows.rs), and the app's bar is held where the app is laid out alone.
+        let one_window = self.meta.roots.len() <= 1 && self.meta.named_roots.is_empty();
+        if one_window {
+            problems.extend(audit::bar(bar));
+        }
         let (bar_height, _) = staged.harness().frame_extent(viewport);
+        // The words the bar paints itself stand over the frame's own, which is laid out under
+        // the bar: both are read where the window shows them.
+        problems.extend(audit::text_on_text(
+            &inspection.root,
+            viewport,
+            &bar.labels,
+            bar_height,
+        ));
+        // A window shows one bar: a header row under it is a second one.
         problems.extend(audit::stacked_header_rows(
             bar_height,
             staged.harness().window_header_row_height(),
         ));
-        for mut problem in problems {
+        // The bar's primary action is read off the slots this window declared, never the
+        // process's: windows laid out side by side in one process keep their bars apart.
+        if one_window {
+            problems.extend(audit::bar_primary(
+                staged.harness().window_toolbar().as_ref(),
+                bar,
+            ));
+        }
+        // Each column's header row stands at rest, as the app's own: what names a column and
+        // acts on what it shows is on the window at every time, never only once the window's bar
+        // is out, and the bar never offers one of those actions again.
+        if one_window {
+            let declared = staged
+                .composed()
+                .map(|composed| declared_headers(&composed))
+                .unwrap_or_default();
+            problems.extend(audit::column_headers_at_rest(
+                &declared,
+                &staged.harness().column_frames(),
+                f64::from(viewport.0),
+            ));
+            let mut buttons = Vec::new();
+            button_names(&inspection.root, viewport, &mut buttons);
+            problems.extend(audit::offered_twice(bar, &buttons));
+        }
+        for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
-            if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
+            if let Some(row) = problem
+                .id
+                .as_ref()
+                .and_then(|id| rows.iter().find(|(key, _)| key == id))
+                .map(|(_, row)| row)
+            {
                 let mut inner = Vec::new();
                 row_keys(row, &mut inner);
                 inner.reverse();
@@ -1851,10 +2311,15 @@ impl AppCheck<'_> {
                 problem.keys = inner;
                 problem.id = None;
             }
+        }
+        problems
+    }
+
+    /// Gather each problem as `label` staged it.
+    fn gather_all(&mut self, problems: Vec<audit::Problem>, layout: Layout, label: &str) {
+        for problem in problems {
             self.gather(&problem, layout, label);
         }
-        self.work.add(staged.take_work());
-        Ok(())
     }
 
     /// Write the window as `label` leaves it at `layout` to `dir`, light and dark, and lay it
@@ -1891,6 +2356,9 @@ impl AppCheck<'_> {
             };
             for (name, theme) in pair {
                 staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                if self.bar_at_rest {
+                    staged.harness_mut().present_window_bar_at_rest();
+                }
                 let file = if family.is_empty() {
                     dir.join(format!("{}-{slug}-{name}.png", self.short))
                 } else {
@@ -2061,6 +2529,23 @@ pub fn render(report: &Report) -> String {
         report.layouts,
         report.elapsed_ms / 1000,
         report.elapsed_ms % 1000 / 100,
+    );
+    // What the layouts spent, counted by the toolkit rather than timed: the same sources give
+    // the same numbers on any machine, so two runs of a change are compared by them.
+    let layout = report.work.layout;
+    let _ = writeln!(
+        out,
+        "layout: {} frames, {} solves in {} passes ({}.{} s), {} region solves and {} kept, {} measures, {} probes in {} copies",
+        report.work.frames,
+        layout.solves,
+        layout.passes,
+        layout.solve_nanos / 1_000_000_000,
+        layout.solve_nanos % 1_000_000_000 / 100_000_000,
+        layout.regions,
+        layout.kept,
+        layout.measures,
+        layout.probes,
+        layout.copies,
     );
     out
 }

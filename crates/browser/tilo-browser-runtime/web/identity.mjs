@@ -282,8 +282,8 @@ async function openKept(storage, record, persist) {
      * entry it signed, which is kept here beside the person and reaches
      * every session of theirs, the open ones at once and later ones as they
      * start. */
-    async revokeDevice(keyHex) {
-      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex));
+    async revokeDevice(keyHex, reason = 'retired') {
+      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex, reason));
       const kept = (await storage.get(BROWSER_RECORD)) ?? record;
       record = {...kept, revocations: [...(kept.revocations ?? []), entry]};
       await storage.put(BROWSER_RECORD, record);
@@ -315,6 +315,9 @@ export async function browserIdentity({storage, create = true, persist = globalT
     if (!create) return null;
     const identity = await runtime.rootNew();
     record = {rootPublicKey: identity.userPublicKey, held: identity.held, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey))};
+    // Kept from the start: the same person on the next load, and in every
+    // other tab of this site.
+    await storage.put(BROWSER_RECORD, record);
   }
   const identity = await openKept(storage, record, persist);
   current = identity;

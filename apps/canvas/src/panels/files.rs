@@ -32,6 +32,7 @@ use crate::document::{self, ArtworkFile, ArtworkRecents, EXTENSION, Recent, Rece
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
+use ui::widget::DrawChild;
 
 /// A chooser, or a write it led to, that has not answered yet.
 enum Pending {
@@ -113,7 +114,7 @@ impl FileDesk {
     fn say(&self, id: &str, args: &[(&str, ui::i18n::ArgValue)]) {
         self.tools
             .notice
-            .set(Some(ui::i18n::I18nManager::format(id, args)));
+            .set(Some(crate::locales::CATALOG.t_args(id, args)));
     }
 
     fn name_of(path: &Path) -> String {
@@ -156,7 +157,7 @@ impl FileDesk {
             // One chooser at a time; the open one answers first.
             return;
         }
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let art = self.live.get();
         match request {
             FileRequest::Open => {
@@ -194,11 +195,11 @@ impl FileDesk {
     }
 
     fn choose_save(&mut self, art: &Artwork, follow: bool) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let title = if follow {
             art.title.clone()
         } else {
-            ui::i18n::I18nManager::format(
+            crate::locales::CATALOG.t_args(
                 "canvas-copy-of",
                 &[(
                     "title",
@@ -297,7 +298,7 @@ impl FileDesk {
 
     /// Ask where the export's `bytes` go.
     fn choose_export(&mut self, stem: &str, settings: Settings, bytes: Vec<u8>) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let extension = settings.format.extension();
         let name = document::file_name(stem, extension);
         let request = PickRequest::save(
@@ -340,7 +341,7 @@ impl FileDesk {
         let Some(pending) = self.chooser.take() else {
             return;
         };
-        let gone = || ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone");
+        let gone = || crate::locales::CATALOG.t("canvas-chooser-gone");
         match pending {
             Pending::Open(channel) => match channel.try_recv() {
                 Err(TryRecvError::Empty) => self.chooser = Some(Pending::Open(channel)),
@@ -597,7 +598,7 @@ fn export_stem(art: &Artwork) -> String {
             matches!(mark.shape, crate::model::Shape::Image { .. }) && mark.name == art.title
         });
     if from_picture {
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-edited",
             &[("title", art.title.clone().into())],
         )
@@ -756,7 +757,7 @@ impl ui::widget::Decorator for FileDesk {
         self.take();
         self.poll();
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     /// The window's keys work wherever the focus is (a tool just clicked

@@ -385,7 +385,7 @@ impl DocStore {
     }
 
     /// The Automerge actor this store writes as.
-    pub fn actor(&self) -> &ActorId {
+    pub fn actor(&self) -> ActorId {
         self.owner.actor()
     }
 
@@ -441,7 +441,7 @@ impl DocStore {
                 source: Box::new(source),
             }
         })?;
-        doc.set_actor(self.actor().clone());
+        doc.set_actor(self.actor());
         self.persisted = doc.get_heads();
         Ok(Some(doc))
     }

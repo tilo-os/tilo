@@ -34,6 +34,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Column, Row, ScrollAxis, Scrollable, Text, Widget};
 
 const WIDTH: u32 = 460;
@@ -171,7 +172,7 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool, frame: Frame) {
     scroll.apply_layout(&taffy, node, Point::ZERO);
     if frame != Frame::Bare {
         // A first draw learns the window's corners, as a live frame has.
-        scroll.draw(
+        scroll.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut tr,
@@ -239,7 +240,7 @@ fn render(
     } else {
         theme.tokens.colors.surfaces.content
     };
-    scroll.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+    scroll.draw_child(&mut scene, Affine::IDENTITY, tr, theme, &presence);
     if radius.is_some() {
         scene.pop_layer();
     }

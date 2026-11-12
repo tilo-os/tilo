@@ -43,16 +43,31 @@ pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        crate::i18n::CATALOG.t_args(
+            "files-cannot-read",
+            &[
+                ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
+                ("detail", ui::i18n::ArgValue::Text(error.to_string())),
+            ],
+        )
+    })?;
     if metadata.is_dir() {
-        return Err(format!("{} is a folder, not a file", path.display()));
+        return Err(crate::i18n::CATALOG.t_args(
+            "files-is-a-folder",
+            &[("path", ui::i18n::ArgValue::Text(path.display().to_string()))],
+        ));
     }
     if metadata.len() > MAX_FILE_BYTES {
-        return Err(format!(
-            "{} is larger than {}",
-            path.display(),
-            ui::format::memory(MAX_FILE_BYTES)
+        return Err(crate::i18n::CATALOG.t_args(
+            "files-too-large",
+            &[
+                ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
+                (
+                    "limit",
+                    ui::i18n::ArgValue::Text(ui::format::memory(MAX_FILE_BYTES)),
+                ),
+            ],
         ));
     }
     std::fs::read(path).map_err(|error| read_failure(path, &error))

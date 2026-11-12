@@ -1,6 +1,7 @@
 //! The notes app's answers to [`NotesEffect`]: moving between notes, files
 //! through the host's chooser, links and the clipboard.
 
+use crate::metadata::CATALOG;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -55,14 +56,14 @@ pub(crate) fn navigation_statuses((back, forward): (bool, bool)) -> Vec<EffectSt
         statuses.push(EffectStatus::unavailable(
             NotesEffect::BACK,
             "notes.no_previous_note",
-            ui::i18n!("notes-no-previous"),
+            CATALOG.t("notes-no-previous"),
         ));
     }
     if !forward {
         statuses.push(EffectStatus::unavailable(
             NotesEffect::FORWARD,
             "notes.no_next_note",
-            ui::i18n!("notes-no-next"),
+            CATALOG.t("notes-no-next"),
         ));
     }
     statuses
@@ -98,7 +99,7 @@ impl NotesApp {
             NotesEffect::ImportNotionExport => Ok(self.choose_notion_export(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
-                let fallback = ui::i18n!("notes-imported-untitled");
+                let fallback = CATALOG.t("notes-imported-untitled");
                 let title = if title.is_empty() { &fallback } else { title };
                 let body = crate::markdown::strip_matching_title_heading(&body, title);
                 let mut done = Vec::new();
@@ -280,7 +281,7 @@ impl NotesApp {
             return Err("the clipboard is unavailable".into());
         }
         self.notify(
-            ui::i18n::I18nManager::format(
+            crate::metadata::CATALOG.t_args(
                 "notes-link-copied",
                 &[("title", ui::i18n::ArgValue::from(label.to_string()))],
             ),
@@ -291,7 +292,7 @@ impl NotesApp {
 
     fn open_link(&self, url: String, cx: &mut Cx) -> EffectAnswer {
         if !crate::markdown::safe_external_url(&url) {
-            return Err(ui::i18n!("notes-link-unsafe"));
+            return Err(CATALOG.t("notes-link-unsafe"));
         }
         let completions = self.completions.clone();
         Ok(cx.thread(
@@ -300,7 +301,7 @@ impl NotesApp {
                 if let Err(error) = &opened {
                     tracing::warn!(%error, "notes: the link did not open");
                     completions.push(Completed::Notify(
-                        ui::i18n!("notes-link-open-failed"),
+                        CATALOG.t("notes-link-open-failed"),
                         ToastKind::Error,
                     ));
                 }
@@ -315,11 +316,11 @@ impl NotesApp {
     /// app put in a note land in the same place.
     fn open_resource(href: &str, cx: &Cx) -> EffectAnswer {
         if actions::resource_address_in(href).is_none() {
-            return Err(ui::i18n!("notes-resource-link-invalid"));
+            return Err(CATALOG.t("notes-resource-link-invalid"));
         }
         cx.dispatcher().open_link(href).map_err(|reason| {
             tracing::warn!(%reason, "notes: the linked resource could not be opened");
-            ui::i18n!("notes-resource-link-open-failed")
+            CATALOG.t("notes-resource-link-open-failed")
         })?;
         Ok(Effected::done())
     }
@@ -328,11 +329,11 @@ impl NotesApp {
     /// action: one undo takes the whole import back.
     fn choose_notion_export(&self, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
-            &ui::i18n!("notes-notion-import-title"),
-            &ui::i18n!("notes-import-accept"),
+            &CATALOG.t("notes-notion-import-title"),
+            &CATALOG.t("notes-import-accept"),
         )
-        .filter(FileFilter::new(&ui::i18n!("notes-notion-files")).glob("*.zip"))
-        .filter(FileFilter::new(&ui::i18n!("notes-notion-json-files")).glob("*.json"))
+        .filter(FileFilter::new(&CATALOG.t("notes-notion-files")).glob("*.zip"))
+        .filter(FileFilter::new(&CATALOG.t("notes-notion-json-files")).glob("*.json"))
         .thread_name("notes-import-notion");
         let completions = self.completions.clone();
         cx.choose_file(request, move |(), chosen, cx| {
@@ -343,7 +344,7 @@ impl NotesApp {
             let imported = pages.len();
             cx.submit(crate::notion::import_action(&pages));
             completions.push(Completed::Notify(
-                ui::i18n::I18nManager::format(
+                crate::metadata::CATALOG.t_args(
                     "notes-notion-imported",
                     &[("pages", ui::i18n::ArgValue::from(imported.to_string()))],
                 ),
@@ -355,10 +356,10 @@ impl NotesApp {
 
     fn choose_markdown(&self, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
-            &ui::i18n!("notes-import-title"),
-            &ui::i18n!("notes-import-accept"),
+            &CATALOG.t("notes-import-title"),
+            &CATALOG.t("notes-import-accept"),
         )
-        .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
+        .filter(FileFilter::new(&CATALOG.t("notes-markdown-files")).glob("*.md"))
         .thread_name("notes-import-markdown");
         let completions = self.completions.clone();
         cx.choose_file(request, move |(), chosen, cx| {
@@ -366,12 +367,12 @@ impl NotesApp {
                 return Ok(Effected::done());
             };
             let markdown =
-                String::from_utf8(file.bytes).map_err(|_| ui::i18n!("notes-import-not-utf8"));
+                String::from_utf8(file.bytes).map_err(|_| CATALOG.t("notes-import-not-utf8"));
             let title = std::path::Path::new(&file.name)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .filter(|title| !title.trim().is_empty())
-                .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
+                .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned);
             let mut done = Vec::new();
             let imported = match markdown {
                 Ok(markdown) => import_note(&title, &markdown, cx, &mut done),
@@ -399,11 +400,11 @@ impl NotesApp {
             .unwrap_or_default();
         let portable = super::inline_images(&markdown, &assets);
         let request = PickRequest::save(
-            &ui::i18n!("notes-export-title"),
-            &ui::i18n!("notes-export-accept"),
+            &CATALOG.t("notes-export-title"),
+            &CATALOG.t("notes-export-accept"),
             &export_name(title),
         )
-        .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
+        .filter(FileFilter::new(&CATALOG.t("notes-markdown-files")).glob("*.md"))
         .thread_name("notes-export-markdown");
         Ok(cx.save_file(request, portable.into_bytes(), |(), _, _| {
             Ok(Effected::done())
@@ -442,7 +443,7 @@ impl NotesApp {
                 (title.to_owned(), titled, 1)
             }
             None => (
-                ui::i18n!("notes-title"),
+                CATALOG.t("notes-title"),
                 actions::notebook_markdown(state),
                 state.data.pages.len(),
             ),
@@ -472,11 +473,11 @@ impl NotesApp {
 
     fn choose_image(&self, page: PageId, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
-            &ui::i18n!("notes-insert-image-title"),
-            &ui::i18n!("notes-insert-image-accept"),
+            &CATALOG.t("notes-insert-image-title"),
+            &CATALOG.t("notes-insert-image-accept"),
         )
         .filter(
-            FileFilter::new(&ui::i18n!("notes-image-files"))
+            FileFilter::new(&CATALOG.t("notes-image-files"))
                 .glob("*.png")
                 .glob("*.jpg")
                 .glob("*.jpeg")
@@ -500,12 +501,12 @@ impl NotesApp {
             let alt = std::path::Path::new(&file.name)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
+                .map_or_else(|| CATALOG.t("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
             cx.submit(image_insertion(page, after, alt.trim(), file.bytes));
             completions.extend([
                 Completed::Rebind,
-                Completed::Notify(ui::i18n!("notes-image-inserted"), ToastKind::Success),
+                Completed::Notify(CATALOG.t("notes-image-inserted"), ToastKind::Success),
             ]);
             Ok(Effected::done())
         })
@@ -563,13 +564,16 @@ fn import_note(
         Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
             title: title.to_owned(),
             markdown,
-            images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+            images: assets
+                .into_iter()
+                .map(|(_, bytes)| ui::tilo_resource::Bytes::to_keep(bytes))
+                .collect(),
             note: Some(crate::notebook::page_id(page)),
         }),
     );
     done.push(Completed::Open(page));
     done.push(Completed::Notify(
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-imported",
             &[("title", ui::i18n::ArgValue::from(title.to_string()))],
         ),
@@ -581,7 +585,7 @@ fn import_note(
 /// The window's word that an import failed with `error`.
 fn import_failed(error: &str) -> Completed {
     Completed::Notify(
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-import-failed",
             &[("error", ui::i18n::ArgValue::from(error.to_string()))],
         ),

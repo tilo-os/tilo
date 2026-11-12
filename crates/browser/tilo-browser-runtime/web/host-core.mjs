@@ -39,6 +39,21 @@ export function pageWheelAsPixels(event,width,height) {
   return {deltaX:-x,deltaY:-y,deltaMode:0,clientX:event.clientX,clientY:event.clientY,
     ctrlKey:event.ctrlKey,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,bubbles:false,cancelable:true};
 }
+/** The pointer a wheel event places, as a move the runtime reads before the
+ * wheel: it routes a wheel by the pointer it last saw, and the wheel says
+ * where the fingers are. A trackpad's two-finger swipe never moves the
+ * pointer, so there the two already agree; a wheel a script sends, or one a
+ * page forwards somewhere else, names a place the runtime never saw the
+ * pointer at, and the wheel's own place is the one the fingers are at.
+ * `undefined` when the runtime already has the pointer there. */
+export function wheelPointerMove(event,seen={x:NaN,y:NaN}) {
+  const x=Number(event.clientX),y=Number(event.clientY);
+  if(!Number.isFinite(x)||!Number.isFinite(y))return undefined;
+  if(seen.x===x&&seen.y===y)return undefined;
+  seen.x=x;seen.y=y;
+  return {pointerId:1,pointerType:'mouse',isPrimary:true,button:-1,buttons:0,
+    clientX:x,clientY:y,bubbles:true,cancelable:true};
+}
 /** A mouse wheel's notches as the line deltas the native session reads from
  * a wheel (libinput's wheel source, one line a notch), so a sideways notch
  * pans the strip a line (40 px) and a vertical one scrolls by a line, as
@@ -308,21 +323,33 @@ export function createHostStatus(element,{lifetime=HOST_STATUS_LIFETIME_MS,setTi
   };
 }
 
-/** A capability belongs to one mount and one authoritative runtime input sequence. */
+/**
+ * Who holds the input, as the mount answers it: the desk's `{owner, holder,
+ * ime}` — the semantics tree's keyboard owner path, who that is (the
+ * application holding the keyboard, or `"system-search"`), and the field an
+ * input method is helping — or, for a mount that answers nothing, such as one
+ * application on its own, the page's own, marked `legacy`.
+ *
+ * `key` is that ownership and nothing else: a composition or a queued focus
+ * transfer survives the field's box moving under a keystroke, and ends when the
+ * keyboard changes hands. `onChange` runs when it does: what was being typed no
+ * longer belongs to the field that had it.
+ */
 export function createInputScope({read,active,onChange=()=>{}}) {
   let mount={},previous;
   function capture(){
     if(!active()){if(previous){previous=undefined;mount={};onChange(null);}return null;}
     const raw=read?.();
-    const value=raw?JSON.parse(raw):{sequence:'legacy',activation:'legacy',owner:null,legacy:true};
-    if(typeof value.sequence!=='string'||typeof value.activation!=='string'||!(value.owner===null||typeof value.owner==='string'))return null;
-    const next={...value,mount};
-    const changed=previous&&(previous.sequence!==next.sequence||previous.activation!==next.activation||previous.owner!==next.owner);
+    const value=raw?JSON.parse(raw):{owner:null,holder:null,ime:null,legacy:true};
+    if(!(value.owner===null||typeof value.owner==='string')||!(value.holder===null||value.holder===undefined||typeof value.holder==='string')||(value.ime!==null&&value.ime!==undefined&&typeof value.ime!=='object'))return null;
+    const key=value.legacy?'local':`${value.holder??''}\u0000${value.owner??''}\u0000${value.ime?.purpose??''}`;
+    const next={...value,key,mount};
+    const changed=previous&&previous.key!==next.key;
     previous=next;
     if(changed)onChange(next);
     return next;
   }
-  function valid(saved){const next=capture();return Boolean(saved&&next&&saved.mount===mount&&saved.sequence===next.sequence&&saved.activation===next.activation&&saved.owner===next.owner);}
+  function valid(saved){const next=capture();return Boolean(saved&&next&&saved.mount===mount&&saved.key===next.key);}
   return {capture,valid,owns(owner){const next=capture();return Boolean(next&&(next.legacy||next.owner===owner));}};
 }
 
@@ -331,7 +358,7 @@ export function createFocusHandoff({scope,epoch,focus}) {
   let serial=0;
   return {complete(before,externalEpoch=epoch()){
     const after=scope.capture();
-    if(!before||!after||after.legacy||(before.sequence===after.sequence&&before.activation===after.activation&&before.owner===after.owner))return Promise.resolve(false);
+    if(!before||!after||before.legacy||after.legacy||before.key===after.key)return Promise.resolve(false);
     const request=++serial;
     return Promise.resolve().then(()=>{
       if(request!==serial||epoch()!==externalEpoch||!scope.valid(after))return false;

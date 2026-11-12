@@ -205,17 +205,6 @@ pub fn serve_workspace_connected(
     backend: Arc<dyn WorkspaceBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<ConnectedWorkspaceServer> {
-    serve_workspace_connected_with_handoffs(stream, backend, runtime, None)
-}
-
-/// Same owned source connection, with an optional source-resident pending-only
-/// handoff registry. Registry contents arise only from actual Pending servers.
-pub fn serve_workspace_connected_with_handoffs(
-    stream: std::os::unix::net::UnixStream,
-    backend: Arc<dyn WorkspaceBackend>,
-    runtime: tokio::runtime::Handle,
-    handoffs: Option<Arc<PendingHandoffRegistry>>,
-) -> io::Result<ConnectedWorkspaceServer> {
     stream.set_nonblocking(true)?;
     let local_runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -233,8 +222,6 @@ pub fn serve_workspace_connected_with_handoffs(
                     backend,
                     runtime,
                     calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
-                    handoffs,
-                    drain: None,
                 });
                 tokio::select! {
                     result = serve_connection(stream, server) => result,
@@ -266,8 +253,6 @@ async fn accept(
             backend: Arc::clone(backend),
             runtime: runtime.clone(),
             calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
-            handoffs: None,
-            drain: None,
         });
         tokio::spawn(async move {
             if let Err(error) = serve_connection(stream, server).await {
@@ -288,8 +273,6 @@ pub(crate) struct Server {
     pub(crate) backend: Arc<dyn WorkspaceBackend>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) calls: Arc<tokio::sync::Semaphore>,
-    pub(crate) handoffs: Option<Arc<PendingHandoffRegistry>>,
-    pub(crate) drain: Option<Arc<pending_handoff::CallDrain>>,
 }
 
 impl Server {
@@ -345,20 +328,15 @@ impl Server {
         .await
     }
 
-    /// Runs a directory backend call with its drain entry and fresh scope
-    /// brackets, so a handoff waits for it and a revocation reads as a refusal.
+    /// Runs a directory backend call between its live-scope checks, so a
+    /// revocation reads as a refusal.
     pub(crate) async fn run_directory<T: Send + 'static>(
         &self,
         backend: Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>,
         call: impl FnOnce() -> Result<T, String> + Send + 'static,
     ) -> Result<Option<T>, String> {
         let permit = self.admit_call()?;
-        let drain = match &self.drain {
-            Some(drain) => Some(drain.enter()?),
-            None => None,
-        };
         self.blocking(permit, move || {
-            let _drain = drain;
             backend.check()?;
             let value = call();
             backend.check()?;
@@ -367,21 +345,13 @@ impl Server {
         .await
     }
 
-    /// Runs one directory call behind its drain entry, without scope brackets.
+    /// Runs one directory call without scope brackets.
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         call: impl FnOnce() -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
         let permit = self.admit_call()?;
-        let drain = match &self.drain {
-            Some(drain) => Some(drain.enter()?),
-            None => None,
-        };
-        self.blocking(permit, move || {
-            let _drain = drain;
-            call()
-        })
-        .await
+        self.blocking(permit, call).await
     }
 }
 
@@ -677,9 +647,3 @@ impl ServeObject for File {
         })
     }
 }
-
-#[path = "workspace_server/pending_handoff.rs"]
-mod pending_handoff;
-pub use pending_handoff::{
-    PendingHandoffRegistry, serve_history_read_connected, serve_pending_connected,
-};

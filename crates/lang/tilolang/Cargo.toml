@@ -23,6 +23,8 @@ name = "tlc"
 path = "src/main.rs"
 
 [dependencies]
+# The tokens, spans and reference literals its parser reads, which the toolkit's editor shares.
+tilolang-lex = { version = "0.1.0", path = "../tilolang-lex" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A text counts, cuts and matches in graphemes: one reading for the runtime's `Text` methods,
@@ -31,6 +33,8 @@ unicode-segmentation = "1.12"
 # The toolkit's component descriptions, read as the package `ui`.
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 wasm-encoder = "0.252"
+# The clock that also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 # The toolkit's code editor brings the compiler into the browser bundle, and
 # the workspace-hack's native feature set does not build for wasm32.

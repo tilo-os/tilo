@@ -2,7 +2,7 @@
 Description=Finish the live system update and restart the desktop in place
 Documentation=file:///usr/share/tilo/system-extensions/README.md
 # Started by the desktop when the person is idle or the screen is locked, at
-# most as often as it asks for restarts (shell::system_update; polkit:
+# most as often as it asks for restarts (tilo_system_service::update; polkit:
 # 49-tilo-updates.rules). Merges the rest of the staged update, restarts the
 # changed session services and every Tilo desktop in place: the login stays
 # and its windows reopen. A desktop that does not come back rolls the update

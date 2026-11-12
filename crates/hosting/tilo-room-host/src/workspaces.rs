@@ -25,16 +25,19 @@ mod agent_door;
 #[cfg(feature = "agents")]
 mod agent_members;
 pub mod app_files;
+mod appended;
 #[cfg(feature = "agents")]
 mod applications;
 mod authority;
+mod channel_governance;
 mod collaboration;
 mod content;
+mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod surfaces;
 pub(crate) use content::lacks_answer;
-pub use content::{ContentKeeper, WorkspaceContent};
+pub use content::{ContentKeeper, WholeRecords, WorkspaceContent};
 mod desktop_writes;
 mod device_keys;
 mod device_plane;
@@ -43,19 +46,33 @@ mod device_plane_tests;
 mod door;
 mod follow;
 pub use device_plane::HostJobs;
-use follow::Followed;
+pub use follow::RecordWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
+/// Wait until this host is reached through a relay, before it names its own
+/// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
+pub use tilo_endpoint_reachability::await_relay;
+mod link_follow;
+mod session_carry;
+pub(crate) use link_follow::carry_admitted;
 mod listing;
+mod memberships;
 mod own;
 mod pages;
 mod peer_parts;
+mod personal;
+mod publication;
+use publication::{Change, SinceBase, starts_over, withdraws};
+#[cfg(test)]
+use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod publisher;
 mod record_format;
+#[cfg(feature = "agents")]
+pub mod repaired_records;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -81,6 +98,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_peer_state::store::{Appetite, Store as LinkStore};
 
 use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
@@ -98,20 +116,8 @@ pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
-pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
+pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
 
-/// An invitation someone who may invite asked the workspace to mail to an
-/// address on its wait list ([`Workspaces::mail_wait_list`]).
-pub struct WaitListMail {
-    /// Completed only after the operator durably accepts the mail.
-    pub queued: tokio::sync::oneshot::Sender<bool>,
-    pub to: Mailbox,
-    /// The invitation's web link.
-    pub link: String,
-    /// A secret that takes the entry off the list, for the mail's removal
-    /// link; the entry keeps only its SHA-256.
-    pub removal: [u8; 32],
-}
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
 pub use tilo_relay_session::workspaces::{
@@ -126,12 +132,10 @@ use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
 /// The record's version this build writes. Version 3 reads a version 2
-/// record's grants in the invitation layout they were written in (see
-/// [`record_format`]).
-const RECORD_VERSION: u32 = 3;
-/// Governance publications kept after the last full checkpoint before the
-/// workspace's publication is compacted into a fresh one.
-const MAX_PUBLICATION_TAIL: usize = 256;
+/// record's grants in the invitation layout they were written in; version 4
+/// keeps the publications and the join receipts in files beside the record
+/// (see [`record_format`]).
+const RECORD_VERSION: u32 = 4;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the relay retains brings them back.
@@ -140,15 +144,36 @@ const KEEP_FOLLOWED: Duration = Duration::from_secs(1);
 const RECORD_NOTICES: usize = 256;
 
 /// One governance message this workspace has published, in publication order.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Its bytes are shared by every copy of the record, so the workspace file's
+/// writer knows a publication it wrote before by its allocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Publication {
-    bytes: Vec<u8>,
+    #[serde(with = "shared_bytes")]
+    bytes: Arc<[u8]>,
     checkpoint: bool,
+}
+
+/// Shared bytes, encoded as the bytes they are.
+mod shared_bytes {
+    use std::sync::Arc;
+
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &Arc<[u8]>, out: S) -> Result<S::Ok, S::Error> {
+        bytes.as_ref().serialize(out)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Arc<[u8]>, D::Error> {
+        Vec::<u8>::deserialize(input).map(Arc::from)
+    }
 }
 
 /// Everything a governed workspace keeps across restarts. Written atomically
 /// after each decision, before it is published or answered; the large parts
-/// of `peer` are files of their own ([`peer_parts`]), written before it.
+/// of `peer` are files of their own ([`peer_parts`]), and the publications
+/// and join receipts are in files appended to beside it ([`appended`]), all
+/// written before it ([`record_format::StoredRecord`]). Its own encoding is the
+/// version 3 layout, which [`record_format`] brings up.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WorkspaceRecord {
     version: u32,
@@ -168,14 +193,40 @@ struct WorkspaceRecord {
     collaboration: collaboration::CollaborationState,
 }
 
-/// What a governance change of a workspace is, as far as starting the workspace's
-/// document over for newcomers goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Change {
-    /// It only admits people ([`GovernedRoom::commit_admission`]).
-    Admission,
-    /// Anything else.
-    Other,
+/// The extension of the file beside a workspace record holding its
+/// publications ([`appended`]).
+const PUBLICATIONS: &str = "published";
+/// The extension of the file beside a workspace record holding its join
+/// receipts ([`appended`]).
+const RECEIPTS: &str = "joins";
+
+impl WorkspaceRecord {
+    /// The record `stored` names: `published`, the publications file's, before
+    /// the publications it holds, and `receipted`, the receipts file's, before
+    /// the receipts its ledger holds.
+    fn read(
+        stored: record_format::StoredRecord,
+        mut published: Vec<Publication>,
+        mut receipted: Vec<tilo_peer_state::join_ledger::JoinCompletionRecord>,
+    ) -> Self {
+        let mut outgoing = stored.outgoing;
+        published.append(&mut outgoing);
+        let mut collaboration = stored.collaboration;
+        receipted.append(&mut collaboration.join_completions);
+        collaboration.join_completions = receipted;
+        Self {
+            version: RECORD_VERSION,
+            workspace: stored.workspace,
+            workspace_id: stored.workspace_id,
+            name: stored.name,
+            authority: stored.authority,
+            peer: stored.peer,
+            generation: stored.generation,
+            outgoing: published,
+            published: stored.published,
+            collaboration,
+        }
+    }
 }
 
 /// A workspace this relay governs.
@@ -185,6 +236,10 @@ struct GovernedWorkspace {
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
+    /// `record.outgoing`, in its own file.
+    publications: appended::Appended<Publication>,
+    /// The join receipts of `record.collaboration`, in their own file.
+    receipts: appended::Appended<tilo_peer_state::join_ledger::JoinCompletionRecord>,
     /// The channel keys of the device this host runs on, asked for the
     /// records of this workspace: `None` when that device keeps no channel
     /// keys, and the workspace's records are then held in the clear.
@@ -223,19 +278,16 @@ struct GovernedWorkspace {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Workspaces::settle`]).
     rebased: bool,
-    /// Every change published since the workspace's document last started over
-    /// at an admission was itself an admission ([`Self::commit_admission`]):
-    /// a person let in, perhaps named by their own choice, and nothing
-    /// changed or taken back. A newcomer may then be given that tail as it
-    /// is, since it shows nothing withdrawn before they joined, and the
-    /// workspace need not start over for them. Only kept in memory: a workspace read
-    /// back from its file starts over at its next admission, as before.
-    ///
-    /// Held as the workspace document's heads when that was last true, so a
-    /// write that reached the document any other way (a member's write the
-    /// governor took in) leaves them behind, and the next admission starts
-    /// over.
-    admissions_since_base: Option<Vec<automerge::ChangeHash>>,
+    /// Whether something the workspace published since its document last
+    /// started over overwrote or deleted a value ([`withdraws`]): a shared
+    /// window closed, a member removed, a name changed. A newcomer replayed
+    /// that history would read what was taken back before they came, so the
+    /// next arrival starts the workspace over. Arrivals and other changes that
+    /// only add are appended, and the publication then starts over only on its
+    /// cadence ([`starts_over`]). Kept in memory: a workspace just made or read
+    /// back from its file counts as having withdrawn something until it next
+    /// starts over.
+    since_base: SinceBase,
     /// The session each of those hosts last opened here that this host
     /// answered ([`Workspaces::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
@@ -339,11 +391,15 @@ impl GovernedWorkspace {
             published: 0,
             collaboration: collaboration::CollaborationState::default(),
         };
+        let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
+        let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             parts,
+            publications,
+            receipts,
             path,
             device: device.cloned(),
             record,
@@ -358,7 +414,7 @@ impl GovernedWorkspace {
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
-            admissions_since_base: None,
+            since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         };
         this.persist()?;
@@ -384,13 +440,20 @@ impl GovernedWorkspace {
         let bytes = record_format::FORMAT
             .bring_up(&path, bytes, version)
             .map_err(|error| error.to_string())?;
-        let record: WorkspaceRecord = postcard::from_bytes(&bytes).map_err(|error| {
-            format!(
-                "{}: {} version {version}: {error}",
-                path.display(),
-                record_format::FORMAT.name
-            )
-        })?;
+        let stored: record_format::StoredRecord =
+            postcard::from_bytes(&bytes).map_err(|error| {
+                format!(
+                    "{}: {} version {version}: {error}",
+                    path.display(),
+                    record_format::FORMAT.name
+                )
+            })?;
+        let mut parts = peer_parts::PeerParts::open(&path)?;
+        let (publications, published) =
+            appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
+        let (receipts, receipted) =
+            appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
+        let record = WorkspaceRecord::read(stored, published, receipted);
         // The record must have been governed by this host's device. What
         // makes a device that device is its key and what the certificate
         // lets it do; a certificate's `device_label` is a human-readable
@@ -412,14 +475,13 @@ impl GovernedWorkspace {
         {
             return Err("workspace record is inconsistent".into());
         }
-        let mut parts = peer_parts::PeerParts::open(&path)?;
         let mut peer = StatePeer::restore(
             &parts.load(&record.peer)?,
             &record.workspace,
             record.authority.clone(),
             vec![record.authority.clone()],
             RevocationList::new(),
-            SystemTime::now(),
+            tilo_clock::wall(),
         )?;
         select_exact_admission(&mut peer)?;
         if !peer.has_governance() {
@@ -434,6 +496,8 @@ impl GovernedWorkspace {
             record,
             peer: Replica::new(peer),
             parts,
+            publications,
+            receipts,
             path,
             device: device.cloned(),
             publisher: Arc::default(),
@@ -446,24 +510,62 @@ impl GovernedWorkspace {
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
             rebased: false,
-            admissions_since_base: None,
+            since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         })
     }
 
+    /// Write the record as it stands ([`record_format::StoredRecord`]): the
+    /// publications and join receipts added since the last write appended to
+    /// their files, then the workspace file naming how many those hold. A
+    /// write costs what the change added, not the workspace's size.
     fn persist(&mut self) -> Result<(), String> {
+        let writing = crate::timing::start();
         // What the publisher could not admit is not published yet, whatever
         // `published` says until the next settle takes the failure back.
-        let bytes = match self.publisher.unretained_from() {
-            Some(first) if first < self.record.published => {
-                let mut record = self.record.clone();
-                record.published = first;
-                postcard::to_stdvec(&record)
-            }
-            _ => postcard::to_stdvec(&self.record),
+        let published = match self.publisher.unretained_from() {
+            Some(first) if first < self.record.published => first,
+            _ => self.record.published,
+        };
+        let ledger = &self.record.collaboration;
+        let filed_publications = self.publications.file(&self.record.outgoing)?;
+        let filed_receipts = self.receipts.file(&ledger.join_completions)?;
+        let beyond = |filed: u64| usize::try_from(filed).map_err(|error| error.to_string());
+        let record = record_format::StoredRecordRef {
+            version: RECORD_VERSION,
+            workspace: &self.record.workspace,
+            workspace_id: self.record.workspace_id,
+            name: &self.record.name,
+            authority: &self.record.authority,
+            peer: &self.record.peer,
+            generation: self.record.generation,
+            outgoing: self
+                .record
+                .outgoing
+                .get(beyond(filed_publications)?..)
+                .unwrap_or_default(),
+            published,
+            collaboration: record_format::LedgerRef {
+                invitations: &ledger.invitations,
+                join_challenges: &ledger.join_challenges,
+                join_completions: ledger
+                    .join_completions
+                    .get(beyond(filed_receipts)?..)
+                    .unwrap_or_default(),
+                membership_challenges: &ledger.membership_challenges,
+                administration: &ledger.administration,
+            },
+            filed_publications,
+            filed_receipts,
+        };
+        let bytes = postcard::to_stdvec(&record).map_err(|error| error.to_string())?;
+        if let Err(error) = tilo_files::native::atomic::write(&self.path, &bytes) {
+            // The files may hold entries the record on disk does not name.
+            self.publications.unsure();
+            self.receipts.unsure();
+            return Err(error.to_string());
         }
-        .map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
+        crate::timing::event("room.record.write", writing, bytes.len() as u64);
         self.parts.collect(&self.record.peer);
         Ok(())
     }
@@ -489,28 +591,6 @@ impl GovernedWorkspace {
     /// invitation hands that one back rather than minting one.
     fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
         self.collaboration().invitation_for(person, now_ns)
-    }
-
-    /// Take off the wait list everyone who joined with an invitation sent
-    /// for their entry. A failed write leaves them for the next time.
-    fn forget_joined_wait_list(&mut self) {
-        let ledger = &self.record.collaboration;
-        match self
-            .wait_list
-            .joined(|invite| ledger.redeemed(invite), tilo_clock::unix_now_ns())
-        {
-            Ok(0) => {}
-            Ok(count) => tracing::info!(
-                workspace = %self.record.workspace,
-                count,
-                "invited addresses left the wait list on joining"
-            ),
-            Err(error) => tracing::warn!(
-                workspace = %self.record.workspace,
-                %error,
-                "the wait list kept invited addresses that joined"
-            ),
-        }
     }
 
     /// Record `state` alone: challenges, invitations, receipts. Governance and
@@ -563,9 +643,6 @@ impl GovernedWorkspace {
         {
             return Err("a room change cannot replace the room".into());
         }
-        // A member admitted from now on is given the workspace as it stands, not
-        // what was withdrawn before they joined.
-        let joined = !member_roots(&candidate, now).is_subset(&member_roots(replica, now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -577,25 +654,14 @@ impl GovernedWorkspace {
         let copying = crate::timing::start();
         let mut record = self.record.clone();
         crate::timing::window("room.commit.record", copying);
-        let tail = record
-            .outgoing
-            .iter()
-            .rev()
-            .take_while(|publication| !publication.checkpoint)
-            .count();
+        // A member admitted from now on is given the workspace as it stands,
+        // not what was withdrawn before they joined.
+        let started_over = change == Change::StartOver
+            || starts_over(&record.outgoing)
+            || (self.since_base == SinceBase::Withdrew
+                && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
+        let mut since_base = self.since_base;
         let mut rebased = false;
-        // Newcomers whose arrival only adds to a tail of earlier arrivals
-        // see nothing in it that was withdrawn before them: the workspace's
-        // document need not start over for them. Anything else since the
-        // last start, or a long tail, starts it over as before.
-        let appended_admission = joined
-            && change == Change::Admission
-            && tail < MAX_PUBLICATION_TAIL
-            && self
-                .admissions_since_base
-                .as_ref()
-                .is_some_and(|clean| replica.workspace_heads().as_ref() == Some(clean));
-        let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
@@ -610,7 +676,14 @@ impl GovernedWorkspace {
                         _ => None,
                     })
                     .collect::<std::collections::BTreeSet<_>>();
-            rebased = joined && candidate.rebase_workspace()?;
+            // The workspace's document starts over from a base holding its
+            // state as it stands, with none of the history that led there.
+            rebased = if change == Change::StartOver {
+                candidate.start_governance_over()?
+            } else {
+                candidate.rebase_workspace()?
+            };
+            since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()
                 .durable_bootstrap_messages(key, now, generation)?
@@ -629,6 +702,9 @@ impl GovernedWorkspace {
             let diffing = crate::timing::start();
             let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
+                if change == Change::Other && withdraws(message) {
+                    since_base = SinceBase::Withdrew;
+                }
                 record.outgoing.push(publication(message, false)?);
             }
             crate::timing::window("room.commit.messages", diffing);
@@ -650,14 +726,7 @@ impl GovernedWorkspace {
         }
         *replica = candidate;
         self.rebased |= rebased;
-        // Clean from a start made at an admission; kept clean only by
-        // admissions appended to it; anything else spoils it until the next.
-        let clean = if started_over {
-            joined
-        } else {
-            appended_admission
-        };
-        self.admissions_since_base = clean.then(|| replica.workspace_heads()).flatten();
+        self.since_base = since_base;
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -666,39 +735,56 @@ impl GovernedWorkspace {
         Ok(generation)
     }
 
+    /// Publish the workspace anew when its governance was brought up from an
+    /// earlier stored layout as it opened: its document starts over from a
+    /// base newer than any a member's device brought up for itself, and what
+    /// the relay retains of the earlier layout is archived as it settles.
+    fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        if !self.peer().governance_brought_up() {
+            return Ok(());
+        }
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        let candidate = replica.clone();
+        let committed = self.commit_held(
+            &mut replica,
+            candidate,
+            (key, now),
+            Change::StartOver,
+            |record, _| Ok(record.collaboration.clone()),
+        );
+        drop(replica);
+        committed.map(drop)
+    }
+
+    /// The people the workspace's governance admits, without the person whose
+    /// device governs it, which holds it by being its owner rather than by an
+    /// admission receipt: [`Workspaces::people`] is who the workspace has.
     fn summary(&self) -> WorkspaceSummary {
-        let now = SystemTime::now();
-        let mut members = self
+        let members = self
             .peer()
             .governance()
-            .governed_members(now)
+            .governed_members(tilo_clock::wall())
             .unwrap_or_default();
-        // The structural owner is the workspace's own person: it holds the
-        // workspace without an admission receipt, and every list and count of
-        // its people includes it, from the authority pinned in the record.
-        let authority = &self.record.authority;
-        if !members
-            .iter()
-            .any(|member| member.user_public_key == authority.user_public_key)
-        {
-            members.insert(
-                0,
-                tilo_peer_state::GovernedMember {
-                    user_public_key: authority.user_public_key,
-                    role: tilo_peer_state::join::MemberRole::Editor,
-                    display_name: Some(authority.device_label.clone()),
-                    active_device_keys: Vec::new(),
-                    removed: false,
-                    administrator: true,
-                },
-            );
-        }
         WorkspaceSummary {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
             name: self.record.name.clone(),
             generation: self.record.generation,
             members,
+        }
+    }
+
+    /// This workspace as a listing names it: what it is called and which
+    /// generation it stands at, without the people a summary answers, which
+    /// a listing does not.
+    fn listing(&self) -> WorkspaceListing {
+        WorkspaceListing {
+            workspace: self.record.workspace.clone(),
+            workspace_id: self.record.workspace_id,
+            name: self.record.name.clone(),
+            generation: self.record.generation,
+            role: None,
         }
     }
 }
@@ -769,7 +855,9 @@ fn publication(
     let (_, kind) = neighbour_wire::retention(message, checkpoint)
         .ok_or("workspace governance message has no retention channel")?;
     Ok(Publication {
-        bytes: postcard::to_stdvec(message).map_err(|error| error.to_string())?,
+        bytes: postcard::to_stdvec(message)
+            .map_err(|error| error.to_string())?
+            .into(),
         checkpoint: kind == Retention::Checkpoint,
     })
 }
@@ -840,6 +928,11 @@ struct WorkspacesInner {
     /// The direct links of the workspaces governed here, one per workspace,
     /// answering a device's dial by the workspace it names.
     direct: tilo_peer_state::direct::Serving,
+    /// Room for the frames a workspace's link heard and its reader did not
+    /// read yet, when a test bounds it ([`Workspaces::bound_link_readers`]);
+    /// `0` keeps the link's own.
+    #[cfg(test)]
+    link_heard_capacity: std::sync::atomic::AtomicUsize,
     dir: PathBuf,
     workspaces: Arc<device_plane::WorkspacesMap>,
     /// The plane the workspaces answer their members' devices on, as this
@@ -854,8 +947,16 @@ struct WorkspacesInner {
     calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
+    /// Each workspace deleted here, and its relay workspace
+    /// ([`Workspaces::deletions`]).
+    deletions: tokio::sync::broadcast::Sender<(String, u64)>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
+    /// What the changes a record's repair kept wait for, by record, so a
+    /// member's write to it is only tried against them when it could release
+    /// one ([`repaired_records`]).
+    #[cfg(feature = "agents")]
+    repairs: repaired_records::Repairs,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -867,6 +968,9 @@ struct WorkspacesInner {
     /// Those waiting for their workspace's next write of the changes it staged,
     /// by workspace.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
+    /// Linked members' writes on their way to the relay's sessions, each
+    /// workspace's in order, each tried until it lands.
+    session_carriers: session_carry::SessionCarriers,
     /// How many members' windows each workspace could not take in because they
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
@@ -880,20 +984,33 @@ struct WorkspacesInner {
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
     hosting: crate::hosted::Hosting,
-    /// Where invitations to mail to wait-list addresses go, once whoever
-    /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
-    wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
+    /// The door's wait list, once whoever runs the relay offers one
+    /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
+    door: wait_list::DoorSettings,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
+    /// Which people each workspace here lists, by person, as its governance
+    /// settled last ([`memberships`]).
+    memberships: memberships::Memberships,
+    /// The workspace lists people's devices kept here ([`personal`]).
+    personal: personal::PersonalLists,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
+    /// The task following where this host answers ([`hosts::Workspaces::follow_own_address`]),
+    /// aborted with the host: it holds the endpoint's address watcher, which keeps the
+    /// endpoint's socket open until it goes.
+    own_address: std::sync::OnceLock<tokio::task::AbortHandle>,
 }
 
-/// Notices one workspace hands its channel service at once; a device asks
-/// again when its request is dropped.
-const MAX_QUEUED_CHANNEL_NOTICES: usize = 16_384;
+impl Drop for WorkspacesInner {
+    fn drop(&mut self) {
+        if let Some(following) = self.own_address.get() {
+            following.abort();
+        }
+    }
+}
 
 /// One person's place in a governed workspace, as installed bots compare it
 /// between passes to see who joined, left, changed role or was banned.
@@ -906,18 +1023,6 @@ pub struct MemberMark {
     pub removed: bool,
     /// They are kept out until unbanned.
     pub banned: bool,
-}
-
-/// A member's write to a record of a governed workspace, after the governor's
-/// copy took it in: what wakes the workspace's installed bots.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecordWrite {
-    /// The workspace's UUID.
-    pub workspace: String,
-    /// The record's app.
-    pub app: String,
-    /// The record's id on the wire (`""` for the app's primary).
-    pub record: String,
 }
 
 /// What [`Workspaces::refound_record`] did: which record was founded again,
@@ -1041,38 +1146,44 @@ impl Workspaces {
         device.channel_keys(&route.cluster_id, &named, create).await
     }
 
+    /// Every record this host holds of `workspace`, by the app whose document
+    /// it is and its id: what its members' pages and agents may name there,
+    /// whether or not a device's session has been sent it. A public workspace
+    /// sends a device its records only when it opens one, so this is what a
+    /// service listing the workspace's apps goes by. `None` for a workspace
+    /// this host does not hold.
+    pub async fn records(&self, workspace: &str) -> Option<Vec<(String, String)>> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let governed = governed.lock().await;
+        Some(governed.peer().records())
+    }
+
     /// These workspaces, held without keeping them alive.
     #[must_use]
     pub fn downgrade(&self) -> WeakWorkspaces {
         WeakWorkspaces(Arc::downgrade(&self.inner))
     }
 
-    /// Open every workspace recorded under `dir` and bind each to the relay:
-    /// its workspace pinned and admitting only governed members, its
-    /// unpublished governance retained, its members' new records created.
+    /// Open every workspace recorded under `dir` and bind each to the relay, pinned.
     pub(crate) async fn open(
         host: WorkspaceServices,
         dir: PathBuf,
         store: PathBuf,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        // A workspace a host made keeps the certificate it made it with:
-        // everything done for it compares that certificate exactly, so a host
-        // whose own was renamed serves with the record's own (the same key
-        // and validity, verified), rather than refusing the workspace.
+        // A workspace a host made keeps the certificate it made it with: a host
+        // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
         let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
+        let store =
+            LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {
             inner: Arc::new(WorkspacesInner {
-                store: Arc::new(
-                    tilo_peer_state::store::Store::open(
-                        store,
-                        tilo_peer_state::store::Appetite::StoreAll,
-                    )
-                    .map_err(|error| error.to_string())?,
-                ),
+                #[cfg(test)]
+                link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
+                store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
                 dir: dir.clone(),
                 plane,
@@ -1081,32 +1192,37 @@ impl Workspaces {
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
                 changes: tokio::sync::broadcast::channel(64).0,
+                deletions: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
+                #[cfg(feature = "agents")]
+                repairs: repaired_records::Repairs::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
+                session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 listings,
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
-                wait_list_mail: std::sync::OnceLock::new(),
+                door: wait_list::DoorSettings::default(),
                 own: std::sync::OnceLock::new(),
+                memberships: memberships::Memberships::default(),
+                personal: personal::PersonalLists::new(&dir),
                 agent_door: agent_door::AgentDoor::default(),
+                own_address: std::sync::OnceLock::new(),
             }),
         };
-        let device = this.device_keys();
-        let mut workspaces = BTreeMap::new();
+        let (device, mut workspaces) = (this.device_keys(), BTreeMap::new());
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let path = entry.map_err(|error| error.to_string())?.path();
-            if path.extension().is_none_or(|extension| extension != "room") {
-                continue;
-            }
             // A workspace this host released stays on disk, unserved.
-            if path.with_extension(RELEASED).exists() {
+            if delete::passed_over(&dir, &this.inner.direct, &path)
+                || path.with_extension(RELEASED).exists()
+            {
                 continue;
             }
             let workspace =
@@ -1127,34 +1243,68 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        // An address that names no relay reaches nobody from outside this
+        // network, and a host that kept nothing names its first workspace's
+        // address as soon as its embedder makes one: wait for the relay, so no
+        // workspace learns an address this host must rename.
+        await_relay(&this.inner.host.endpoint).await;
+        this.serve_kept(workspaces).await?;
+        this.start_following().await;
+        Ok(this)
+    }
+
+    /// Serve each workspace this host kept from its last run: bring it up,
+    /// settle its governance, name this host's address in it, and recall what
+    /// it left running.
+    async fn serve_kept(
+        &self,
+        workspaces: Vec<Arc<AsyncMutex<GovernedWorkspace>>>,
+    ) -> Result<(), String> {
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
-            this.bind(&workspace)
+            workspace
+                .publish_brought_up(&self.inner.host.key, tilo_clock::wall())
+                .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
+            self.bind(&workspace)
                 .await
                 .map_err(|e| format!("bind: {e}"))?;
             tracing::info!("bound");
-            this.settle(&mut workspace)
+            self.settle(&mut workspace)
                 .await
                 .map_err(|e| format!("settle: {e}"))?;
             tracing::info!("settled");
-            this.name_own_host(&mut workspace)
-                .await
-                .map_err(|e| format!("hosts: {e}"))?;
-            this.recall(&mut workspace)
+            // Where members reach the host is advice: a workspace whose
+            // governance does not take this host's new address keeps the one
+            // it names, and is served all the same.
+            if let Err(error) = self.name_own_host(&mut workspace).await {
+                tracing::error!(workspace = %workspace.workspace(), %error, "the host's address is not named in the workspace's governance");
+            }
+            self.keep_link_history(&workspace).await;
+            self.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
             tracing::info!("recalled");
-            this.prepare_desktop_record(&mut workspace)
+            self.prepare_desktop_record(&mut workspace)
                 .await
                 .map_err(|e| format!("desktop record: {e}"))?;
             tracing::info!("desktop record ready");
             // What the relay's log revoked while the workspace was closed.
-            this.carry_revocations(&mut workspace, &[]).await?;
+            self.carry_revocations(&mut workspace, &[]).await?;
         }
-        this.follow_activity();
-        this.follow_missing_surfaces();
-        this.inner.hosting.resume().await;
-        Ok(this)
+        Ok(())
+    }
+
+    /// Follow what a host watches once its workspaces are open: their
+    /// activity, the app surfaces their writes wait for, each record's
+    /// repair, and the address it answers at, then whatever its hosted
+    /// workspaces left running.
+    async fn start_following(&self) {
+        self.follow_activity();
+        self.follow_missing_surfaces();
+        self.follow_own_address();
+        #[cfg(feature = "agents")]
+        self.follow_repaired_records();
+        self.inner.hosting.resume().await;
     }
 
     /// The certificate this host serves its workspaces with: its own, or the
@@ -1203,6 +1353,16 @@ impl Workspaces {
         {
             return Err("this host released that room; its files stay here".into());
         }
+        if let Some(workspace) = workspace
+            && self
+                .inner
+                .dir
+                .join(workspace)
+                .with_extension(delete::DELETED)
+                .exists()
+        {
+            return Err("that room was deleted here".into());
+        }
         // A workspace this host serves for its governor elsewhere is that
         // governor's: governing it here as well would fork it.
         if let Some(workspace_id) =
@@ -1230,7 +1390,7 @@ impl Workspaces {
                 name,
                 (&self.inner.host.cert, &self.inner.host.key),
                 device.as_ref(),
-                SystemTime::now(),
+                tilo_clock::wall(),
             )?,
             None => GovernedWorkspace::create(
                 &self.inner.dir,
@@ -1238,11 +1398,11 @@ impl Workspaces {
                 &self.inner.host.cert,
                 &self.inner.host.key,
                 device.as_ref(),
-                SystemTime::now(),
+                tilo_clock::wall(),
             )?,
         };
         self.bind(&workspace).await?;
-        let summary = workspace.summary();
+        let summary = self.people(workspace.workspace(), &workspace);
         let workspace = Arc::new(AsyncMutex::new(workspace));
         self.inner
             .workspaces
@@ -1302,6 +1462,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         tracing::info!(%workspace, workspace_id = governed.workspace_id(), "governed room released");
+        // Nobody lists a workspace this host governs no longer.
+        self.inner.memberships.forget(workspace);
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
         Ok(())
@@ -1327,7 +1489,7 @@ impl Workspaces {
         {
             return Ok(governed.summary());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let key = &self.inner.host.key;
         let mut candidate = governed.peer().clone();
         candidate
@@ -1355,13 +1517,46 @@ impl Workspaces {
             .collect::<Vec<_>>();
         let mut summaries = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
-            summaries.push(workspace.lock().await.summary());
+            let workspace = workspace.lock().await;
+            summaries.push(self.people(workspace.workspace(), &workspace));
         }
         summaries
     }
 
-    /// The delegated agents on `workspace`'s roster, acting or not now.
+    /// List `device` in the workspace carried as `workspace_id`, or forget it
+    /// again: a device this host certified and started itself for that
+    /// workspace (a browser environment of it), which the workspace holds as a
+    /// member device while it runs and not after.
     ///
+    /// # Errors
+    ///
+    /// No workspace of this host is carried as `workspace_id`, or its
+    /// membership could not be written.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays held until its membership is written"
+    )]
+    pub async fn list_device(
+        &self,
+        workspace_id: u64,
+        device: [u8; 32],
+        listed: bool,
+    ) -> Result<(), String> {
+        let shared = {
+            let registry = self.inner.host.workspaces.lock().await;
+            registry.get(&workspace_id).cloned()
+        }
+        .ok_or_else(|| format!("no workspace of this host is carried as {workspace_id}"))?;
+        let mut workspace = shared.lock().await;
+        if listed {
+            workspace.admit_device(device)
+        } else {
+            workspace.forget_device(&device)
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    /// The delegated agents on `workspace`'s roster, acting or not now.    ///
     /// # Errors
     ///
     /// Returns why the workspace's roster could not be read.
@@ -1375,7 +1570,7 @@ impl Workspaces {
             .await
             .peer()
             .governance()
-            .governed_agents(SystemTime::now());
+            .governed_agents(tilo_clock::wall());
         agents.map_err(CollaborationError::new)
     }
 
@@ -1399,75 +1594,6 @@ impl Workspaces {
         self.inner.plane.clone()
     }
 
-    /// The direct links of the workspaces governed here, as the host's own
-    /// device: a member device of a workspace syncs with it here, and catches
-    /// up from the history the host keeps.
-    #[must_use]
-    pub fn direct(&self) -> tilo_peer_state::direct::Serving {
-        self.inner.direct.clone()
-    }
-
-    /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store, and take in what its members send there.
-    fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let link = tilo_peer_state::direct::DirectSync::over(
-            workspace.peer.clone(),
-            self.inner.host.key.clone(),
-        )
-        .with_store(Arc::clone(&self.inner.store));
-        self.inner.direct.serve(link.clone())?;
-        self.follow_link(workspace, &link);
-        Ok(())
-    }
-
-    /// Take in what `workspace`'s link admits and answer what its members ask
-    /// there: a frame the link admitted is what a member's write through a
-    /// relay session was, so it is followed as one ([`Self::absorb`]), and each
-    /// ask for content is answered with what this host keeps of it, or word
-    /// that it keeps none, addressed to whoever asked. The link carries each
-    /// ask on to the workspace's other members itself.
-    fn follow_link(
-        &self,
-        workspace: &GovernedWorkspace,
-        link: &tilo_peer_state::direct::DirectSync,
-    ) {
-        let name = workspace.workspace().to_owned();
-        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
-        let link = link.clone();
-        let mut heard = link.heard();
-        tokio::spawn(async move {
-            while let Ok(frame) = heard.recv().await {
-                // The host this link served is gone: so is the answer.
-                let Some(workspaces) = workspaces.upgrade() else {
-                    return;
-                };
-                let asking = matches!(
-                    frame.message,
-                    neighbour_wire::NeighbourMsg::RecordContentWant { .. }
-                );
-                let Ok(body) = postcard::to_allocvec(&frame.message) else {
-                    continue;
-                };
-                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
-                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
-                }
-                if !asking {
-                    continue;
-                }
-                for answer in workspaces.content_answer(&name, &body) {
-                    match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&answer) {
-                        Ok(message) => {
-                            let _ = link.send(message);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "a content answer did not encode");
-                        }
-                    }
-                }
-            }
-        });
-    }
-
     /// Run the transform an offloadable action declares for the workspaces
     /// governed here as a compute job on `jobs`: the host then answers the
     /// offers of its workspaces' devices with what `jobs` knows of itself, and
@@ -1485,7 +1611,7 @@ impl Workspaces {
     ) -> Option<collab_types::role::Role> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let member = governed.peer().permissions(device, now).ok()?;
         drop(governed);
         member
@@ -1502,25 +1628,6 @@ impl Workspaces {
     #[must_use]
     pub fn governance_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.changes.subscribe()
-    }
-
-    /// The invitations members ask to mail to addresses on a wait list,
-    /// for whoever runs the relay to send from the web entry `door`: until
-    /// this is called, the workspaces send no mail and refuse to, and they mail
-    /// only invitations on that door
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]). `None` once
-    /// called before.
-    #[must_use]
-    pub fn mail_wait_list(
-        &self,
-        door: &str,
-    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.inner
-            .wait_list_mail
-            .set((door.to_owned(), sender))
-            .ok()?;
-        Some(receiver)
     }
 
     /// Each member write to a record the governor's copy took in. A slow
@@ -1591,7 +1698,58 @@ impl Workspaces {
     ///
     /// The workspace is not governed here.
     pub async fn summary(&self, workspace: &str) -> Result<WorkspaceSummary, CollaborationError> {
-        Ok(self.workspace(workspace).await?.lock().await.summary())
+        let governed = self.workspace(workspace).await?;
+        let governed = governed.lock().await;
+        Ok(self.people(workspace, &governed))
+    }
+
+    /// `governed`'s people as everything that lists or counts them reads them:
+    /// the ones its governance admits, and its structural owner — the person
+    /// whose device runs the workspace, which holds it by being its owner
+    /// rather than by an admission receipt that would list it.
+    ///
+    /// A workspace this host keeps for somebody as their own takes nobody
+    /// that way: it is theirs by the door's invitation, and the device
+    /// governing it is this host's, which runs it without being one of its
+    /// people.
+    fn people(&self, workspace: &str, governed: &GovernedWorkspace) -> WorkspaceSummary {
+        let mut summary = governed.summary();
+        let kept_for_someone = self
+            .own()
+            .is_some_and(|own| own.owner_of(workspace).is_some());
+        let owner = governed.peer().owner();
+        if !kept_for_someone
+            && !summary
+                .members
+                .iter()
+                .any(|member| member.user_public_key == owner)
+        {
+            summary.members.insert(
+                0,
+                tilo_peer_state::GovernedMember {
+                    user_public_key: owner,
+                    role: tilo_peer_state::join::MemberRole::Editor,
+                    display_name: None,
+                    active_device_keys: Vec::new(),
+                    removed: false,
+                    administrator: true,
+                },
+            );
+        }
+        summary
+    }
+
+    /// `workspace` as a listing names it: its name and generation, read
+    /// without its people.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn listing_of(
+        &self,
+        workspace: &str,
+    ) -> Result<WorkspaceListing, CollaborationError> {
+        Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
     /// Every person governance records in `workspace` other than its owner, by
@@ -1604,7 +1762,7 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<(u64, std::collections::BTreeMap<String, MemberMark>), CollaborationError> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
         let policy = governed
@@ -1653,7 +1811,7 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let policy = state
             .lock()
@@ -1679,7 +1837,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         device: &DeviceCert,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
         let workspace = self.workspace(workspace).await.ok()?;
         let workspace = workspace.lock().await;
         member_bootstrap(
@@ -1756,6 +1914,8 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
+        let public = self.inner.listings.is_public(&workspace);
+        runtime.store.set_records_when_opened(public);
         // This relay's workspace authority governs the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.
         if std::mem::replace(
@@ -1795,7 +1955,7 @@ impl Workspaces {
                     notice = notices.recv() => {
                         let Some((author, body)) = notice else { break };
                         let Some(inner) = workspaces.upgrade() else { break };
-                        if let Err(error) = (Self { inner }).absorb(&workspace, author, &body).await {
+                        if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
                             tracing::warn!(%workspace, %error, "governed room did not follow a record write");
                         }
                     }
@@ -1819,30 +1979,27 @@ impl Workspaces {
             let Some(inner) = workspaces.upgrade() else {
                 return;
             };
-            let workspaces = Self { inner };
-            let Ok(state) = workspaces.workspace(&workspace).await else {
-                return;
-            };
-            let workspace_id = state.lock().await.workspace_id();
-            let retained = match workspaces
-                .inner
-                .host
-                .records
-                .retained_settled(workspace_id)
-                .await
-            {
-                Ok(retained) => retained,
-                Err(error) => {
-                    tracing::warn!(%workspace, %error, "governed room did not replay what its members wrote");
-                    return;
-                }
-            };
-            #[cfg(any(feature = "agents", feature = "web"))]
-            workspaces
-                .found_retained(&workspace, &state, &retained)
-                .await;
-            workspaces.recall_retained(&mut *state.lock().await, retained);
+            (Self { inner }).replay(&workspace).await;
         });
+    }
+
+    /// Replay what the relay retains for `workspace` into the governor's
+    /// copy now: [`Self::replay_soon`] in the caller's own time.
+    async fn replay(&self, workspace: &str) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let workspace_id = state.lock().await.workspace_id();
+        let retained = match self.inner.host.records.retained_settled(workspace_id).await {
+            Ok(retained) => retained,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "governed room did not replay what its members wrote");
+                return;
+            }
+        };
+        #[cfg(any(feature = "agents", feature = "web"))]
+        self.found_retained(workspace, &state, &retained).await;
+        self.recall_retained(&mut *state.lock().await, retained);
     }
 
     /// Found every record of `workspace` that `retained` holds a write of and
@@ -1899,7 +2056,7 @@ impl Workspaces {
         };
         for retained in missing {
             if let Err(error) = self
-                .absorb(workspace, retained.author, &retained.body)
+                .absorb_kept(workspace, retained.author, &retained.body)
                 .await
             {
                 tracing::warn!(%workspace, %error, "governed room did not found a record its members wrote");
@@ -1926,15 +2083,64 @@ impl Workspaces {
                 return;
             };
             let workspaces = Self { inner };
-            let joined = workspaces.join_channel(&name, &app, &record).await;
+            // Still asking until what the channel's keys open is replayed:
+            // whoever waits for them ([`Self::waits_for_keys`]) reads the
+            // record once that is in the governor's copy.
+            if workspaces.join_channel(&name, &app, &record).await {
+                workspaces.replay(&name).await;
+            }
             let Ok(workspace) = workspaces.workspace(&name).await else {
                 return;
             };
             workspace.lock().await.asking.remove(&(app, record));
-            if joined {
-                workspaces.replay_soon(name);
-            }
         });
+    }
+
+    /// Ask to be let into the channel that seals `record` of `app` in
+    /// `workspace`, when this host takes part in the workspace's channels:
+    /// what a host that reads a record its members write sealed asks for once
+    /// it finds the record shut, since its keys arrive only after the
+    /// channel's participants admit it ([`Self::join_soon`]). Nothing when
+    /// the workspace is not governed here; the keys arrive on the channel
+    /// service's own time, and the record reads once they have.
+    pub async fn ask_to_open(&self, workspace: &str, app: &str, record: &str) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let mut governed = state.lock().await;
+        #[cfg(any(feature = "agents", feature = "web"))]
+        self.join_soon(&mut governed, app.to_owned(), record.to_owned());
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        {
+            let _ = (&mut governed, app, record);
+        }
+    }
+
+    /// Whether this host waits to be let into the channel that seals `record`
+    /// of `app` in `workspace`: it runs on a device that takes part in the
+    /// workspace's channels, and holds none of that channel's keys yet. Once
+    /// it holds them, every write of the record reaches it readable and is
+    /// followed as it lands, so nothing about the record is worth asking
+    /// again. It waits while it is let in and replays what the keys open.
+    /// `false` for a workspace not governed here.
+    pub async fn waits_for_keys(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        #[cfg(any(feature = "agents", feature = "web"))]
+        let waits = governed.seals()
+            && (governed
+                .asking
+                .contains(&(app.to_owned(), record.to_owned()))
+                || !governed.takes_part_in_channel(app, record).await);
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let waits = {
+            let _ = (&governed, app, record);
+            false
+        };
+        drop(governed);
+        waits
     }
 
     /// Take in `message` if it is a notice rather than a record write: an
@@ -1945,9 +2151,10 @@ impl Workspaces {
         workspace: &str,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
+        carried: Carried,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
-        if channel_workspace(&message).is_some() {
-            self.take_channel_governance(workspace, author, message)
+        if message.channel_workspace().is_some() {
+            self.take_channel_governance(workspace, author, message, carried)
                 .await?;
             return Ok(None);
         }
@@ -1965,6 +2172,25 @@ impl Workspaces {
         .map(|()| None)
     }
 
+    /// [`Self::absorb`] for `body`, a write the relay already keeps: one a
+    /// member sent over its session, which the governor follows as it is kept.
+    async fn absorb_kept(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), String> {
+        self.absorb_carried(workspace, author, body, Carried::Kept)
+            .await
+    }
+
+    /// Take in the record write `body` of `author`, which reached the host
+    /// over the workspace's direct link: [`Self::absorb_carried`].
+    async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
+        self.absorb_carried(workspace, author, body, Carried::Unkept)
+            .await
+    }
+
     /// Take in the record write `body` of `author`. A record the workspace lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the workspace has
@@ -1974,7 +2200,13 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
-    async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
+    async fn absorb_carried(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+        carried: Carried,
+    ) -> Result<(), String> {
         let host = &self.inner.host;
         // Every member's record write reaches the governor here, so this is
         // where one that does not decode is reported (the content classifier
@@ -1993,18 +2225,19 @@ impl Workspaces {
         // device's channel governance like any member's, for the other
         // participants: the host keeps no channels to have it already.
         if author == host.cert.device_public_key
+            && message.channel_workspace().is_none()
             && !matches!(
                 message,
                 neighbour_wire::NeighbourMsg::AppDocument { .. }
                     | neighbour_wire::NeighbourMsg::SyncResp { .. }
-                    | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
-                    | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { .. }
-                    | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
             )
         {
             return Ok(());
         }
-        let Some(message) = self.absorb_notice(workspace, author, message).await? else {
+        let Some(message) = self
+            .absorb_notice(workspace, author, message, carried)
+            .await?
+        else {
             return Ok(());
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
@@ -2054,7 +2287,7 @@ impl Workspaces {
             self.join_soon(&mut workspace, app_id, record_id);
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let member = workspace
             .peer()
             .permissions(author, now)
@@ -2138,7 +2371,7 @@ impl Workspaces {
                 return Err(self.unbuildable_windows(workspace.workspace(), missing));
             }
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let outcome = candidate.receive_from(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
@@ -2157,8 +2390,8 @@ impl Workspaces {
             .collect();
         // The person `author` writes for, when `author` is one of them: who
         // left the workspace themselves is not kept out of it.
-        let author_person = workspace
-            .summary()
+        let author_person = self
+            .people(workspace.workspace(), &workspace)
             .members
             .iter()
             .find(|member| member.active_device_keys.contains(&author))
@@ -2170,138 +2403,6 @@ impl Workspaces {
         })?;
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
         self.settle(&mut workspace).await
-    }
-
-    /// Queue `message`, a member's channel governance, for `workspace`'s
-    /// channel service. True when it is the first since they were last handed
-    /// over, so its sender must start the hand-over.
-    fn queue_channel_notice(
-        &self,
-        workspace: &str,
-        message: neighbour_wire::NeighbourMsg,
-    ) -> Result<bool, String> {
-        let mut queued = self
-            .inner
-            .channel_notices
-            .lock()
-            .map_err(|_| "channel notices poisoned")?;
-        let waiting = queued.entry(workspace.to_owned()).or_default();
-        let first = waiting.len() < MAX_QUEUED_CHANNEL_NOTICES && {
-            waiting.push(message);
-            waiting.len() == 1
-        };
-        drop(queued);
-        Ok(first)
-    }
-
-    /// Take in `author`'s access request or commit for a channel of `workspace`.
-    ///
-    /// This host holds no channel keys of its own. One whose device's channel
-    /// service it runs queues what members send for that service, which settles
-    /// the groups; one that is no device's peer keeps what the channels are
-    /// made of like any other governance, for whoever takes part; and one
-    /// beside a channel service running on the device itself keeps nothing,
-    /// since that service hears these on its own sessions.
-    async fn take_channel_governance(
-        &self,
-        workspace: &str,
-        author: [u8; 32],
-        message: neighbour_wire::NeighbourMsg,
-    ) -> Result<(), String> {
-        if channel_workspace(&message).is_none_or(|named| named != workspace) {
-            return Ok(());
-        }
-        let Some(channels) = &self.inner.host.channels else {
-            // What a governed member device sent, and only that.
-            let state = self
-                .workspace(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let (workspace_id, member) = {
-                let governed = state.lock().await;
-                (
-                    governed.workspace_id(),
-                    governed
-                        .peer()
-                        .governance()
-                        .governed_access(SystemTime::now())
-                        .is_ok_and(|access| access.member_devices.contains(&author)),
-                )
-            };
-            if !member {
-                return Ok(());
-            }
-            return self
-                .retain_channel_governance(workspace_id, vec![message])
-                .await;
-        };
-        if channels.sink.is_some() {
-            self.channel_notice(workspace, message)?;
-        }
-        Ok(())
-    }
-
-    /// Start handing `workspace`'s queued channel governance over. A crowd
-    /// joining sends a request each, so notices only queue here; the first
-    /// since they were last taken starts a task that hands all of them over
-    /// at once.
-    fn channel_notice(
-        &self,
-        workspace: &str,
-        message: neighbour_wire::NeighbourMsg,
-    ) -> Result<(), String> {
-        if self.queue_channel_notice(workspace, message)? {
-            let workspaces = self.clone();
-            let workspace = workspace.to_owned();
-            tokio::spawn(async move {
-                if let Err(error) = workspaces.take_channel_notices(&workspace).await {
-                    tracing::warn!(%workspace, %error, "the room's channels did not take their notices");
-                }
-            });
-        }
-        Ok(())
-    }
-
-    /// Hand `workspace`'s channel service every queued notice: the workspace's
-    /// own governance is retained before the channel governance a service
-    /// built on it decides them with.
-    async fn take_channel_notices(&self, workspace: &str) -> Result<(), String> {
-        let sink = self
-            .inner
-            .host
-            .channels
-            .as_ref()
-            .and_then(|channels| channels.sink.clone());
-        let Some(sink) = sink else {
-            self.inner
-                .channel_notices
-                .lock()
-                .map_err(|_| "channel notices poisoned")?
-                .remove(workspace);
-            return Ok(());
-        };
-        let governed = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let publisher = {
-            let governed = governed.lock().await;
-            Arc::clone(&governed.publisher)
-        };
-        // Whatever settle handed over is retained before the channel
-        // governance a service derives from it.
-        publisher.flushed().await;
-        // Taken under the service: notices that queue while it works start the
-        // next hand-over, which takes all of them at once.
-        let waiting = self
-            .inner
-            .channel_notices
-            .lock()
-            .map_err(|_| "channel notices poisoned")?
-            .remove(workspace)
-            .unwrap_or_default();
-        sink.take(waiting);
-        Ok(())
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,
@@ -2346,7 +2447,7 @@ impl Workspaces {
             .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
         let channel = neighbour_wire::app_document_channel(app, record);
         let state = self.workspace(workspace).await?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let host = &self.inner.host;
         let (readable, keys) = {
             let workspace = state.lock().await;
@@ -2417,7 +2518,7 @@ impl Workspaces {
     /// Returns whether the workspace changed.
     fn forget_expired_devices(&self, workspace: &mut GovernedWorkspace) -> Result<bool, String> {
         let host = &self.inner.host;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         if !candidate
             .governance_mut()
@@ -2429,48 +2530,6 @@ impl Workspaces {
             Ok(record.collaboration.clone())
         })?;
         Ok(true)
-    }
-
-    /// Retain channel governance messages as this relay's own, once what the
-    /// workspace's governance already handed its store is durable: a channel's
-    /// group is built on it.
-    ///
-    /// # Errors
-    ///
-    /// The messages could not be retained, or this host holds no such
-    /// workspace.
-    pub async fn publish_channel_governance(
-        &self,
-        workspace: &str,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<(), String> {
-        let governed = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let (workspace_id, publisher) = {
-            let governed = governed.lock().await;
-            (governed.workspace_id(), Arc::clone(&governed.publisher))
-        };
-        self.retain_channel_governance(workspace_id, messages)
-            .await?;
-        publisher.flushed().await;
-        Ok(())
-    }
-
-    /// Retain channel governance messages as this relay's own.
-    async fn retain_channel_governance(
-        &self,
-        workspace_id: u64,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<(), String> {
-        for admission in self
-            .enqueue_channel_governance(workspace_id, messages)
-            .await?
-        {
-            admission.durable().await?;
-        }
-        Ok(())
     }
 
     /// Take `message`, `author`'s write to the record `(app, record)` the
@@ -2508,10 +2567,21 @@ impl Workspaces {
             }
             crate::timing::window("room.compact", compacting);
         }
+        // What the write carried, read here where it is at hand, so a record
+        // whose repair keeps changes is read only for a write that could
+        // release one of them.
+        #[cfg(feature = "agents")]
+        let carried = {
+            let name = workspace.workspace().to_owned();
+            self.carried_into(&*workspace, (&name, &app, &record), &message)
+                .await
+        };
         let _ = self.inner.record_writes.send(RecordWrite {
             workspace: workspace.workspace().to_owned(),
             app,
             record,
+            #[cfg(feature = "agents")]
+            carried,
         });
     }
 
@@ -2526,7 +2596,7 @@ impl Workspaces {
         reason: &str,
     ) -> Result<(), String> {
         let host = &self.inner.host;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let filed = candidate
             .workspace_mut()
@@ -2580,7 +2650,7 @@ impl Workspaces {
             &self.inner.host.cert,
             message,
             &self.inner.host.key,
-            SystemTime::now(),
+            tilo_clock::wall(),
         );
         match cleared {
             Ok(changed) => changed,
@@ -2621,104 +2691,6 @@ impl Workspaces {
         });
     }
 
-    /// Queue channel governance messages in the host's order as this
-    /// relay's own, without waiting for them to be durable.
-    async fn enqueue_channel_governance(
-        &self,
-        workspace_id: u64,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<Vec<crate::workspace_records::WorkspaceAdmission>, String> {
-        let mut admissions = Vec::with_capacity(messages.len());
-        for message in messages {
-            let commit = channel_commit(&message)?;
-            admissions.push(
-                self.inner
-                    .host
-                    .records
-                    .enqueue(workspace_id, commit)
-                    .await?,
-            );
-        }
-        Ok(admissions)
-    }
-
-    /// Replay every record write the relay retains for `workspace` into the
-    /// governor's copy, and keep what it took in.
-    async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
-        let retained = self
-            .inner
-            .host
-            .records
-            .retained(workspace.workspace_id())
-            .await?;
-        self.recall_retained(workspace, retained);
-        Ok(())
-    }
-
-    /// Take `retained`, the record writes the relay retains for `workspace`, into
-    /// the governor's copy, and keep what it took in. A write held for an
-    /// app surface not here yet may be let go past the held queue's bound,
-    /// and so is every later write of its author to its record, which
-    /// would otherwise overtake it for good. The relay still retains them
-    /// all: they are replayed again, in the order their authors wrote them,
-    /// once the surface arrives ([`Self::follow`]) or something they waited
-    /// for lands ([`Followed::replay_wanted`]).
-    fn recall_retained(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        retained: Vec<crate::workspace_records::RetainedBody>,
-    ) {
-        let (mut changed, mut again) = (false, false);
-        for retained in retained {
-            // What the relay's device wrote is retained under its key, the
-            // governor's own commits and its sessions' writes alike: the
-            // first are the governor's copy already, the second it took in
-            // as they came (`absorb`). Neither is replayed into it.
-            if retained.author == self.inner.host.cert.device_public_key {
-                continue;
-            }
-            let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
-                Ok(message) => message,
-                Err(error) => {
-                    tracing::warn!(
-                        author = %hex::encode(retained.author),
-                        %error,
-                        "a retained write does not decode; it is not replayed"
-                    );
-                    continue;
-                }
-            };
-            let followed = workspace.follow(retained.author, message.clone());
-            let Followed {
-                changed: took,
-                replay_wanted,
-                refused,
-            } = followed;
-            changed |= took;
-            again |= replay_wanted;
-            if let Some(reason) = refused {
-                let filed = workspace.refused(
-                    &self.inner.host.cert,
-                    &self.inner.host.key,
-                    &message,
-                    &reason,
-                );
-                changed |= filed.changed;
-            } else if took && self.landed(workspace, &message) {
-                changed = true;
-            }
-        }
-        if changed {
-            workspace.keep_followed();
-        }
-        // What a write let go waited for landed in this replay: the relay's
-        // copy is read again, with what reached it since this one was read.
-        // Each further replay needs something new to land, so it ends.
-        if again {
-            self.replay_soon(workspace.workspace().to_owned());
-        }
-    }
-
     /// Bring the relay in line with the workspace's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
     /// published, then re-derive its calls' participants. Runs after each
@@ -2740,20 +2712,60 @@ impl Workspaces {
         if self.forget_expired_devices(workspace)? {
             tracing::debug!(workspace = %workspace.workspace(), "room settled without the devices whose certificates expired");
         }
-        let now = SystemTime::now();
+        let accessing = crate::timing::start();
+        let now = tilo_clock::wall();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
-        host.access
+        crate::timing::event("room.settle.access_read", accessing, 0);
+        let members = access.member_devices.clone();
+        // Who is in the workspace is what its governance just said: the person
+        // listing of every one of them is answered from that, not by reading
+        // every workspace this host governs.
+        self.inner.memberships.record(
+            workspace.workspace(),
+            access.member_user_roots.iter().copied(),
+        );
+        let dropped = host
+            .access
             .replace(workspace.workspace_id(), true, access)
             .await
             .map_err(|error| error.to_string())?;
-        let standings = workspace
-            .peer()
-            .governance()
-            .governed_standings(SystemTime::now())?;
+        crate::timing::event("room.settle.access", accessing, 0);
+        // A device the workspace no longer admits is sent to no one: what it
+        // retained to introduce itself goes, unless it brings a revocation
+        // this workspace holds nowhere else. Every newcomer is sent the
+        // revocations the workspace holds beside its governance, and the
+        // hellos that bring any other: a hello can be the only record of a
+        // revocation, of a device no workspace row lists, and forgetting it
+        // would let that device in again.
+        if !dropped.is_empty() {
+            let hosted = host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace.workspace_id())
+                .cloned();
+            if let Some(hosted) = hosted {
+                let held = workspace.peer().revocations();
+                let forgotten = crate::compaction::owner_run(&hosted, move |store| {
+                    let payloads = std::sync::Arc::clone(store.payloads());
+                    store.forget_hellos(&dropped, &|body| {
+                        payloads.identity(body).is_some_and(|(_, brought)| {
+                            brought.iter().any(|entry| !held.contains(entry))
+                        })
+                    })
+                })
+                .await?;
+                tracing::debug!(workspace = %workspace.workspace(), forgotten, "forgot the hellos of devices the workspace no longer admits");
+            }
+        }
+        let standing = crate::timing::start();
+        let standings = workspace.peer().governance().standings_of(&members, now)?;
         host.access
             .replace_standings(workspace.workspace_id(), true, standings)
             .await
             .map_err(|error| error.to_string())?;
+        crate::timing::event("room.settle.standings", standing, 0);
+        let publishing = crate::timing::start();
         let publisher = Arc::clone(&workspace.publisher);
         if workspace.rebased {
             publisher.flushed().await;
@@ -2782,8 +2794,11 @@ impl Workspaces {
             epoch,
             publications,
         );
+        crate::timing::event("room.settle.publish", publishing, 0);
+        let observing = crate::timing::start();
         self.observe_calls(workspace);
         self.governance_moved(workspace);
+        crate::timing::event("room.settle.observe", observing, 0);
         Ok(())
     }
 
@@ -2853,59 +2868,9 @@ impl Workspaces {
         Ok(())
     }
 
-    /// The signed Iroh address a joining device dials to redeem an
-    /// invitation of `workspace`.
-    fn transport_hint(
-        &self,
-        workspace: &GovernedWorkspace,
-    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        let host = &self.inner.host;
-        let endpoint_addr = host.endpoint.addr();
-        let packet_relay_url = endpoint_addr
-            .relay_urls()
-            .next()
-            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
-            version: 1,
-            mode: host.mode,
-            room: workspace.workspace().to_owned(),
-            workspace_id: workspace.workspace_id(),
-            endpoint_addr,
-            host_user_public_key: host.cert.user_public_key,
-            host_device_certificate: host.cert.clone(),
-            packet_relay_url,
-        }
-        .transport_hint(&host.key)
-        .map_err(|error| CollaborationError::new(error.to_string()))
-    }
-
     fn revocations(&self) -> RevocationList {
         self.inner.host.revocations.read_recover().clone()
     }
-}
-
-/// The workspace a channel governance message names.
-fn channel_workspace(message: &neighbour_wire::NeighbourMsg) -> Option<&str> {
-    match message {
-        neighbour_wire::NeighbourMsg::MlsGovernance { workspace, .. }
-        | neighbour_wire::NeighbourMsg::MlsAccessRequest { workspace, .. } => Some(workspace),
-        neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room),
-        _ => None,
-    }
-}
-
-/// A channel governance message, retained as this relay's own.
-fn channel_commit(
-    message: &neighbour_wire::NeighbourMsg,
-) -> Result<crate::workspace_records::HostCommit, String> {
-    let (channel, retention) = neighbour_wire::retention(message, false)
-        .ok_or("channel governance has no retention channel")?;
-    let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
-    Ok(crate::workspace_records::HostCommit {
-        body,
-        channel,
-        checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-    })
 }
 
 fn system_time(now_ns: u64) -> SystemTime {
@@ -2927,13 +2892,20 @@ pub(crate) fn member_bootstrap(
     workspace_id: u64,
     generation: u64,
     device: &DeviceCert,
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
     use tilo_peer_state::join::{
         JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
     };
+    let now = tilo_clock::wall();
     let role = peer
-        .permissions(device.device_public_key, SystemTime::now())
+        .permissions(device.device_public_key, now)
         .map_or(collab_types::Role::Viewer, |authority| authority.role);
+    // The replay after the bootstrap carries the workspace's governance, and
+    // with it every member's certificate: the roster names only what the
+    // device holds before that governance, or could not take from it.
+    let certified_roster =
+        peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
+    let certified = crate::peer::GovernanceCertificates::new(&certified_roster, peer.revocations());
     let answer = match role {
         collab_types::Role::Owner => {
             JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
@@ -2942,7 +2914,7 @@ pub(crate) fn member_bootstrap(
                 room: peer.workspace_id().to_owned(),
                 workspace_id,
                 host: host.clone(),
-                certified_roster: peer.certificates(),
+                certified_roster,
                 revocations: peer.revocations(),
                 records: Vec::new(),
                 governance_messages: Vec::new(),
@@ -2962,12 +2934,25 @@ pub(crate) fn member_bootstrap(
             room: peer.workspace_id().to_owned(),
             workspace_id,
             host: host.clone(),
-            certified_roster: peer.certificates(),
+            certified_roster,
             revocations: peer.revocations(),
             records: Vec::new(),
             governance_messages: Vec::new(),
             generation,
         }),
     };
-    postcard::to_stdvec(&answer).ok()
+    Some((postcard::to_stdvec(&answer).ok()?, certified))
+}
+
+/// How a member's write reached the governor, which decides whether the host
+/// still has to keep what it carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Carried {
+    /// Over the member's relay session: the relay kept it before the
+    /// governor was told, so it is replayed to whoever catches up already.
+    Kept,
+    /// Some way the relay keeps nothing of, the workspace's direct link or
+    /// a device's entry: the host keeps it for the members on relay
+    /// sessions and whoever catches up later.
+    Unkept,
 }

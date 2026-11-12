@@ -69,4 +69,142 @@ mod tests {
         });
         assert_eq!(harness.pointer_cursor(), CursorIcon::Default);
     }
+
+    /// A card that builds its contents again while it draws, as a panel opening the card it was
+    /// asked for does, and says so: what it let go of is kept aside, so a read through the old
+    /// nodes finds them out of the tree instead of in freed memory.
+    struct RebuildsWhileDrawing {
+        child: Box<dyn crate::widget::Widget>,
+        let_go: Vec<Box<dyn crate::widget::Widget>>,
+        rebuild: bool,
+        replaced: bool,
+        rect: vello::kurbo::Rect,
+    }
+
+    fn card() -> Box<dyn crate::widget::Widget> {
+        Box::new(
+            crate::widget::Row::new().push(Box::new(crate::widget::TextInput::new(vec![
+                crate::PathSegment::Field("draft".into()),
+            ]))),
+        )
+    }
+
+    impl crate::widget::Widget for RebuildsWhileDrawing {
+        fn name(&self) -> &str {
+            "rebuilds-while-drawing"
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &crate::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            let child = self.child.build_layout(taffy, theme, node_map);
+            let style = taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..Default::default()
+            };
+            taffy.widget_node(style, &[child], node_map, self)
+        }
+
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: Point,
+        ) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+            if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
+                self.child.apply_layout(taffy, child, origin);
+            }
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.rect
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) {
+            self.child.draw(scene, transform, text, theme, presence);
+            if std::mem::take(&mut self.rebuild) {
+                self.let_go.push(std::mem::replace(&mut self.child, card()));
+                self.replaced = true;
+            }
+        }
+
+        fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+            vec![self.child.as_ref()]
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+            vec![self.child.as_mut()]
+        }
+
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.replaced)
+        }
+    }
+
+    /// The mapped nodes whose widget is no longer in the shown tree.
+    fn out_of_tree(harness: &FrameHarness) -> usize {
+        fn walk(widget: &dyn crate::widget::Widget, live: &mut Vec<usize>) {
+            live.push(std::ptr::from_ref(widget).cast::<()>() as usize);
+            for child in widget.children() {
+                walk(child, live);
+            }
+        }
+        let mut live = Vec::new();
+        walk(harness.root.as_ref(), &mut live);
+        harness
+            .node_map
+            .values()
+            .filter(|pointer| !live.contains(&(pointer.cast::<()>() as usize)))
+            .count()
+    }
+
+    /// A widget that built its children again while the frame drew leaves the frame's layout
+    /// maps naming the ones it let go of. The page reads them on input before its next frame
+    /// (a tooltip, the pointer's shape after an event that dispatched nothing); input admits the
+    /// composition first, so nothing is read through a widget that is gone.
+    #[test]
+    fn input_after_a_widget_rebuilt_while_drawing_reads_no_widget_it_let_go_of() {
+        let root = RebuildsWhileDrawing {
+            child: card(),
+            let_go: Vec::new(),
+            rebuild: false,
+            replaced: false,
+            rect: vello::kurbo::Rect::ZERO,
+        };
+        let mut harness =
+            FrameHarness::for_root(State::new(), root, (240, 160), crate::theme::Theme::dark());
+        // The page's own clock: input does not lay out by itself.
+        harness.set_coalesce_input_frames(true);
+        harness.relayout();
+        assert_eq!(out_of_tree(&harness), 0);
+        harness.root_mut::<RebuildsWhileDrawing>().rebuild = true;
+        harness.relayout();
+        assert!(
+            out_of_tree(&harness) > 0,
+            "the frame drew a rebuilt card after laying out the old one"
+        );
+        // A modifier snapshot the page repeats dispatches nothing, and the page shows the
+        // pointer's shape after it all the same.
+        harness.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::default(),
+        ));
+        assert_eq!(
+            out_of_tree(&harness),
+            0,
+            "input read the layout maps through widgets that were let go of"
+        );
+        let _ = harness.pointer_cursor();
+    }
 }

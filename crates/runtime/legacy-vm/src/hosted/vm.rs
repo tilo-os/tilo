@@ -22,7 +22,9 @@ use thiserror::Error;
 use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
+use super::memory;
 use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
+use super::network::Endpoint;
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
 use crate::virtiofs::SYSTEM_READ_ONLY;
@@ -80,6 +82,74 @@ pub struct Settings {
     /// one ([`super::jail`]). Unjailed VMs (development only) have no
     /// network.
     pub jail: Option<Arc<Jail>>,
+    /// Where the relay is, as the host reaches it: the one destination a
+    /// VM may reach besides the internet, so the browser session in it joins
+    /// its workspace. A relay on the host's own loopback (a local stack) is
+    /// reached through [`super::network::HOST_LOOPBACK`]; anywhere else (a
+    /// cluster address), the VM dials it as it is. `None`: the host serves
+    /// no Browser.
+    pub relay: Option<Endpoint>,
+    /// Where the templates a new VM is cloned from are kept, one per size
+    /// ([`firecracker::clone_vm`]). Only jailed VMs are cloned: a jail names
+    /// a VM's disk and sockets at the same path for every VM, which a
+    /// snapshot records. `None`: every new VM boots cold.
+    pub templates: Option<PathBuf>,
+}
+
+/// What a template's guest reads before it is snapshotted: the session's,
+/// Browser's and Chromium's files, so each clone finds them in the page
+/// cache it shares with every other clone.
+const WARM: &str = "find /usr/bin/tilo-session /usr/libexec/tilo /usr/lib/tilo-runtime \
+    /usr/share/tilo-apps -type f -exec cat {} + >/dev/null 2>&1; sync";
+
+/// What a template was made from: the guest image and the size. A template
+/// of another image is not one.
+fn template_stamp(settings: &Settings, size: VmSize) -> String {
+    let machine = &settings.machine;
+    format!(
+        "{}\n{}\n{size}\n{WARM}\n",
+        machine.kernel.display(),
+        machine
+            .base_disk
+            .as_ref()
+            .map_or_else(String::new, |disk| disk.display().to_string())
+    )
+}
+
+/// Where `size`'s template is kept, when `settings` keep templates.
+#[must_use]
+pub fn template_dir(settings: &Settings, size: VmSize) -> Option<PathBuf> {
+    settings.jail.as_ref()?;
+    Some(settings.templates.as_ref()?.join(size.as_str()))
+}
+
+/// `size`'s template, when one was made from this guest image.
+#[must_use]
+pub fn template(settings: &Settings, size: VmSize) -> Option<VmFiles> {
+    let state = template_dir(settings, size)?;
+    let files = VmFiles {
+        run: state.clone(),
+        state,
+        jailed: true,
+    };
+    let stamp = std::fs::read_to_string(files.state.join("template")).ok()?;
+    (stamp == template_stamp(settings, size) && files.snapshot().valid() && files.disk().is_file())
+        .then_some(files)
+}
+
+/// Make the suspended VM at `files` `size`'s template: read-only, and
+/// stamped with what it was made from.
+pub fn freeze_template(settings: &Settings, size: VmSize, files: &VmFiles) -> Result<(), VmError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let snapshot = files.snapshot();
+    for path in [&files.disk(), &snapshot.state, &snapshot.memory] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))?;
+    }
+    tilo_files::native::atomic::write_creating_parent(
+        &files.state.join("template"),
+        template_stamp(settings, size).as_bytes(),
+    )?;
+    Ok(())
 }
 
 /// How the last wake went: what an agent waited for its first command.
@@ -99,7 +169,8 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    ledger: Ledger,
+    /// Where its runs are billed.
+    ledger: Option<Ledger>,
     clock: Clock,
     meter: Meter,
     life: Lifecycle,
@@ -110,6 +181,8 @@ pub struct HostedVm {
     servers: Vec<ShareServer>,
     wake_started: Option<Instant>,
     restoring: bool,
+    /// The next run starts for a Linux action, and is billed from its start.
+    bill_next: bool,
     last_wake: Option<Wake>,
     /// The jail slot the running VM holds.
     slot: Option<u32>,
@@ -123,15 +196,13 @@ impl HostedVm {
         identity: VmIdentity,
         files: VmFiles,
         settings: Arc<Settings>,
-        ledger: Ledger,
+        ledger: Option<Ledger>,
         clock: Clock,
     ) -> Result<Self, VmError> {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
         kill_stray(&files, settings.jail.as_deref());
-        if let Some(record) = meter.recover() {
-            ledger.append(&record)?;
-        }
+        record_in(ledger.as_ref(), meter.recover().as_ref())?;
         meter.save(&files.meter())?;
         let mut life = Lifecycle::new(settings.idle_suspend.as_secs());
         let disk = files.disk().is_file();
@@ -157,6 +228,7 @@ impl HostedVm {
             servers: Vec::new(),
             wake_started: None,
             restoring: false,
+            bill_next: false,
             last_wake: None,
             slot: None,
         })
@@ -165,6 +237,12 @@ impl HostedVm {
     #[must_use]
     pub const fn identity(&self) -> &VmIdentity {
         &self.meter.identity
+    }
+
+    /// How to reach the running VM's agent.
+    #[must_use]
+    pub fn link(&self) -> Option<AgentLink> {
+        self.link.clone()
     }
 
     #[must_use]
@@ -187,10 +265,44 @@ impl HostedVm {
         self.meter.snapshot.map(|held| held.bytes)
     }
 
+    /// What the running VM takes of this host's memory, MiB, as its kernel
+    /// accounts it ([`memory::tree_mib`]): its Firecracker process and
+    /// everything below it, which is what closing the VM would free. This is
+    /// what the host counts the VM at, and what it stops admitting new ones
+    /// over. `None` when it is not running.
+    #[must_use]
+    pub fn resident_mib(&self) -> Option<u64> {
+        memory::tree_mib(self.process.as_ref()?.id())
+    }
+
+    /// Ask the running VM's guest to give `target_mib` of its memory back,
+    /// which the host then has: `Ok(true)` when its Firecracker took the
+    /// target, `Ok(false)` when this VM has no balloon device (it booted or
+    /// was restored from a snapshot made without one), which no later call
+    /// changes.
+    pub fn balloon(&self, target_mib: u64) -> Result<bool, VmError> {
+        match Api::new(self.files.api_socket()).balloon(target_mib) {
+            Ok(()) => Ok(true),
+            Err(FirecrackerError::Api { status, .. }) if (400..500).contains(&status) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Wake the VM with `shares` mounted, and say how to reach its agent,
-    /// and how the wake went when this call woke it.
-    pub fn ensure(&mut self, shares: &[Served]) -> Result<(AgentLink, Option<Wake>), VmError> {
-        self.reap();
+    /// and how the wake went when this call woke it. For a Linux action
+    /// (`linux`), the VM's time is billed from now until it sleeps
+    /// ([`Meter::billed`](super::meter::Meter::billed)); the browser session
+    /// alone bills none.
+    pub fn ensure(
+        &mut self,
+        shares: &[Served],
+        linux: bool,
+    ) -> Result<(AgentLink, Option<Wake>), VmError> {
+        if self.reap() && linux {
+            self.meter.billed((self.clock)());
+            self.meter.save(&self.files.meter())?;
+        }
+        self.bill_next = linux;
         for share in shares {
             if !self.desired.iter().any(|known| known.path == share.path) {
                 self.desired.push(share.clone());
@@ -232,7 +344,8 @@ impl HostedVm {
     }
 
     /// Look at the running VM: is it alive, what runs in it. Suspends it
-    /// once it has been idle for the limit.
+    /// once it has been idle for the limit: the browser session counts as
+    /// running until its own idle limit ends it.
     pub fn poll(&mut self) -> Result<(), VmError> {
         if !self.reap() || self.life.phase() != Phase::Running {
             return Ok(());
@@ -284,11 +397,14 @@ impl HostedVm {
     fn execute(&mut self, actions: &[Action]) -> Result<(), VmError> {
         for action in actions {
             match action {
-                Action::CreateDisk => firecracker::create_disk(
-                    &self.settings.machine,
-                    &self.files.disk(),
-                    self.meter.identity.size,
-                )?,
+                Action::CreateDisk => match template(&self.settings, self.meter.identity.size) {
+                    Some(template) => firecracker::clone_vm(&template, &self.files)?,
+                    None => firecracker::create_disk(
+                        &self.settings.machine,
+                        &self.files.disk(),
+                        self.meter.identity.size,
+                    )?,
+                },
                 Action::Define => {}
                 Action::Start => self.start()?,
                 Action::AwaitAgent => {
@@ -332,7 +448,7 @@ impl HostedVm {
         let dirs = if let Some(jail) = &settings.jail {
             let slot = jail.take().ok_or(VmError::HostFull)?;
             self.slot = Some(slot);
-            match self.jail_dirs() {
+            match self.jail_dirs(machine) {
                 Ok(dirs) => Some((jail, slot, dirs)),
                 Err(error) => {
                     self.release();
@@ -352,6 +468,7 @@ impl HostedVm {
                     sockets,
                     guest: guest.as_ref(),
                 },
+                settings.relay,
             )
         } else {
             let argv = if self.restoring {
@@ -388,7 +505,8 @@ impl HostedVm {
             },
         );
         self.process = Some(process);
-        self.meter.started((self.clock)());
+        self.meter
+            .started((self.clock)(), std::mem::take(&mut self.bill_next));
         self.meter.save(&self.files.meter())?;
         self.link = Some(AgentLink::Hybrid {
             socket: self.files.vsock_socket(),
@@ -409,14 +527,8 @@ impl HostedVm {
 
     /// The directories a jail is made of: the VM's state, its sockets, and
     /// the guest kernel's (absent for a kernel at the filesystem root).
-    fn jail_dirs(&self) -> std::io::Result<(File, File, Option<File>)> {
-        let guest = self
-            .settings
-            .machine
-            .kernel
-            .parent()
-            .map(File::open)
-            .transpose()?;
+    fn jail_dirs(&self, machine: &Machine) -> std::io::Result<(File, File, Option<File>)> {
+        let guest = machine.kernel.parent().map(File::open).transpose()?;
         Ok((
             File::open(self.files.vmm())?,
             File::open(&self.files.run)?,
@@ -447,16 +559,18 @@ impl HostedVm {
         let Some(jail) = self.settings.jail.clone() else {
             return;
         };
-        let released = self.jail_dirs().and_then(|(vmm, sockets, _)| {
-            jail.helper.release(
-                slot,
-                &JailDirs {
-                    vmm: &vmm,
-                    sockets: &sockets,
-                    guest: None,
-                },
-            )
-        });
+        let released = self
+            .jail_dirs(&self.settings.machine)
+            .and_then(|(vmm, sockets, _)| {
+                jail.helper.release(
+                    slot,
+                    &JailDirs {
+                        vmm: &vmm,
+                        sockets: &sockets,
+                        guest: None,
+                    },
+                )
+            });
         match released {
             Ok(()) => jail.give_back(slot),
             Err(error) => eprintln!("tilo-legacy hosted: releasing slot {slot}: {error}"),
@@ -588,9 +702,8 @@ impl HostedVm {
         self.ended(RunEnd::Suspended)?;
         snapshot.complete()?;
         let now = (self.clock)();
-        if let Some(record) = self.meter.snapshot_taken(now, snapshot.bytes_on_disk()) {
-            self.ledger.append(&record)?;
-        }
+        let record = self.meter.snapshot_taken(now, snapshot.bytes_on_disk());
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         self.life.suspended();
         self.link = None;
@@ -602,18 +715,15 @@ impl HostedVm {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
-        if let Some(record) = &record {
-            self.ledger.append(record)?;
-        }
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(record)
     }
 
     fn drop_snapshot(&mut self) -> Result<(), VmError> {
         self.files.snapshot().discard()?;
-        if let Some(record) = self.meter.snapshot_dropped((self.clock)()) {
-            self.ledger.append(&record)?;
-        }
+        let record = self.meter.snapshot_dropped((self.clock)());
+        record_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(())
     }
@@ -662,14 +772,25 @@ impl HostedVm {
 
     /// `sync` in the guest: what it wrote is on its disk.
     fn sync_guest(&self) -> Result<(), VmError> {
+        self.run_in_guest(&["sync"], Duration::from_secs(30))
+    }
+
+    /// Read the session's, Browser's and Chromium's files into the guest's
+    /// page cache: what a template does before it is snapshotted.
+    pub fn warm(&self) -> Result<(), VmError> {
+        self.run_in_guest(&["sh", "-c", WARM], Duration::from_secs(300))
+    }
+
+    /// Run `argv` in the guest and wait for it to end.
+    fn run_in_guest(&self, argv: &[&str], patience: Duration) -> Result<(), VmError> {
         let link = self.link.as_ref().ok_or(VmError::NotRunning)?;
         let stream = link.connect(AGENT_PORT)?;
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        stream.set_read_timeout(Some(patience))?;
         let (mut out, mut err) = (std::io::sink(), std::io::sink());
         client::launch(
             stream,
             &legacy_agent_protocol::Launch {
-                argv: vec!["sync".to_string()],
+                argv: argv.iter().map(ToString::to_string).collect(),
                 cwd: Some("/".to_string()),
                 env: Vec::new(),
                 stdio: legacy_agent_protocol::Stdio::Null,
@@ -722,6 +843,14 @@ impl Drop for HostedVm {
 
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
+
+/// Bill `record` to its account, when this VM's runs are billed at all.
+fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
+    match (ledger, record) {
+        (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
+        _ => Ok(()),
+    }
+}
 
 /// `tilo-legacy confine-fs --isolate --hide … --ro … -- tilo-legacy hosted
 /// files-serve …`: Landlock holds the server to its one share (read-only

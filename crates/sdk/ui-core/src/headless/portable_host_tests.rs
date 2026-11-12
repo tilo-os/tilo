@@ -1205,6 +1205,43 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     );
 }
 
+/// An agent writing in a note has its live caret where its write ends, and its action caret
+/// there too: it wears one tag, the one saying who it is and what it is doing, never its name a
+/// second time over the same words.
+#[test]
+fn an_agent_writing_wears_one_tag_at_its_caret() {
+    use crate::permissions::UserId;
+    let text = "The quick brown fox jumps";
+    let key = crate::widget::block_editor::block_presence_key("b1");
+    let mut frame = note_frame(text);
+    let event = written_interaction(4, 9);
+    let at = crate::time::now()
+        .checked_sub(crate::time::Duration::from_secs(1))
+        .expect("the clock is later than a second ago");
+    frame.update_presence(|presence| {
+        presence.names.insert(UserId("scribe".into()), "Ada".into());
+        presence.set_caret(&key, UserId("scribe".into()), 9);
+        presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies")
+    });
+    frame.poll_frame().unwrap();
+    frame.relayout();
+    frame.render_rgba();
+    let tags: Vec<String> = frame
+        .presence()
+        .caret_tags()
+        .into_iter()
+        .filter(|tag| tag.user == UserId("scribe".into()))
+        .map(|tag| tag.label)
+        .collect();
+    assert_eq!(
+        tags,
+        vec!["Ada: added text".to_owned()],
+        "one tag, saying who and what it did to the text"
+    );
+}
+
 /// A leaf a test drives by hand: what it paints changed, an animation it
 /// owes, and a deadline it looks at.
 struct Changed {

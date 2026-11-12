@@ -34,7 +34,7 @@ fn sending_a_typed_sentence_leaves_the_box_with_chat() {
     let (mut app, mut doc) = app_with_doc();
     let id = send_own(&mut app, &mut doc, "check the plan");
     ui::widget::context_menu::note_input(&mouse(ElementState::Pressed, MouseButton::Right));
-    app.open_message_menu(id, Point::new(120.0, 120.0));
+    app.open_message_menu(id.clone(), Point::new(120.0, 120.0));
     type_str(&mut app, &mut doc, "please");
     assert_eq!(
         app.menu.as_ref().map(|menu| menu.widget.query()),
@@ -49,5 +49,15 @@ fn sending_a_typed_sentence_leaves_the_box_with_chat() {
     assert!(!menu.widget.is_open(), "the rows went with the menu");
     assert!(menu.widget.send_to_alone_open(), "the box took their place");
     assert_eq!(menu.widget.send_to().text(), "please");
+    // The box is about the message, as the item Chat's record publishes it under.
+    let about = &menu.widget.send_to().subjects()[0];
+    assert_eq!(
+        about.anchor.place,
+        Some(ui::tilo_actions::SelectionPlace::item(id.as_str()))
+    );
+    assert_eq!(
+        about.resource.as_ref().map(|resource| resource.id.clone()),
+        Some(crate::effects::item_row_id("messages", id.as_str()))
+    );
     ui::shared_selection::set_send_host_available(false);
 }

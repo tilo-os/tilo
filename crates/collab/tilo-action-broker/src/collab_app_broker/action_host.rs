@@ -41,9 +41,11 @@ mod governance_witness_tests;
 
 mod app_admission;
 mod directory;
+mod hosted;
 mod launch_child;
 mod own_device;
-pub(super) mod publishers;
+mod publishers;
+mod readiness;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
@@ -100,6 +102,10 @@ pub(super) struct ConnectionActionHost {
 }
 
 impl tilo_actions::remote::ActionHost for ConnectionActionHost {
+    fn record_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::RecordReads>> {
+        self.state.record_reads()
+    }
+
     fn query(
         &self,
         caller: &Caller,
@@ -385,6 +391,23 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// A workspace's `start` of `app`: its instance with no window, where the host runs one,
+/// answered with that instance as [`app_open_descriptor`]'s `open` is.
+pub(super) fn app_start_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+    let mut descriptor = app_open_descriptor(&crate::services::LaunchableApplication {
+        package_id: package_id.to_owned(),
+        display_name: display_name.to_owned(),
+        unconfined: false,
+        offers: Vec::new(),
+        capabilities: Vec::new(),
+    });
+    descriptor.address.action = tilo_actions::remote::APPLICATION_START_ACTION.into();
+    descriptor.action_label = format!("Start {display_name}");
+    descriptor.description =
+        Some("Start this application in the current workspace without showing it".into());
+    descriptor
+}
+
 /// The address `request` is delivered at: on `resource`, the resource it names as its app
 /// publishes it now, when it was written under an id the app had before.
 fn current_address(resource: Option<&str>, request: &InvokeRequest) -> tilo_actions::ActionAddress {
@@ -596,7 +619,7 @@ pub(super) fn refusal(reason: String) -> ActionHostError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
     {
-        ActionHostError::ConfirmationRequired
+        ActionHostError::confirmation_required()
     } else if reason.contains("not allowed") {
         ActionHostError::NotPermitted
     } else if reason.contains("no longer publishes")
@@ -677,24 +700,46 @@ impl AppBrokerState {
                     person.clone()
                 })
             }
-            // Records are read device to device by the shell; an application
-            // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::FeedbackRequest { .. }
+            // The app's own records it reads as the person using it; another
+            // app's as itself, acting for them, by what the workspace grants it.
+            RemoteActionMessage::RecordRead { read, .. } => Some(if read.app == app_id {
+                person.clone()
+            } else {
+                match person.principal() {
+                    tilo_actions::remote::CallerPrincipal::Person(id) => {
+                        as_app.acting_for(id.clone())
+                    }
+                    _ => as_app,
+                }
+            }),
+            RemoteActionMessage::FeedbackRequest { .. }
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
+            // A confirmation is asked for on the door that puts questions to
+            // the person, never by an application.
+            | RemoteActionMessage::Confirm { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
-            | RemoteActionMessage::RetiredResourceWatch { .. } => None,
+            | RemoteActionMessage::RetiredResourceWatch { .. }
+            // An application puts content through its own store, not into
+            // another device's over this door; nor does it read another
+            // device's workspace content through it.
+            | RemoteActionMessage::ContentPutRequest { .. }
+            | RemoteActionMessage::ContentGetRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::RecordReading { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
@@ -1048,11 +1093,17 @@ impl AppBrokerState {
             let first = rows.len();
             let workspace_id = workspace.id().to_string();
             let mut live_apps = std::collections::HashSet::new();
+            // The apps with a window here: one running only without a window
+            // is still opened, which gives that instance its window.
+            let mut windowed_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
                 .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
+                if !self.is_windowless(surface.peer_id) {
+                    windowed_apps.insert(surface.app_id.clone());
+                }
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
@@ -1258,7 +1309,7 @@ impl AppBrokerState {
                 for app in applications
                     .iter()
                     .filter(|app| scope.wants_app(&app.package_id))
-                    .filter(|app| !live_apps.contains(&app.package_id))
+                    .filter(|app| !windowed_apps.contains(&app.package_id))
                 {
                     if policy.may_in(
                         &workspace,
@@ -1275,11 +1326,13 @@ impl AppBrokerState {
                         rows.push(app_named_row(&provider, app));
                     }
                 }
+                // A running app is offered to close where the host closes
+                // apps; where it does not, an agent of this machine is still
+                // told its name, which is how it addresses the app.
                 rows.extend(
                     applications
                         .iter()
                         .filter(|app| scope.wants_app(&app.package_id))
-                        .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
                             policy.may_in(
@@ -1289,12 +1342,16 @@ impl AppBrokerState {
                                 now,
                             )
                         })
-                        .map(|app| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &app.package_id,
-                                app_close_descriptor(&app.package_id, &app.display_name),
-                            )
+                        .filter_map(|app| {
+                            if closes_applications {
+                                Some(CatalogueRow::for_action(
+                                    provider.clone(),
+                                    &app.package_id,
+                                    app_close_descriptor(&app.package_id, &app.display_name),
+                                ))
+                            } else {
+                                names_unopened.then(|| app_named_row(&provider, app))
+                            }
                         }),
                 );
             }
@@ -1651,16 +1708,6 @@ impl AppBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
-        // Opening an app this session serves is opening its root with its default view, beside
-        // the place the ask is in: the request becomes the arrangement's own `open` and is
-        // dispatched again, so there is one path and no refusal-and-retry
-        // (`docs/designs/app-language/one-app-model.md` §3). Every dispatch enters here — the
-        // eager door, a launchable provider's delivery, and a re-asked child alike — so the
-        // rewrite is made once, at the front of the door.
-        if let Some(root) = self.served_open_root(request) {
-            let opened = publishers::opened_request(request, &root);
-            return self.action_invoke_with_origin(caller, own_peer, launch, origin, &opened);
-        }
         // Host-service replay is an observation under the original custody,
         // not another dispatch through a possibly changed live catalogue.
         if let Some(origin) = origin {
@@ -1694,6 +1741,7 @@ impl AppBrokerState {
         }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
+            || super::windowless_instances::started_app(request).is_some()
         {
             return self.invoke_launchable(caller, origin, request);
         }
@@ -1843,56 +1891,33 @@ impl AppBrokerState {
         let earlier = self.earlier_ids();
         let resource = earlier.current_resource(&request.target.address.resource);
         let address = &current_address(resource.as_deref(), request);
-        let (workspace, app_id, record, offered) = if let Some((workspace, app_id)) =
-            application_provider(&request.target.provider)
-        {
-            let current = earlier.current(app_id).to_owned();
-            let app_id = current.as_str();
-            let offered = self
-                .published_surfaces()
-                .into_iter()
-                .chain(self.launchable.surfaces())
-                .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
-                .find_map(|surface| {
-                    surface.actions.into_iter().find(|action| {
+        let (workspace, app_id, record, offered) =
+            if let Some((workspace, app_id)) = super::windowless_instances::started_app(request) {
+                // A workspace's `start` of its app offers nothing of the app: it
+                // runs the app, so the caller may launch it.
+                (workspace.to_owned(), app_id.to_owned(), None, None)
+            } else if let Some((workspace, app_id, offered)) = self.application_offer(request) {
+                let record = application_provider_record(&request.target.provider);
+                (workspace, app_id, record.map(str::to_owned), offered)
+            } else {
+                let retained = self
+                    .launchable
+                    .surface_for(&request.target.provider)
+                    .ok_or(ActionHostError::UnknownAction)?;
+                let offered = retained
+                    .actions
+                    .into_iter()
+                    .find(|action| {
                         action.resource == address.resource && action.action == address.action
                     })
-                })
-                .or_else(|| self.manifest_offer(app_id, address));
-            let record = application_provider_record(&request.target.provider);
-            (
-                workspace.to_owned(),
-                current.clone(),
-                record.map(str::to_owned),
-                offered,
-            )
-        } else {
-            let retained = self
-                .launchable
-                .surface_for(&request.target.provider)
-                .ok_or(ActionHostError::UnknownAction)?;
-            let offered = retained
-                .actions
-                .into_iter()
-                .find(|action| {
-                    action.resource == address.resource && action.action == address.action
-                })
-                .ok_or(ActionHostError::UnknownAction)?;
-            (
-                retained.route.cluster_id,
-                retained.app_id,
-                Some(retained.route.record_id),
-                Some(offered),
-            )
-        };
-        // An app whose model this session runs itself has no window process: its plain `open` is
-        // the session's own `open` step, which places its root, and `action_invoke_with_origin`
-        // rewrites every dispatch into it before any launch is admitted
-        // (`docs/designs/app-language/one-app-model.md` §3). Reached here, the rewrite was
-        // bypassed — never answer a served app's `open` with a launch.
-        if self.served_root(&app_id).is_some() {
-            return Err(ActionHostError::UnknownAction);
-        }
+                    .ok_or(ActionHostError::UnknownAction)?;
+                (
+                    retained.route.cluster_id,
+                    retained.app_id,
+                    Some(retained.route.record_id),
+                    Some(offered),
+                )
+            };
         // Only a caller on this machine launches apps on this desktop.
         if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
@@ -1938,7 +1963,7 @@ impl AppBrokerState {
                             .confirmation_for_argument(argument.as_deref()),
                         request.confirmation.as_ref(),
                     ) {
-                        return Err(ActionHostError::ConfirmationRequired);
+                        return Err(ActionHostError::confirmation_required());
                     }
                 }
                 Ok(workspace.clone())
@@ -1964,6 +1989,35 @@ impl AppBrokerState {
     /// The action the installed app `app_id`'s signed manifest offers at
     /// `address` while it is closed: what a launch is admitted against until
     /// the app publishes its own.
+    /// The workspace, app and offered action an application target of
+    /// `request` names (`application:<workspace>:<app>`): the app under the id
+    /// it has now, and the action as one of its instances publishes it, as it
+    /// is kept for launching, or as its manifest declares it. `None` for a
+    /// target that names no application; no action when the app offers none
+    /// at that address.
+    pub(super) fn application_offer(
+        &self,
+        request: &InvokeRequest,
+    ) -> Option<(String, String, Option<PublishedAction>)> {
+        let (workspace, app_id) = application_provider(&request.target.provider)?;
+        let earlier = self.earlier_ids();
+        let resource = earlier.current_resource(&request.target.address.resource);
+        let address = &current_address(resource.as_deref(), request);
+        let app_id = earlier.current(app_id).to_owned();
+        let offered = self
+            .published_surfaces()
+            .into_iter()
+            .chain(self.launchable.surfaces())
+            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
+            .find_map(|surface| {
+                surface.actions.into_iter().find(|action| {
+                    action.resource == address.resource && action.action == address.action
+                })
+            })
+            .or_else(|| self.manifest_offer(&app_id, address));
+        Some((workspace.to_owned(), app_id, offered))
+    }
+
     fn manifest_offer(&self, app_id: &str, address: &ActionAddress) -> Option<PublishedAction> {
         let applications = self.services.launcher.as_ref()?.applications();
         let app = applications
@@ -1994,6 +2048,61 @@ impl AppBrokerState {
         self.start_job(caller, origin, &delivered, request).await
     }
 
+    /// The connection ready to take `address` in `destination`, and the address it takes it
+    /// at: the native task's own, an instance of the app for a `start` (`starts`), else the
+    /// app's ready publisher of it.
+    fn ready_for(
+        &self,
+        destination: &LaunchDestination,
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        starts: bool,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<(u64, tilo_actions::ActionAddress)> {
+        let workspace = destination.workspace.id().to_string();
+        match native {
+            Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
+            None if starts => self
+                .running_instance(&destination.app_id, &workspace, &address.action)
+                .map(|peer_id| (peer_id, address.clone())),
+            None => self.ready_delivery(
+                &destination.app_id,
+                &workspace,
+                destination.record.as_deref(),
+                address,
+            ),
+        }
+    }
+
+    /// Answer `request`, a workspace's `start` of its app ([`super::windowless_instances::started_app`]),
+    /// with `peer_id`, the instance that runs now. The journal blocks, so it answers on the
+    /// delivery runtime's blocking pool.
+    async fn answer_started(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+        (workspace, app_id): (&str, &str),
+        peer_id: u64,
+    ) -> Result<u64, ActionHostError> {
+        let state = Arc::clone(self);
+        let (caller, origin, request) = (caller.clone(), origin.cloned(), request.clone());
+        let reason = format!("{app_id} start worker stopped");
+        let (workspace, app_id) = (workspace.to_owned(), app_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            state.answer_start(
+                &caller,
+                origin.as_ref(),
+                &request,
+                (&app_id, &workspace),
+                peer_id,
+            )
+        })
+        .await
+        .map_err(|error| ActionHostError::Unavailable {
+            reason: format!("{reason}: {error}"),
+        })?
+    }
+
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
@@ -2022,6 +2131,7 @@ impl AppBrokerState {
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         let shows = self.action_shows(app_id, &workspace_id, address);
+        let started = super::windowless_instances::started_app(request);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
@@ -2039,16 +2149,16 @@ impl AppBrokerState {
             if tokio::time::Instant::now() >= deadline.deadline() {
                 return Err(expired());
             }
-            let ready = match native {
-                Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
-                None => self.ready_delivery(
-                    app_id,
-                    &workspace_id,
-                    destination.record.as_deref(),
-                    address,
-                ),
-            };
-            if let Some((peer_id, published)) = ready {
+            if let Some((peer_id, published)) =
+                self.ready_for(destination, native, started.is_some(), address)
+            {
+                if native.is_none()
+                    && let Some(started) = started
+                {
+                    return self
+                        .answer_started(caller, origin, request, started, peer_id)
+                        .await;
+                }
                 return self
                     .deliver_to(peer_id, caller, origin, (request, &published), native)
                     .await;
@@ -2298,7 +2408,15 @@ impl AppBrokerState {
         if let Some(admitted) = admitted {
             let expected = admitted.broker_actor();
             let actual = BrokerActor::for_caller(caller);
-            if expected.id != actual.id || expected.is_agent != actual.is_agent {
+            // The connection's app may act under its own identity, by what
+            // the workspace grants it.
+            let own_app = match origin {
+                Some(super::published_invocation::InvocationCaller::Local { route, .. }) => {
+                    actual.is_agent && actual.id == BrokerActor::app(&route.app_id).id
+                }
+                _ => false,
+            };
+            if !own_app && (expected.id != actual.id || expected.is_agent != actual.is_agent) {
                 return Err(ActionHostError::NotPermitted);
             }
         }
@@ -2332,10 +2450,16 @@ impl AppBrokerState {
         let result = self
             .current_framework_authority(caller, origin, workspace)
             .and_then(|(workspace, policy, now)| {
-                policy
-                    .may_in(&workspace, &app_node(&workspace, app_id), kind, now)
-                    .then_some(workspace)
-                    .ok_or(ActionHostError::NotPermitted)
+                if policy.may_in(&workspace, &app_node(&workspace, app_id), kind, now) {
+                    return Ok(workspace);
+                }
+                tracing::warn!(
+                    %app_id,
+                    caller = %policy.id,
+                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    "an app's launch was refused: the workspace does not let the caller open it"
+                );
+                Err(ActionHostError::NotPermitted)
             });
         if result.is_err() {
             self.complete_host_action(
@@ -2502,7 +2626,9 @@ impl AppBrokerState {
 
     /// The ready publisher of `address` and the address it publishes it
     /// under: the exact one, else (when `aliases`) one whose resource is a
-    /// bound alias of `address`'s resource.
+    /// bound alias of `address`'s resource, or the one alias of the same
+    /// resource now when `address` names an alias an instance that ended
+    /// published ([`super::PublishedSurface::current_resource`]).
     fn publisher_of(
         &self,
         app_id: &str,
@@ -2528,23 +2654,34 @@ impl AppBrokerState {
                     && subscribers.contains_key(&surface.peer_id)
             })
             .filter_map(|surface| {
-                let published = surface
-                    .actions
-                    .iter()
-                    .find(|action| {
-                        action.action == address.action && action.resource == address.resource
-                    })
-                    .or_else(|| {
-                        surface.actions.iter().find(|action| {
-                            aliases
-                                && action.action == address.action
-                                && tilo_actions::selection::logical_resource_id(&action.resource)
-                                    == address.resource
-                        })
-                    })?;
+                let resource = if aliases {
+                    surface
+                        .current_resource(&address.resource, &address.action)
+                        .or_else(|| {
+                            surface
+                                .actions
+                                .iter()
+                                .find(|action| {
+                                    action.action == address.action
+                                        && tilo_actions::selection::logical_resource_id(
+                                            &action.resource,
+                                        ) == address.resource
+                                })
+                                .map(|action| action.resource.as_str())
+                        })?
+                } else {
+                    surface
+                        .actions
+                        .iter()
+                        .find(|action| {
+                            action.action == address.action && action.resource == address.resource
+                        })?
+                        .resource
+                        .as_str()
+                };
                 Some((
                     surface.peer_id,
-                    tilo_actions::ActionAddress::new(&published.resource, &published.action),
+                    tilo_actions::ActionAddress::new(resource, &address.action),
                 ))
             })
             .min_by_key(|(peer_id, _)| *peer_id)
@@ -2558,6 +2695,9 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Some(forward) = self.eager_forward(caller, origin, request) {
+            return self.send_to_host(caller, forward);
+        }
         let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
@@ -2783,10 +2923,6 @@ impl AppBrokerState {
         .map_err(refusal)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered door for a workspace action: the workspace's copied authority, then each host service's admission in turn"
-    )]
     fn start_workspace_action(
         self: &Arc<Self>,
         caller: &Caller,
@@ -2816,77 +2952,16 @@ impl AppBrokerState {
         ) {
             return result;
         }
-        if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            && address.action == APPLICATION_OPEN_ACTION
-        {
-            if caller.workspace().is_none() {
-                return Err(ActionHostError::UnknownAction);
-            }
-            // An app whose model this session runs has no window to open: its `open` is the
-            // session's own, placing its root, and the request was rewritten into that step
-            // before it reached here (`docs/designs/app-language/one-app-model.md` §3). Never
-            // launch a served app.
-            if self.served_root(app_id).is_some() {
-                return Err(ActionHostError::UnknownAction);
-            }
-            if !policy.may_in(
-                &workspace,
-                &app_node(&workspace, app_id),
-                tilo_action_policy::ActionKind::Undoable,
-                now,
-            ) {
-                return Err(ActionHostError::NotPermitted);
-            }
-            if !launch_content_hash(argument).is_empty() && launch.is_none() {
-                return Err(refusal(
-                    "launch content requires an application the launcher authenticated".into(),
-                ));
-            }
-            let author = match caller.principal() {
-                CallerPrincipal::Person(person)
-                    if policy.may_in(
-                        &workspace,
-                        &workspace.node(),
-                        tilo_action_policy::ActionKind::Undoable,
-                        now,
-                    ) =>
-                {
-                    Some(person.as_str())
-                }
-                _ => None,
-            };
-            let app = self
-                .services
-                .launcher
-                .as_ref()
-                .and_then(|launcher| {
-                    launcher
-                        .applications()
-                        .into_iter()
-                        .find(|app| app.package_id == app_id)
-                })
-                .ok_or(ActionHostError::UnknownAction)?;
-            let admitted = self.admit_host_action(
-                caller,
-                origin,
-                super::host_action_admission::HostActionAdmission {
-                    workspace: workspace_id,
-                    app_id,
-                    descriptor: &app_open_descriptor(&app),
-                    request,
-                },
-            )?;
-            return self.launch_application(
-                (caller, origin, workspace_id),
-                admitted,
-                app_id,
-                crate::services::LaunchContent {
-                    hash: launch_content_hash(argument),
-                    caller: launch,
-                    author,
-                },
-                &self.launch_place(caller, workspace_id, launch),
-            );
+        if let Some(result) = self.start_app_open(
+            caller,
+            workspace_id,
+            launch,
+            origin,
+            request,
+            argument,
+            (workspace.clone(), policy.clone(), now),
+        )? {
+            return Ok(result);
         }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_CLOSE_ACTION
@@ -2953,7 +3028,16 @@ impl AppBrokerState {
         );
         let confirmed = match answer {
             tilo_action_policy::Answer::Allow => true,
-            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Deny => {
+                tracing::warn!(
+                    app,
+                    caller = %policy.id,
+                    owner = workspace.owner().map_or("none", |owner| owner.as_str()),
+                    action = %descriptor.address.action,
+                    "an action was refused: the workspace does not grant it to the caller"
+                );
+                return Err(ActionHostError::NotPermitted);
+            }
             tilo_action_policy::Answer::Ask => match confirmation {
                 Some(Confirmation::Witnessed(_)) => witnessed,
                 Some(Confirmation::Confirmed) => policy.direct(),
@@ -2961,7 +3045,7 @@ impl AppBrokerState {
             },
         };
         if !confirmed {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.spend_once_grants(&workspace.id().to_string(), &spent);
         Ok(())
@@ -3134,7 +3218,7 @@ impl AppBrokerState {
     /// after [`CHANGE_SAFETY_INTERVAL`] without one — the
     /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
     /// of the broker's hosts. `None` for an invocation `caller` did not
-    /// admit, or off a runtime, where the waiter polls on its own schedule.
+    /// admit.
     pub(super) fn action_next_change(
         &self,
         caller: &Caller,
@@ -3142,9 +3226,8 @@ impl AppBrokerState {
         mut seen: tokio::sync::watch::Receiver<u64>,
     ) -> Option<Pending<()>> {
         self.remote_job(caller, id)?;
-        let runtime = tokio::runtime::Handle::try_current().ok()?;
         let (changed, change) = pending();
-        runtime.spawn(async move {
+        let wait = async move {
             tokio::select! {
                 _ = seen.changed() => {}
                 () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
@@ -3153,7 +3236,14 @@ impl AppBrokerState {
                 () = changed.abandoned() => return,
             }
             changed.complete(());
-        });
+        };
+        // A waiter on a thread of its own (the control door's connections) waits on the app
+        // runtime: without one it would hear no change and ask again at once.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(wait));
+        } else {
+            drop(tilo_rt::try_app().ok()?.spawn(wait));
+        }
         Some(change)
     }
 
@@ -3805,7 +3895,7 @@ mod device_pairing_tests {
         let unconfirmed = fixture.invoke(&request(device_pairing::APPROVE, None));
         assert_eq!(
             unconfirmed,
-            Err(tilo_actions::remote::ActionHostError::ConfirmationRequired),
+            Err(tilo_actions::remote::ActionHostError::confirmation_required()),
             "approval needs the person's confirmation"
         );
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");

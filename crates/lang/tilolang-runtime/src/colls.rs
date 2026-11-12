@@ -40,6 +40,9 @@ pub(crate) struct CollSeen {
     /// ([`crate::host_values::Imp::ListPrevious`]): a row's neighbour, which stays the one it
     /// saw while the rows ahead of them come and go.
     before: Vec<(Rc<str>, Option<Rc<str>>)>,
+    /// Whether the listing held each item a view asked the place of, where the store answered
+    /// without reading its items.
+    holds: Vec<(Rc<str>, bool)>,
     /// How many items were read one after the other from the first: a loop over the
     /// collection. Once it read them all, the view depends on the whole collection (a read of
     /// its field) and what it reads of it item by item is no longer kept.
@@ -58,6 +61,7 @@ impl CollSeen {
             last: End::Unread,
             at: Vec::new(),
             before: Vec::new(),
+            holds: Vec::new(),
             sweep: 0,
             whole: false,
         }
@@ -114,6 +118,11 @@ impl CollSeen {
             && self.before.iter().all(|(item, seen)| {
                 matches!(before_in(listing, item), Neighbour::At(now) if now == *seen)
             })
+            // A listing that cannot say where an item is was read again: it may hold it now.
+            && self
+                .holds
+                .iter()
+                .all(|(item, seen)| listing.holds(item) == Some(*seen))
     }
 
     /// Whether everything seen is still so in the store.
@@ -127,6 +136,7 @@ impl CollSeen {
             self.whole = true;
             self.at = Vec::new();
             self.before = Vec::new();
+            self.holds = Vec::new();
             return;
         }
         self.len = self.len.or(other.len);
@@ -139,6 +149,7 @@ impl CollSeen {
         }
         self.at.extend(other.at);
         self.before.extend(other.before);
+        self.holds.extend(other.holds);
     }
 }
 
@@ -250,6 +261,9 @@ enum Read {
     Last(Option<Rc<str>>),
     At(usize, Rc<str>),
     Before(Rc<str>, Option<Rc<str>>),
+    /// Whether the listing held the item, where a view asked where it stands and the store
+    /// answered that without reading the items: an item that joins or leaves runs it again.
+    Holds(Rc<str>, bool),
 }
 
 impl Core {
@@ -292,6 +306,7 @@ impl Core {
         let Some(vs) = frames.view_mut() else {
             return;
         };
+        let deciding = vs.decides;
         let at = vs
             .colls
             .iter()
@@ -318,11 +333,20 @@ impl Core {
                 seen.at.push((i, id));
             }
             Read::Before(item, before) => seen.before.push((item, before)),
+            Read::Holds(item, holds) => seen.holds.push((item, holds)),
         }
         // A filtered or ordered collection read whole still depends on what it saw item by
         // item: an item changing whether it is in, or where, is no change to the collection's
         // field.
         if seen.sweep == len && len > 0 && !coll.derived() {
+            seen.whole = true;
+            seen.at = Vec::new();
+            vs.reads.push((seen.resource.clone(), coll.field.clone()));
+        } else if deciding && coll.derived() && !seen.whole {
+            // What a requirement, an `applies` condition or a presentation read of a filtered
+            // collection is decided by every item's own fields, and it is kept as an answer
+            // another turn reads again ([`crate::runtime::Reading`]): that answer is the
+            // collection's field, which a change to any item under it reaches.
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
@@ -602,6 +626,32 @@ impl Core {
         }
     }
 
+    /// Where the item `id` stands in `coll`, as the store's listing finds it: by what orders the
+    /// listing — a page or two —, not by reading its items one by one. The view depends on the
+    /// item standing there, so an item that moves runs it again.
+    pub(crate) fn coll_index_of(&self, coll: &Rc<CollRef>, id: &str) -> HResult<Option<usize>> {
+        let listing = self.coll_listing(coll)?;
+        let Some(at) = listing.position(id) else {
+            // A listing that cannot say where an item stands, one that checks its items as it
+            // reads them, is read item by item: the read is what its items are.
+            let mut found = None;
+            for (at, item) in listing.iter().enumerate() {
+                if found.is_none() && &*item == id {
+                    found = Some(at);
+                }
+                self.saw(coll, Read::At(at, item), listing.len());
+            }
+            return Ok(found);
+        };
+        match at {
+            Some(at) => self.saw(coll, Read::At(at, Rc::from(id)), listing.len()),
+            // Not in the listing: the view depends on the item joining it, which the store
+            // answers without reading the listing's items.
+            None => self.saw(coll, Read::Holds(Rc::from(id), false), listing.len()),
+        }
+        Ok(at)
+    }
+
     /// A reference to the item at `index` of `coll`.
     pub(crate) fn coll_get(&self, coll: &Rc<CollRef>, index: usize) -> HResult<Value> {
         let listing = self.coll_listing(coll)?;
@@ -669,6 +719,30 @@ impl Core {
                 break;
             };
             self.saw(coll, Read::At(i, Rc::clone(&id)), len);
+            out.push(self.item_ref(coll, &id));
+        }
+        Ok(out)
+    }
+
+    /// The last `n` items of `coll`, as references: what a view reads of a conversation from
+    /// its end, so looking at the last of a long one reads that many items, not all. It depends
+    /// on the item at the end, so an item arriving there runs the view again.
+    ///
+    /// # Errors
+    ///
+    /// A message when the store cannot list the collection.
+    pub(crate) fn coll_take_end(&self, coll: &Rc<CollRef>, n: usize) -> Result<Vec<Value>, String> {
+        let listing = self.coll_listing(coll)?;
+        let len = listing.len();
+        let start = len.saturating_sub(n);
+        // Where its end is, even when it is empty: the first item arriving there runs the view.
+        self.saw(coll, Read::Last(listing.last()), len);
+        let mut out = Vec::new();
+        for i in start..len {
+            let Some(id) = listing.get(i) else {
+                break;
+            };
+            self.saw(coll, Read::At(i, id.clone()), len);
             out.push(self.item_ref(coll, &id));
         }
         Ok(out)

@@ -20,6 +20,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
@@ -429,7 +430,7 @@ impl Widget for NativeView {
         }
 
         if let Some(fallback) = &mut self.fallback {
-            fallback.draw(scene, transform, text_renderer, theme, presence);
+            fallback.draw_child(scene, transform, text_renderer, theme, presence);
             return;
         }
 
@@ -612,21 +613,23 @@ impl Widget for NativeView {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         match &self.accessibility {
-            NativeViewAccessibility::Toolkit { name } => Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name(name)
-                    .with_description(
-                        self.mount_error
-                            .as_deref()
-                            .unwrap_or("Native platform view"),
-                    )
-                    .with_state(
+            NativeViewAccessibility::Toolkit { name } => {
+                let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group).with_name(name);
+                // A view that mounted says nothing beyond its name; one that
+                // did not says why.
+                let node = match self.mount_error.as_deref() {
+                    Some(error) => node.with_description(error),
+                    None => node,
+                };
+                Some(
+                    node.with_state(
                         crate::a11y::AccessState::new()
                             .focusable(self.enabled)
                             .focused(self.focused)
                             .disabled(!self.enabled),
                     ),
-            ),
+                )
+            }
             NativeViewAccessibility::PlatformOwned => None,
         }
     }

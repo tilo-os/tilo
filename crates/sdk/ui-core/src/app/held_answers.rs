@@ -2,6 +2,7 @@
 //! has landed ([`crate::wake::WakeHandle::owe`]): asked at the end of each
 //! sync, never waited for, so the person's own frames go on meanwhile.
 
+use crate::app::document_routes::Handoff;
 use crate::collaboration::CollabRequest;
 
 use super::App;
@@ -35,7 +36,7 @@ impl App {
                 .all(crate::wake::WakeHandle::settled);
         self.actions.held_answers.push((id, update));
         if settled {
-            self.send_held_answers();
+            self.send_held_answers(false);
         }
     }
 
@@ -63,21 +64,31 @@ impl App {
             scope.begin_pass();
         }
         if settled {
-            self.send_held_answers();
+            self.send_held_answers(false);
         }
     }
 
     /// Send every held answer now, after the document commands they cover:
-    /// once settled, or as the window closes and nothing more lands.
-    pub(super) fn send_held_answers(&mut self) {
+    /// once settled, or as the window closes (`closing`) and nothing more
+    /// lands or opens.
+    pub(super) fn send_held_answers(&mut self, closing: bool) {
         if self.actions.held_answers.is_empty() {
             return;
         }
         // A terminal must follow the document commands it covers: queue every
         // changed owned record first, or retire the transport as uncertain.
-        if !self.queue_documents_before_terminal() {
-            self.actions.held_answers.clear();
-            return;
+        // A record whose route still joins holds the answers until the pass
+        // that finds it joined.
+        match self.queue_documents_before_terminal() {
+            Handoff::Opening if !closing => {
+                self.actions.answers_await_route = true;
+                return;
+            }
+            Handoff::Queued | Handoff::Opening => {}
+            Handoff::Stopped => {
+                self.actions.held_answers.clear();
+                return;
+            }
         }
         for (id, update) in std::mem::take(&mut self.actions.held_answers) {
             self.collaboration

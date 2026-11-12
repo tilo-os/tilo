@@ -34,7 +34,7 @@ impl Editor {
                 ..ToolbarLocation::default()
             }),
             views: Some(ToolbarViews {
-                name: "Edit mode".into(),
+                name: crate::resource::CATALOG.t("hex-editor-edit-mode"),
                 choices: [EditMode::Overwrite, EditMode::Insert]
                     .into_iter()
                     .map(|mode| ToolbarView {
@@ -49,9 +49,9 @@ impl Editor {
                     .entry(
                         "panel-right",
                         if open {
-                            "Hide inspector"
+                            crate::resource::CATALOG.t("hex-editor-hide-inspector")
                         } else {
-                            "Show inspector"
+                            crate::resource::CATALOG.t("hex-editor-show-inspector")
                         },
                         (),
                     )

@@ -3,7 +3,7 @@
 
 use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
-use super::{RowOp, Shared};
+use super::{Shared, row_op::RowOp};
 use crate::TileSource;
 use crate::navigation;
 
@@ -18,7 +18,7 @@ pub(super) fn open(
     let (tab_id, group_id) = (shared.minter.mint(), shared.minter.mint());
     let slot = shared.tree.active_workspace()?.slot;
     let workspace = shared.tree.workspaces.iter().find(|w| w.slot == slot)?;
-    let tab = tiles.launch(workspace, tab_id, app)?;
+    let tab = tiles.launch(workspace, tab_id, app, None)?;
     let shown = navigation::active_strip(&shared.tree, workspace);
     // A workspace a site lets this computer into comes with the strips its
     // site holds, and one joined before its site recorded any has none. The

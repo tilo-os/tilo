@@ -12,7 +12,6 @@ use super::{
     migration::PinnedDirectory,
     retained_consumer_lease::{PendingRetainedConsumer, RetainedConsumerLease},
     retained_consumer_selection::ReviewedConsumerSelection,
-    retained_open_dispatch::RetainedOpenDispatcher,
     retained_projection_session::RetainedProjectionSession,
 };
 use launcher::{
@@ -257,14 +256,6 @@ fn run_reviewed(
         .ok_or_else(refused)?;
     let input = Arc::new(reviewed.launch_input(cancel)?);
     let challenge = challenge(&context, input.binding(), input.person_public_key())?;
-    // Independent ordinary Files Read enrollment precedes target release; the
-    // actual issuer and source input belong to this Files lifetime, not an editor.
-    let history_reader = super::retained_history_read::enroll_files_read(
-        bootstrap,
-        input.clone(),
-        cancel.clone(),
-        fence.initial_deadline()?,
-    )?;
     // Keep the authenticated original source/UDisks actor in this namespace.
     // Only this separately owned fixed child isolates a private consuming
     // namespace and spawns the target-credential ordinary launcher there.
@@ -292,11 +283,10 @@ fn run_reviewed(
         context,
         cancel,
     )?;
-    let projection = RetainedProjectionSession::start_home_for_consumer_with_history(
+    let projection = RetainedProjectionSession::start_home_for_consumer(
         Arc::clone(&input),
         &selection,
         Arc::clone(cancel),
-        history_reader,
     )?;
     let mut pending =
         PendingRetainedConsumer::new(Arc::clone(&input), projection, cancel, managed)?;
@@ -317,21 +307,12 @@ fn run_reviewed(
         export?;
         lease.lock().map_err(|_| refused())?.check(cancel)?;
         fence.observed_consumer()?;
-        let mut opens = RetainedOpenDispatcher::new(
-            bootstrap.try_clone()?,
-            Arc::clone(cancel),
-            cancellation.clone(),
-            lease
-                .lock()
-                .map_err(|_| refused())?
-                .original_proof_interrupt()?,
-        )?;
         let mut gate = None;
-        let outcome = RetainedConsumerLease::supervise_shared_with_open_requests(
+        let outcome = RetainedConsumerLease::supervise(
             &lease,
             cancel,
             Duration::from_secs(5),
-            &mut opens,
+            bootstrap,
             reviewed_slot,
             &mut gate,
         );

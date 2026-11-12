@@ -21,8 +21,6 @@
               lives until the app it starts is done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,8 +30,8 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_session::mount::shell::WINDOW_MENU;
-use tilo_session::mount::slots::BINDINGS;
+use tilo_session::shell::state::WINDOW_MENU;
+use tilo_session::slots::BINDINGS;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
@@ -221,7 +219,7 @@ fn bind(session: &mut Session, app: &str, view: &str) {
 
 /// The program the probe is pointed at, under the name the app `app` 's view runs as:
 /// `so.tilo.window-menu` runs as `tilo-window-menu`
-/// ([`Binding::program`](tilo_session::mount::slots::Binding::program)).
+/// ([`Binding::program`](tilo_session::slots::Binding::program)).
 fn installed(environment: &mut ScopedEnv, app: &str, probe: &Path) {
     let program = format!(
         "tilo-{}",
@@ -287,8 +285,7 @@ fn press(session: &mut Session, name: &str) {
 /// `app.wasm` , as an installed app's has.
 #[track_caller]
 fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
-    let surface =
-        tilo_session::mount::slots::surface(slot).expect("the slot's state has a surface");
+    let surface = tilo_session::slots::surface(slot).expect("the slot's state has a surface");
     let surfaces = tilolang_tilo::catalogue::parse_surfaces(&surface.text)
         .expect("the surface the session publishes for the slot");
     let meta = tilolang_tilo::catalogue::package_of(&surface.app, &surface.title, &surfaces);
@@ -307,7 +304,7 @@ fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
 #[test]
 fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
@@ -374,7 +371,7 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
 #[test]
 fn a_part_the_system_draws_refuses_a_binding() {
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session_with(&socket, desk_tree());
     for slot in ["lock", "consent", "portal", "auth", "display-confirm"] {
@@ -401,7 +398,7 @@ fn a_part_the_system_draws_refuses_a_binding() {
 fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
@@ -489,7 +486,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
                 .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
         },
     );
-    let namespace = tilo_session::surfaces::namespace(tilo_session::mount::shell::WINDOW_MENU_SLOT);
+    let namespace = tilo_session::surfaces::namespace(tilo_session::shell::state::WINDOW_MENU_SLOT);
     assert_eq!(
         session.compositor().layer_shown(&namespace),
         Some(false),
@@ -501,7 +498,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
 fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_with() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
@@ -551,7 +548,7 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
 fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     let _settled = ui::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-rows"), "window-menu", ROWS_VIEW);

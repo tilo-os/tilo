@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
-    NOTIFICATIONS, SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK,
+    NIGHT_LIGHT, NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -250,6 +250,10 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         // The session itself.
         QsEffect::LockScreen => (SCREEN, "lock"),
         QsEffect::PowerMenu => (SCREEN, "power-menu"),
+        QsEffect::SetRotationLock { locked } => {
+            put(&mut arguments, "locked", locked);
+            (DISPLAY_SETTINGS, "set-rotation-lock")
+        }
         QsEffect::SetNightLight { on } => {
             put(&mut arguments, "on", on);
             (NIGHT_LIGHT, "toggle")
@@ -268,6 +272,25 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             put(&mut arguments, "query", &query);
             (DESK, "search")
         }
+        // What the panel shows, which is this device's own setting: the
+        // session keeps it, so it is the same arrangement whether the panel
+        // is drawn or not.
+        QsEffect::ShowControl { control } => {
+            put(&mut arguments, "control", control);
+            (QUICK_SETTINGS, "show-control")
+        }
+        QsEffect::HideControl { control } => {
+            put(&mut arguments, "control", control);
+            (QUICK_SETTINGS, "hide-control")
+        }
+        QsEffect::MoveControl { control, before } => {
+            put(&mut arguments, "control", control);
+            if let Some(before) = before {
+                put(&mut arguments, "before", before);
+            }
+            (QUICK_SETTINGS, "move-control")
+        }
+        QsEffect::ResetControls => (QUICK_SETTINGS, "reset-controls"),
         _ => return None,
     };
     Some((resource, action, arguments))
@@ -342,6 +365,11 @@ mod tests {
             Some("session:screen lock"),
             "the session itself locks"
         );
+        assert_eq!(
+            said(&QsEffect::SetRotationLock { locked: true }).as_deref(),
+            Some("settings:settings.display set-rotation-lock locked=true"),
+            "the lock is the person's display setting, kept by the settings service"
+        );
     }
 
     #[test]
@@ -367,6 +395,48 @@ mod tests {
             .as_deref(),
             Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
             "the session moves the accessory between the person's devices"
+        );
+    }
+
+    /// The arrangement is this device's own setting: the session keeps it, so a person, an agent
+    /// and a script change the panel the same way whether it is drawn or not.
+    #[test]
+    fn arranging_the_panel_is_the_sessions_own_setting() {
+        assert_eq!(
+            said(&QsEffect::ShowControl {
+                control: "vpn".into()
+            })
+            .as_deref(),
+            Some("session:quick-settings show-control control=vpn")
+        );
+        assert_eq!(
+            said(&QsEffect::HideControl {
+                control: "vpn".into()
+            })
+            .as_deref(),
+            Some("session:quick-settings hide-control control=vpn")
+        );
+        assert_eq!(
+            said(&QsEffect::MoveControl {
+                control: "vpn".into(),
+                before: Some("wifi".into()),
+            })
+            .as_deref(),
+            Some("session:quick-settings move-control control=vpn before=wifi"),
+            "a control stands in front of the one it was dropped on"
+        );
+        assert_eq!(
+            said(&QsEffect::MoveControl {
+                control: "vpn".into(),
+                before: None,
+            })
+            .as_deref(),
+            Some("session:quick-settings move-control control=vpn"),
+            "and last, with no control named"
+        );
+        assert_eq!(
+            said(&QsEffect::ResetControls).as_deref(),
+            Some("session:quick-settings reset-controls")
         );
     }
 

@@ -33,7 +33,9 @@
 //! +------------------------------------+
 //! ```
 
+use crate::metadata::CATALOG;
 use std::collections::HashMap;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -73,8 +75,8 @@ struct EmptyLabels {
 impl EmptyLabels {
     fn new() -> Self {
         Self {
-            title: ui::i18n!("notes-empty-title"),
-            action: ui::i18n!("notes-empty-action"),
+            title: CATALOG.t("notes-empty-title"),
+            action: CATALOG.t("notes-empty-action"),
         }
     }
 
@@ -541,9 +543,9 @@ impl MainPanel {
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
                 .with_text_role(TextRole::LargeTitle)
-                .with_placeholder(ui::i18n!("notes-title-placeholder"))
+                .with_placeholder(CATALOG.t("notes-title-placeholder"))
                 .with_id("note_title")
-                .with_accessible_name(ui::i18n!("notes-a11y-page-title")),
+                .with_accessible_name(CATALOG.t("notes-a11y-page-title")),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
@@ -788,18 +790,29 @@ impl MainPanel {
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
     }
+    /// Give the panel back the keyboard the window's saved view names.
+    ///
+    /// A title edit is this person's own gesture — their New note, their
+    /// rename — and is never reopened by the window being presented again:
+    /// following someone brings this window forward, and another
+    /// participant's action changes the note under it, neither of which may
+    /// put the person's keyboard in a field they did not open. A saved view
+    /// that names the title (`NotesFocus::Title`, which this window no longer
+    /// writes) gives back the note's body instead, which is where the person
+    /// stands.
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
         let _ = self.title_label.take_outcome();
         self.pending_rename = None;
         self.empty_action_focused = false;
         self.editor.set_focus(false);
-        if self.page_id.is_some() {
-            match focus {
-                crate::local_view::NotesFocus::Title => self.title_label.begin_edit(),
-                crate::local_view::NotesFocus::Editor => self.editor.set_focus(true),
-                _ => {}
-            }
+        if self.page_id.is_some()
+            && matches!(
+                focus,
+                crate::local_view::NotesFocus::Editor | crate::local_view::NotesFocus::Title
+            )
+        {
+            self.editor.set_focus(true);
         }
     }
 
@@ -1147,6 +1160,40 @@ impl MainPanel {
         true
     }
 
+    /// PageUp and PageDown while the caret is in the note page its body, as
+    /// on any page: a paragraph has no page of its own to move through, so
+    /// they reached nothing and the note never moved. The caret stays where
+    /// it is; typing brings the view back to it. With Shift they extend the
+    /// selection, the editor's.
+    fn page_while_writing(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let direction = match key.logical_key {
+            Key::Named(NamedKey::PageDown) => 1.0,
+            Key::Named(NamedKey::PageUp) => -1.0,
+            _ => return false,
+        };
+        if *ctx.handled
+            || !self.editor.is_focused()
+            || !ctx.modifiers.state().is_empty()
+            || self.scroll_thumb().is_none()
+        {
+            return false;
+        }
+        if key.state == ElementState::Pressed {
+            let page = self.scroll_metrics().viewport * ui::widget::scrollbar::PAGE_FRACTION;
+            self.set_scroll_offset(self.scroll_y + direction * page);
+            self.dirty = true;
+        }
+        *ctx.handled = true;
+        true
+    }
+
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         if self.scroll_thumb().is_none() {
             self.scrollbar.release();
@@ -1242,7 +1289,7 @@ impl MainPanel {
     }
 
     fn parent_path_label(&self) -> String {
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-parent-path",
             &[("path", self.parent_path.clone().into())],
         )
@@ -2133,8 +2180,13 @@ impl Widget for MainPanel {
             // Its own part: naming the note repaints the title, not the page.
             self.title_label.apply_layout_external(self.title_rect);
             let mut title_scene = Scene::new();
-            self.title_label
-                .draw(&mut title_scene, transform, text_renderer, theme, presence);
+            self.title_label.draw_child(
+                &mut title_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             let pinned = Rect::new(
@@ -2184,7 +2236,7 @@ impl Widget for MainPanel {
             let mut outside = scene.clone();
             if let Some(header) = self.header.built_mut() {
                 let mut header_scene = Scene::new();
-                header.draw(&mut header_scene, transform, text_renderer, theme, presence);
+                header.draw_child(&mut header_scene, transform, text_renderer, theme, presence);
                 scene.append(&header_scene, None);
                 let rect = header.get_rect();
                 parts.push(ui::widget::paint_damage::PaintPart::new(
@@ -2199,7 +2251,7 @@ impl Widget for MainPanel {
             }
             let mut editor_scene = Scene::new();
             self.editor
-                .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+                .draw_child(&mut editor_scene, transform, text_renderer, theme, presence);
             let pointer_chrome = self.editor.editor().pointer_chrome();
             if let Some(body) = &mut self.body_drawing {
                 body.pointer_chrome = pointer_chrome;
@@ -2385,6 +2437,9 @@ impl Widget for MainPanel {
         }
 
         if self.handle_scrollbar_event(event, ctx.handled) {
+            return;
+        }
+        if self.page_while_writing(event, ctx) {
             return;
         }
 
@@ -2588,13 +2643,13 @@ impl Widget for MainPanel {
         if self.page_id.is_none() && !self.empty_adds {
             // Nothing to press: the empty notebook says only that it is.
             return Some(
-                AccessNode::new(Role::StaticText).with_name(ui::i18n!("notes-empty-title")),
+                AccessNode::new(Role::StaticText).with_name(CATALOG.t("notes-empty-title")),
             );
         }
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
-                .with_name(ui::i18n!("notes-empty-action"))
-                .with_description(ui::i18n!("notes-a11y-first-note"))
+                .with_name(CATALOG.t("notes-empty-action"))
+                .with_description(CATALOG.t("notes-a11y-first-note"))
                 .with_action_target("notes.first_note")
                 .with_state(
                     AccessState::new()
@@ -2611,7 +2666,7 @@ impl Widget for MainPanel {
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)
-                .with_name(ui::i18n!("notes-a11y-note-title"))
+                .with_name(CATALOG.t("notes-a11y-note-title"))
                 .with_value(self.title_label.current_text())
                 .with_action_target("notes.page-title")
                 .with_bounds(self.title_rect)
@@ -2624,8 +2679,8 @@ impl Widget for MainPanel {
         if let Some(thumb) = self.scroll_thumb() {
             children.push(
                 AccessNode::new(Role::Slider)
-                    .with_name(ui::i18n!("notes-scroll-position"))
-                    .with_description(ui::i18n!("notes-scroll-help"))
+                    .with_name(CATALOG.t("notes-scroll-position"))
+                    .with_description(CATALOG.t("notes-scroll-help"))
                     .with_value(format!(
                         "{:.0}",
                         self.scroll_y / self.scroll_metrics().max_scroll() * 100.0
@@ -2641,8 +2696,8 @@ impl Widget for MainPanel {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name(ui::i18n!("notes-a11y-header"))
-                .with_description(ui::i18n!("notes-a11y-header-description"))
+                .with_name(CATALOG.t("notes-a11y-header"))
+                .with_description(CATALOG.t("notes-a11y-header-description"))
                 .with_children(children),
         )
     }

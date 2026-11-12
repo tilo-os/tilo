@@ -121,6 +121,12 @@ impl Principal {
         Principal::Person(hex::encode(key.0))
     }
 
+    /// The person `key` is, as their workspaces name them.
+    #[must_use]
+    pub fn of_person(key: [u8; 32]) -> Self {
+        Self::person_from_key(Ed25519PublicKey::from_bytes(key))
+    }
+
     /// Is this principal a human?
     pub fn is_person(&self) -> bool {
         matches!(self, Principal::Person(_))

@@ -21,6 +21,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, Live};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{
@@ -231,7 +232,7 @@ impl BrowserWindow {
         {
             // The window's custody is fixed when it opens: what it publishes
             // its page actions as stays true for as long as it is open.
-            return Err(crate::browsing_mode::NO_ACCOUNT_CUSTODY.into());
+            return Err(crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_CUSTODY));
         }
         match &effect {
             BrowserEffect::ListServiceSessions => {
@@ -362,15 +363,15 @@ impl BrowserWindow {
             .page
             .download_exit_status()
             .unwrap_or_else(|| "Waiting for native transfer cleanup".into());
+        let heading = if cancelling {
+            crate::resource::CATALOG.t("browser-quit-cancelling-downloads")
+        } else {
+            crate::resource::CATALOG.t("browser-quit-downloads-running")
+        };
         let mut column = Column::new()
             .with_intrinsic_height()
             .push(Box::new(
-                Text::new(if cancelling {
-                    "Cancelling downloads before quitting…"
-                } else {
-                    "Downloads are still running"
-                })
-                .with_role(ui::tokens::TextRole::Heading),
+                Text::new(&heading).with_role(ui::tokens::TextRole::Heading),
             ))
             .push(Box::new(
                 Text::new(&status).with_role(ui::tokens::TextRole::Caption),
@@ -381,12 +382,18 @@ impl BrowserWindow {
             column = column.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("browser.download-exit.keep", "Keep downloading")
-                            .on_effect(move || keep.set(Some(false))),
+                        Button::new(
+                            "browser.download-exit.keep",
+                            &crate::resource::CATALOG.t("browser-quit-keep-downloading"),
+                        )
+                        .on_effect(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
-                        Button::new("browser.download-exit.cancel", "Cancel downloads and quit")
-                            .on_effect(move || cancel.set(Some(true))),
+                        Button::new(
+                            "browser.download-exit.cancel",
+                            &crate::resource::CATALOG.t("browser-quit-cancel-downloads"),
+                        )
+                        .on_effect(move || cancel.set(Some(true))),
                     )),
             ));
         }
@@ -589,13 +596,13 @@ impl Widget for BrowserWindow {
         presence: &PresenceCtx,
     ) {
         if self.layout_immersive == Some(true) {
-            self.page.draw(scene, transform, tr, theme, presence);
+            self.page.draw_child(scene, transform, tr, theme, presence);
             return;
         }
         if let Some(panel) = self.exit_panel.as_mut() {
-            panel.draw(scene, transform, tr, theme, presence);
+            panel.draw_child(scene, transform, tr, theme, presence);
         }
-        self.page.draw(scene, transform, tr, theme, presence);
+        self.page.draw_child(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.repaint = true;
@@ -733,7 +740,10 @@ impl Widget for BrowserWindow {
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Group).with_name("Browser"))
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::resource::CATALOG.t("browser-window-name")),
+        )
     }
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.dirty);

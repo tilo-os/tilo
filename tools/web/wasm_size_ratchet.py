@@ -23,6 +23,12 @@
   grew most since, so the growth is traced to the surface that caused it:
   make that surface load on first use (`ui::lazy_code!`) rather than raise
   the budget. `parts NAME BUNDLE_DIR` writes the file anew.
+
+Every size here is the file the page downloads, after wasm-opt. A build also
+writes `pkg/split.json`, whose `main.bytes` is the start module as the
+splitter made it, before wasm-opt: a quarter or so larger, and the number a
+reader of that file sees. A measurement names both when they differ, so the
+two are never taken for one another.
 """
 
 from __future__ import annotations
@@ -119,13 +125,35 @@ def budget_for(size: int, headroom: float) -> int:
     return math.ceil(size * (1 + headroom) / ROUNDING) * ROUNDING
 
 
+def split_main(bundle: pathlib.Path) -> int | None:
+    """The start module's size as `pkg/split.json` names it: the splitter's
+    output before wasm-opt, so larger than the file the page downloads and
+    not what a budget holds."""
+    path = bundle / SPLIT
+    if not path.is_file():
+        return None
+    main = json.loads(path.read_text()).get("main")
+    return int(main["bytes"]) if isinstance(main, dict) and "bytes" in main else None
+
+
+def unoptimised_note(bundle: pathlib.Path, size: int) -> str:
+    """A line saying what `pkg/split.json` counts, when it is not `size`, so
+    a reader comparing the two never takes one for the other."""
+    before = split_main(bundle)
+    if before is None or before == size:
+        return ""
+    return (f"\n  {SPLIT} names {before} bytes, the start module as the splitter wrote it, before "
+            f"wasm-opt; the budget holds the {size} bytes the page downloads")
+
+
 def measure(name: str, bundle: pathlib.Path, budget: Budget) -> tuple[int, str]:
     size = (bundle / MODULE).stat().st_size
     limits = budget.totals()
     proposed = budget_for(size, budget.headroom)
+    note = unoptimised_note(bundle, size)
     if name not in limits:
         return 1, (f"{name}: {size} bytes; no budget yet, add [bundles.{name}] "
-                   f"bytes = {proposed} to {DIRECTORY}/budget.toml")
+                   f"bytes = {proposed} to {DIRECTORY}/budget.toml" + note)
     limit = limits[name]
     if size > limit:
         message = (
@@ -138,12 +166,12 @@ def measure(name: str, bundle: pathlib.Path, budget: Budget) -> tuple[int, str]:
         if lines:
             message += (f"\nwhat grew most in the start module since {DIRECTORY}/parts/{name}.json "
                         f"(make it load on first use, ui::lazy_code!):\n" + "\n".join(lines))
-        return 1, message
+        return 1, message + note
     if proposed < limit * (1 - SLACK):
         return 0, (f"{name}: {size} bytes, under its budget of {limit}; lower it: "
                    f"[bundles.{name}] bytes = {proposed}, without its raise files, and "
-                   f"write {DIRECTORY}/parts/{name}.json with `parts {name} BUNDLE_DIR`")
-    return 0, f"{name}: {size} bytes, within its budget of {limit}"
+                   f"write {DIRECTORY}/parts/{name}.json with `parts {name} BUNDLE_DIR`" + note)
+    return 0, f"{name}: {size} bytes, within its budget of {limit}" + note
 
 
 def start_parts(bundle: pathlib.Path) -> dict[str, int]:

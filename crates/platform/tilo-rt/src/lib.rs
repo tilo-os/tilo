@@ -58,6 +58,9 @@ pub use tilo_wake as wake;
 use std::cell::Cell;
 use std::future::Future;
 
+/// Run a future as a task on the page's own turn; a desktop starts a thread instead.
+#[cfg(target_family = "wasm")]
+pub use app::spawn_task;
 pub use app::{AppRuntime, app, try_app};
 pub use caps::{Availability, Feature, availability, available};
 pub use cpu::{CpuTask, bound_parallel_pool, cpu, cpu_pool};

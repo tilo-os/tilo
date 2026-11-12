@@ -14,7 +14,7 @@ use crate::surface::WindowMenuSurface;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WindowMenu {}
 
-#[resource(kind = "desktop.window-menu-view", label = "Window menu")]
+#[resource(kind = "desktop.window-menu-view")]
 impl WindowMenu {}
 
 /// The app the session mounts over the desk while a window's menu is up.

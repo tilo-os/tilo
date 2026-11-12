@@ -79,6 +79,32 @@ fn items(r: &Replica) -> Vec<Value> {
     }
 }
 
+/// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
+pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("title") {
+        Some(Value::Text(title)) => Some(title.clone()),
+        Some(Value::Opt(Some(title))) => match &**title {
+            Value::Text(title) => Some(title.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// How many things the window's header says its page lists, or nothing when it says no number.
+pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
+    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    match shell.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        Some(Value::Opt(Some(count))) => match **count {
+            Value::Int(count) => Some(count),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A place as the sidebar draws it: its label, and the count the sidebar itself works out for
 /// the places it counts (the inbox's and today's).
 pub(crate) type ShownPlace = (String, Option<i64>);
@@ -751,6 +777,29 @@ fn row_of(view: &ViewInstance, item: &Value) -> String {
     })
 }
 
+/// The tree a page's row stands in: the outline the page draws, whose moves are the tree's.
+fn outline_of(view: &ViewInstance, row: &str) -> String {
+    fn holds(node: &UiNode, row: &str) -> bool {
+        node.key == row || node.children.iter().any(|child| holds(child, row))
+    }
+    fn walk(node: &UiNode, row: &str) -> Option<String> {
+        if node.kind == "ui.TreeView" && node.children.iter().any(|child| holds(child, row)) {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(|child| walk(child, row))
+    }
+    walk(view.tree(), row).unwrap_or_else(|| panic!("no tree holding {row}"))
+}
+
+/// Move a task in a page's outline, as the tree reports it: `event` is how it lands — `drop`
+/// just before the row `at`, `into` at the end of its own — carrying the task that moved and the
+/// row it lands at.
+fn move_in_outline(view: &ViewInstance, moved: &Value, event: &str, at: &Value) {
+    let tree = outline_of(view, &row_of(view, at));
+    let carried = Value::List(vec![moved.clone(), Value::some(at.clone())]);
+    view.fire_with(&tree, event, Some(&carried)).unwrap();
+}
+
 /// The drawn node with this key, at any depth.
 pub(crate) fn node_of<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     if node.key == key {
@@ -788,12 +837,15 @@ fn launch_post() -> (Replica, Value) {
     (ada, parent)
 }
 
-/// The page a task opens, drawn.
+/// The page a task opens, drawn: its outline's rows built as a window that shows them all
+/// builds them, so the test reads the rows a person sees rather than the ones a scroll would
+/// have to reach.
 pub(crate) fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
     let Value::Ref(at) = task else {
         panic!("a task: {task:?}")
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
     view
 }
@@ -815,8 +867,7 @@ fn a_subtask_moves_and_is_checked_from_the_outline() {
             Value::text("Screenshots"),
         ]
     );
-    let key = row_of(&view, &outline);
-    view.fire_with(&key, "drop", Some(&shots)).unwrap();
+    move_in_outline(&view, &shots, "drop", &outline);
     ada.commit();
     view.poll_patches().unwrap();
     assert_eq!(
@@ -842,8 +893,7 @@ fn a_subtask_dropped_inside_another_is_nested() {
     let outline = task(&ada, "Outline");
     let draft = task(&ada, "First draft");
     let mut view = task_page(&ada, &parent);
-    let key = row_of(&view, &draft);
-    view.fire_with(&key, "into", Some(&outline)).unwrap();
+    move_in_outline(&view, &outline, "into", &draft);
     ada.commit();
     view.poll_patches().unwrap();
     assert_eq!(
@@ -867,6 +917,68 @@ fn a_subtask_dropped_inside_another_is_nested() {
         node.props.get("parent").and_then(target),
         target(&draft),
         "the row is drawn under its new parent"
+    );
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(1)),
+        "one step in from the top of the page's outline"
+    );
+}
+
+/// A task's page draws its steps as a tree whose rows the window fills as it shows them: the
+/// tree holds every step, and a step's row says how deep it stands without the row it stands
+/// under having been read, so a step indented under another draws one step in even where it is
+/// the only row on screen.
+#[test]
+fn a_task_pages_outline_tells_the_window_where_each_step_stands() {
+    let (mut ada, parent) = launch_post();
+    call(
+        &ada,
+        "indent",
+        vec![
+            task(&ada, "Screenshots"),
+            Value::some(task(&ada, "First draft")),
+        ],
+    );
+    ada.commit();
+    let Value::Ref(at) = &parent else {
+        panic!("a task: {parent:?}")
+    };
+    let mut page = ada.host.open_resource(&at.target, None).unwrap();
+    page.poll_patches().unwrap();
+    let tree = key_of(&page, "ui.TreeView", &|node| {
+        node.props.get("name") == Some(&Value::text("Subtasks"))
+    });
+    assert_eq!(
+        page.list_len(&tree),
+        Some(3),
+        "the outline holds every step of the task"
+    );
+    assert!(
+        all(page.tree(), "ui.TreeViewNode").is_empty(),
+        "no step is drawn before the window shows it"
+    );
+    // The indented step, read first: neither the step over it nor its parent has been read.
+    let row = page.row(&tree, 2).unwrap().expect("shown").clone();
+    let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+    assert_eq!(node.props.get("label"), Some(&Value::text("Screenshots")));
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(1)),
+        "one step in, of the row it stands under"
+    );
+    assert!(!flag(node, "branch"), "it holds no step of its own");
+    let row = page.row(&tree, 1).unwrap().expect("shown").clone();
+    let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+    assert_eq!(node.props.get("label"), Some(&Value::text("First draft")));
+    assert_eq!(
+        node.props.get("depth"),
+        Some(&Value::Int(0)),
+        "a step of the task itself stands at the top of its outline"
+    );
+    assert!(
+        flag(node, "branch"),
+        "it says it holds a step, so the window draws it foldable"
     );
 }
 
@@ -1028,7 +1140,7 @@ pub(crate) fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<Stri
 }
 
 /// The home list's row that presents `item`: its place, its key, and what its box draws.
-fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
+pub(crate) fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
     let row = home_list_rows(view)
         .into_iter()
         .find(|(_, _, of, _)| of == item);
@@ -1205,6 +1317,62 @@ fn a_peers_completion_takes_its_row_away() {
     ada.sync_with(&mut ben);
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 1, "the row left: {rows:?}");
+    assert!(rows.iter().all(|(_, _, row, _)| *row != of));
+}
+
+/// A task somebody else completes while the person has it open stays where it stands, drawn
+/// checked, until they leave the place: what they read does not vanish from under them.
+#[test]
+fn a_peers_completion_of_the_open_task_keeps_its_row_until_the_place_is_left() {
+    let (mut ada, root) = workspace();
+    for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
+        let made = call(&ada, "new_task", create(&root, title));
+        call(
+            &ada,
+            "schedule",
+            vec![made, Value::some(Value::text("2026-10-29"))],
+        );
+        ada.commit();
+    }
+    let mut ben = ada.fork("ben", PACKAGES);
+    ben.host.sync_from(&ben.doc);
+    let mut view = ada.view(APP);
+    go_to(&mut view, "Today");
+    assert_eq!(home_list_rows(&mut view).len(), 3);
+    let bill = task(&ada, "Pay the electricity bill");
+    let of = target(&bill).expect("a task");
+    let (place, _, _) = home_row_of(&mut view, &of);
+    let list = all(view.tree(), "ui.VirtualList")
+        .first()
+        .expect("the home list")
+        .key
+        .clone();
+    // The person opens the row where it stands, as the list does on a press.
+    let open = view.row_key(&list, place).expect("the row");
+    view.fire_with(&list, "opened", Some(&bill)).unwrap();
+    view.open_row(&list, Some(&open));
+    view.poll_patches().unwrap();
+    call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 3, "the open row stayed: {rows:?}");
+    let (now, _, drawn) = home_row_of(&mut view, &of);
+    assert_eq!(now, place, "in the place it stood");
+    assert!(drawn, "its box drawn checked");
+    // Closing it, or opening another row, is reading on in the same place: the row stays.
+    view.fire(&list, "closed").unwrap();
+    view.open_row(&list, None);
+    assert_eq!(
+        home_list_rows(&mut view).len(),
+        3,
+        "closing it keeps the row"
+    );
+    // Leaving the place settles the list: the task is no longer today's.
+    go_to(&mut view, "Inbox");
+    go_to(&mut view, "Today");
+    let rows = home_list_rows(&mut view);
+    assert_eq!(rows.len(), 2, "the row left with the place: {rows:?}");
     assert!(rows.iter().all(|(_, _, row, _)| *row != of));
 }
 
@@ -1806,6 +1974,7 @@ fn a_step_names_its_day_only_when_its_task_does_not() {
 /// What each step's row of a task's page says of the day it is due, by the step's title: the day
 /// it gives, which kind of fact that is, and none where it leaves the day to the page.
 fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
+    view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
     let tree = all(view.tree(), "ui.TreeView")
         .into_iter()
@@ -2720,4 +2889,22 @@ fn every_declared_action_is_offered() {
         offered, declared,
         "every action is offered, in declaration order"
     );
+}
+
+/// An action run on a task names the kind it is published on, a task's, not the record's that
+/// holds the task: the workspace decides the change against the actions of that kind, and a
+/// change naming the record's kind with a task's action is refused.
+#[test]
+fn a_tasks_action_names_the_kind_of_a_task() {
+    let (ada, root) = workspace();
+    let made = call(&ada, "new_task", create(&root, "Water the plants"));
+    let _ = ada.host.take_committed();
+    call(&ada, "check", vec![made]);
+    let kinds: Vec<String> = ada
+        .host
+        .take_committed()
+        .into_iter()
+        .map(|committed| committed.action.kind)
+        .collect();
+    assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
 }

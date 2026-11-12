@@ -2134,3 +2134,112 @@ fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
         );
     }
 }
+
+#[test]
+#[allow(clippy::float_cmp, reason = "a give at rest is exactly zero")]
+fn a_browsers_swipe_past_the_top_springs_back_once_it_pauses() {
+    use crate::time::testing::with_monotonic_time;
+    // A browser's trackpad deltas carry no phase: winit hands each over as
+    // `Moved`, and only the pause after them ends the gesture.
+    let mut s = vertical(1000.0);
+    let mut wheel = crate::widget::PhaselessWheel::default();
+    let start = crate::time::now();
+    let feed = |s: &mut Scrollable, event: &WindowEvent| {
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
+            s.on_wheel(delta, *phase, false, 1.0);
+        }
+    };
+    with_monotonic_time(start, || {
+        let mut up = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 60.0)),
+            phase: TouchPhase::Moved,
+        };
+        wheel.observe(&mut up, start);
+        feed(&mut s, &up);
+        assert!(s.drawn_offset().1 < 0.0, "pulled past the top");
+    });
+    let due = wheel.deadline().expect("the swipe runs");
+    with_monotonic_time(due, || {
+        let end = wheel.end_if_due(due).expect("its pause ends it");
+        feed(&mut s, &end);
+    });
+    with_monotonic_time(due + Duration::from_secs(1), || {
+        assert_eq!(s.drawn_offset(), (0.0, 0.0), "sprung back to the top");
+    });
+}
+
+/// A field that holds the keyboard focus and handles no key: a note's
+/// paragraph has no page of its own to move through.
+struct FocusedField {
+    rect: Rect,
+}
+
+impl Widget for FocusedField {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_lengths(200.0, 2000.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn is_focused(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &'static str {
+        "FocusedField"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+#[test]
+fn a_page_key_the_focused_field_leaves_alone_pages_the_view_holding_it() {
+    let mut scroll =
+        Scrollable::new_vertical().with_child(Box::new(FocusedField { rect: Rect::ZERO }));
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(300.0),
+            },
+        )
+        .unwrap();
+    scroll.apply_layout(&taffy, node, Point::ZERO);
+    assert!(
+        !scroll.is_focused(),
+        "the field has the focus, not the view"
+    );
+    assert!(
+        dispatch(&mut scroll, &named_key(NamedKey::PageDown)),
+        "PageDown taken"
+    );
+    let page = scroll.offset_y();
+    assert!(page > 200.0, "a page down: {page}");
+    assert!(
+        dispatch(&mut scroll, &named_key(NamedKey::PageUp)),
+        "PageUp taken"
+    );
+    assert_eq!(scroll.offset_y(), 0.0, "back at the top");
+    assert!(
+        !dispatch(&mut scroll, &named_key(NamedKey::PageUp)),
+        "at the top, PageUp is left to the view around it"
+    );
+}

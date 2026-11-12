@@ -127,6 +127,10 @@ pub struct LaunchArgs {
     /// logical pixel (1 to [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display
     /// draws the same window.
     pub device_scale: Option<u32>,
+    /// `--touch`: the capture is a touch-only window — a phone — which
+    /// reports a finger and no pointer, so controls offer the gestures it can
+    /// make rather than those only a dragged pointer can.
+    pub touch: bool,
     /// `--distinct-letters on|off`: a capture renders with "Always
     /// distinguish similar letters" on or off, whatever the theme's face
     /// would choose.
@@ -217,10 +221,12 @@ impl LaunchSpec {
         self
     }
 
-    /// Whether a native launch with `args` attaches to the session runtime.
+    /// Whether a native launch with `args` attaches to the session runtime: the policy the
+    /// specification set ([`Self::runtime_attachment`]).
     pub fn attaches_runtime(&self, args: &LaunchArgs) -> bool {
         (self.runtime_attachment)(args)
     }
+
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         Self {
@@ -889,12 +895,15 @@ fn run_parsed(
     if opens_native_window(&args) {
         crate::window_door::announce();
     }
+    // A process started with no window makes none until the shell asks for
+    // one: nothing is drawn, so nothing is prepared to draw.
+    let shows = opens_native_window(&args) && !crate::host::environment().windowless;
     // The font database is built on its own thread, so the app's first text
     // renderer finds the catalog verified and the fonts read. It starts
     // first: the renderer preparation below also opens the early window on
     // this thread and waits there for the compositor's first configure,
     // and nothing in the font database waits for either.
-    if opens_native_window(&args) || args.first_frame {
+    if shows || args.first_frame {
         prepare_font_database_beside();
     }
     // A window's GPU device and vello's pipelines are prepared on their own
@@ -902,7 +911,7 @@ fn run_parsed(
     // instead of starting them after the compositor's first configure. Never
     // inside the event loop's `resumed`: see `prepare_native_renderer`.
     #[cfg(any(windows, target_os = "linux"))]
-    let mut renderer = if opens_native_window(&args) {
+    let mut renderer = if shows {
         crate::app::prepare_native_renderer()
     } else {
         None
@@ -1151,6 +1160,11 @@ fn dispatch_definition_with(
         // names a palette is drawn in it, as every other `--shots` path is.
         if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
+        }
+        // A capture of a phone reports the device a phone is: a finger and
+        // no pointer, before any scenario stages its frame.
+        if args.touch {
+            driver.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
         }
         if !args.native_audit
             && let Some(scenario) = spec.component_capture_scenario
@@ -1554,6 +1568,12 @@ fn parse_args_extended(
                 }
                 parsed.window_bar = true;
             }
+            "--touch" if inline.is_none() => {
+                if parsed.touch {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.touch = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -1622,6 +1642,9 @@ fn parse_args_extended(
     }
     if parsed.window_bar && parsed.shots.is_none() {
         return Err(LaunchError::ShotsOnly("--window-bar".to_owned()));
+    }
+    if parsed.touch && parsed.shots.is_none() && parsed.shots_dir.is_none() {
+        return Err(LaunchError::ShotsOnly("--touch".to_owned()));
     }
     if parsed.search.is_some()
         && parsed.shots.is_none()
@@ -2074,6 +2097,17 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
+            ));
+            let phone = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--touch"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(phone.touch, "a capture can be a touch-only window");
+            assert!(matches!(
+                parse_args(&strings(&["app", "--touch"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--touch"
             ));
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),

@@ -142,6 +142,31 @@ pub struct AccessState {
     pub multiline: bool,
     /// When set, widgets must NOT place the secret in [`AccessNode::value`].
     pub protected: bool,
+    /// What a text field asks for, so a browser or password manager can
+    /// fill it in and a page can offer passkeys on it. `None` for fields
+    /// that ask for nothing a person keeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autofill: Option<Autofill>,
+}
+
+/// What a text field asks for, in the terms browsers and password managers
+/// fill fields by (HTML's `autocomplete` tokens).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Autofill {
+    /// The name the person signs in with; a page offers passkeys here too.
+    Username,
+    Email,
+    /// The password the person signs in with.
+    CurrentPassword,
+    /// A password the person is choosing.
+    NewPassword,
+    /// A code sent to the person or shown by their authenticator.
+    OneTimeCode,
+    /// The person's own full name.
+    Name,
+    /// A telephone number.
+    Tel,
 }
 
 impl AccessState {
@@ -195,6 +220,11 @@ impl AccessState {
     }
     pub fn protected(mut self, v: bool) -> Self {
         self.protected = v;
+        self
+    }
+    /// Sets [`autofill`](Self::autofill).
+    pub fn autofill(mut self, purpose: Option<Autofill>) -> Self {
+        self.autofill = purpose;
         self
     }
     pub fn modal(mut self, v: bool) -> Self {
@@ -282,11 +312,20 @@ pub enum Politeness {
     Assertive,
 }
 
+/// Whether a flag is unset: what serde skips in an inspection patch.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn not(value: &bool) -> bool {
+    !*value
+}
+
 /// The per-widget *local* accessibility semantics returned by
 /// [`Widget::accessibility`](crate::widget::Widget::accessibility);
 /// `name`/`description` must already be **FTL-resolved** strings (via
-/// [`i18n!`](macro@crate::i18n)), not translation keys, since AccessKit/AT-SPI
-/// consume final text.
+/// [`widget_text`](crate::i18n::widget_text)), not translation keys, since
+/// AccessKit/AT-SPI consume final text.
 #[must_use]
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct AccessNode {
@@ -299,9 +338,25 @@ pub struct AccessNode {
     pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
+    /// `name` is a fallback the widget found for itself (the value it shows)
+    /// rather than words given for it. A parent that holds the control's
+    /// words ([`Widget::accessibility_child_name`](crate::widget::Widget::accessibility_child_name))
+    /// names it instead; a widget that sets a name of its own leaves this
+    /// `false`. Sent only when it is the one case that has it, so the
+    /// inspection patch stays a keystroke's worth of bytes.
+    #[serde(default, skip_serializing_if = "not")]
+    pub name_found: bool,
     pub description: Option<String>,
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
+    /// How many UTF-16 code units a [`protected`](AccessState::protected)
+    /// value holds, which is what the characters a person typed into it
+    /// measure in a page's own field. A host that shows the interface as
+    /// HTML keeps the person's text in that field and never receives the
+    /// characters back, so this is how it learns the app cleared or replaced
+    /// them and its own field must let them go too. A masked field shows one
+    /// dot per character, so the count of them is already on screen.
+    pub value_length: Option<usize>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
     /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
@@ -403,8 +458,10 @@ impl AccessNode {
             semantic_key: None,
             action_target: None,
             name: None,
+            name_found: false,
             description: None,
             value: None,
+            value_length: None,
             text_selection: None,
             state: AccessState::default(),
             live: None,
@@ -530,8 +587,24 @@ impl AccessNode {
         self
     }
 
+    /// [`Self::with_name`] for a name the widget found for itself, the value
+    /// it shows: a parent that holds the control's words says its own
+    /// ([`Self::name_found`]).
+    pub fn with_found_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self.name_found = true;
+        self
+    }
+
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Set or drop the description, for a node whose default one would only
+    /// repeat what its name already says.
+    pub fn with_optional_description(mut self, description: Option<String>) -> Self {
+        self.description = description;
         self
     }
 
@@ -542,6 +615,13 @@ impl AccessNode {
 
     pub fn with_optional_value(mut self, value: Option<String>) -> Self {
         self.value = value;
+        self
+    }
+
+    /// Publish the length of a [`protected`](AccessState::protected) value
+    /// without its characters (see [`Self::value_length`]).
+    pub fn with_value_length(mut self, value_length: usize) -> Self {
+        self.value_length = Some(value_length);
         self
     }
 
@@ -744,6 +824,42 @@ pub struct A11ySettings {
 /// WCAG 2.1 luminance and contrast live in [`crate::color`]; re-exported
 /// here, where accessibility code has always found them.
 pub use crate::color::{contrast_ratio, relative_luminance};
+
+/// The node `widget` states, and what a row of one is called: its own, or the
+/// first node a widget it wraps names itself with. A wrapper that adds no node
+/// of its own — a slot, a box, a toolbar floating over a row — stands where
+/// what it wraps does, so the row it draws states what that rows states.
+pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNode> {
+    if let Some(node) = widget.accessibility()
+        && node.name.is_some()
+    {
+        return Some(node);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| stated_node(child))
+}
+
+/// The widget that states `widget`'s row ([`stated_node`]), to act on: the one
+/// whose node an owner publishing the row hands over, so the one an action on
+/// that node reaches.
+pub(crate) fn stated_widget_mut(
+    widget: &mut dyn crate::widget::Widget,
+) -> Option<&mut dyn crate::widget::Widget> {
+    if widget
+        .accessibility()
+        .is_some_and(|node| node.name.is_some())
+    {
+        return Some(widget);
+    }
+    for child in widget.children_mut() {
+        if let Some(stated) = stated_widget_mut(child) {
+            return Some(stated);
+        }
+    }
+    None
+}
 
 #[cfg(test)]
 mod tests {

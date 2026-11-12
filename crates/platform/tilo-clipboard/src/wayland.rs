@@ -66,11 +66,12 @@ impl RichClipboard {
     }
 }
 
-const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
+const CLIPBOARD_READ_BUDGET: tilo_clock::time::Duration =
+    tilo_clock::time::Duration::from_millis(40);
 
 /// How long an explicit paste waits for the clipboard's owner to send its
 /// text.
-const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_secs(2);
+const EXPLICIT_READ_BUDGET: tilo_clock::time::Duration = tilo_clock::time::Duration::from_secs(2);
 
 /// How long a copy may wait for the compositor before it is refused. A copy
 /// is two compositor roundtrips (the focus check, then the selection's
@@ -78,9 +79,9 @@ const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_se
 /// which also paints; the compositor itself only calls an iteration slow
 /// beyond 100 ms. The app's UI thread does not wait: the outcome settles a
 /// [`crate::ClipboardCopy`].
-const PUBLICATION_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
+const PUBLICATION_BUDGET: tilo_clock::time::Duration = tilo_clock::time::Duration::from_millis(250);
 
-fn publication_deadline() -> tilo_clock::Instant {
+fn publication_deadline() -> tilo_clock::time::Instant {
     let now = tilo_clock::now();
     now.checked_add(PUBLICATION_BUDGET).unwrap_or(now)
 }
@@ -140,11 +141,15 @@ fn settle_once(settle: &SharedSettle, copied: bool) {
 struct Publication {
     payload: PublicationPayload,
     settle: Settle,
-    deadline: tilo_clock::Instant,
+    deadline: tilo_clock::time::Instant,
 }
 
 impl Publication {
-    fn new(payload: PublicationPayload, settle: Settle, deadline: tilo_clock::Instant) -> Self {
+    fn new(
+        payload: PublicationPayload,
+        settle: Settle,
+        deadline: tilo_clock::time::Instant,
+    ) -> Self {
         Self {
             payload,
             settle,
@@ -189,7 +194,7 @@ impl PublicationClaim {
 
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
-    budget: tilo_clock::Duration,
+    budget: tilo_clock::time::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
 }
@@ -225,7 +230,7 @@ pub struct WaylandClipboard {
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
     wake: tilo_rt::wake::WakeHandle,
-    explicit_read_budget: tilo_clock::Duration,
+    explicit_read_budget: tilo_clock::time::Duration,
 }
 
 struct PublicationClipboard {
@@ -257,24 +262,15 @@ enum ClipboardCommand {
     Publish(Publication),
     Exit,
     Fence(std::sync::mpsc::Sender<()>),
-    ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
+    ReadText(
+        std::sync::mpsc::Sender<Option<String>>,
+        tilo_clock::time::Instant,
+    ),
     #[cfg(test)]
     CommandProcessed(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
-    /// Attach to the `wl_display` behind `display_ptr`.
-    ///
-    /// # Safety
-    ///
-    /// `display_ptr` must remain live until this value AND every outstanding
-    /// loader have finished. A timed-out text read can retain a loader after
-    /// this value is dropped. Use [`Self::from_owned_display`] when that
-    /// independent lifetime cannot be guaranteed.
-    pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
-        unsafe { Self::new_with_owner(display_ptr, None) }
-    }
-
     /// Attach while retaining the actual display owner for every worker,
     /// including loaders that survive runner close.
     pub fn from_owned_display(
@@ -330,7 +326,7 @@ impl WaylandClipboard {
     unsafe fn with_publication_worker(
         display_ptr: *mut std::ffi::c_void,
         owner: Option<Arc<dyn Send + Sync>>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
         name: &str,
     ) -> Self {
         let backend = unsafe {
@@ -399,7 +395,7 @@ impl WaylandClipboard {
     /// Wait until the compositor has processed this worker's seat and device
     /// bindings before a protocol fixture maps its window and acquires focus.
     #[doc(hidden)]
-    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::Duration) -> bool {
+    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::time::Duration) -> bool {
         let Some(end) = tilo_clock::now().checked_add(budget) else {
             return false;
         };
@@ -427,7 +423,7 @@ impl WaylandClipboard {
     #[doc(hidden)]
     pub fn new_for_wayland_test_with_read_budget(
         connection: smithay_client_toolkit::reexports::client::Connection,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
     ) -> Self {
         let display_ptr = connection.backend().display_ptr().cast();
         // SAFETY: the worker retains the connection that owns the display.
@@ -542,7 +538,7 @@ mod image_worker_impl {
         rich_active_seat: Option<WlSeat>,
         rich_pending: Option<PendingRich>,
         plain_pending: Option<PendingPlain>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
         /// Dispatched claims must be settled even when the shared display
         /// retains their callback userdata after this worker stops.
         pending_publications: HashMap<usize, (Arc<PublicationClaim>, SharedSettle)>,
@@ -578,7 +574,7 @@ mod image_worker_impl {
         commands: calloop::channel::Channel<ClipboardCommand>,
         pasted: PastedImage,
         rich: Arc<RichClipboard>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
     ) {
         struct ClearRich(Arc<RichClipboard>);
         impl Drop for ClearRich {
@@ -684,7 +680,7 @@ mod image_worker_impl {
     struct PendingPublication {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
         settle: SharedSettle,
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
         claim: Arc<PublicationClaim>,
     }
 
@@ -694,7 +690,7 @@ mod image_worker_impl {
 
     struct PlainRequest {
         reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
     }
 
     struct PendingPlain {
@@ -1138,7 +1134,7 @@ mod image_worker_impl {
     }
 
     struct PendingRich {
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
         html: Option<String>,
         plain: Option<String>,
         html_done: bool,
@@ -1162,7 +1158,7 @@ mod image_worker_impl {
             &self,
             connection: &Connection,
             reply: std::sync::mpsc::Sender<Option<String>>,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) {
             // Read only after this queue has handled preceding selection and
             // keyboard-focus events, including a queued focus revocation.
@@ -1190,7 +1186,7 @@ mod image_worker_impl {
             &mut self,
             connection: &Connection,
             reply: std::sync::mpsc::Sender<Option<String>>,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) {
             // One explicit paste can own one bounded pipe. A newer request
             // cancels the previous transfer rather than accumulating readers.
@@ -1260,7 +1256,7 @@ mod image_worker_impl {
             &mut self,
             pipe: sctk::data_device_manager::ReadPipe,
             generation: u64,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) -> bool {
             let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
                 return false;

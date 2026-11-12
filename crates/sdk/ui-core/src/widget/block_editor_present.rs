@@ -577,7 +577,8 @@ mod tests {
 
     /// A collaborator's caret on the first line labels itself below the
     /// line: above it are the host's title and dates, which the tag must
-    /// not cover. On a later line the tag rises above the caret as usual.
+    /// not cover. On a later line, mid-way through its words and under a line
+    /// of text, the tag covers neither: it hangs below the caret's line.
     #[test]
     fn a_caret_tag_on_the_first_line_hangs_below_it() {
         use crate::widget::Widget as _;
@@ -647,9 +648,10 @@ mod tests {
         );
         let second_top = TOP + editor.blocks()[1].line.get_rect().y0;
         let second = tag_rows(&mut editor, "b");
+        assert!(!second.is_empty(), "the later line's caret tag is drawn");
         assert!(
-            second.iter().any(|&y| y < second_top),
-            "a later line's tag rises above its caret: rows {second:?}, line at {second_top}"
+            second.iter().all(|&y| y >= second_top),
+            "a later line's tag covers nothing of the line above: rows {second:?}, line at {second_top}"
         );
     }
 }

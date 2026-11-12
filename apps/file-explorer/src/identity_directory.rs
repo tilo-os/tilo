@@ -497,7 +497,8 @@ mod tests {
 
         let authors = directory.history_authors();
         let by_agent = authors.resolve_file_actor(&person, &scribe_key).unwrap();
-        assert_eq!(by_agent.name, "Scribe · Software, for Ada Lovelace");
+        assert_eq!(by_agent.name, "Scribe");
+        assert_eq!(ui::author_line(&by_agent), "Scribe for Ada Lovelace");
         assert_eq!(by_agent.rgb(), (10, 20, 30));
         let attribution = by_agent.attribution.unwrap();
         assert_eq!(attribution.actor, "agent:scribe");

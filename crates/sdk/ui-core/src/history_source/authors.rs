@@ -22,8 +22,9 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// The data half of naming authors, below the toolkit: decoding an actor
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
-    DeviceActors, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, author_coloured, device_actor,
-    short_id, stable_hue,
+    AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, ParticipantNames, ResolveAuthor,
+    SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_words,
+    author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
 };
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
@@ -230,25 +231,16 @@ impl AuthorDirectory {
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
         let person = self.resolve_identity(&principal_key(&agent.person)).name;
         let reader = self.reader();
-        let name = crate::history_source::sentence::with_reader(|words| {
-            words.actor(&tilo_history::Who {
-                actor: &agent.label,
-                kind: tilo_actions::ActorKind::Agent,
-                for_person: Some(&person),
-                for_reader: reader.as_deref() == Some(agent.person.as_str()),
-                is_reader: false,
-                task: None,
-            })
-        });
-        author_coloured(name, short_id(actor_hex), agent.rgb)
+        let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
             .with_attribution(HistoryAttribution {
                 actor: agent.principal.clone(),
                 kind: tilo_actions::ActorKind::Agent,
-                actor_name: agent.label.clone(),
                 on_behalf_of: Some(agent.person.clone()),
                 on_behalf_of_name: Some(person),
-            })
+            });
+        author.for_reader = reader.as_deref() == Some(agent.person.as_str());
+        author
     }
 
     /// [`Self::resolve`] for anyone but a registered agent.
@@ -268,6 +260,11 @@ impl AuthorDirectory {
         }
         let short = short_id(key);
         match actor_handle(key) {
+            // An app's change reads as the app: its own name, with no fragment of its actor id
+            // beside it, which would say nothing a person reads.
+            Some(handle) if is_app_principal(&handle) => {
+                self.author_from_identity(participant_display_label(&handle), &handle, "")
+            }
             Some(handle) => {
                 self.author_from_identity(participant_display_label(&handle), &handle, short)
             }
@@ -321,11 +318,22 @@ impl AuthorDirectory {
             self.resolve(actor_hex)
         } else {
             let principal = hex::encode(invoker.actor.as_bytes());
-            let mut author = self.resolve(&principal);
-            if !self.is_registered(&principal) {
-                author.name = principal_name(&invoker.actor);
+            let author = self.resolve(&principal);
+            match &invoker.name {
+                // An agent goes by the name its admission certified for it,
+                // in the colour presence draws that agent in.
+                Some(name) => {
+                    let mut named = author.with_rgb(collab_types::presence::agent_rgb(name));
+                    named.name.clone_from(name);
+                    named
+                }
+                None if !self.is_registered(&principal) => {
+                    let mut author = author;
+                    author.name = principal_name(&invoker.actor);
+                    author
+                }
+                None => author,
             }
-            author
         };
         let reads = reader.as_deref() == Some(invoker.actor.as_str());
         let relation = if reads {
@@ -346,34 +354,19 @@ impl AuthorDirectory {
         // as its person through it.
         let task = entry
             .and_then(|entry| entry.group.as_ref())
-            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN);
-        let task = task.map(|task| tilo_history::Task {
-            id: &task.id,
-            label: &task.label,
-        });
-        let name = crate::history_source::sentence::with_reader(|words| {
-            words.actor(&tilo_history::Who {
-                actor: match &task {
-                    Some(_) => for_person.as_deref().unwrap_or(author.name.as_str()),
-                    None => author.name.as_str(),
-                },
-                kind: invoker.kind,
-                for_person: for_person.as_deref(),
-                for_reader,
-                is_reader: reads,
-                task: task.as_ref(),
-            })
-        });
+            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
+            .map(|task| task.label.clone())
+            .filter(|label| !label.trim().is_empty());
         let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {
             actor: invoker.actor.clone(),
             kind: invoker.kind,
-            actor_name: author.name.clone(),
             on_behalf_of: invoker.on_behalf_of.clone(),
-            on_behalf_of_name: for_person.clone(),
+            on_behalf_of_name: for_person,
         });
         let mut author = author.with_relation(relation);
-        author.name = name;
         author.attribution = attribution;
+        author.for_reader = for_reader;
+        author.task = task;
         author
     }
 
@@ -485,12 +478,62 @@ fn principal_name(principal: &str) -> String {
 /// that wire identifier verbatim, however, makes the UI look unfinished and
 /// obscures the important fact that the actor was software. This projection
 /// removes only the protocol prefix and adds a persistent, readable kind
-/// label. Human names and other identifiers pass through unchanged.
+/// label. An app reads as its own name in the person's language (`app:so.tilo.lang.today` is
+/// "Today"), never as its id. Human names and other identifiers pass through unchanged.
 pub fn participant_display_label(principal: &str) -> String {
     match agent_principal_name(principal) {
         Some(name) => agent_display_label(&name),
-        None => principal.trim().to_string(),
+        None => match app_principal(principal) {
+            Some(app) => app_name(app, crate::i18n::I18nManager::window_locale().as_str()),
+            None => principal.trim().to_string(),
+        },
     }
+}
+
+/// The principal `id` names an app's own (`app:so.tilo.lang.today`).
+pub fn is_app_principal(id: &str) -> bool {
+    app_principal(id).is_some()
+}
+
+/// The app a principal id names, when it is an app's own.
+fn app_principal(id: &str) -> Option<&str> {
+    id.trim()
+        .strip_prefix(APP_NAMESPACE)
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+}
+
+/// What the actor `principal` is called to the person reading, by what it is: a person by their
+/// name, an app by its own name in their language, an agent by its name. Never an id, and never
+/// part of one: a participant nobody named is [`UNKNOWN_AUTHOR_NAME`].
+pub fn participant_name(principal: &str) -> String {
+    actor_name(principal, &CatalogueNames)
+}
+
+/// The names the toolkit's words give: the session's names for the apps installed here, in the
+/// window's language, and no roster of its own.
+struct CatalogueNames;
+
+impl ParticipantNames for CatalogueNames {
+    fn app(&self, app_id: &str) -> String {
+        app_name(app_id, crate::i18n::I18nManager::window_locale().as_str())
+    }
+}
+
+/// [`participant_name`] for a principal that names software (`app:`, `agent:`, `bot:`,
+/// `shortcut:`), and nothing for an id that names no principal: what presence shows for someone
+/// it knows only an id of, until the roster names them.
+pub fn software_name(principal: &str) -> Option<String> {
+    let principal = principal.trim();
+    [
+        APP_NAMESPACE,
+        AGENT_NAMESPACE,
+        BOT_NAMESPACE,
+        SHORTCUT_NAMESPACE,
+    ]
+    .iter()
+    .any(|namespace| principal.starts_with(namespace))
+    .then(|| participant_name(principal))
 }
 
 /// The readable name of an `agent:<id>` principal, without the kind label:
@@ -583,6 +626,23 @@ mod tests {
                 HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
             );
             assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
+        }
+        // phase: an_apps_change_reads_as_the_app_never_as_its_id
+        // An app changing another app's record is named by its own name, and no fragment of its
+        // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
+        {
+            let principal = "app:so.tilo.lang.notes";
+            assert_eq!(participant_display_label(principal), "Notes");
+            assert!(is_app_principal(principal));
+            assert!(!is_app_principal("agent:scribe"));
+
+            let actor = automerge::ActorId::from(principal.as_bytes());
+            let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
+            assert_eq!(resolved.name, "Notes");
+            assert_eq!(
+                resolved.identity_short, "",
+                "an app's row shows no fragment of its actor id"
+            );
         }
         // phase: a_public_key_actor_is_not_mistaken_for_a_handle
         // A 32-byte public key is not a handle. It must not be rendered as

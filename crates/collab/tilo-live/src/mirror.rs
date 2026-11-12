@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::Task;
 use crate::carrier::{self, OriginTask, origin_config};
+use crate::plane::unused;
 use crate::voice;
 use tilo_lock::MutexRecover as _;
 
@@ -58,9 +59,6 @@ impl Downlink {
 /// Groups copied concurrently per mirrored track; a newer group evicts the
 /// oldest instead of queueing behind it.
 const MAX_GROUPS_IN_FLIGHT: usize = 8;
-
-/// An output track without subscribers for this long is withdrawn.
-const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// A session-owned copy of `source`. Drop it to cut the session off.
 pub(crate) struct Mirror {
@@ -235,20 +233,6 @@ async fn next(track: &mut moq_net::track::Subscriber) -> Next {
     .await
 }
 
-/// SUBSCRIBE can exchange consumer handles. Match the shared relay's existing
-/// unused-demand grace; the caller then closes atomically with demand.
-pub(crate) async fn unused(output: &moq_net::track::Producer) {
-    loop {
-        if output.unused().await.is_err() {
-            return;
-        }
-        tokio::time::sleep(UNUSED_GRACE).await;
-        if !output.is_used() {
-            return;
-        }
-    }
-}
-
 async fn copy(
     input: &mut moq_net::track::Subscriber,
     mut output: moq_net::track::Producer,
@@ -361,6 +345,7 @@ async fn copy_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plane::UNUSED_GRACE;
 
     #[tokio::test(start_paused = true)]
     async fn unused_video_cancels_even_while_source_groups_arrive() {

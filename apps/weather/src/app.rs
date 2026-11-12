@@ -50,6 +50,7 @@ use crate::panes::{DetailPane, OverviewPane};
 #[cfg(feature = "samples")]
 use crate::resource::SampleForecasts;
 use crate::resource::Weather;
+use ui::widget::DrawChild;
 
 /// The overview rail's places (id, name, condition glyph) and the selected one.
 type RailPlaces = (Vec<(String, String, Icon)>, Option<String>);
@@ -423,7 +424,7 @@ impl WeatherApp {
             "weather.places",
             items,
         )])
-        .with_accessible_name("Places")
+        .with_accessible_name(crate::i18n::t("weather-a11y-places"))
         .rail()
         .on_view("weather.rail", {
             let core = Rc::clone(core);
@@ -639,7 +640,7 @@ impl ui::widget::Decorator for WeatherApp {
         self.keep_places_in_front_without_a_forecast();
         self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.stage_pending_scenario();
     }
 
@@ -662,7 +663,7 @@ impl ui::widget::Decorator for WeatherApp {
     fn accessibility(&self) -> Option<AccessNode> {
         let core = self.core.borrow();
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Weather")
+            .with_name(crate::i18n::t("weather-window-name"))
             .with_bounds(self.nav.get_rect());
         if !core.status.is_empty() {
             root.children.push(
@@ -776,7 +777,7 @@ mod interaction_tests {
             let presence = PresenceCtx::empty();
             let mut scene = Scene::new();
             let theme = Framed::harness(&self.app).theme().clone();
-            self.app.draw(
+            self.app.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.tr,
@@ -1112,7 +1113,7 @@ mod interaction_tests {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            h.press_bar("Refresh forecast");
+            h.press_bar(&crate::i18n::CATALOG.t("weather-refresh-forecast"));
             let queued = h
                 .app
                 .core
@@ -1156,7 +1157,10 @@ mod interaction_tests {
             h.app.core.borrow_mut().status = "Forecast updated".into();
             let tree = h.app.accessibility().expect("weather exports a window");
             assert_eq!(tree.role, Role::Window);
-            assert_eq!(tree.name.as_deref(), Some("Weather"));
+            assert_eq!(
+                tree.name.as_deref(),
+                Some(crate::i18n::t("weather-window-name").as_str())
+            );
             assert!(tree.children.iter().any(|node| {
                 node.name.as_deref() == Some("Forecast updated")
                     && node.live == Some(Politeness::Polite)
@@ -1263,7 +1267,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
-            h.press_bar("Add place");
+            h.press_bar(&crate::i18n::CATALOG.t("weather-add-place"));
             assert!(
                 h.app.core.borrow().search_is_focused(),
                 "Add place shows and focuses the field"

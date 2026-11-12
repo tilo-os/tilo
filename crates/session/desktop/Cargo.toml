@@ -1,9 +1,17 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-desktop"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
+
+# One test binary for the crate's integration tests, whose files it includes as
+# modules: a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [features]
 # This desktop presents another device's shared window, so the surface
@@ -66,6 +74,13 @@ word-processor = { path = "../../../apps/word-processor" }
 tilo-app-state = { path = "../../system/app-state" }
 tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
+# The six windows the browser's launch demo opens, for the typing measurement
+# (`tests/typing_desktop`, `examples/typing_perf`): what a keystroke in one of
+# them costs with the others open beside it.
+sheets = { path = "../../../apps/sheets" }
+calendar = { path = "../../../apps/calendar" }
+calculator = { path = "../../../apps/calculator" }
+slides = { path = "../../../apps/slides" }
 tilo-tts = { path = "../../system/tts" }
 tilo-activities = { path = "../activities" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
@@ -75,6 +90,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-surface-host = { path = "../surface-host" }
 tilo-compositor = { path = "../compositor" }
+tilo-session-core = { path = "../core" }
 
 [lints]
 workspace = true

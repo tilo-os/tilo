@@ -43,7 +43,26 @@ impl GitClient {
     }
 }
 
-#[resource(kind = "git_client.repo", label = "Repository")]
+impl GitClient {
+    /// What the record holds: the repository it opens and what collaborators see of its
+    /// history.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "git_client.repo",
+    read_content = GitClient::read_document
+)]
 impl GitClient {
     /// Record what the repository on disk holds now
     ///
@@ -65,8 +84,6 @@ pub struct SampleRepository {
     pub model: RepoModel,
     pub diffs: DiffMap,
 }
-
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 #[cfg(feature = "samples")]
@@ -95,7 +112,7 @@ impl ResourceApp for GitClientShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 
     fn commands() -> &'static [Command] {
@@ -1254,11 +1271,11 @@ mod tests {
     fn the_catalog_resolves_the_remote_messages() {
         GitClientShell::catalog().unwrap().ensure();
         for (key, value) in [
-            ("git-remote-running", ui::i18n!("git-remote-running")),
-            ("git-remote-busy", ui::i18n!("git-remote-busy")),
+            ("git-remote-running", crate::i18n::t("git-remote-running")),
+            ("git-remote-busy", crate::i18n::t("git-remote-busy")),
             (
                 "git-remote-worker-stopped",
-                ui::i18n!("git-remote-worker-stopped"),
+                crate::i18n::t("git-remote-worker-stopped"),
             ),
         ] {
             assert_ne!(key, value);

@@ -8,6 +8,7 @@
 
 use super::activation::{NATIVE_INVOKE, NativeControl};
 use super::{ActionEmitter, ControlBindingMetadata};
+use crate::i18n::widget_text;
 
 pub(crate) struct Dismissal {
     /// The close control's id, `<surface>.close`, when the surface publishes
@@ -24,7 +25,7 @@ impl Dismissal {
         let id = format!("{surface}.close");
         let (native, binding) = NativeControl::new(
             &id,
-            &crate::i18n!("Close"),
+            &widget_text("Close"),
             tilo_actions::OperationKind::View,
             handler,
         );

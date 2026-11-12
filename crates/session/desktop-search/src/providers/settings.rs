@@ -122,6 +122,25 @@ impl Settings {
         Self::changing_in_place(workspace, &|_| false)
     }
 
+    /// Settings' pages in `workspace`, leaving out the settings `published` changes in place: the
+    /// ones the settings service publishes as actions of their own (a switch, a choice's values, a
+    /// value), which search finds as those actions. A row opening Settings at them would only stand
+    /// beside the switch itself.
+    ///
+    /// Every desktop that runs a session offers this one source, so a page finds the pages its own
+    /// Settings shows ([`settings_store::index::Page::here`]) exactly as a computer does.
+    #[must_use]
+    pub fn of_published(
+        workspace: impl Into<String>,
+        published: &[tilo_actions::ActionDescriptor],
+    ) -> Self {
+        let in_place: Vec<&str> = published
+            .iter()
+            .filter_map(|action| index::setting_of_resource(action.address.resource.as_str()))
+            .collect();
+        Self::changing_in_place(workspace, &|id| in_place.contains(&id))
+    }
+
     /// [`Self::new`], leaving out the settings `in_place` names by id: those
     /// the settings service publishes as actions that change them in place
     /// (a switch, a choice's values, a value), which search finds as those
@@ -134,7 +153,9 @@ impl Settings {
     ) -> Self {
         let mut rows = Vec::new();
         let mut fields = Vec::new();
-        for page in index::PAGES {
+        // A page Settings has not here (a device's hardware, on the web)
+        // is not offered, nor any setting on it.
+        for page in index::PAGES.iter().filter(|page| page.here()) {
             let title = t(&page.title_key());
             let subtitle = t(&page.subtitle_key());
             let mut found = vec![
@@ -164,7 +185,7 @@ impl Settings {
             let Some((at, page)) = index::PAGES
                 .iter()
                 .enumerate()
-                .find(|(_, page)| page.slug == setting.page)
+                .find(|(_, page)| page.slug == setting.page && page.here())
             else {
                 continue;
             };
@@ -341,6 +362,38 @@ mod tests {
                 .resolve("setting:keyboard.layout")
                 .map(|hit| hit.id),
             Some("setting:keyboard.layout".into())
+        );
+    }
+
+    /// A setting the settings service publishes as an action of its own is found as that action,
+    /// which is the change itself: a row opening Settings at it would only stand beside it.
+    #[test]
+    fn a_setting_changed_where_it_stands_is_left_to_its_action() {
+        let switch = tilo_actions::ResourceSpec::new(
+            "setting:keyboard.layout",
+            "settings.setting",
+            "Keyboard layout",
+        )
+        .with_action(tilo_actions::ActionSpec::immediate_encoded(
+            "set",
+            "Set the keyboard layout",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::EncodedAction {
+                type_id: "test.setting".into(),
+                payload: Vec::new(),
+            },
+        ));
+        let published = tilo_actions::door::survey(&[switch]);
+        let offered = |settings: &Settings| {
+            settings
+                .query("keyboard layout")
+                .into_iter()
+                .any(|hit| hit.id == "setting:keyboard.layout")
+        };
+        assert!(offered(&Settings::new("workspace")), "Settings offers it");
+        assert!(
+            !offered(&Settings::of_published("workspace", &published)),
+            "the change is the row"
         );
     }
 }

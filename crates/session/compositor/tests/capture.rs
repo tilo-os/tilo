@@ -14,15 +14,13 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::rc::Rc;
 use std::time::Duration;
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::Transform;
-use tilo_compositor::{
-    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
-};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
+use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_pointer::WlPointer,
     wl_registry, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
@@ -197,39 +195,35 @@ fn pump(compositor: &mut Compositor, tool: &mut Tool, done: impl FnMut(&Seen) ->
 }
 
 /// A hosted surface: one square of one colour.
+/// A hosted square in one colour. Like any surface host it keeps the frame it drew and hands that
+/// same frame on every pass: a host that handed a fresh one each time would be saying it drew
+/// everything again, and every pass would damage the output.
 struct Square {
     rect: (i32, i32, i32, i32),
-    buffer: MemoryRenderBuffer,
+    frame: HostFrame,
 }
 
 impl Square {
     fn new(rect: (i32, i32, i32, i32), bgr: [u8; 3]) -> Self {
-        let pixel = [bgr[0], bgr[1], bgr[2], 255];
-        let bytes = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
-        let buffer = MemoryRenderBuffer::from_slice(
-            &bytes,
-            Fourcc::Argb8888,
-            (rect.2, rect.3),
-            1,
-            Transform::Normal,
-            None,
+        let pixel = [bgr[2], bgr[1], bgr[0], 255];
+        let frame = HostFrame::from_pixels(
+            (
+                u32::try_from(rect.2).expect("a whole number of pixels"),
+                u32::try_from(rect.3).expect("a whole number of pixels"),
+            ),
+            pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap()),
         );
-        Self { rect, buffer }
+        Self { rect, frame }
     }
 }
 
 impl SurfaceHost for Square {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            frame: HostFrame::from_buffer(
-                self.buffer.clone(),
-                (
-                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
-                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
-                ),
-            ),
+            frame: self.frame.clone(),
         }]
     }
 
@@ -248,7 +242,7 @@ fn compositor() -> Compositor {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 64, 48))
         .expect("output");
-    compositor.add_host(Box::new(Square::new((8, 8, 16, 16), RED)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((8, 8, 16, 16), RED))));
     compositor
 }
 
@@ -397,7 +391,7 @@ fn a_copy_with_damage_waits_until_the_output_changes() {
         !pump_until(&mut compositor, &mut tool, 20, |seen| seen.ready),
         "nothing changed, nothing is copied"
     );
-    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((40, 30, 8, 8), GREEN))));
     pump(&mut compositor, &mut tool, |seen| seen.ready);
     // The new square is damaged (and the one it moved down in the stack),
     // not the whole output.
@@ -474,7 +468,7 @@ fn a_trusted_tool_copies_an_output_through_image_copy_capture() {
     frame.attach_buffer(&small);
     frame.damage_buffer(0, 0, 16, 16);
     frame.capture();
-    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    compositor.add_host(Rc::new(RefCell::new(Square::new((40, 30, 8, 8), GREEN))));
     pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
     assert!(tool.seen.failed);
 }

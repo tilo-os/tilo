@@ -46,13 +46,13 @@ impl TransportReadiness {
         matches!(self, Self::Ready)
     }
 
-    /// Short state that fits the meta column of a list row.
-    pub fn label(self) -> &'static str {
+    /// The message naming this state in the meta column of a list row.
+    pub fn label_message(self) -> &'static str {
         match self {
-            Self::Ready => "Ready",
-            Self::NeedsLiveSessionCapability => "Not available here",
-            Self::BackendUnavailable => "RDP isn't supported",
-            Self::InvalidProfile => "Needs editing",
+            Self::Ready => "remote-readiness-ready",
+            Self::NeedsLiveSessionCapability => "remote-readiness-elsewhere",
+            Self::BackendUnavailable => "remote-readiness-no-rdp",
+            Self::InvalidProfile => "remote-readiness-editing",
         }
     }
 
@@ -66,20 +66,18 @@ impl TransportReadiness {
         }
     }
 
-    /// One sentence for the person, without implying that a connection was
-    /// tried.
-    pub fn detail(self, kind: ConnectionKind) -> &'static str {
+    /// The catalogue message saying what this state means for the person,
+    /// without implying that a connection was tried.
+    pub fn detail_message(self, kind: ConnectionKind) -> &'static str {
         match self {
-            Self::Ready => "Remote can connect to this machine.",
+            Self::Ready => "remote-state-ready",
             Self::NeedsLiveSessionCapability => match kind {
-                ConnectionKind::Ssh => "Remote can't open SSH sessions on this device.",
-                ConnectionKind::Vnc => "Remote can't open VNC sessions on this device.",
-                _ => "Remote can't open this kind of session on this device.",
+                ConnectionKind::Ssh => "remote-state-no-ssh",
+                ConnectionKind::Vnc => "remote-state-no-vnc",
+                _ => "remote-state-no-session",
             },
-            Self::BackendUnavailable => "Remote opens SSH, VNC and Tilo devices, but not RDP.",
-            Self::InvalidProfile => {
-                "The saved address or sign-in method doesn't fit this protocol."
-            }
+            Self::BackendUnavailable => "remote-state-no-rdp",
+            Self::InvalidProfile => "remote-state-invalid-profile",
         }
     }
 }

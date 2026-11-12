@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetHost};
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
@@ -17,17 +18,16 @@ use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
+use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_desktop_surface::notifications::Notification;
-use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
-use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
 use ui::floating_layer::Card;
 use ui::live_activity::{Published, Summary};
 use ui::search::Scope;
 use ui::vello::kurbo::Rect;
 
 use crate::notifications::NoticeSignals;
+use crate::platform::notice::{Notice, Notices as Told};
 
 /// The app whose live activity is the clocks app's when the desk reads the running timer.
 pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
@@ -255,8 +255,8 @@ impl Activities {
         self.touch(app, activity);
     }
 
-    /// The due events the apps want announced, each posted once.
-    pub(crate) fn announce(&self, notices: &DesktopNotifications) {
+    /// The due events the apps want announced, each told once.
+    pub(crate) fn announce(&self, notices: &dyn Told) {
         for (app, published) in self.read().iter() {
             let Some(announcement) = &published.announce else {
                 continue;
@@ -275,7 +275,7 @@ impl Activities {
             } else {
                 announcement.body.clone()
             };
-            notices.post(Notification::new(title, body));
+            notices.show(&Notice::new(String::new(), 1, title, body));
         }
     }
 
@@ -354,13 +354,11 @@ fn key(app: &str, summary: &Summary) -> String {
 
 /// What the bar reads of the session besides the desk's tree: the
 /// notifications' state, the machine's own status, the apps' live activities,
-/// the running applications' tray items, and where the session's own
-/// notices go.
+/// and the running applications' tray items.
 pub(crate) struct BarFeeds {
     pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) readings: crate::status::Shared,
     pub(crate) activities: Rc<Activities>,
-    pub(crate) notices: DesktopNotifications,
     /// The applications' tray items, when their watcher serves.
     pub(crate) tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, as the loop found them this pass.
@@ -386,7 +384,7 @@ pub(crate) struct ChromeWiring {
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// The desktop's one shortcut table, shared with the session: what the chrome matches a press
     /// against and what it shows beside its rows.
-    pub(crate) shortcuts: crate::mount::panels::Shortcuts,
+    pub(crate) shortcuts: crate::panels::mount::Shortcuts,
     pub(crate) feeds: BarFeeds,
     /// This device's workspaces, as their records hold them.
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
@@ -421,8 +419,6 @@ pub(crate) struct SessionChrome {
     readings: crate::status::Shared,
     /// The apps' live activities, which the bar's pill names and the floating layer shows as cards.
     activities: Rc<Activities>,
-    /// The desk's notifications, where a due timer is announced.
-    notices: DesktopNotifications,
     /// The running applications' status-notifier items, as their host keeps them.
     tray: Option<Arc<tilo_tray_host::Tray>>,
     /// The monitors of the displays a fullscreen window owns, which the loop takes from the
@@ -456,7 +452,6 @@ impl SessionChrome {
             signals,
             readings,
             activities,
-            notices,
             tray,
             fullscreen,
             shares,
@@ -474,7 +469,6 @@ impl SessionChrome {
             notes,
             readings,
             activities,
-            notices,
             tray,
             fullscreen,
             shares,
@@ -504,7 +498,9 @@ impl ChromeSource for SessionChrome {
 
     fn place_people(&self, tree: &mut DesktopTree) {
         if let Some(sync) = &self.sync {
-            sync.show(tree, &self.notes.records(), &|_: &str| None);
+            sync.show(tree, &self.notes, &|app: &str| {
+                Some(crate::app_names::app_name(app))
+            });
         }
     }
 
@@ -530,7 +526,7 @@ impl ChromeSource for SessionChrome {
         // The bar's own avatar is the same face their card shows: one name, one identity, one
         // colour, read where the card reads it.
         let (name, identity) = crate::people::own_face(&own, &self.person);
-        let (red, green, blue) = crate::people::own_rgb(&identity);
+        let (red, green, blue) = crate::people::own_live_rgb(self.sync.as_deref(), &identity);
         OwnChip {
             // The name they go by, and the root key the picture they chose hangs on: the id is
             // never shown as their name.
@@ -591,8 +587,6 @@ impl ChromeSource for SessionChrome {
     }
 
     fn fill(&self, snapshot: &mut DesktopChromeSnapshot) {
-        // A due event is announced once, here, where the bar reads it.
-        self.activities.announce(&self.notices);
         snapshot.status = self.readings.borrow().status();
         snapshot.activities = self.activities.pill();
         snapshot.notifications_only = self.notifications_only;
@@ -612,6 +606,35 @@ impl ChromeSource for SessionChrome {
         let fullscreen = self.fullscreen.borrow();
         self.handle
             .read(|tree| Placement::of(tree, fullscreen.as_slice()))
+    }
+
+    /// A workspace may be branched by whoever reads all of it: the person is in it here and not
+    /// removed. One this device holds no governance of is the desk's own, and the person's unless
+    /// it names someone else as its owner.
+    fn may_branch_workspace(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceSlot,
+    ) -> Result<(), String> {
+        let (id, owner) = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.slot == workspace)
+                    .map(|held| (held.id(), held.owner().cloned()))
+            })
+            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+        let reads = match &self.engine {
+            Some(engine) if engine.holds(id) => engine.reads_whole(id),
+            _ => owner.is_none_or(|owner| owner == self.person),
+        };
+        if reads {
+            Ok(())
+        } else {
+            Err(tilo_desktop_surface::i18n::t(
+                "desktop-cannot-branch-workspace",
+            ))
+        }
     }
 
     fn may_delete_workspace(
@@ -708,7 +731,7 @@ impl crate::Session {
                 }
             }
         }
-        let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
+        let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -719,14 +742,17 @@ impl crate::Session {
     }
 }
 
-/// What holds the keyboard over the desk: the desk's search from the pass it says it is open, and
-/// what the overlay stack says otherwise.
+/// What holds the keyboard over the desk: a surface opened over the field the person types in,
+/// else the desk's search from the pass it says it is open, and what the overlay stack says
+/// otherwise.
 /// The palette is the desk's own state while it is the chrome that draws it and publishes its
 /// surface. A key typed between the desk opening it and the chrome drawing it is the palette's, not
 /// the window's behind it: what the person typed goes into the search, and the frame that key asks
 /// for is the one that publishes the palette's surface.
 pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
-    if handle.search_open() {
+    if let Some(over) = overlays.over() {
+        Target::Surface(over)
+    } else if handle.search_open() {
         Target::Surface(Slot::Search)
     } else {
         overlays.target()
@@ -740,7 +766,7 @@ pub(crate) fn host(
     options: &crate::Options,
     wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
-    overview: &crate::mount::overview::Overview,
+    overview: &crate::overview::Overview,
     emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
@@ -803,6 +829,8 @@ pub(crate) fn host(
     };
     let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
+    // The chrome draws the overview, so the overview's flight asks frames of the chrome alone.
+    overview.drawn_on(host.host().motion_surface());
     // What the compositor draws over the chrome: the overview's flying windows,
     // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();
@@ -817,7 +845,7 @@ pub(crate) fn host(
                     picture.rect.width(),
                     picture.rect.height(),
                 );
-                tilo_compositor::WindowPicture {
+                tilo_session_core::surface::WindowPicture {
                     window: picture.window,
                     rect: (x, y, width, height),
                     opacity: 1.0,
@@ -1118,15 +1146,8 @@ mod tests {
     fn a_due_event_is_announced_once() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
-        let notices = DesktopNotifications::default();
-        let announced = || {
-            notices
-                .log()
-                .active()
-                .iter()
-                .map(|notification| (notification.title.clone(), notification.body.clone()))
-                .collect::<Vec<_>>()
-        };
+        let notices = crate::notifications::told::Told::default();
+        let announced = || notices.told();
         publish(
             &board,
             CLOCKS_APP,

@@ -51,6 +51,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
             .iter()
             .map(|(id, _, _)| (*id, format!("record-{id}")))
             .collect(),
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 
@@ -479,4 +480,44 @@ fn moving_someone_elses_window_on_the_canvas_is_moving_it() {
     let mut first = unplaced.clone();
     on_canvas(&mut first, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
     assert!(foreign_acts(&unplaced, &first, "ada", None).is_empty());
+}
+
+#[test]
+fn the_run_that_opened_a_window_stays_until_the_window_closes() {
+    let run = crate::ownership::OpenedBy {
+        run: "agent-run:7".into(),
+        label: "Jane Doe's agent".into(),
+        title: "Fill Jane Doe's visa application".into(),
+    };
+    let page = desktop(&[(1, 100, "ada"), (2, 200, "ada")]);
+    let mut opened = page.clone();
+    opened.opened_by.insert(2, run.clone());
+    let mut closed = page.clone();
+    closed.tree.workspaces[0].strips[0]
+        .window_groups
+        .retain(|group| group.id != 200);
+    closed.records.retain(|(tab, _)| *tab != 2);
+    closed.authors.remove(&2);
+    // As entries, then as the desk's own document, each rewritten by a page
+    // that knows nothing of who opened what.
+    let mut desk = AutoCommit::new();
+    crate::desktop_doc::seed(&mut desk, &page.tree);
+    for (shape, mut doc) in [AutoCommit::new(), desk].into_iter().enumerate() {
+        write(&mut doc, &opened).unwrap();
+        write(&mut doc, &page).unwrap();
+        assert!(
+            !write(&mut doc, &opened).unwrap(),
+            "{shape}: an unchanged desk writes nothing"
+        );
+        assert_eq!(read(&doc, None).unwrap().opened_by.get(&2), Some(&run));
+        // Its window closes: what opened it goes with it.
+        write(&mut doc, &closed).unwrap();
+        let read_back = read(&doc, None).unwrap();
+        assert!(read_back.tree.tab(2).is_none(), "{shape}");
+        assert!(
+            read_back.opened_by.is_empty(),
+            "{shape}: {:?}",
+            read_back.opened_by
+        );
+    }
 }

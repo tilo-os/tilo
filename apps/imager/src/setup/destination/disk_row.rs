@@ -59,12 +59,19 @@ fn notes(disk: &Disk) -> Vec<&'static str> {
 pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
     let model = disk.model.trim();
     let title = if model.is_empty() {
-        format!("{} storage device", capacity(disk))
+        crate::resource::CATALOG.t_args(
+            "imager-storage-device",
+            &[("size", ui::i18n::ArgValue::Text(capacity(disk)))],
+        )
     } else {
         model.to_string()
     };
     let notes = notes(disk);
-    let mut secondary = format!("{}, {}", disk.name.trim(), disk.contents_summary());
+    let mut secondary = crate::contents::drive_line(
+        disk.name.trim(),
+        disk.partitions.len(),
+        &disk.partition_filesystems(),
+    );
     for note in &notes {
         secondary.push_str(". ");
         secondary.push_str(note.trim_end_matches('.'));

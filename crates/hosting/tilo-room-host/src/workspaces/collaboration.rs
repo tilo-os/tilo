@@ -8,7 +8,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
+use tilo_peer_state::join::JoinBootstrap;
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
@@ -1057,18 +1057,31 @@ impl Workspaces {
         {
             return Ok(GovernanceCompletion { generation });
         }
-        let mut candidate = workspace.peer().clone();
-        change(&mut candidate)?;
-        let mut state = workspace.collaboration().clone();
-        state.record_administration(
-            request_id,
-            digest,
-            workspace.record.generation.saturating_add(1),
-        );
-        let generation =
-            workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(state)
-            })?;
+        // Staged from the replica held until the change commits: a member's
+        // write its link takes in meanwhile waits, rather than landing between
+        // the copy the change was made on and the commit, which then refused
+        // the change for dropping that write.
+        let generation = {
+            let shared = workspace.peer.shared();
+            let mut replica = shared.lock();
+            let mut candidate = replica.clone();
+            change(&mut candidate)?;
+            let mut state = workspace.collaboration().clone();
+            state.record_administration(
+                request_id,
+                digest,
+                workspace.record.generation.saturating_add(1),
+            );
+            let committed = workspace.commit_held(
+                &mut replica,
+                candidate,
+                (&self.inner.host.key, system_time(now)),
+                super::Change::Other,
+                |_, _| Ok(state),
+            );
+            drop(replica);
+            committed?
+        };
         self.settle(workspace).await?;
         Ok(GovernanceCompletion { generation })
     }
@@ -1133,19 +1146,6 @@ impl Workspaces {
         }
     }
 
-    /// Verify `proof` against the challenge `workspace` issued to the device at
-    /// `remote_endpoint`, for an invitation still redeemable.
-    pub(super) fn redeem(
-        workspace: &GovernedWorkspace,
-        remote_endpoint: [u8; 32],
-        proof: &JoinProof,
-        now: u64,
-    ) -> Result<VerifiedRedemption, CollaborationError> {
-        workspace
-            .collaboration()
-            .redeem(&workspace.governed(), remote_endpoint, proof, now)
-    }
-
     /// Admit the verified `joins` to `workspace` in one governance change: the
     /// shared admission ([`tilo_peer_state::join_answer::admit`]), published before anyone
     /// hears their answer. People arriving together cost the workspace one write
@@ -1165,6 +1165,7 @@ impl Workspaces {
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
+        let deciding = crate::timing::start();
         let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
@@ -1172,8 +1173,11 @@ impl Workspaces {
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
             (admitted, held.committed)
         };
+        crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
         if committed {
+            let settling = crate::timing::start();
             self.settle(workspace).await?;
+            crate::timing::event("join.admit.settle", settling, joins.len() as u64);
             // Someone invited from the wait list is in now: their entry
             // leaves it.
             workspace.forget_joined_wait_list();
@@ -1341,7 +1345,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
 /// change is committed under the workspace's lock and published before the
 /// lock is released.
 impl JoinWorkspaces for Workspaces {
-    fn key(&self) -> &SigningKey {
+    fn signer(&self) -> &dyn collab_types::signer::DeviceSigner {
         &self.inner.host.key
     }
 

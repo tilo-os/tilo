@@ -23,7 +23,11 @@ impl OverviewPanel {
             return true;
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            self.choose(OverviewPick::Dismiss);
+            // Escape answers the question a row is asking: things stay as they are, whatever
+            // Shift is doing.
+            if !self.tilo_keep() {
+                self.choose(OverviewPick::Dismiss);
+            }
             return true;
         }
         if self.strip_key(key, mods) {
@@ -429,6 +433,11 @@ impl OverviewPanel {
     /// or joins a workspace, a site workspace's Leave, a workspace to go to; anything else leaves
     /// the overview.
     pub(super) fn click_at(&mut self, p: Point) {
+        // A row asking about something that cannot be undone: its two answers are what a press
+        // here means, and a press anywhere else keeps things as they are.
+        if self.tilo_asking_answer(p) {
+            return;
+        }
         if self.strip_click(p) {
             return;
         }
@@ -443,9 +452,7 @@ impl OverviewPanel {
         // A row below the workspaces, or its control: what it does, or nothing for a row that
         // only says something.
         if let Some((index, on_action)) = self.tilo_hit(p) {
-            if let Some(pick) = self.tilo_pick(index, on_action) {
-                self.choose(pick);
-            }
+            self.tilo_press(index, on_action);
             return;
         }
         let leaving = (0..self.desk.cards.len())

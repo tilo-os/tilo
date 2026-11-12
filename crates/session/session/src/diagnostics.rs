@@ -17,7 +17,7 @@ use tilo_actions::{
     ActionAddress, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
     ParamType, ResourceSpec,
 };
-use tilo_surface_host::Published;
+use tilo_session_core::door::Published;
 use ui::host_operation::ResourceOperationStart;
 
 /// The resource the session's diagnostics are published under.
@@ -74,10 +74,14 @@ fn resource() -> ResourceSpec {
         },
     );
     status.type_mut().contract.result = result;
-    ResourceSpec::new(RESOURCE, KIND, "Session diagnostics")
-        .with_action(start)
-        .with_action(stop)
-        .with_action(status)
+    ResourceSpec::new(
+        RESOURCE,
+        KIND,
+        crate::i18n::t("session-resource-diagnostics"),
+    )
+    .with_action(start)
+    .with_action(stop)
+    .with_action(status)
 }
 
 /// What the session knows of its own cost now: the profiler's state and the heap trim's. One
@@ -112,7 +116,7 @@ impl Published for Served {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         if address.resource != RESOURCE {
             return Err(DoorError::Unknown(address.clone()));
@@ -192,7 +196,7 @@ mod tests {
             .invoke(
                 &ActionAddress::new(RESOURCE, "profile-status"),
                 &Map::new(),
-                &mut tilo_surface_host::Look::none(),
+                &mut tilo_session_core::door::Look::none(),
             )
             .expect("the reading");
         let ResourceOperationStart::Completed(output) = status else {
@@ -217,7 +221,7 @@ mod tests {
             Served.invoke(
                 &ActionAddress::new(RESOURCE, "profile-elsewhere"),
                 &Map::new(),
-                &mut tilo_surface_host::Look::none()
+                &mut tilo_session_core::door::Look::none()
             ),
             Err(DoorError::Unknown(_))
         ));
@@ -225,7 +229,7 @@ mod tests {
             Served.invoke(
                 &ActionAddress::new("session:devices", "profile-stop"),
                 &Map::new(),
-                &mut tilo_surface_host::Look::none()
+                &mut tilo_session_core::door::Look::none()
             ),
             Err(DoorError::Unknown(_))
         ));

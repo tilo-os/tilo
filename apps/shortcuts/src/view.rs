@@ -12,6 +12,7 @@
 //! the draft's structure changes and not while a value is typed, so a field
 //! keeps its caret; problems and binding summaries follow every edit.
 
+use crate::locales::CATALOG;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -182,6 +183,9 @@ fn shape_of(steps: &[Step], out: &mut String) {
             }
             StepKind::Task { allow, output, .. } => {
                 let _ = write!(out, "task {} {output:?}", allow.len());
+            }
+            StepKind::Read { app, joined, .. } => {
+                let _ = write!(out, "read {app} {joined}");
             }
         }
         out.push(')');
@@ -470,7 +474,8 @@ fn step_count(steps: &[Step]) -> usize {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => 0,
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => 0,
             }
         })
         .sum()
@@ -537,7 +542,7 @@ impl LibraryNav {
         let nav = NavList::new(library_sections(&ui.live, &ui.door))
             .bind_selection(&ui.selected)
             .with_id("shortcuts-library")
-            .with_accessible_name("Shortcuts");
+            .with_accessible_name(crate::locales::CATALOG.t("shortcuts-a11y-window"));
         Self {
             nav,
             live: ui.live.clone(),
@@ -591,11 +596,15 @@ fn notice(ui: &Ui) -> Element {
                 Some(Notice::Saved(name)) => {
                     Box::new(Banner::success(format!("Saved “{name}”")).dismissible())
                 }
-                Some(Notice::Deleted(name)) => {
-                    Box::new(Banner::info(format!("Deleted “{name}”")).dismissible())
-                }
+                Some(Notice::Deleted(name)) => Box::new(
+                    Banner::info(
+                        crate::locales::CATALOG
+                            .t_args("shortcuts-deleted", &[("name", name.clone().into())]),
+                    )
+                    .dismissible(),
+                ),
                 Some(Notice::Failed(reason)) => Box::new(
-                    Banner::error("Could not finish")
+                    Banner::error(crate::locales::CATALOG.t("shortcuts-not-finished"))
                         .with_message(reason.clone())
                         .dismissible(),
                 ),
@@ -648,7 +657,7 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
             SkeletonShape::Text { lines: 2 },
         )),
         Arrival::Failed(reason) => items.push(Box::new(
-            Banner::warning(ui::i18n!("shortcuts-library-unavailable"))
+            Banner::warning(CATALOG.t("shortcuts-library-unavailable"))
                 .with_message(reason.clone()),
         )),
         Arrival::Ready(_) => {}
@@ -656,17 +665,17 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
     if door.runs.is_empty() {
         if matches!(&door.library, Arrival::Ready(library) if library.is_empty()) {
             items.push(Box::new(
-                EmptyState::new(ui::i18n!("shortcuts-saved-empty")).with_message(ui::i18n!(
+                EmptyState::new(CATALOG.t("shortcuts-saved-empty")).with_message(CATALOG.t(
                     if drafting {
                         "shortcuts-saved-empty-draft"
                     } else {
                         "shortcuts-saved-empty-blank"
-                    }
+                    },
                 )),
             ));
         } else {
             items.push(Box::new(Section::titled(
-                ui::i18n!("shortcuts-runs"),
+                CATALOG.t("shortcuts-runs"),
                 vec![Box::new(caption("shortcuts-runs-empty"))],
             )));
         }
@@ -702,7 +711,7 @@ fn proposal_panel(ui: &Ui, proposal: &crate::proposal::Proposal, door: &DoorStat
         })
         .collect();
     items.push(Box::new(Section::titled(
-        ui::i18n!("shortcuts-steps"),
+        CATALOG.t("shortcuts-steps"),
         steps,
     )));
     let program = proposal.program();
@@ -715,7 +724,7 @@ fn proposal_panel(ui: &Ui, proposal: &crate::proposal::Proposal, door: &DoorStat
         grants.push(Box::new(caption("shortcuts-grant-none")));
     }
     items.push(Box::new(Section::titled(
-        ui::i18n!("shortcuts-grant"),
+        CATALOG.t("shortcuts-grant"),
         grants,
     )));
     let json = serde_json::to_value(&program).unwrap_or(Value::Null);
@@ -729,7 +738,7 @@ fn proposal_panel(ui: &Ui, proposal: &crate::proposal::Proposal, door: &DoorStat
         Workbench::IGNORE_PROPOSAL.map(move |()| key.clone()),
     );
     items.push(Box::new(ActionGroup::new(open).secondary(stop)));
-    Box::new(Section::titled(ui::i18n!("shortcuts-proposal"), items))
+    Box::new(Section::titled(CATALOG.t("shortcuts-proposal"), items))
 }
 
 /// Asking the agent for a draft: shown only when the person is offered the
@@ -757,7 +766,7 @@ fn describe_panel(
         }
         Some(door::Drafting::Failed(reason)) => {
             items.push(Box::new(
-                Banner::warning(ui::i18n!("shortcuts-draft-failed")).with_message(reason.clone()),
+                Banner::warning(CATALOG.t("shortcuts-draft-failed")).with_message(reason.clone()),
             ));
         }
         Some(door::Drafting::Ready(drafted)) => {
@@ -773,7 +782,7 @@ fn describe_panel(
             ));
             if !drafted.drafted.problems.is_empty() {
                 items.push(Box::new(
-                    Banner::warning(ui::i18n!("shortcuts-draft-problems"))
+                    Banner::warning(CATALOG.t("shortcuts-draft-problems"))
                         .with_message(drafted.drafted.problems.join("\n")),
                 ));
             }
@@ -799,7 +808,7 @@ fn describe_panel(
         )
     };
     items.push(Box::new(buttons));
-    Box::new(Section::titled(ui::i18n!("shortcuts-describe"), items))
+    Box::new(Section::titled(CATALOG.t("shortcuts-describe"), items))
 }
 
 /// Draft it, and once there is a draft, open it.
@@ -841,7 +850,7 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     let mut rows: Vec<Element> = Vec::new();
     for run in door.runs.iter().take(20) {
         let secondary = match &run.status {
-            RunStatus::Running => String::from("Running…"),
+            RunStatus::Running => CATALOG.t("shortcuts-running"),
             // A run that finished with steps that fell short says so after
             // what it produced, and one that produced nothing says so alone.
             RunStatus::Completed { value, degraded } => {
@@ -849,11 +858,17 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
                 match (produced, degraded) {
                     (Some(produced), Some(degraded)) => format!("{produced} ({degraded})"),
                     (Some(produced), None) => produced,
-                    (None, Some(degraded)) => format!("Finished: {degraded}"),
-                    (None, None) => String::from("Finished"),
+                    (None, Some(degraded)) => CATALOG.t_args(
+                        "shortcuts-finished-at-degraded",
+                        &[("detail", ui::i18n::ArgValue::Text(degraded.clone()))],
+                    ),
+                    (None, None) => CATALOG.t("shortcuts-finished"),
                 }
             }
-            RunStatus::Failed(reason) => format!("Stopped: {reason}"),
+            RunStatus::Failed(reason) => CATALOG.t_args(
+                "shortcuts-stopped-at",
+                &[("detail", ui::i18n::ArgValue::Text(reason.clone()))],
+            ),
         };
         let open = {
             let ui = ui.clone();
@@ -877,25 +892,35 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
         };
         rows.push(Box::new(item));
     }
-    Box::new(Section::titled(ui::i18n!("shortcuts-runs"), rows))
+    Box::new(Section::titled(CATALOG.t("shortcuts-runs"), rows))
 }
 
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     let Some(run) = door.last_run(shortcut) else {
-        return String::from("Not run yet");
+        return CATALOG.t("shortcuts-not-run-yet");
     };
+    let time = || ui::i18n::ArgValue::Text(run.started.clone());
     match &run.status {
-        RunStatus::Running => format!("Running since {}", run.started),
+        RunStatus::Running => CATALOG.t_args("shortcuts-running-since", &[("time", time())]),
         RunStatus::Completed {
             degraded: Some(degraded),
             ..
-        } => format!(
-            "Finished at {}, with steps that fell short: {degraded}",
-            run.started
+        } => CATALOG.t_args(
+            "shortcuts-finished-degraded",
+            &[
+                ("time", time()),
+                ("steps", ui::i18n::ArgValue::Text(degraded.clone())),
+            ],
         ),
-        RunStatus::Completed { .. } => format!("Finished at {}", run.started),
-        RunStatus::Failed(reason) => format!("Stopped at {}: {reason}", run.started),
+        RunStatus::Completed { .. } => CATALOG.t_args("shortcuts-finished-at", &[("time", time())]),
+        RunStatus::Failed(reason) => CATALOG.t_args(
+            "shortcuts-stopped",
+            &[
+                ("time", time()),
+                ("reason", ui::i18n::ArgValue::Text(reason.clone())),
+            ],
+        ),
     }
 }
 
@@ -948,7 +973,7 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
             )));
         }
         items.push(Box::new(Section::titled(
-            ui::i18n!("shortcuts-inputs"),
+            CATALOG.t("shortcuts-inputs"),
             form,
         )));
     }
@@ -972,7 +997,7 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
         .collect();
     if !numbered.is_empty() {
         items.push(Box::new(Section::titled(
-            ui::i18n!("shortcuts-steps"),
+            CATALOG.t("shortcuts-steps"),
             numbered,
         )));
     }
@@ -1009,7 +1034,7 @@ fn refine_panel(ui: &Ui, shortcut: &Shortcut) -> Element {
         ))
     };
     items.push(review);
-    Box::new(Section::titled(ui::i18n!("shortcuts-refine"), items))
+    Box::new(Section::titled(CATALOG.t("shortcuts-refine"), items))
 }
 
 /// What the agent proposes in answer to a comment: each step that changes,
@@ -1026,7 +1051,7 @@ fn refined_body(ui: &Ui, drafted: Option<&door::Drafting>) -> Element {
         }
         Some(door::Drafting::Failed(reason)) => {
             items.push(Box::new(
-                Banner::warning(ui::i18n!("shortcuts-draft-failed")).with_message(reason.clone()),
+                Banner::warning(CATALOG.t("shortcuts-draft-failed")).with_message(reason.clone()),
             ));
         }
         Some(door::Drafting::Ready(refined)) => {
@@ -1035,7 +1060,7 @@ fn refined_body(ui: &Ui, drafted: Option<&door::Drafting>) -> Element {
             }
             if !refined.drafted.problems.is_empty() {
                 items.push(Box::new(
-                    Banner::warning(ui::i18n!("shortcuts-draft-problems"))
+                    Banner::warning(CATALOG.t("shortcuts-draft-problems"))
                         .with_message(refined.drafted.problems.join("\n")),
                 ));
             }
@@ -1062,7 +1087,7 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
         },
         move |door| -> Element {
             Box::new(Section::titled(
-                ui::i18n!("shortcuts-last-run"),
+                CATALOG.t("shortcuts-last-run"),
                 vec![Box::new(Text::new(&last_run_text(door, &id)))],
             ))
         },
@@ -1219,15 +1244,15 @@ fn save_dialog(ui: &Ui, blocked: bool) -> SaveDialog {
         let sheet = ui.sheet.clone();
         move || sheet.set(false)
     };
-    let mut dialog = ModalDialog::new(ui::i18n!("shortcuts-grant-title"), body)
+    let mut dialog = ModalDialog::new(CATALOG.t("shortcuts-grant-title"), body)
         .with_test_id("shortcuts-save-sheet")
         .on_dismiss(close.clone())
         .with_max_width(560.0);
     if !blocked {
         let ui = ui.clone();
         dialog = dialog
-            .primary_action(ui::i18n!("shortcuts-save"), move || save_open_draft(&ui))
-            .secondary_action(ui::i18n!("shortcuts-cancel"), close);
+            .primary_action(CATALOG.t("shortcuts-save"), move || save_open_draft(&ui))
+            .secondary_action(CATALOG.t("shortcuts-cancel"), close);
     }
     dialog
 }
@@ -1317,7 +1342,10 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 (_, 0) => save_blocker(input).unwrap_or_else(|| String::from("Ready to save")),
                 (Some(top), _) => top.join("; "),
                 (None, 1) => String::from("1 step needs attention"),
-                (None, count) => format!("{count} problems to fix before saving"),
+                (None, count) => CATALOG.t_args(
+                    "shortcuts-problems",
+                    &[("count", ui::i18n::ArgValue::Text(count.to_string()))],
+                ),
             }
         })
         .with_id("draft-problems")
@@ -1336,14 +1364,14 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     }
     if let Arrival::Failed(reason) = &input.catalogue {
         items.push(Box::new(
-            Banner::warning(ui::i18n!("shortcuts-catalogue-unavailable"))
+            Banner::warning(CATALOG.t("shortcuts-catalogue-unavailable"))
                 .with_message(reason.clone()),
         ));
     }
     items.push(schedule_section(ui, &draft_id));
     items.push(inputs_section(ui, &draft_id, draft));
     items.push(Box::new(Section::titled(
-        ui::i18n!("shortcuts-steps"),
+        CATALOG.t("shortcuts-steps"),
         vec![block(ui, input, &draft_id, draft, "", 0)],
     )));
     items.push(output_section(ui, input, &draft_id, draft));
@@ -1380,7 +1408,7 @@ fn grant_section(input: &EditorInput) -> Element {
         ));
     }
     Box::new(Section::titled(
-        ui::i18n!("shortcuts-grant"),
+        CATALOG.t("shortcuts-grant"),
         vec![Box::new(Section::new(lines))],
     ))
 }
@@ -1399,7 +1427,7 @@ fn text_view(ui: &Ui, draft_id: Id) -> Element {
     .with_id("draft-text")
     .with_role(TextRole::Code);
     Box::new(Section::titled(
-        ui::i18n!("shortcuts-text-view"),
+        CATALOG.t("shortcuts-text-view"),
         vec![Box::new(lines)],
     ))
 }
@@ -1513,13 +1541,13 @@ fn schedule_controls(ui: &Ui, draft_id: Id, time: Option<tilo_automation::TimeOf
         }),
     );
     Box::new(Section::titled(
-        ui::i18n!("shortcuts-schedule"),
+        CATALOG.t("shortcuts-schedule"),
         vec![
             Box::new(checkbox),
             Box::new(labeled_field("shortcuts-schedule-hour", hour_control)),
             Box::new(labeled_field("shortcuts-schedule-minute", minute_control)),
             Box::new(
-                Text::new(&ui::i18n!("shortcuts-schedule-description"))
+                Text::new(&CATALOG.t("shortcuts-schedule-description"))
                     .with_role(TextRole::Caption),
             ),
         ],
@@ -1549,7 +1577,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                 Button::icon_only(
                     &format!("remove-input-{}", input.name),
                     Icon::X,
-                    &ui::i18n!("shortcuts-remove"),
+                    &CATALOG.t("shortcuts-remove"),
                 ),
                 Workbench::REMOVE_INPUT.map({
                     let draft = draft_id.clone();
@@ -1563,7 +1591,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                 .push(Box::new(
                     Text::new(&input.name).with_kind(TextKind::Identifier),
                 ))
-                .push(Box::new(caption(editor::param_type_label(input.ty))))
+                .push(Box::new(caption(&editor::param_type_label(input.ty))))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(remove)),
         ));
@@ -1602,9 +1630,9 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                     INPUT_TYPES
                         .iter()
                         .map(|ty| {
-                            let label =
-                                crate::model::param_type(ty).map_or(*ty, editor::param_type_label);
-                            ((*ty).to_owned(), label.to_owned())
+                            let label = crate::model::param_type(ty)
+                                .map_or_else(|| (*ty).to_owned(), editor::param_type_label);
+                            ((*ty).to_owned(), label)
                         })
                         .collect(),
                 );
@@ -1612,7 +1640,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
             }))
             .push(Box::new(add)),
     ));
-    Box::new(Section::titled(ui::i18n!("shortcuts-inputs"), items))
+    Box::new(Section::titled(CATALOG.t("shortcuts-inputs"), items))
 }
 
 fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) -> Element {
@@ -1643,7 +1671,7 @@ fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) ->
         |value: String| binding_json(&value).and_then(|value| serde_json::from_value(value).ok()),
     );
     Box::new(Section::titled(
-        ui::i18n!("shortcuts-output"),
+        CATALOG.t("shortcuts-output"),
         vec![Box::new(picker)],
     ))
 }
@@ -1863,7 +1891,7 @@ fn action_picker_body(
         .collect();
     if !blocks.is_empty() {
         groups.push(Box::new(
-            Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
+            Section::new(blocks).with_header(SectionHeader::group(CATALOG.t("shortcuts-blocks"))),
         ));
     }
     for group in editor::picker(&input.catalog) {
@@ -1923,7 +1951,7 @@ fn action_picker_body(
     }
     Box::new(
         Section::new(groups).with_header(
-            SectionHeader::heading(ui::i18n!("shortcuts-add-step-button")).action(close),
+            SectionHeader::heading(CATALOG.t("shortcuts-add-step-button")).action(close),
         ),
     )
 }
@@ -1979,13 +2007,13 @@ fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shutting: bool) -> Button {
         (
             "step-fold",
             Icon::ChevronDown,
-            ui::i18n!("shortcuts-fold-step"),
+            CATALOG.t("shortcuts-fold-step"),
         )
     } else {
         (
             "step-open",
             Icon::ChevronRight,
-            ui::i18n!("shortcuts-open-step"),
+            CATALOG.t("shortcuts-open-step"),
         )
     };
     let draft = draft_id.clone();
@@ -2158,7 +2186,7 @@ fn policy_row(at: &StepEditor<'_>, step: &Step) -> Element {
     let StepEditor {
         ui, draft_id, path, ..
     } = *at;
-    let label = ui::i18n!("shortcuts-when-it-fails");
+    let label = CATALOG.t("shortcuts-when-it-fails");
     let selected = match &step.on_error {
         StepPolicy::Fail => POLICY_STOP,
         StepPolicy::Retry { .. } => POLICY_RETRY,
@@ -2168,16 +2196,16 @@ fn policy_row(at: &StepEditor<'_>, step: &Step) -> Element {
     let values = vec![
         (
             POLICY_STOP.to_owned(),
-            ui::i18n!("shortcuts-stop-the-shortcut"),
+            CATALOG.t("shortcuts-stop-the-shortcut"),
         ),
-        (POLICY_RETRY.to_owned(), ui::i18n!("shortcuts-try-again")),
+        (POLICY_RETRY.to_owned(), CATALOG.t("shortcuts-try-again")),
         (
             POLICY_FALLBACK.to_owned(),
-            ui::i18n!("shortcuts-do-these-instead"),
+            CATALOG.t("shortcuts-do-these-instead"),
         ),
         (
             POLICY_DEFAULT.to_owned(),
-            ui::i18n!("shortcuts-go-on-with-a-value"),
+            CATALOG.t("shortcuts-go-on-with-a-value"),
         ),
     ];
     let labels = values.iter().map(|(_, label)| label.clone()).collect();
@@ -2430,7 +2458,7 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     }
     if !input.problems.is_empty() {
         body = body.push(Box::new(
-            Banner::warning(ui::i18n!("shortcuts-grant-blocked")).with_message(
+            Banner::warning(CATALOG.t("shortcuts-grant-blocked")).with_message(
                 editor::problem_lines(&draft.program().steps, &input.problems).join("\n"),
             ),
         ));
@@ -2478,18 +2506,18 @@ fn step_actions(
     let deeper = nesting(
         "step-nest",
         Icon::ArrowRight,
-        &ui::i18n!("shortcuts-nest-step"),
+        &CATALOG.t("shortcuts-nest-step"),
         editor::nest_into(steps, path),
     );
     let shallower = nesting(
         "step-lift",
         Icon::ArrowLeft,
-        &ui::i18n!("shortcuts-lift-step"),
+        &CATALOG.t("shortcuts-lift-step"),
         editor::lift_out(path),
     );
     let up = ui
         .bind(
-            step_button("step-up", Icon::ChevronUp, &ui::i18n!("shortcuts-move-up")),
+            step_button("step-up", Icon::ChevronUp, &CATALOG.t("shortcuts-move-up")),
             Workbench::MOVE_STEP.map({
                 let draft = draft_id.clone();
                 let path = path.to_owned();
@@ -2502,7 +2530,7 @@ fn step_actions(
             step_button(
                 "step-down",
                 Icon::ChevronDown,
-                &ui::i18n!("shortcuts-move-down"),
+                &CATALOG.t("shortcuts-move-down"),
             ),
             Workbench::MOVE_STEP.map({
                 let draft = draft_id.clone();
@@ -2512,7 +2540,7 @@ fn step_actions(
         )
         .with_enabled(index + 1 < count);
     let remove = ui.bind(
-        step_button("step-remove", Icon::Trash2, &ui::i18n!("shortcuts-remove")),
+        step_button("step-remove", Icon::Trash2, &CATALOG.t("shortcuts-remove")),
         Workbench::REMOVE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
@@ -2584,11 +2612,11 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 move |binding| json!({"step": "if", "cond": {"truthy": binding}, "then": then, "else": otherwise})
             }));
             nested.push(branch(
-                ui::i18n!("shortcuts-then"),
+                CATALOG.t("shortcuts-then"),
                 block(ui, input, draft_id, draft, &format!("{path}.then"), 1),
             ));
             nested.push(branch(
-                ui::i18n!("shortcuts-otherwise"),
+                CATALOG.t("shortcuts-otherwise"),
                 block(ui, input, draft_id, draft, &format!("{path}.else"), 1),
             ));
         }
@@ -2602,11 +2630,12 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 let repeated = repeated.clone();
                 move |binding| json!({"step": "for_each", "items": binding, "item": item, "body": repeated})
             }));
-            body = body.push(Box::new(caption(&format!(
-                "Inside the repeat, each item is the variable {item}"
+            body = body.push(Box::new(caption(&CATALOG.t_args(
+                "shortcuts-repeat-hint",
+                &[("variable", ui::i18n::ArgValue::Text(item.clone()))],
             ))));
             nested.push(branch(
-                ui::i18n!("shortcuts-repeat"),
+                CATALOG.t("shortcuts-repeat"),
                 block(ui, input, draft_id, draft, &format!("{path}.each"), 1),
             ));
         }
@@ -2685,6 +2714,8 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 },
             ));
         }
+        // A record read is written in the program's text; its heading says it.
+        StepKind::Read { .. } => {}
     }
     (body, nested)
 }

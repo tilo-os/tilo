@@ -9,7 +9,12 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy, SurfaceHost as _};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_session_core::surface::SurfaceHost as _;
+
 use tilo_surface_host::{AppHost, Placement};
 use tilo_topbar::{Link, fixture};
 
@@ -47,7 +52,7 @@ fn the_top_bar_draws_along_the_top_of_the_output() {
         ))
         .unwrap();
     let host = bar(size);
-    compositor.add_host(Box::new(host));
+    compositor.add_host(Rc::new(RefCell::new(host)));
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
 
@@ -86,7 +91,10 @@ fn the_bar_shows_the_pointer_shape_its_controls_ask_for() {
     let size = fixture::viewport(Some("bar"));
     let mut host = bar(size);
     host.prepare_frame();
-    assert_eq!(host.cursor(), tilo_compositor::CursorIcon::Default);
+    assert_eq!(
+        host.cursor(),
+        tilo_session_core::surface::CursorIcon::Default
+    );
     let shapes: Vec<_> = (0..size.0)
         .step_by(4)
         .map(|x| {
@@ -98,7 +106,7 @@ fn the_bar_shows_the_pointer_shape_its_controls_ask_for() {
     assert!(
         shapes
             .iter()
-            .any(|shape| *shape != tilo_compositor::CursorIcon::Default),
+            .any(|shape| *shape != tilo_session_core::surface::CursorIcon::Default),
         "some control along the bar asks for its own pointer shape"
     );
 }

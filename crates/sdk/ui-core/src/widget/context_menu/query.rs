@@ -8,6 +8,7 @@
 //! its send row carries into the send-to box that takes the menu's place
 //! ([`crate::widget::SendToBox`]), which sends it to whom the person names.
 
+use crate::i18n::{widget_format, widget_text};
 use std::cell::Cell;
 
 use vello::Scene;
@@ -113,7 +114,7 @@ impl ContextMenu {
         if self.query.is_some() && self.can_ask() {
             self.own_rows = Some(self.items.len());
             self.items
-                .push(MenuItem::action(crate::i18n!("menu-send"), || {}).with_icon(Icon::Sparkles));
+                .push(MenuItem::action(widget_text("menu-send"), || {}).with_icon(Icon::Sparkles));
         }
         self.refilter();
         self.dirty = true;
@@ -196,7 +197,7 @@ impl ContextMenu {
                 .map(|query| query.text.trim().to_owned())
                 .unwrap_or_default();
             if let Some(MenuItem::Action { label, .. }) = self.items.get_mut(ask) {
-                *label = crate::i18n!("menu-ask-typed", "text" => text);
+                *label = widget_format("menu-ask-typed", &[("text", text.into())]);
             }
             self.shown.push(ask);
         }

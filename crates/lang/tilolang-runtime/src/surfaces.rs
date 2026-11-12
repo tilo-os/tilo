@@ -65,6 +65,8 @@ const MENU: &str = "menu";
 const SWIPE: &str = "swipe";
 const OVERVIEW: &str = "overview";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
+const SIDEBAR_ACTIONS: &str = "sidebar_actions";
+const SIDEBAR: &str = "sidebar";
 const ACTIONS: &str = "actions";
 
 /// The word a "…" is named by: the one the shell gives its own More button.
@@ -149,12 +151,16 @@ impl Core {
             return Ok(());
         };
         // Only what the window's own place offers: an action that reads a row over it has
-        // none on a window's page.
+        // none on a window's page. What the view already drew in the window's bar with its own
+        // controls — the "+" that makes the thing the sidebar lists, the page's own button for
+        // what it shows — stands there alone, not again beside them as the subject's action.
+        let headed = self.header_actions(shell)?;
         let acted: Vec<Value> = self
             .actions_on(&subject, &Value::none())
             .map_err(trapped)?
             .into_iter()
             .filter(|action| flag(action, APPLIES))
+            .filter(|action| opt_text(action, ID).is_none_or(|id| !headed.contains(&id.to_owned())))
             .collect();
         self.costs
             .publish(u64::try_from(acted.len()).unwrap_or(u64::MAX));
@@ -379,6 +385,34 @@ impl Core {
         {
             *field = value;
         }
+    }
+
+    /// The actions the view's own controls already offer where the window's navigation and
+    /// headers stand: the sidebar's head and its places (a section's add), and the controls the
+    /// view draws in its columns' header rows. A control the view drew stands where the view put
+    /// it, alone: the subject's action of the same name is not placed again in a header row, so
+    /// the person finds each action once.
+    fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
+        let mut ids = Vec::new();
+        for name in [SIDEBAR, SIDEBAR_ACTIONS, ACTIONS, OVERVIEW_ACTIONS] {
+            if let Some(head) = self.slot(shell, name)? {
+                self.applied_ids(head, &mut ids)?;
+            }
+        }
+        Ok(ids)
+    }
+
+    /// The ids of the actions the controls under `at` apply, at any depth.
+    fn applied_ids(&self, at: usize, out: &mut Vec<String>) -> Result<(), RuntimeError> {
+        for value in self.events(at)?.into_values() {
+            if let Value::Action(run) = value {
+                out.push(run.action);
+            }
+        }
+        for child in self.children(at)? {
+            self.applied_ids(child, out)?;
+        }
+        Ok(())
     }
 
     /// The window's shell in the tree: the first one met, a view's own frame included.
@@ -735,13 +769,20 @@ impl Core {
             )?;
         }
         for (index, action) in by_place.into_iter().flatten().enumerate() {
+            let primary = flag(&action, PRIMARY);
             let node = Self::action_button(
                 &action,
                 &format!("{key}~{slot}~action-{index}"),
                 entry,
                 true,
             );
-            self.put_in_slot(shell, slot, node)?;
+            // The window's main action leads the actions of its bar: it stands where a person
+            // looks first, and the app's own controls follow it.
+            if primary {
+                self.put_in_slot_front(shell, slot, node)?;
+            } else {
+                self.put_in_slot(shell, slot, node)?;
+            }
         }
         // What the view left unplaced stands in the bar's own "…", beside what does not fit in
         // its row: one bar has one door, and the app's own menu beside it is a second "…" with
@@ -1023,6 +1064,16 @@ impl Core {
         })
     }
 
+    /// What `at` does on each event it reports: the actions its controls apply.
+    fn events(&self, at: usize) -> Result<BTreeMap<String, Value>, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.events.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })
+    }
+
     fn kind(&self, at: usize) -> Result<String, RuntimeError> {
         self.arena(|view| {
             view.nodes
@@ -1113,6 +1164,30 @@ impl Core {
     fn put_in_slot(&self, at: usize, name: &str, node: NodeBuild) -> Result<(), RuntimeError> {
         let child = self.push(node)?;
         self.put_at_in_slot(at, name, child)
+    }
+
+    /// The node `node` at the front of `at`'s slot `name`, the slot made when it has none: the
+    /// window's main action leads the actions of its bar.
+    fn put_in_slot_front(
+        &self,
+        at: usize,
+        name: &str,
+        node: NodeBuild,
+    ) -> Result<(), RuntimeError> {
+        let child = self.push(node)?;
+        let key = self.key(at)?;
+        let slot = if let Some(slot) = self.slot(at, name)? {
+            slot
+        } else {
+            let mut props = BTreeMap::new();
+            props.insert("name".to_owned(), Value::text(name));
+            let mut slot = empty(SLOT, &format!("{key}~slot-{name}"));
+            slot.props = props;
+            let slot = self.push(slot)?;
+            self.insert(at, usize::MAX, slot)?;
+            slot
+        };
+        self.insert(slot, 0, child)
     }
 
     /// The node `child` (one of the arena's) at the end of `at`'s slot `name`, the slot made

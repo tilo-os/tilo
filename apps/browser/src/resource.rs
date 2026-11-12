@@ -43,12 +43,28 @@ pub struct Browser {
     pub site_exceptions: Set<String>,
 }
 
+impl Browser {
+    /// What the record holds: the bookmarks, the preferences that follow the person to every
+    /// window, and the sites tracker protection is off for.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "browser.application",
-    label = "Browser",
     initialize = Browser::default,
     scopes = Browser::scopes,
-    children = Browser::sites
+    children = Browser::sites,
+    read_content = Browser::read_document
 )]
 impl Browser {
     /// Bookmark a page.

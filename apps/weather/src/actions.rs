@@ -28,7 +28,7 @@ pub enum WeatherEffect {
     /// Refresh this forecast.
     ///
     /// Fetch the forecast and air quality of one saved place.
-    #[effect(job, kind = "read")]
+    #[effect(job, kind = "read", label = "weather-refresh-forecast")]
     RefreshLocation {
         #[param("Id of the saved place")]
         location: String,

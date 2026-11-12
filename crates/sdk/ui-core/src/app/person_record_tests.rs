@@ -108,7 +108,7 @@ fn app_holding(record: &StoredRecord) -> App {
     while !app.document_routes.owners.iter().all(|entry| {
         app.collaboration
             .manager
-            .document_route_publishable_for_test(&entry.route)
+            .document_route_publishable(&entry.route)
     }) {
         assert!(
             crate::time::now() < deadline,

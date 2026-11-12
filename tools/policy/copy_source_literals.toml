@@ -1,0 +1,259 @@
+# Copy a builder is handed that no catalogue has to say
+# (check_copy_language.py, rule `uncatalogued`).
+#
+# A crate that ships a translation resolves everything a person reads through
+# its catalogue, so a German window never mixes the two languages. Three kinds
+# of text are exempt, each saying why here:
+#
+# * what an agent is told a tool does — the agent reads English, the person
+#   never sees it;
+# * a key's name as the keyboard prints it, spelled the same in every
+#   language;
+# * a label a performance harness paints, which no one reads.
+#
+# An entry that no longer matches anything fails the check.
+
+[[allow]]
+file = "apps/chat/src/host_model.rs"
+text = "Continue the interrupted answer. Do not repeat or perform actions."
+reason = "What Chat tells the model when a person continues an interrupted answer, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root/facts.rs"
+text = "What this holds as a compact summary of plain values (names, times, counts, text), to check it against a request or compare two versions. With version, the facts as of that version."
+reason = "What the facts tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root.rs"
+text = "Open the app at one item: the anchor of a search hit."
+reason = "What the open tool does, told to an agent."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/root.rs"
+text = "Show this item."
+reason = "What the show tool does, told to an agent."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/runner/presentation.rs"
+text = "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first."
+reason = "What the screenshot tool answers an agent."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/chain.rs"
+text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended; an item's own content when the read \\\n         is of that item."
+reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
+
+[[allow]]
+file = "crates/session/desktop-surface/src/window.rs"
+text = "See a window this desktop does not run as it shows now: answers with the picture, \\\n         kept as content of the workspace the window stands in."
+reason = "What the window-picture tool answers an agent."
+
+[[allow]]
+file = "crates/session/desktop-surface/src/window.rs"
+text = "What a window this desktop does not run says of itself: its title and the app it \\\n         belongs to."
+reason = "What the window-description tool answers an agent."
+
+[[allow]]
+file = "apps/word-processor/src/semantic_read/action.rs"
+text = "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next"
+reason = "How the Markdown an agent reads is shaped; a description of a tool's answer."
+
+[[allow]]
+file = "apps/video-player/src/app.rs"
+text = "Escape"
+reason = "A key's name, as the keyboard prints it."
+
+[[allow]]
+file = "apps/video-player/src/app.rs"
+text = "Ctrl+O"
+reason = "A key's name, as the keyboard prints it."
+
+[[allow]]
+file = "apps/git-client/src/app.rs"
+text = "Flush the blur pass before presenting"
+reason = "A capture label a frame-timing harness paints."
+
+[[allow]]
+file = "crates/sdk/ui-core/src/widget/replaced_tripwire.rs"
+text = "Tripwire"
+reason = "A sample label in the widget that trips on a replaced widget."
+
+[[allow]]
+file = "apps/mail/src/compose.rs"
+text = "Maya Chen <maya@northwind.example>"
+reason = "Sample mail the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/mail/src/compose.rs"
+text = "Re: Spring launch plan"
+reason = "Sample mail the headless screenshot opens, never a person's own window."
+
+# The Themes app draws a mock window to judge a theme by, and the words in it
+# are that sample's content — a person reads them as part of the picture, the
+# way they read a photograph's, not as this window's own copy.
+
+[[allow]]
+file = "apps/sheets/src/app/annotations.rs"
+text = "Ag"
+reason = "A sample word measured to lay out a card; never shown."
+
+# A headless screenshot's sample content: the words are part of the picture
+# the shot shows, not this window's own copy.
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it."
+reason = "Sample conversation a headless screenshot stages, never a person's own window."
+
+[[allow]]
+file = "apps/chat/src/live_share_panel.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/chat/src/render_chat/attach_picker.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "Release Notes"
+reason = "Sample chat the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "Changelogs and launch dates"
+reason = "Sample chat the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Par"
+reason = "Sample search query behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Reykjav"
+reason = "Sample place behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Zzqx"
+reason = "Sample query with no results behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/terminal/src/main_body.rs"
+text = "Writing"
+reason = "A name the headless harness gives a new environment, never a person's own window."
+
+[[allow]]
+file = "apps/totp/src/list.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/weather/src/presentation.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/contacts/src/view.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/feeds/src/list_pane.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/mail/src/app.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/mail/src/list.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/settings/src/panes/network/vpn.rs"
+text = "WireGuard"
+reason = "A protocol's name, spelled the same in every language."
+
+[[allow]]
+file = "crates/session/session/src/pairing.rs"
+text = "the device was not paired: {}"
+reason = "What the pairing door answers a caller, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/sync/client/plane.rs"
+text = "the collaboration endpoint: {error}"
+reason = "What the sync client reports of a failed endpoint, never a window's copy."
+
+[[allow]]
+file = "apps/browser/src/service_sessions.rs"
+text = "Slack"
+reason = "A service's name, spelled the same in every language."
+
+[[allow]]
+file = "apps/browser/src/service_sessions.rs"
+text = "Discord"
+reason = "A service's name, spelled the same in every language."
+
+[[allow]]
+file = "apps/file-explorer/src/files_app.rs"
+text = "Personal cloud"
+reason = "A label a capture scenario paints, which no one reads."
+
+[[allow]]
+file = "crates/sdk/tilo-app/src/framework/chain.rs"
+text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended; an item's own content when the read \\\n         is of that item."
+reason = "What the chain read tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "apps/store/src/app.rs"
+text = "Terminal"
+reason = "A store app's own name, the same in every language; the sentence around it is the catalogue's."
+
+[[allow]]
+file = "apps/settings/src/panes/agent_models/hub.rs"
+text = "Hugging Face"
+reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."
+
+# The session's capture fixtures: the words a screenshot poses, drawn for a
+# picture or a test, never in a window a person works in.
+
+[[allow]]
+file = "crates/session/activities/src/fixture.rs"
+text = "Glenn Gould"
+reason = "A sample activity card's subtitle in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Ada Lovelace"
+reason = "A sample banner's sender in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Design review"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Build finished"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Jonas Weber"
+reason = "A sample banner's sender in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Battery critically low"
+reason = "A sample banner's title in the capture fixtures, which no one reads."
+
+[[allow]]
+file = "crates/session/notification-banners/src/fixture.rs"
+text = "Upload {at} finished"
+reason = "A sample banner's title in the capture fixtures, which no one reads."

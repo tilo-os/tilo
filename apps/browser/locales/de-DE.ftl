@@ -60,6 +60,7 @@ browser-service-forget-fence-failed = Das ausgewählte Konto konnte zum Vergesse
 
 browser-service-forget-retry = Vergessen dieses Kontos erneut versuchen
 browser-service-forget-retry-failed = Das Konto konnte nicht gelöscht werden. Gespeicherte Zugangsdaten wurden nicht widerrufen; versuche erneut, dieses Konto zu vergessen.
+browser-service-open = { $name } öffnen
 browser-engine-failed = Schließe Browser und öffne ihn erneut. Startet er weiterhin nicht, aktualisiere Browser im Store oder installiere ihn neu.
 
 ## Toolbar
@@ -206,6 +207,19 @@ browser-page-dialog-unsaved = Vorgenommene Änderungen werden eventuell nicht ge
 browser-page-dialog-leave = Verlassen
 browser-page-dialog-reload = Neu laden
 
+## Die gespeicherten Adressen, aus denen der Browser Formulare füllt
+browser-autofill-offline = Adressausfüllen ist hier nicht verfügbar: Dieses Fenster surft ohne deine Anmeldungen.
+browser-autofill-enable = Adressausfüllen einschalten
+browser-autofill-disable = Adressausfüllen ausschalten
+browser-autofill-selected-address = Die gewählte Adresse
+browser-autofill-delete-question = { $label } löschen?
+browser-autofill-delete = Adresse löschen
+browser-autofill-keep = Adresse behalten
+browser-autofill-save = Adresse speichern
+browser-autofill-discard = Änderungen verwerfen
+browser-autofill-add = Adresse hinzufügen
+browser-autofill-saved = Adresse auf diesem Gerät gespeichert.
+
 ## An address or page that did not open
 browser-address-failed = Diese Adresse konnte nicht geöffnet werden
 browser-address-empty = Geben Sie eine Webadresse oder Suchbegriffe ein
@@ -328,3 +342,205 @@ browser-filters-updated = Filterlisten aktualisiert
 browser-filters-cached = Gespeicherte Filterlisten werden verwendet
 browser-filters-failed = Aktualisierung fehlgeschlagen: { $detail }. Die bisherigen Regeln bleiben erhalten.
 browser-filters-failed-worker = Aktualisierung fehlgeschlagen: Hilfsprozess nicht verfügbar. Die bisherigen Regeln bleiben erhalten.
+browser-address-suggestions = Adressvorschläge
+browser-window-name = Browser
+browser-page-menu-name = Seitenmenü
+
+## Fenster- und Barrierefreiheits-Texte
+browser-quit-downloads-running = Downloads laufen noch
+browser-quit-cancelling-downloads = Downloads werden vor dem Beenden abgebrochen…
+browser-section-passwords = Passwörter
+browser-section-no-secure-page = Keine sichere Seite
+browser-section-address-autofill = Adress-Autofill
+browser-a11y-search-engine = Suchmaschine
+browser-a11y-clear-on-quit = Daten beim Schließen des Browsers löschen
+browser-a11y-block-ads = Werbung und Tracker blockieren
+browser-settings-title = Einstellungen
+
+## Fakten, Eigenschaftsnamen und Bereichstitel
+browser-save-login = Anmeldung für { $site } speichern?
+browser-section-saved-accounts = Gespeicherte Konten
+browser-section-forms = Formulare auf dieser Seite
+browser-action-keep-page = Seite so lassen, wie sie ist
+browser-action-close-picture-in-picture = Bild im Bild schließen
+browser-action-close-reader-view = Leseansicht schließen
+browser-action-resume-history = Verlauf in diesem Fenster fortsetzen
+browser-action-let-leave = Freigeben: { $request }
+
+## Passwörter und Adress-Autofill
+browser-credentials-done = Fertig
+browser-credentials-refresh = Formulare und Konten neu lesen
+browser-credentials-refresh-addresses = Formulare neu lesen
+browser-credentials-fill = Anmeldung einsetzen
+browser-credentials-fill-address = Ausgewählte Adresse einsetzen
+browser-credentials-save-from-form = Anmeldung aus dem Formular speichern
+browser-credentials-delete = Anmeldung löschen
+browser-credentials-save-account = Neues Konto speichern
+browser-credentials-update-account = Ausgewähltes Konto aktualisieren
+browser-credentials-delete-account = Konto löschen
+browser-credentials-keep-account = Konto behalten
+browser-credentials-confirm-delete = Diese gespeicherte Anmeldung löschen?
+browser-credentials-kept-here = Das Passwort liegt im Passwortspeicher dieses Geräts.
+browser-credentials-no-login-form = Kein unterstütztes Anmeldeformular gefunden.
+browser-credentials-no-address-form = Kein unterstütztes Adressformular auf dieser Seite gefunden.
+browser-credentials-no-accounts = Keine gespeicherten Konten für diese Seite.
+browser-credentials-unnamed-account = Konto ohne Namen
+browser-credentials-form = Formular
+browser-credentials-address-form = Adressformular
+browser-credentials-create-form = Konto-anlegen-Formular
+browser-credentials-sign-in-form = Anmeldeformular
+browser-credentials-form-numbered = { $form } { $number }
+browser-credentials-unavailable-private = Passwörter und Adress-Autofill sind hier nicht verfügbar: Dieses Fenster surft ohne deine Anmeldungen.
+browser-credentials-unavailable-engine = Das Ausfüllen von Formularen ist mit dieser Browser-Engine nicht verfügbar.
+browser-credentials-unavailable-insecure = Öffne eine sichere HTTPS-Seite, um ein Formular auszufüllen.
+browser-credentials-checking = Diese Seite wird geprüft…
+browser-credentials-select-address = Wähle vor dem Ausfüllen eine aktive, gespeicherte Adresse.
+browser-credentials-capture-expired = Die Aufnahme ist abgelaufen. Lies die Anmeldung erneut.
+browser-credentials-request-expired = Die Anfrage ist abgelaufen. Lies die Seite neu, bevor du es erneut versuchst; ein bereits gestarteter Vorgang kann noch fertig werden.
+
+## Was das Aktionsverzeichnis und das Fenster benennen
+browser-page-untitled = Webseite
+browser-page-content-name = Webinhalt
+browser-history-back = Verlauf zurück
+browser-history-forward = Verlauf vor
+browser-history-paused = Verlauf pausiert
+browser-history-recording = Verlauf wird aufgezeichnet
+browser-history-already-empty = Der Verlauf ist bereits leer
+browser-resource-history = Verlauf
+browser-resource-bookmarks = Lesezeichen
+browser-resource-downloads = Downloads
+browser-resource-extensions = Erweiterungen
+browser-resource-library = Bibliothek
+browser-resource-settings = Einstellungen
+browser-resource-accounts = Konten
+browser-resource-account = Konto
+browser-resource-continuity = Surfverlauf mitnehmen
+browser-resource-personal-bookmarks = Persönliche Lesezeichen
+browser-resource-bookmark-navigation = Lesezeichen-Navigation
+browser-library-already-clear = Der Filter der Bibliothek ist bereits leer
+browser-action-needs-page = Öffne zuerst eine Webseite
+browser-action-no-previous-page = Keine vorherige Seite
+browser-action-no-next-page = Keine nächste Seite
+browser-action-page-idle = Die Seite ist untätig
+
+## Die Einstellungen des Browsers
+browser-settings-done = Fertig
+browser-settings-manage = Verwalten
+browser-settings-new-private-window = Neues privates Fenster
+browser-settings-clear-history = Verlauf löschen
+browser-settings-clear-site-data = Websitedaten löschen
+browser-settings-general = Allgemein
+browser-settings-homepage-label = Startseite
+browser-settings-adblock = Werbung und Tracker blockieren
+browser-settings-adblock-detail = Blockiert Werbung, Tracker und Werbevideos auf YouTube.
+browser-settings-clear-on-exit-label = Daten beim Schließen des Browsers löschen
+browser-settings-clear-on-exit-detail = Löscht beim Beenden Verlauf und Cookies.
+browser-settings-browsing-data = Surf-Daten
+browser-settings-browsing-data-detail = Verlauf sowie Cookies und Dateien, die Websites auf diesem Gerät ablegen.
+browser-settings-passwords = Passwörter
+browser-settings-passwords-detail = Auf diesem Gerät gespeicherte Anmeldungen.
+browser-settings-autofill = Adress-Autofill
+browser-settings-autofill-detail = Füllt Adressformulare aus deinen gespeicherten Adressen.
+browser-settings-privacy = Datenschutz und Sicherheit
+browser-settings-windows = Fenster
+browser-settings-private = Privates Surfen
+browser-settings-private-detail = Aus einem privaten Fenster bleibt nach dem Schließen nichts erhalten.
+browser-settings-search-engine-label = Suchmaschine
+browser-settings-search-engine-detail = Suchen aus dem Adressfeld gehen dorthin.
+
+## What the window shows
+browser-quit-keep-downloading = Weiter herunterladen
+browser-quit-cancel-downloads = Downloads abbrechen und beenden
+browser-open = { $address } öffnen
+browser-search-for = Nach { $query } suchen
+browser-history-clear-failed = Der Verlauf wurde nicht gelöscht, weil Browser die Änderung nicht speichern konnte. Der bisherige Verlauf blieb erhalten.
+browser-download-active-hint = Schließe ihn in Downloads in der Bibliothek ab oder brich ihn dort ab, und schließe dann den Tab.
+browser-history-paused-hint = Seiten in diesem Fenster werden nicht im Verlauf gespeichert.
+browser-service-sign-in-hint = Melde dich an, um dieses Konto fertig zu verbinden.
+
+## A window without the person's accounts
+browser-no-account-custody = Dieses Fenster surft ohne deine Anmeldungen. Öffne die Seite in einem eigenen Browser-Fenster, um dort deine Konten zu nutzen
+
+## Actions
+
+browser-address-book = Adressbuch
+browser-effect-read-continuity = Importfortschritt lesen
+browser-effect-open-service-session = Konto öffnen
+browser-effect-retry-forget-service-session = Kontolöschung wiederholen
+browser-effect-list-service-sessions = Konten auflisten
+browser-effect-read-service-session = Konto lesen
+browser-effect-retry-continuity = Import wiederholen
+browser-effect-back = Zurück
+browser-effect-forward = Vorwärts
+browser-effect-navigate = Adresse öffnen
+browser-effect-open-tab = In neuem Tab öffnen
+browser-effect-open = Seite öffnen
+browser-effect-show-page = Aktuelle Seite zeigen
+browser-effect-show-history = Verlauf anzeigen
+browser-effect-show-bookmarks = Lesezeichen anzeigen
+browser-effect-show-downloads = Downloads anzeigen
+browser-effect-show-extensions = Erweiterungen anzeigen
+browser-effect-pin-extension = An Symbolleiste anheften
+browser-effect-unpin-extension = Von Symbolleiste lösen
+browser-effect-use-extension = Erweiterung verwenden
+browser-effect-send-to-extension = Text an Erweiterung senden
+browser-effect-open-extension-settings = Erweiterungseinstellungen
+browser-effect-open-extension-side-panel = Seitenleiste öffnen
+browser-effect-revoke-extension-access = Zugriff der Erweiterung entziehen
+browser-effect-remove-extension = Erweiterung entfernen
+browser-effect-show-settings = Browsereinstellungen
+browser-effect-set-library-filter = Bibliothek filtern
+browser-effect-edit-address = Gespeicherte Adresse bearbeiten
+browser-effect-delete-address = Gespeicherte Adresse löschen
+browser-effect-forget-visit = Seite vergessen
+browser-effect-start-download = Adresse herunterladen
+browser-effect-show-download = Download anzeigen
+browser-effect-cancel-download = Download abbrechen
+browser-effect-retry-download = Download wiederholen
+browser-effect-open-download = Datei öffnen
+browser-effect-read-download = Datei lesen
+browser-effect-save-download = Download behalten
+browser-effect-discard-download = Download verwerfen
+browser-effect-send-held-request = Zurückgehaltene Anfrage senden
+browser-effect-read-page = Seite lesen
+browser-effect-capture-page = Seite aufnehmen
+browser-effect-read-page-changes = Änderungen der Seite
+browser-effect-read-page-element-at = Element an einer Stelle
+browser-effect-wait-page-settled = Warten, bis die Seite geladen ist
+browser-effect-read-page-console = Konsolenmeldungen
+browser-effect-read-page-network = Netzwerkanfragen
+browser-effect-find-page-element = Seitenelement finden
+browser-effect-click-page = Element anklicken
+browser-effect-hover-page = Zeiger über Element bewegen
+browser-effect-drag-page = Element ziehen
+browser-effect-pointer-path = Zeigerweg zeichnen
+browser-effect-fill-page = Feld ausfüllen
+browser-effect-fill-page-secret = Passwortfeld ausfüllen
+browser-effect-select-page = Optionen wählen
+browser-effect-fill-page-files = Dateien zum Hochladen wählen
+browser-effect-press-page = Taste drücken
+browser-effect-submit-page = Formular absenden
+browser-effect-accept-page-dialog = Dialog bestätigen
+browser-effect-dismiss-page-dialog = Dialog schließen
+browser-effect-answer-permission = Berechtigungsanfrage beantworten
+browser-effect-pointer-page = Zeiger bewegen
+browser-effect-scroll-page = Seite scrollen
+browser-effect-import-personal-bookmarks = Lesezeichen importieren
+browser-effect-remove-personal-bookmark = Lesezeichen entfernen
+browser-effect-remove-personal-imported-node = Importiertes Lesezeichen entfernen
+browser-effect-show-personal-bookmark-folder = Lesezeichenordner öffnen
+browser-browsing-history = Browserverlauf
+browser-browsing-history-visit = Besuch vermerken
+browser-browsing-history-import-history-bundle = Verlauf importieren
+browser-browsing-history-name-visit = Seite benennen
+browser-browsing-history-forget = Seite vergessen
+browser-browsing-history-clear-history = Alle Seiten vergessen
+browser-personal-bookmarks = Persönliche Lesezeichen
+browser-personal-bookmarks-add-bookmark = Seite als Lesezeichen merken
+browser-personal-bookmarks-remove-bookmark = Lesezeichen entfernen
+browser-personal-bookmarks-import-bookmarks = Lesezeichen importieren
+browser-personal-bookmarks-remove-imported-node = Importierten Ordner entfernen
+browser-application = Browser
+browser-application-add-bookmark = Seite als Lesezeichen merken
+browser-application-remove-bookmark = Lesezeichen entfernen
+browser-application-set-site-protection = Tracker-Schutz

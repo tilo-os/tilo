@@ -15,12 +15,24 @@
 //! publishes while the link lasts. Whoever holds a document can hand over its
 //! whole state, so a device added later catches up from any of its siblings.
 
+// Nothing compiled for the web dials the person's own store yet: the page's
+// session opens its links with its own wiring.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, reason = "the page's session wires these")
+)]
+
 use super::PeerPersonal;
 use crate::NeighbourMsg;
-use crate::direct::{OUTGOING, REFUSED, bump, read_frame, send_all};
-use ed25519_dalek::SigningKey;
+use crate::frames::{OUTGOING, bump};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::frames::{REFUSED, read_message, send_all};
+use collab_types::signer::DeviceSigner;
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::Connection;
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::protocol::{AcceptError, ProtocolHandler};
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::{Endpoint, EndpointAddr};
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -53,7 +65,7 @@ pub struct PersonalSync(Arc<Inner>);
 
 struct Inner {
     store: PeerPersonal,
-    key: SigningKey,
+    key: Arc<dyn DeviceSigner>,
     outgoing: broadcast::Sender<NeighbourMsg>,
     admitted: broadcast::Sender<AdmittedFrame>,
     changed: watch::Sender<u64>,
@@ -62,28 +74,25 @@ struct Inner {
 impl std::fmt::Debug for PersonalSync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersonalSync")
-            .field(
-                "device",
-                &hex::encode(self.0.key.verifying_key().as_bytes()),
-            )
+            .field("device", &hex::encode(self.0.key.device_public_key()))
             .finish_non_exhaustive()
     }
 }
 
 impl PersonalSync {
-    /// Share `store`, held by the device whose signing key is `key` (and
+    /// Share `store`, held by the device whose key `key` signs with (and
     /// whose iroh endpoint's secret key it is).
     #[must_use]
-    pub fn new(store: super::PersonalStore, key: SigningKey) -> Self {
+    pub fn new(store: super::PersonalStore, key: impl DeviceSigner + 'static) -> Self {
         Self::over(PeerPersonal::new(store), key)
     }
 
     /// Share `store`, which other parts of the engine read as well.
     #[must_use]
-    pub fn over(store: PeerPersonal, key: SigningKey) -> Self {
+    pub fn over(store: PeerPersonal, key: impl DeviceSigner + 'static) -> Self {
         Self(Arc::new(Inner {
             store,
-            key,
+            key: Arc::new(key),
             outgoing: broadcast::channel(OUTGOING).0,
             admitted: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
@@ -107,12 +116,15 @@ impl PersonalSync {
         &self,
         publish: impl FnOnce(
             &mut super::PersonalStore,
-            &SigningKey,
+            &dyn DeviceSigner,
             SystemTime,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let now = SystemTime::now();
-        let message = self.0.store.write(|store| publish(store, &self.0.key, now));
+        let now = tilo_clock::wall();
+        let message = self
+            .0
+            .store
+            .write(|store| publish(store, self.0.key.as_ref(), now));
         self.publish_refusals();
         Ok(self.published(message?))
     }
@@ -140,7 +152,13 @@ impl PersonalSync {
         envelope: collab_types::SignedOp,
     ) -> Result<NeighbourMsg, String> {
         let message = self.0.store.write(|store| {
-            store.admit_local(app, record, envelope, &self.0.key, SystemTime::now())
+            store.admit_local(
+                app,
+                record,
+                envelope,
+                self.0.key.as_ref(),
+                tilo_clock::wall(),
+            )
         });
         self.publish_refusals();
         Ok(self.published(message?))
@@ -157,7 +175,7 @@ impl PersonalSync {
         let changed = self
             .0
             .store
-            .write(|store| admit(store, SystemTime::now()))?;
+            .write(|store| admit(store, tilo_clock::wall()))?;
         self.publish_refusals();
         if changed {
             self.published(self.0.store.read(super::PersonalStore::hello));
@@ -189,6 +207,7 @@ impl PersonalSync {
 
     /// Dial the device at `addr` from `endpoint` and sync with it until the
     /// link ends.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(
         &self,
         endpoint: &Endpoint,
@@ -203,6 +222,7 @@ impl PersonalSync {
 
     /// Sync with the device on the other end of `connection` until the link
     /// ends, whichever side dialled.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn run(&self, connection: &Connection) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
         // Subscribe before taking the catch-up, so a write published in
@@ -227,25 +247,25 @@ impl PersonalSync {
     fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
         self.0
             .store
-            .write(|store| store.catch_up(&self.0.key, remote, SystemTime::now()))
+            .write(|store| store.catch_up(self.0.key.as_ref(), remote, tilo_clock::wall()))
     }
 
     /// Admit every frame `remote` sends until its stream ends. A document the
     /// store refuses is that write's verdict, not the link's: the link stays
     /// up for the frames after it. A device whose identity the store does not
     /// admit loses the link.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn receive_all(&self, remote: [u8; 32], connection: &Connection) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
-        while let Some(message) = read_frame(&mut recv).await? {
+        while let Some(message) = read_message(&mut recv).await? {
             let identity = matches!(message, NeighbourMsg::IdentityHello { .. });
             let frame = admitted_frame(&message);
-            let admitted = self
-                .0
-                .store
-                .write(|store| store.receive(&self.0.key, remote, message, SystemTime::now()));
+            let admitted = self.0.store.write(|store| {
+                store.receive(self.0.key.as_ref(), remote, message, tilo_clock::wall())
+            });
             // Whatever the store decided, what it now refuses of this
             // device's writes is sent: the verdict reaches its author, live.
             if self.publish_refusals() {
@@ -298,6 +318,7 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for PersonalSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.run(&connection)

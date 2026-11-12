@@ -85,16 +85,10 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `VELLO_AREA_PPT8`                 | Exact-1                  | Eight-pixels-per-thread Area fine-shader experiment. Full rendering excludes canonical order; sparse rendering additionally excludes selected quad-skip, solid-fuse, and segment-row-mask paths.                                                                                                                                                                                                                                                                      |
 | `VELLO_CLIP_SINGLE_GROUP`         | Exact-1                  | GPU clip-leaf specialization only for 1–256 clips and exactly one clip-leaf workgroup `(1,1,1)`. Other clip shapes use the normal shader.                                                                                                                                                                                                                                                                                                                             |
 | `VELLO_DEFER_BUMP_READBACK`       | Exact-1                  | Moves the existing bump-counter readback after fine rasterization in synchronous GPU recording. Not full CPU or asynchronous rendering. Does not remove overflow validation or the readback bytes.                                                                                                                                                                                                                                                                    |
-| `TILO_DRM_XRGB_DAMAGE`            | Exact-1                  | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage.                                                                                                                                                                                                    |
-| `TILO_KMS_ATOMIC`                 | Unset: on; exact `0` off | `0` page-flips every output through the legacy `drmModePageFlip` instead of an atomic commit of the primary plane, without asking the driver for atomic. Restores the flips Tilo made before atomic presentation: the A/B baseline, or the switch-off for a driver whose atomic flips misbehave. Legacy flips cannot change format, so fullscreen `XBGR8888`/`ABGR8888` clients are composited. Latched at first use. |
-| `TILO_CLIENT_SCANOUT`             | Unset: on; exact `0` off | `0` composites every frame instead of page-flipping a qualifying fullscreen client's own buffer. The composited baseline for an A/B measurement, or an escape hatch for a driver that misbehaves with client framebuffers. Latched at first use.                                                                                                                                                       |
 
-Sources: [shader selection](../vendor/vello/src/render.rs),
-[DRM scanout](../crates/session/compositor/src/backend/drm/),
-[KMS flips](../crates/session/compositor/src/backend/drm/),
-[XRGB history](../crates/session/compositor/src/backend/drm/).
-For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
-`VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 TILO_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`;
+Sources: [shader selection](../vendor/vello/src/render.rs).
+For the recorded `bounds-ppt8` experiment, the additional controls were
+`VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_AREA_PPT8=1`;
 these are not production defaults.
 
 ## Memory-policy and renderer diagnostics
@@ -104,7 +98,7 @@ these are not production defaults.
 | `VELLO_BUMP_BUDGET`             | Unset: adaptive          | `upstream` pins all policy reservations to upstream constants. `lines`, `binning`, `tiles`, `seg_counts`, `segments`, `blend`, or `ptcl` seeds only that field from upstream; these single-field modes remain adaptive. `ptcl=N` seeds PTCL words (u32, capped at the policy ceiling), not bytes. Unknown/invalid strings warn and retain adaptive initialization. Scene/viewport structural floors still apply. |
 | `VELLO_BUMP_LOG`                | Nonempty, off            | Logs allocator usage/recovery; adds output overhead. `=0` still logs.                                                                                                                                                                                                                                                                                                                                            |
 | `VELLO_COMPUTE_BATCH_LOG`       | Exact-1, off             | Logs compute batching information; separate from timing queries.                                                                                                                                                                                                                                                                                                                                                 |
-| `VELLO_DIRECT_PATH_WORKGROUPS`  | `128`; integer `1..=128` | Initialization-only dispatch-grid diagnostic. Invalid, zero, out-of-range, or non-Unicode values use `128`. Only affects the direct path. Nondefault grids require shell benchmark profile mode.                                                                                                                                                                                                                 |
+| `VELLO_DIRECT_PATH_WORKGROUPS`  | `128`; integer `1..=128` | Initialization-only dispatch-grid diagnostic. Invalid, zero, out-of-range, or non-Unicode values use `128`. Only affects the direct path.                                                                                                                                                                                                                 |
 | `VELLO_GPU_TIMESTAMPS`          | Exact-1, off             | Requests GPU timestamp instrumentation and query/resolve/readback resources. Requires adapter/device timestamp support; unsupported is reported, not a zero-time sample.                                                                                                                                                                                                                                         |
 | `VELLO_GPU_DISPATCH_TIMESTAMPS` | Exact-1, off             | Per-dispatch GPU timing; requires `VELLO_GPU_TIMESTAMPS=1`, inside-pass query support, GPU execution, and no `wgpu-profiler` feature. The harness rejects the missing-parent-flag combination.                                                                                                                                                                                                                   |
 
@@ -149,12 +143,10 @@ selection. Keep their values identical across steady-state comparisons.
 | Variable                    | Default / values                                                     | Effect and limits                                                                                                                                                                                                                                                                                                                                                                                   |
 | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path                                                | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result.                                                                                                                                                             |
-| `TILO_DMABUF_DEVICE`        | Unset: automatic probe; path                                         | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
 Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs),
-[shell startup](../crates/session/session/src/main.rs),
-[startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
-[compositor render node](../crates/session/compositor/src/).
+[session startup](../crates/session/session/src/main.rs),
+[startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs).
 
 ## UI dashboard benchmark
 
@@ -225,38 +217,9 @@ Sources:
 [widget_perf_bench.rs](../crates/dev/ui-examples/examples/widget_perf_bench.rs),
 [perf_hud_shot.rs](../crates/dev/ui-examples/examples/perf_hud_shot.rs).
 
-## Shell redraw and cold-scene harnesses
-
-Build `cargo build -p shell --release --example redraw_bench --locked` and run
-`target/release/examples/redraw_bench`. The workload is fixed at 1,000 actions,
-native 3840×2160, with GPU completion, readback, and CPU XRGB conversion. There
-is no environment override for the action count, resolution, or gate limits.
-Current limits are **mean ≤25,000 µs and p99 ≤50,000 µs**; they are not a 60 fps
-claim. Its CPU destination is reused memory, not a physical KMS mapping.
-
-| Variable                           | Default / values        | Effect                                                                                                                                                                                                                                        |
-| ---------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TILO_REDRAW_BENCH_PROFILE`        | Exact-1, off            | Phase timing and joined action diagnostics. Acceptance is disabled and the run deliberately returns nonzero even when rendering succeeds.                                                                                                     |
-| `TILO_REDRAW_BENCH_PROFILE_OUTPUT` | Unset, or nonempty path | Profile-only all-action report, written after the loop to a newly created file; existing paths are not overwritten. Empty paths fail in profile mode. Ignored outside profile mode.                                                           |
-| `TILO_REDRAW_BENCH_SAMPLES`        | Unset, or nonempty path | Writes the 1,000 action samples (microseconds, one per line, action order) before the gate decides, so a run that misses the gate is still recorded. Only a complete, valid sample set is written. Empty paths fail; rejected with PROFILE=1. |
-| `TILO_REDRAW_BENCH_SCENE_REUSE`    | Exact-1, off            | Requires PROFILE=1. Compares/retains resolved upload bytes for **telemetry**, not production scene-reuse enablement.                                                                                                                          |
-| `TILO_REDRAW_BENCH_GEOMETRY_REUSE` | Exact-1, off            | Requires PROFILE=1. Measures potential geometry reuse for **telemetry**, not an implemented production geometry cache.                                                                                                                        |
-| `SHELL_DRAW_ITERS`                 | `500`; usize            | Only the separate `draw_bench` example: repeated CPU scene paint at 1600×900, no GPU/present. Invalid falls back; use a positive count.                                                                                                       |
-
-Either GPU timestamp flag, scene/geometry reuse telemetry, or a nondefault
-direct-path workgroup grid requires shell profile mode. Never count a diagnostic
-nonzero exit as an ordinary acceptance failure or pass without reading its
-explicit mode and result.
-
-`retained_scene_probe` accepts exactly one positional mode: `legacy-dense`,
-`legacy-versioned`, `segmented-dense`, or `segmented-versioned`. It renders one
-**cold** native-4K frame with phase timing; it is not an acceptance benchmark.
-Sources: [redraw_bench.rs](../crates/session/compositor/src/),
-[retained_scene_probe.rs](../crates/session/compositor/src/).
-
 ## Presentation-loop controls
 
-These measure/drive the actual shell loop. Keep physical-display measurements
+These measure/drive the session's own loop. Keep physical-display measurements
 separate from headless and nested-window results.
 
 | Variable                            | Default / values                           | Effect                                                                                                                                                                                                                                                                                                                                                  |
@@ -264,30 +227,25 @@ separate from headless and nested-window results.
 | `TILO_FRAME_TRACE`                  | Unset; path                                | Enables instrumentation and creates/truncates a per-tick CSV file.                                                                                                                                                                                                                                                                                      |
 | `TILO_FRAME_SUMMARY`                | Unset; path                                | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings.                                                                                                                                                                                                       |
 | `TILO_FRAME_WARMUP_MS`              | `1500`; trimmed u64                        | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled.                                                                                                                                                                                                                                        |
-| `TILO_PAINT_STATS`                  | Present (Unicode), off                     | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons.                                                                                                                              |
-| `TILO_LOOP_TIMING`                  | Present (Unicode), off                     | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. On a running desktop, a [profile](#profiling-the-running-desktop) records every phase without a restart.                                                                                 |
+| `TILO_LOOP_TIMING`                  | Present (Unicode), off                     | Logs the Wayland work a dispatch turn spent 4 ms or more on (`SLOW-WAYLAND-CLIENT`, `-REQUEST`, `-CLEANUP`, with client, request and microseconds): where a native loop waits on a client. `=0` still enables it; no log does not establish a 16.67 ms deadline. A [profile](#profiling-the-running-desktop) records every phase without a restart.     |
 | `TILO_RUN_SECONDS`                  | Unset: run indefinitely                    | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout.                                                                                                                                                                                                                                               |
-| `TILO_REFRESH_HZ`                   | Backend refresh, or 60 Hz fallback         | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor.                                                                                                                                                                         |
-| `TILO_TEST_FRAME_STALL_MS`          | Unset; `80` or `50-130` (ms, at most 2000) | Developer override (debug or `dev-overrides` builds only; release builds ignore it): blocks the loop after every painted frame, a fresh delay from the range each frame, so layout springs, animations and configures run at a slow machine's frame times. Invalid values warn and are ignored. `os/dev/test-slow-frame-launch.sh` opens apps under it. |
-| `TILO_TEST_PRESENT_DEVICE_DELAY_MS` | Unset; milliseconds                        | Developer override (debug or `dev-overrides` builds only; release builds ignore it): the renderer's device is published for client imports, and its GPU probe and dmabuf feedback sent, only that long after it opened, so a headless session meets its first clients without a presenting GPU, as a laptop does at session start.                      |
-| `TILO_HEADLESS_SIZE`                | `1600x900`                                 | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back.                                                                                                                                                                                                                                                                      |
-| `TILO_HEADLESS_WATCH`               | Unset: unwatched                           | `1` rasterizes every headless frame from the start, as a streaming viewer needs; otherwise frames are rasterized only after the control socket's `watch` (snapshots render on demand regardless).                                                                                                                                                       |
-| `TILO_WINIT_SIZE`                   | `1600x900`                                 | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back.                                                                                                                                                                                                                                                                        |
+| `TILO_HEADLESS_SIZE`                | `1280x800`                                 | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. Read by `dist/dev/nested-session.sh`, which passes it as the session's `--size`; a session started by hand takes `--size` directly.                                                                                                                                  |
+| `TILO_WINIT_SIZE`                   | `1280x800` logical                         | Initial nested window `WxH`; malformed/zero falls back. Read by `dist/dev/nested-session.sh`, which asks for `1280x800` logical at the host's scale and passes it as the session's `--size`.                                                                                                                                                            |
 
 The [frame-loop driver](../scripts/perf/frame-loop-bench.py) exposes:
 
 | CLI option                         | Default / purpose                                                                                |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `--seconds`                        | `8.0`, run length                                                                                |
-| `--backend`                        | `headless`; also `winit` or `drm` (requires a free seat/TTY)                                     |
+| `--backend`                        | `headless`; also `nested` (a window on the operator's desktop) or `drm` (requires a free seat/TTY) |
 | `--load`                           | `none`; also continuously repainting `windowed` or `fullscreen` client                           |
 | `--input-hz`                       | `0.0`; injected click rate                                                                       |
 | `--width`, `--height`              | `1600`, `900`; request native dimensions                                                         |
 | `--warmup-ms`                      | `1500`; summary warm-up exclusion                                                                |
-| `--refresh-hz`                     | Unset; passes the pacing override above                                                          |
+| `--refresh-hz`                     | Unset; the rate the run is scored against, and that `--target-us` derives from                   |
 | `--target-us`                      | `0` means derive from refresh override, otherwise 16,667 µs; scoring target, not rendering speed |
 | `--label`, `--out`                 | Optional run label; output directory defaults to `target/frame-bench`                            |
-| `--shell-bin`, `--startup-timeout` | Optional existing binary; startup timeout `30.0` seconds                                         |
+| `--session-bin`, `--startup-timeout` | Optional existing binary; startup timeout `30.0` seconds                                     |
 | `--nested`                         | Off; wraps winit in a headless `cage`                                                            |
 | `--compare BEFORE AFTER`           | Compare existing `.stats.json` files                                                             |
 | `--report STATS_JSON`              | Report existing results                                                                          |
@@ -330,9 +288,8 @@ kept. It reuses the loop's own instruments:
 | File           | Contents                                                                                                                                                                                                                                                                                      |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `frames.csv`   | One row per loop tick, the `TILO_FRAME_TRACE` columns (`--resummarize` above reads it).                                                                                                                                                                                                       |
-| `phases.csv`   | `seq,phase,elapsed_us,items`: every pump phase and checkpoint `TILO_LOOP_TIMING` times, the widget pump's parts (`widget-pump/*`), the overlay host's update steps and the retained scene build's (`scene/*`), joined to `frames.csv` on `seq`. `TILO_LOOP_TIMING` alone logs only slow ones. |
 | `threads.csv`  | `t_us,tid,thread,cpu_us`: CPU each thread used since the previous sample, read from `/proc/self/task` every 50 ms by the profile's own `compositor-profile` thread (which appears in it). Presenter, GPU and worker threads show here, not only the loop.                                     |
-| `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-phase count/total/max, per-thread CPU totals. Written last; the profile is complete once it exists.                                                                                                                                              |
+| `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-thread CPU totals. Written last; the profile is complete once it exists.                                                                                                                                                                         |
 
 While no profile records, the loop pays one atomic load per tick. Rows are
 handed to writer threads once a second, so a profile never puts the loop in the
@@ -341,7 +298,7 @@ committed frames, which is why the files are private.
 
 ### Projector capture workload
 
-The capture profile is not a flag. The projector service sends it to the shell
+The capture profile is not a flag. The projector service sends it to the session
 as a `CaptureProfile` event on its control socket whenever it changes
 (`tilo_projector::control`), and the capture tap drains that channel before each
 frame; nothing is read from disk on the render thread. Its u32 fields are
@@ -434,11 +391,11 @@ application can enable them through dependency feature unification):
 | --------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ui/dmabuf-import`          | Off                        | Vulkan external-memory import of a compatible DMA-BUF; avoids a CPU pixel round-trip. Requires supported formats/modifiers/device sharing; enabling the feature does not guarantee successful zero-copy import. |
 | `ui/gpu-video`              | Off                        | Enables DMA-BUF import plus NV12/P010-to-RGB GPU conversion. Conversion is still GPU work even when no CPU pixel copy occurs.                                                                                   |
-| `media/realtime`            | Off (the shell enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry.                      |
-| `shell/hosted-test-control` | Off                        | Deterministic test seams for `shots` and integration tests, and the sampling heap profiler. Test builds only; never in a shipped shell. Not a frame-rate optimization.                                          |
+| `media/realtime`            | Off (the session enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry.                      |
+| `tilo-session/dev-overrides` | Off                       | The test-control socket `tilo-vm` and the capture harnesses drive a desktop through, and the deterministic seams `shots` and the integration tests need. A dev image builds it; a production image never does. Not a frame-rate optimization. |
 
 See [UI features](../crates/sdk/ui-core/Cargo.toml) and
-[shell features](../crates/session/session/Cargo.toml). `--no-default-features`
+[session features](../crates/session/session/Cargo.toml). `--no-default-features`
 changes the workload/capability set; document it in any benchmark recipe rather
 than silently comparing different feature sets.
 

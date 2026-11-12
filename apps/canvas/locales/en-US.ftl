@@ -373,6 +373,7 @@ canvas-save-failed = Could not save: { $why }
 canvas-chooser-gone = the file chooser went away
 canvas-files-failed = Files could not answer: { $why }
 canvas-picture-failed = The picture was not added: { $why }
+canvas-write-refused = The artwork was not changed: { $why }
 canvas-export-edited = { $title } edited
 
 canvas-rendering-artwork = Rendering the artwork…
@@ -476,3 +477,52 @@ canvas-combine = Combined shapes
 # no GPU, or (in a browser page) a request answered at once, such as an
 # agent's diff, compare or measure, which the page cannot render in time.
 canvas-pictures-unavailable = This needs a picture of the artwork, which can’t be made here yet.
+
+# Said when an answer must show the artwork's pictures themselves and one is
+# still being decoded: a browser page cannot wait for the decoder, so the
+# same request answers once the pixels are here.
+canvas-pictures-decoding = This needs a picture that is still being decoded. Ask again in a moment.
+
+## Facts, property labels and section titles
+canvas-a11y-artwork = { $width } by { $height } units, { $layers } layers, { $marks } marks, { $selected } selected; inspect lists them and look shows them
+
+## What the window shows
+canvas-resource-artwork = Artwork
+
+## Actions
+
+canvas-recent-artworks = Recent artworks
+canvas-recent-artworks-remember = Record a recent artwork
+canvas-recent-artworks-forget = Forget a recent artwork
+canvas-view-look = Look at artwork
+canvas-view-inspect = Inspect marks
+canvas-view-measure = Measure ink
+canvas-view-media = List media
+canvas-view-export = Export picture
+canvas-view-compare-versions = Compare versions
+canvas-view-export-svg = Export SVG
+canvas-view-compare = Compare with reference
+canvas-view-save-artwork = Save artwork
+canvas-view-find-area = Find image area
+canvas-artwork-paint = Paint strokes
+canvas-artwork-draw = Draw shapes
+canvas-artwork-chart = Draw chart
+canvas-artwork-edit-marks = Edit marks
+canvas-artwork-remove-marks = Remove marks
+canvas-artwork-arrange = Arrange marks
+canvas-artwork-edit-layer = Edit layer
+canvas-artwork-remove-layer = Remove layer
+canvas-artwork-set-artwork = Set artwork
+canvas-artwork-save-medium = Save medium
+canvas-artwork-remove-medium = Remove medium
+canvas-artwork-align = Align marks
+canvas-artwork-set-reference = Set reference
+canvas-artwork-import-svg = Import SVG
+canvas-artwork-open-picture = Open picture
+canvas-artwork-open-artwork = Open artwork
+canvas-artwork-select = Select area
+canvas-artwork-use-selection = Use selection
+canvas-artwork-combine = Combine shapes
+canvas-tools-use-brush = Use brush
+canvas-tools-use-colour = Use colour
+canvas-tools-use-pigment = Load pigment

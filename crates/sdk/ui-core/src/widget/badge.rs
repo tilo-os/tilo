@@ -587,7 +587,6 @@ impl Widget for Badge {
     ) -> NodeId {
         let metrics = BadgeMetrics::of(theme);
         self.hand_on.build(None);
-        self.layout_dirty = false;
         self.laid_out_leaving = self.leaving.is_some();
         let (width, height) = match self.drawn_content() {
             BadgeContent::Dot | BadgeContent::Modified => (metrics.dot, metrics.dot),
@@ -683,7 +682,7 @@ impl Widget for Badge {
                     || near(was.x1, at.x1)
                     || near(was.center().x, at.center().x))
         });
-        if let Some(kept) = left {
+        if let Some((kept, _)) = left {
             self.take_up(kept);
         }
         if self.face.resized(self.rect) {
@@ -770,6 +769,12 @@ impl Widget for Badge {
             || self.layout_dirty
             // The room a leaving badge kept is given back once it has gone.
             || self.laid_out_leaving && !self.presence.is_visible(crate::motion::frame_now())
+    }
+
+    /// The room a badge asked for is measured even when no frame draws it: a
+    /// count of none or one scrolled out of view is laid out and never drawn.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn name(&self) -> &'static str {

@@ -73,6 +73,11 @@ impl AppBrokerState {
             || request.invocation.0.is_nil()
             || descriptor.address != request.target.address
         {
+            tracing::warn!(
+                accepting = self.is_accepting(),
+                run_ended = caller.execution_id().is_some() && !caller.execution_is_live(),
+                "an action of the person's own was refused at its admission"
+            );
             return Err(ActionHostError::NotPermitted);
         }
         if self.durable_owner_required || self.publisher.requires_owner_for(workspace) {
@@ -161,6 +166,16 @@ impl AppBrokerState {
                     || principal_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
+                // The connection's app acting under its own identity, by what
+                // the workspace grants it: decided as that app and owned by it,
+                // never attested as the connection's person
+                // (`AppBrokerState::invocation_owner`).
+                if route.cluster_id == workspace
+                    && actor.is_agent
+                    && actor.id == BrokerActor::app(&route.app_id).id
+                {
+                    return Ok(InvocationOwner::Local { actor: actor.id });
+                }
                 if route.cluster_id != workspace
                     || expected != actor.id
                     || current.agent_id.is_some() != actor.is_agent
@@ -187,6 +202,12 @@ impl AppBrokerState {
                     || actor.is_agent
                     || actor.id != principal_id_for_root(certificate.user_public_key)
                 {
+                    tracing::warn!(
+                        %workspace,
+                        original_workspace,
+                        caller = %actor.id,
+                        "an action of the person's own was refused: its admission names another seat"
+                    );
                     return Err(ActionHostError::NotPermitted);
                 }
                 InvocationOwner::AuthenticatedLocal {
@@ -373,6 +394,11 @@ impl AppBrokerState {
             .map_err(|_| unavailable("invocation admission unavailable"))?;
         if !self.is_accepting() || (caller.execution_id().is_some() && !caller.execution_is_live())
         {
+            tracing::warn!(
+                accepting = self.is_accepting(),
+                run_ended = caller.execution_id().is_some() && !caller.execution_is_live(),
+                "an action of the person's own was refused before its admission was read"
+            );
             return Err(ActionHostError::NotPermitted);
         }
         // Legacy app-local custody cannot have admitted a signed host action.
@@ -381,7 +407,12 @@ impl AppBrokerState {
         {
             return Ok(None);
         }
-        let workspace = caller.workspace().ok_or(ActionHostError::NotPermitted)?;
+        let Some(workspace) = caller.workspace() else {
+            tracing::warn!(
+                "an action of the person's own was refused: the caller names no workspace"
+            );
+            return Err(ActionHostError::NotPermitted);
+        };
         let owner = self.host_action_owner(caller, Some(origin), workspace, request.invocation)?;
         let record = {
             let guard = self

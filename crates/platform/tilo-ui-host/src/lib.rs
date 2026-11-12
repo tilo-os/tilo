@@ -44,10 +44,3 @@ pub use tilo_render_protocol::patch::{
     Binding, Event, Lane, Node as UiNode, Principal, ResourceRef, Value,
 };
 pub use window::AppWindow;
-
-/// Whether a node of `kind` is a virtual list: a `ui.VirtualList`, whose rows the app renders
-/// as the list shows them rather than in the tree. A content `list` comes whole.
-#[must_use]
-pub fn is_virtual(kind: &str) -> bool {
-    tilo_render_protocol::patch::is_virtual_list(kind)
-}

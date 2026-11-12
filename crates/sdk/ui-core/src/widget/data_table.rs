@@ -28,6 +28,7 @@ use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
+use crate::widget::DrawChild;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
@@ -3637,9 +3638,14 @@ impl DataTableCore {
                 0.0
             };
             if along != 0.0 {
-                let before = self.h_offset;
-                self.set_h_offset(before + along);
-                *handled = (self.h_offset - before).abs() > f64::EPSILON;
+                self.set_h_offset(self.h_offset + along);
+                // The columns are this table's to scroll sideways, so a wheel
+                // over them is the table's whether or not this event moved
+                // them: one at the last column stops there rather than going
+                // on to whatever encloses the table — on a desktop, the strip
+                // of windows, which a person scrolling the grid never asked
+                // to pan.
+                *handled = true;
                 return;
             }
         }
@@ -5095,7 +5101,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        Widget::draw(
+        DrawChild::draw_child(
             &mut self.core,
             scene,
             transform,

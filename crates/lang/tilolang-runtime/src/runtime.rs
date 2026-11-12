@@ -429,6 +429,17 @@ impl Runtime {
         self.core.rust_views.borrow_mut().insert(app, views);
     }
 
+    /// What `person` has not seen of the items the resource `at` holds, as a reading of it
+    /// carries it to another app's runtime ([`crate::store::UNSEEN`]). `None` for a resource
+    /// that holds no items.
+    #[must_use]
+    pub fn unseen_reading(&self, person: &str, at: &ResourceRef) -> Option<Json> {
+        let (field, item) = self.core.item_collection_of(at)?;
+        let first = self.core.first_unseen_of(person, at, &field, &item).ok()?;
+        let count = self.core.unread_count_of(person, at).ok().flatten()?;
+        Some(serde_json::json!({ "first": first, "count": count }))
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -993,6 +1004,33 @@ impl Runtime {
             })
     }
 
+    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// state its presentation gives it, with what reading them read. `None` for an action whose
+    /// app presents nothing of it there.
+    ///
+    /// # Errors
+    ///
+    /// A message when the presentation cannot be read.
+    pub fn presentation_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<Presentation>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .presentation_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a presentation waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
@@ -1004,6 +1042,13 @@ impl Runtime {
     /// request, which runs each request once, and whose journal entry a replay answers from.
     pub fn set_web(&self, transport: impl crate::web::WebTransport + 'static) {
         *self.core.web.borrow_mut() = Some(Box::new(transport));
+    }
+
+    /// The device's files ([`crate::blob`]): the content store a chosen file's bytes are kept
+    /// in, what it holds, and the chooser a person picks with. Until it is set, the runtime
+    /// holds no files: a chooser offers nothing and `.text()` says the content is not here.
+    pub fn set_blobs(&self, host: impl crate::blob::BlobHost + 'static) {
+        *self.core.blobs.borrow_mut() = Some(Box::new(host));
     }
 
     /// Where `model_call` goes.
@@ -1141,6 +1186,26 @@ impl Runtime {
     /// The store could not read the versions of `at`.
     pub fn unseen(&self, person: &str, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
         self.core.unseen_of(person, at)
+    }
+
+    /// The members whose reading of `coll` ends at `at`, `person` aside: who has read to that
+    /// line (`seen_by(c, m)`), read from each member's mark of `coll`.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn seen_by(
+        &self,
+        person: &str,
+        coll: &ResourceRef,
+        at: &ResourceRef,
+    ) -> Result<Vec<crate::ids::Principal>, StoreError> {
+        Ok(self
+            .core
+            .seen_by_of(person, coll, at)?
+            .into_iter()
+            .map(|member| member.who)
+            .collect())
     }
 
     /// `person` has seen every version of `at` there is now: the mark moves to its newest,
@@ -1468,6 +1533,18 @@ impl Runtime {
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)
     }
+}
+
+/// What an action shows offered on a subject, as its app presents it there (`present`): what it
+/// is called, the icon beside it, and whether the state it toggles is on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presentation {
+    /// The label the presentation reads for the subject.
+    pub label: Option<String>,
+    /// The icon name it reads there.
+    pub icon: Option<String>,
+    /// Whether the state it toggles is on, for an action whose presentation says.
+    pub on: Option<bool>,
 }
 
 /// What reading an action's requirements read of the workspace: the fields, each once, and

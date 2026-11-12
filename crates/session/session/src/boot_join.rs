@@ -105,7 +105,7 @@ impl BootJoin {
         let workspace = if sealed {
             None
         } else {
-            match directory::invited_workspace(&text) {
+            match crate::platform::directory::invited_workspace(&text) {
                 Ok(workspace) => Some(workspace),
                 Err(error) => {
                     tracing::warn!(%error, "boot join: the invitation is not for this computer");
@@ -117,13 +117,13 @@ impl BootJoin {
             Some(workspace) if held(workspace) => {
                 tracing::info!(%workspace, "boot join: this computer is already a member");
             }
-            Some(workspace) => match directory::take(directory, &text) {
+            Some(workspace) => match crate::platform::directory::take(directory, &text) {
                 Ok(()) => tracing::info!(%workspace, "boot join: redeeming the invitation"),
                 Err(error) => {
                     tracing::warn!(%workspace, %error, "boot join: the invitation was not redeemed");
                 }
             },
-            None if sealed => match directory::take(directory, &text) {
+            None if sealed => match crate::platform::directory::take(directory, &text) {
                 Ok(()) => tracing::info!("boot join: fetching the invitation its link names"),
                 Err(error) => {
                     tracing::warn!(%error, "boot join: the link's invitation was not fetched");

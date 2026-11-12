@@ -267,6 +267,7 @@ fn verb(action: &ActionSpec, declared: Option<Declared>, types: &mut TypeSet) ->
         destructive: action.contract.risk == RiskLevel::Destructive,
         incoming_message: false,
         params,
+        returns: None,
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     }

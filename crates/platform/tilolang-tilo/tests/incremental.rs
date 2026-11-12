@@ -1167,8 +1167,9 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
     assert_eq!(watch.take().listing(&key), Some(&steps[..]));
     assert_eq!(listed(), item_ids(&ada, &meta, &root));
 
-    // Added by the runtime here: told once, when the record holds the action's change and the
-    // indexes hold what it derives.
+    // Added by the runtime here: told when the action commits, with the step its item took
+    // into the listing, and not again when the record holds the action's change, which moves
+    // nothing those who read were told.
     let add_action = meta.actions.iter().find(|a| a.name == "add").unwrap();
     ada.host
         .runtime()
@@ -1180,22 +1181,22 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
             ),
         )
         .unwrap();
-    assert!(
-        watch.take().is_empty(),
-        "the action's change is told when the record holds it, not when it is written"
-    );
+    let told = watch.take();
+    let ids = item_ids(&ada, &meta, &root);
+    let added = [Splice::Insert {
+        at: 4,
+        item: ids[4].clone(),
+    }];
+    assert_eq!(told.listing(&key), Some(&added[..]), "{told:?}");
+    assert_eq!(listed(), ids);
     ada.commit();
     let told = watch.take();
-    // The person's own insert was already in what they read (the write was the mirror's open
-    // transaction): the note names the collection, whose items the view reads again.
+    assert_eq!(told.listing(&key), None, "nothing moved: {told:?}");
     assert!(
-        told.docs.values().flatten().any(|named| *named == key),
-        "the note names the collection the item joined: {told:?}"
+        !told.docs.values().flatten().any(|named| *named == key),
+        "the collection is not named again: {told:?}"
     );
-    assert_eq!(told.listing(&key), Some(&[][..]), "nothing moved");
-    let ids = item_ids(&ada, &meta, &root);
-    let jam = ids[4].clone();
-    assert_eq!(ids[4], jam);
+    assert_eq!(item_ids(&ada, &meta, &root), ids);
     assert_eq!(listed(), ids);
 
     // Removed by a peer.

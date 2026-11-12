@@ -17,7 +17,28 @@ use crate::app::{AuthenticatorApp, Notice, Store};
 pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
-#[resource(kind = "totp.vault", label = "Authenticator", search = Totp::search)]
+impl Totp {
+    /// What the record holds: the accounts' metadata — issuer, account name, algorithm, digits,
+    /// period and colour, in list order. Their seeds are this device's secret store and never
+    /// reach the record.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "totp.vault",
+    search = Totp::search,
+    read_content = Totp::read_document
+)]
 impl Totp {
     /// Move an account one place up.
     #[action]
@@ -126,7 +147,7 @@ pub enum TotpEffect {
     ///
     /// Opens the protected form on this device: a setup link carries the
     /// secret, so it is never an action argument.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "totp-add-title-add")]
     AddAccount,
     /// Open account.
     #[effect(kind = "read")]
@@ -143,7 +164,7 @@ pub enum TotpEffect {
     /// Set up on this device.
     ///
     /// Opens the protected form for the account's secret on this device.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "totp-add-title-provision")]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,
@@ -233,7 +254,7 @@ impl ResourceApp for TotpShell {
         // it hosts the add sheet.
         let empty = EmptyState::new("No accounts yet")
             .with_icon(Icon::Shield)
-            .with_message("Scan a QR code or paste a setup link to see its one-time codes here.")
+            .with_message(crate::i18n::t("totp-empty-message"))
             .with_action("Add account")
             .with_action_id("totp-empty-add");
         let empty = match cx.actions().effect(&TotpEffect::AddAccount) {
@@ -944,38 +965,35 @@ mod tests {
         app.harness().present_in_window_bar();
         settle(&mut app);
 
-        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert_eq!(
-            bar.location.map(|location| location.label).as_deref(),
-            Some("Accounts")
+            ui::window_toolbar::declared(),
+            None,
+            "the bar holds only what is the window's"
         );
-        let actions: Vec<&str> = bar
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert_eq!(
-            actions,
-            ["Add account"],
-            "the bar's search is the only search"
-        );
+        let row = app.harness().header_row_names();
+        for word in ["Accounts", "Add account"] {
+            assert!(
+                row.iter().any(|name| name == word),
+                "{word} stands in the header row, which is the window's bar: {row:?}"
+            );
+        }
         let listed = names(&mut app);
-        assert!(
-            !listed
+        assert_eq!(
+            listed
                 .iter()
-                .any(|(role, name)| role == "Button" && name == "Add account"),
-            "the window draws no header of its own: {listed:?}"
+                .filter(|(role, name)| role == "Button" && name == "Add account")
+                .count(),
+            1,
+            "the window offers Add account once: {listed:?}"
         );
 
-        let add = bar.actions[0].id.clone();
-        app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: add });
+        app.harness().press_window_action("Add account").unwrap();
         settle(&mut app);
         assert!(
             names(&mut app)
                 .iter()
                 .any(|(role, name)| role == "Dialog" && name == "Add account"),
-            "the bar's Add account opens the sheet"
+            "the row's Add account opens the sheet"
         );
     }
 

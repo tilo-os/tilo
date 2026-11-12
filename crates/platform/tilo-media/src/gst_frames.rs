@@ -3,6 +3,7 @@
 //! ([`crate::realtime`]).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gstreamer as gst;
 use gstreamer_video as gst_video;
@@ -33,11 +34,30 @@ unsafe extern "C" {
 // Sample → Frame
 // ---------------------------------------------------------------------------
 
+/// Whether the log has already said that a dmabuf sample cannot be described, and the same for a
+/// sample negotiated to a consumer that takes none. This runs once per decoded frame, so a stream
+/// that keeps dropping says it once: the line says what is wrong with the stream, which is the
+/// same for every frame it drops.
+static UNDESCRIBED_SAID: AtomicBool = AtomicBool::new(false);
+static UNSUITABLE_SAID: AtomicBool = AtomicBool::new(false);
+
 /// Turn one appsink sample into a [`Frame`] in whatever memory it arrived in.
 pub(crate) fn frame_from_sample(
     sample: &gst::Sample,
     acceptance: FrameAcceptance,
 ) -> Option<Frame> {
+    let frame = describe(sample, acceptance);
+    // A frame that came through whole says the drop was not the stream's end: the next one that
+    // cannot be described is news again.
+    if frame.is_some() {
+        UNDESCRIBED_SAID.store(false, Ordering::Relaxed);
+        UNSUITABLE_SAID.store(false, Ordering::Relaxed);
+    }
+    frame
+}
+
+/// [`frame_from_sample`] itself, without the saying of what a drop meant.
+fn describe(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> {
     let caps = sample.caps()?;
     let buffer = sample.buffer()?;
     let pts_ms = buffer.pts().map_or(0, gst::ClockTime::mseconds);
@@ -58,13 +78,17 @@ pub(crate) fn frame_from_sample(
                     payload: FramePayload::Dmabuf(Arc::new(img)),
                 });
             }
-            tracing::warn!("media: dmabuf sample could not be described; dropping frame");
+            if !UNDESCRIBED_SAID.swap(true, Ordering::Relaxed) {
+                tracing::warn!("media: dmabuf sample could not be described; dropping frame");
+            }
             return None;
         }
         // An RGBA-only consumer cannot be handed a dmabuf, and mapping one
         // here would be a silent stall. Negotiation should have prevented
         // this; say so rather than pretending.
-        tracing::warn!("media: dmabuf negotiated for an RGBA-only consumer; dropping frame");
+        if !UNSUITABLE_SAID.swap(true, Ordering::Relaxed) {
+            tracing::warn!("media: dmabuf negotiated for an RGBA-only consumer; dropping frame");
+        }
         return None;
     }
 

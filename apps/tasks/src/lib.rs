@@ -44,7 +44,6 @@ pub(crate) use filter::Filter;
 pub use tasks_model as model;
 
 use ui::framework::{EffectCx, Effected};
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
@@ -112,7 +111,7 @@ impl Nav {
 }
 
 pub(crate) fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::locales::CATALOG.t(key)
 }
 
 /// A message with named text arguments.
@@ -121,7 +120,7 @@ pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
         .iter()
         .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
         .collect();
-    I18nManager::format(key, &args)
+    crate::locales::CATALOG.t_args(key, &args)
 }
 
 pub struct App;
@@ -130,14 +129,6 @@ impl ResourceApp for App {
     type Resource = Tracker;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    /// The session's document host runs the tracker's model (`tasks-model`, built as the
-    /// `tasks.tracker` module), so the app's process opens no record of its own: it joins no
-    /// workspace of its own, and reads the readings the session publishes and submits its
-    /// actions over its one connection (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4).
-    const ATTACHES_RUNTIME: bool = false;
-    const HOSTED_BY_SESSION: bool = true;
-
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }

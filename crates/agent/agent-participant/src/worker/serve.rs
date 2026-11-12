@@ -85,6 +85,10 @@ struct Worker {
     read: Option<ReadSession>,
     /// What the held record's view is lent as its content store.
     content: WorkerContent,
+    /// What the held record published when a page of it was last asked
+    /// for, kept for the pages asked next: every change to the record
+    /// arrives as a request, and any other request lets it go.
+    surveyed: Option<Vec<tilo_actions::remote::CatalogueRow>>,
 }
 
 /// The content store a held record's view reads and writes in the worker:
@@ -149,10 +153,14 @@ impl Worker {
             text: (mode == Mode::Read).then(resident_text_renderer),
             read: None,
             content: WorkerContent::new(),
+            surveyed: None,
         }
     }
 
     fn handle(&mut self, request: Request) -> Reply {
+        if !matches!(request, Request::SurveyPage { .. }) {
+            self.surveyed = None;
+        }
         match request {
             Request::Probe { path } => Reply::Probe(probe(&path)),
             Request::PutContent(bytes) => self.content.put(&bytes),
@@ -221,6 +229,50 @@ impl Worker {
         };
         match request {
             Request::Survey => descriptors(&replica.survey()),
+            Request::SurveyRows => {
+                let held = replica.survey_rows();
+                let total = u64::try_from(held.len()).unwrap_or(u64::MAX);
+                match serde_json::to_string(&held) {
+                    Ok(rows) => Reply::Page { total, rows },
+                    Err(error) => Reply::Failed(error.to_string()),
+                }
+            }
+            Request::SurveyPage {
+                query,
+                can_render,
+                offset,
+                take,
+            } => match decode::<tilo_actions::remote::CatalogueQuery>(&query) {
+                Ok(query) => {
+                    let window = (
+                        usize::try_from(offset).unwrap_or(usize::MAX),
+                        usize::try_from(take).unwrap_or(usize::MAX),
+                    );
+                    let surveyed = self.surveyed.get_or_insert_with(|| replica.survey_rows());
+                    let (total, page) = Replica::page_of(surveyed, &query, (can_render, window));
+                    match serde_json::to_string(&page) {
+                        Ok(rows) => Reply::Page {
+                            total: u64::try_from(total).unwrap_or(u64::MAX),
+                            rows,
+                        },
+                        Err(error) => Reply::Failed(error.to_string()),
+                    }
+                }
+                Err(reason) => Reply::Failed(reason),
+            },
+            Request::ChangedKeys {
+                record,
+                snapshot,
+                bytes,
+            } => record_change(&record, mutation(snapshot, bytes), |record, change| {
+                changed_keys(replica.changed_keys(record, &change))
+            }),
+            Request::Resolve { address } => match decode(&address) {
+                Ok(address) => {
+                    descriptors(&replica.descriptor(&address).into_iter().collect::<Vec<_>>())
+                }
+                Err(reason) => Reply::Failed(reason),
+            },
             Request::Invoke {
                 address,
                 arguments,
@@ -249,54 +301,21 @@ impl Worker {
                     }
                 }
             }
-            Request::TakeMutation => {
-                Reply::Mutation(replica.take_mutation().map(|mutation| match mutation {
-                    DocumentMutation::Snapshot(bytes) => (true, bytes),
-                    DocumentMutation::Incremental(bytes) => (false, bytes),
-                }))
-            }
+            Request::TakeMutation => taken_mutation(replica),
             Request::Apply { snapshot, bytes } => {
-                let mutation = if snapshot {
-                    DocumentMutation::Snapshot(bytes)
-                } else {
-                    DocumentMutation::Incremental(bytes)
-                };
-                match replica.apply(&mutation) {
-                    Ok(()) => Reply::Done,
-                    Err(error) => Reply::Failed(error.to_string()),
-                }
+                applied(replica.apply(&mutation(snapshot, bytes)))
             }
             Request::ApplyRecord {
                 record,
                 snapshot,
                 bytes,
-            } => {
-                let Some(record) = parse_record(&record) else {
-                    return Reply::Failed(format!("{record} is not a record id"));
-                };
-                let mutation = if snapshot {
-                    DocumentMutation::Snapshot(bytes)
-                } else {
-                    DocumentMutation::Incremental(bytes)
-                };
-                match replica.apply_record(&record, &mutation) {
-                    Ok(()) => Reply::Done,
-                    Err(error) => Reply::Failed(error.to_string()),
-                }
+            } => record_change(&record, mutation(snapshot, bytes), |record, change| {
+                applied(replica.apply_record(record, &change))
+            }),
+            Request::TakeRecordMutations => taken_record_mutations(replica),
+            request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
+                workspace_reply(replica, request)
             }
-            Request::TakeRecordMutations => Reply::RecordMutations(
-                replica
-                    .take_record_mutations()
-                    .into_iter()
-                    .map(|(record, mutation)| {
-                        let record = record.as_str().to_owned();
-                        match mutation {
-                            DocumentMutation::Snapshot(bytes) => (record, true, bytes),
-                            DocumentMutation::Incremental(bytes) => (record, false, bytes),
-                        }
-                    })
-                    .collect(),
-            ),
             Request::Presence => Reply::Presence(
                 replica
                     .presence()
@@ -437,6 +456,83 @@ fn resident_text_renderer() -> ui::TextRenderer {
         let _ = database.with_face_data(face, |data, _| data.len());
     }
     ui::TextRenderer::with_font_system(fonts)
+}
+
+/// The change a wire pair names: a whole snapshot or one incremental change.
+fn mutation(snapshot: bool, bytes: Vec<u8>) -> DocumentMutation {
+    if snapshot {
+        DocumentMutation::Snapshot(bytes)
+    } else {
+        DocumentMutation::Incremental(bytes)
+    }
+}
+
+/// A change as the wire names it: whether it is a snapshot, and its bytes.
+fn wire_mutation(mutation: DocumentMutation) -> (bool, Vec<u8>) {
+    match mutation {
+        DocumentMutation::Snapshot(bytes) => (true, bytes),
+        DocumentMutation::Incremental(bytes) => (false, bytes),
+    }
+}
+
+/// What the record `wire` names answers about `change`, or the reply that says
+/// `wire` names no record.
+fn record_change(
+    wire: &str,
+    change: DocumentMutation,
+    asked: impl FnOnce(&RecordId, DocumentMutation) -> Reply,
+) -> Reply {
+    match parse_record(wire) {
+        Some(record) => asked(&record, change),
+        None => Reply::Failed(format!("{wire} is not a record id")),
+    }
+}
+
+/// What the record's replica reports `change` wrote, or, for a record it holds
+/// none of, `null`: the host reads that one as it always did.
+fn changed_keys(written: Option<Result<Vec<Vec<String>>, String>>) -> Reply {
+    match written {
+        Some(Ok(keys)) => match serde_json::to_string(&keys) {
+            Ok(text) => Reply::Keys(text),
+            Err(error) => Reply::Failed(error.to_string()),
+        },
+        Some(Err(reason)) => Reply::Failed(reason),
+        None => Reply::Keys("null".into()),
+    }
+}
+
+/// The reply to a change the record took, or why it did not take it.
+fn applied(taken: Result<(), crate::apps::AppError>) -> Reply {
+    match taken {
+        Ok(()) => Reply::Done,
+        Err(error) => Reply::Failed(error.to_string()),
+    }
+}
+
+/// What a held record's store answers about the records it reads through its
+/// workspace's hosts.
+fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
+    match request {
+        Request::AskWorkspace => {
+            replica.ask_workspace_for_missing();
+            Reply::Done
+        }
+        Request::Wanted => Reply::Wanted(
+            replica
+                .wanted_records()
+                .into_iter()
+                .map(|record| record.as_str().to_owned())
+                .collect(),
+        ),
+        Request::Answered { record } => match parse_record(&record) {
+            Some(record) => {
+                replica.workspace_answered(record);
+                Reply::Done
+            }
+            None => Reply::Failed("invalid record id".into()),
+        },
+        _ => Reply::Failed("not a request about the workspace's records".into()),
+    }
 }
 
 /// A record id as [`RecordId::as_str`] spells it.
@@ -612,5 +708,31 @@ impl ReadSession {
             arguments,
         )?;
         started.completed().ok_or_else(refused)
+    }
+}
+
+/// The replica's own changes since the last take, or why they could not be
+/// collected: a failure, never "nothing changed", so a write that made them
+/// is not answered as done.
+fn taken_mutation(replica: &mut crate::Replica) -> Reply {
+    match replica.take_mutation() {
+        Ok(mutation) => Reply::Mutation(mutation.map(wire_mutation)),
+        Err(error) => Reply::Failed(error.to_string()),
+    }
+}
+
+/// [`taken_mutation`], for the records held beside the replica's own.
+fn taken_record_mutations(replica: &mut crate::Replica) -> Reply {
+    match replica.take_record_mutations() {
+        Ok(taken) => Reply::RecordMutations(
+            taken
+                .into_iter()
+                .map(|(record, mutation)| {
+                    let (snapshot, bytes) = wire_mutation(mutation);
+                    (record.as_str().to_owned(), snapshot, bytes)
+                })
+                .collect(),
+        ),
+        Err(error) => Reply::Failed(error.to_string()),
     }
 }

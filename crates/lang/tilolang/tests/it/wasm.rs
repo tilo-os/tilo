@@ -260,3 +260,32 @@ fn a_packages_catalogues_travel_in_its_module() {
     assert!(!locales[1].1.contains("d-x = Counter"), "{}", locales[1].1);
     assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
 }
+
+/// A `File` reaches the metadata as the type it is, so a host reads a field's and a
+/// parameter's type as the file it holds.
+#[test]
+fn a_file_is_a_field_and_a_parameters_type() {
+    let compiled = crate::common::compile_body(
+        "type N {\n    body: Text\n    picture: Option<File>\n}\n
+         action put(n: N, picture: File) {\n    n.picture = picture\n}",
+    );
+    let note = compiled
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "N")
+        .expect("the type");
+    let picture = note
+        .fields
+        .iter()
+        .find(|f| f.name == "picture")
+        .expect("the field");
+    assert_eq!(picture.ty, "Option<File>");
+    let put = compiled
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "put")
+        .expect("the action");
+    assert_eq!(put.params.get(1).map(|p| p.ty.as_str()), Some("File"));
+}

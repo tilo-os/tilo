@@ -16,11 +16,11 @@ sheets-set-records = Wrote records
 sheets-upsert-item = Updated or added a row
 sheets-add-chart = Charted { $range }
 sheets-edit-chart = Edited the chart { $title }
-sheets-edit-comment = Edited a comment: { $body }
-sheets-delete-chart = Deleted a chart
+sheets-edit-comment = Edit comment
+sheets-delete-chart = Delete chart
 sheets-comment = Commented on { $range }: { $text }
 sheets-reply = Replied: { $text }
-sheets-delete-comment = Deleted a comment
+sheets-delete-comment = Delete comment
 sheets-cell-raw = Edited a cell
 sheets-cell-format = Formatted a cell
 sheets-cell-bold = { $new ->
@@ -66,3 +66,92 @@ sheets-notion-archive-invalid = The export archive cannot be read
 sheets-notion-unreadable = This file is not a Notion export
 sheets-notion-yes = Yes
 sheets-notion-no = No
+sheets-start-formula = Start a formula
+sheets-start-formula-detail = Begin a formula in the active cell
+sheets-name-box = Name box
+sheets-name-box-detail = Go to a cell or range; shortcut Control+G
+sheets-formula-bar = Formula bar
+sheets-formula-bar-detail = Edit the active cell's value or formula
+sheets-add-sheet = Add sheet
+sheets-column-headers = Column headers
+sheets-comments-charts = Comments and charts
+sheets-manage-chart = Manage chart
+sheets-open-chart-range = Open chart range
+sheets-rename-chart = Rename chart
+sheets-column-chart = Column chart
+sheets-line-chart = Line chart
+sheets-chart-cells = Chart cells
+sheets-reply-comment = Reply to comment
+sheets-open-comment-anchor = Open comment anchor
+sheets-resolve-comment = Resolve comment
+sheets-reopen-comment = Reopen comment
+sheets-actions = Spreadsheet actions
+sheets-window-name = Sheets
+sheets-window-detail = Editable workbook with formula bar and sheet tabs
+
+## Window and accessibility copy
+sheets-numbers-none = No numbers in this range
+
+## Facts, property labels and section titles
+sheets-a11y-comment-by = Comment by { $author }
+sheets-a11y-chart-extent = { $start }:{ $end }; open, rename, change its type or cells, or delete from the chart card
+sheets-a11y-worksheet = Worksheet; selected range { $range }; { $columns } columns by { $rows } rows; only the visible grid window is announced
+sheets-a11y-row = Row { $row }
+sheets-a11y-cell = Column { $column }, row { $row }
+sheets-a11y-column = Column { $letter }
+
+## What the window shows
+sheets-no-replies = No replies
+
+sheets-comment-you = You
+sheets-comment-someone = Someone
+
+## The document settings sheet
+sheets-document-settings = Document settings
+sheets-done = Done
+
+## The window bar's slots
+sheets-file-menu = File
+sheets-format-menu = Format
+sheets-bold = Bold
+sheets-autosum = AutoSum
+sheets-show-formulas = Show formulas
+sheets-show-results = Show calculated results
+
+## A tab's colour mark
+sheets-tab-colour = Tab colour
+
+## Actions
+
+sheets-effect-import-csv = Import CSV
+sheets-effect-import-xlsx = Import Excel workbook
+sheets-effect-import-ods = Import OpenDocument spreadsheet
+sheets-effect-export-csv = Export CSV
+sheets-effect-export-xlsx = Export Excel workbook
+sheets-effect-export-ods = Export OpenDocument spreadsheet
+sheets-effect-import-xlsx-content = Import workbook content
+sheets-effect-export-xlsx-content = Export workbook content
+sheets-effect-commands = Open command palette
+sheets-effect-go-to-cell = Go to cell…
+sheets-effect-toggle-formula-view = Toggle formula view
+sheets-effect-read-cells = Read cells
+sheets-effect-open = Open
+sheets-workbook = Workbook
+sheets-workbook-set-title = Name the workbook
+sheets-workbook-set-records = Set records
+sheets-workbook-upsert-item = Upsert a row
+sheets-workbook-duplicate-sheet = Duplicate sheet
+sheets-workbook-delete-sheet = Delete sheet
+sheets-workbook-set-cells = Set cells
+sheets-workbook-write-cells = Write cells
+sheets-workbook-format-cells = Format cells
+sheets-workbook-sort-rows = Sort rows
+sheets-workbook-insert-rows = Insert rows
+sheets-workbook-delete-rows = Delete rows
+sheets-workbook-insert-columns = Insert columns
+sheets-workbook-delete-columns = Delete columns
+sheets-workbook-import-sheets = Import sheets
+sheets-workbook-add-chart = Add chart
+sheets-workbook-edit-chart = Edit chart
+sheets-workbook-rename-sheet = Rename sheet
+sheets-workbook-comment = Comment on cells

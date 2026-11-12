@@ -2,15 +2,17 @@
 //! renders them for what each list shows.
 //!
 //! The app renders a row only when the list shows it (the visible rows and the overscan): the
-//! list asks for a range ([`RowSource::request_range`]), the window sends the app that range,
-//! and the app answers with the keys of those rows and the rows it rendered for them. Until
-//! they arrive a row is not shown, as a row scrolled in before it is built. The app sends
+//! list asks for a range ([`RowSource::request_range`]), and which row stands open into its
+//! item where it stands, the window sends the app both, and the app answers with the keys of
+//! those rows and the rows it rendered for them — the open row's document among them, and no
+//! closed row's. Until they arrive a row is not shown, as a row scrolled in before it is built.
+//! The app sends
 //! each change of the rows as it happens: a row inserted, removed or moved is that change of
 //! the list, and a shown row that changed is sent again alone. Each row is read through the
 //! one adapter, as the list's item component (`ui.ListItem`).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -18,7 +20,7 @@ use tilo_render_protocol::patch::RowChange;
 use ui::component::{RowSource, Source};
 use ui::widget::virtual_list::ListModelChange;
 
-use crate::adapter::{NodeSource, description_of, kind};
+use crate::adapter::{NodeSource, description_of};
 use crate::reconcile::Reconciler;
 use crate::shell::prefixed;
 use crate::{Lane, UiNode};
@@ -32,6 +34,8 @@ pub struct RemoteRows {
     lane: Lane,
     /// The key of the list node in its view.
     list: String,
+    /// The kind of the component a row is: the list's item, or a tree's node.
+    item: String,
     /// What the keys of the view's nodes carry in the window's tree (the detail's carry one).
     prefix: String,
     /// Reads the rows as the window's other components are read, reporting to the same place.
@@ -45,13 +49,27 @@ pub struct RemoteRows {
     /// The rows the app rendered for the range the list shows, by key.
     rows: HashMap<String, UiNode>,
     changes: Vec<ListModelChange<String>>,
-    /// The range the app was last asked for.
-    asked: Option<Range<usize>>,
-    /// A range the list shows that the app is still to be asked for.
-    wanted: Option<Range<usize>>,
+    /// The rows the app was last asked for: the range the list shows, and the row standing open
+    /// into its item where it stands.
+    asked: Option<Asked>,
+    /// Rows the list shows that the app is still to be asked for.
+    wanted: Option<Asked>,
+    /// The words of the heading over its rows (`ui.Card`, `ui.Section`, the window's title),
+    /// where one heads them: a row's day fact that says the same day is the heading's to say.
+    under: Option<String>,
     /// The app was asked for rows and has not answered: the list keeps taking frames until it
     /// does, so what it shows is never a frame behind what it asked for.
     awaiting: bool,
+}
+
+/// What the list asked the app for: the rows it shows, and the row standing open into its item
+/// where it stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    pub range: Range<usize>,
+    /// The row standing open into its item, by key, when one does: the app renders its
+    /// document, and no closed row's.
+    pub open: Option<String>,
 }
 
 impl RemoteRows {
@@ -61,6 +79,7 @@ impl RemoteRows {
     pub fn new(
         lane: Lane,
         list: &str,
+        item: &str,
         prefix: &str,
         reconciler: Rc<RefCell<Reconciler>>,
         bound: BoundValues,
@@ -68,6 +87,7 @@ impl RemoteRows {
         Self {
             lane,
             list: list.to_owned(),
+            item: item.to_owned(),
             prefix: prefix.to_owned(),
             reconciler,
             bound,
@@ -78,7 +98,14 @@ impl RemoteRows {
             asked: None,
             wanted: None,
             awaiting: false,
+            under: None,
         }
+    }
+
+    /// The heading over its rows, as the tree says it above the list: what a row's day fact
+    /// standing under it leaves to it.
+    pub fn under(&mut self, heading: Option<String>) {
+        self.under = heading;
     }
 
     /// Whether the list shows a range the app is still to be asked for: the window owes the
@@ -88,12 +115,12 @@ impl RemoteRows {
         self.wanted.is_some()
     }
 
-    /// The range the list shows that the app is still to be asked for, taken.
-    pub fn take_wanted(&mut self) -> Option<(Lane, String, Range<usize>)> {
-        let range = self.wanted.take()?;
-        self.asked = Some(range.clone());
+    /// The rows the list shows that the app is still to be asked for, taken.
+    pub fn take_wanted(&mut self) -> Option<(Lane, String, Asked)> {
+        let asked = self.wanted.take()?;
+        self.asked = Some(asked.clone());
         self.awaiting = true;
-        Some((self.lane, self.list.clone(), range))
+        Some((self.lane, self.list.clone(), asked))
     }
 
     /// The app's rows: the list has `len`, the keys from `start` on are `keys`, and `rows` are
@@ -105,7 +132,7 @@ impl RemoteRows {
         if let Some(asked) = &self.asked {
             let keep: std::collections::HashSet<Rc<str>> = self
                 .keys
-                .get(asked.start.min(self.keys.len())..asked.end.min(self.keys.len()))
+                .get(asked.range.start.min(self.keys.len())..asked.range.end.min(self.keys.len()))
                 .unwrap_or_default()
                 .iter()
                 .flatten()
@@ -199,7 +226,7 @@ impl RemoteRows {
         if let Some(asked) = self.asked.clone() {
             let held = self
                 .keys
-                .get(asked.start.min(self.keys.len())..asked.end.min(self.keys.len()))
+                .get(asked.range.start.min(self.keys.len())..asked.range.end.min(self.keys.len()))
                 .unwrap_or_default()
                 .iter()
                 .flatten()
@@ -210,11 +237,27 @@ impl RemoteRows {
         }
     }
 
+    /// The list has `len` rows now: the keys grow or go with it, and the list hears it as the
+    /// rows it is, so it settles where it now stands and asks for the range it shows.
     fn resize(&mut self, len: usize) {
-        if self.keys.len() != len {
-            self.keys.resize(len, None);
-            *self.index.get_mut() = None;
+        let was = self.keys.len();
+        if was == len {
+            return;
         }
+        if len > was {
+            self.keys.resize(len, None);
+            self.changes.push(ListModelChange::RowsInserted {
+                index: was,
+                count: len.saturating_sub(was),
+            });
+        } else {
+            self.keys.truncate(len);
+            self.changes.push(ListModelChange::RowsRemoved {
+                index: len,
+                count: was.saturating_sub(len),
+            });
+        }
+        *self.index.get_mut() = None;
     }
 
     /// Whether these are the rows of `list` of the view of `lane`.
@@ -228,6 +271,33 @@ impl RemoteRows {
     pub fn rendered(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.rows.keys().cloned().collect();
         keys.sort();
+        keys
+    }
+
+    /// The lane of the window whose view holds this list.
+    #[must_use]
+    pub fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    /// The keys of the rows the list holds, in the order it lists them: the model's own order,
+    /// which the list draws, and a row it holds outside that order (one of a range it no longer
+    /// shows) after them, by key, so the order is the same in every process and at every size.
+    #[must_use]
+    pub fn in_order(&self) -> Vec<String> {
+        let mut keys: Vec<String> = (0..RowSource::len(self))
+            .filter_map(|index| RowSource::key_at(self, index))
+            .filter(|key| self.rows.contains_key(key))
+            .collect();
+        let listed: BTreeSet<&str> = keys.iter().map(String::as_str).collect();
+        let mut rest: Vec<String> = self
+            .rows
+            .keys()
+            .filter(|key| !listed.contains(key.as_str()))
+            .cloned()
+            .collect();
+        rest.sort();
+        keys.extend(rest);
         keys
     }
 
@@ -285,8 +355,37 @@ impl RemoteRows {
     }
 }
 
+/// The virtual lists of a view's tree, by key, with the kind of the component each holds its
+/// rows as (`ui.ListItem`, a tree's `ui.TreeViewNode`).
+pub fn lists(tree: &UiNode) -> Vec<(String, String, Option<String>)> {
+    lists_under(tree, None)
+}
+
+/// Every virtual list of `tree` standing under `under`, the words of the heading over it.
+pub fn lists_under(tree: &UiNode, under: Option<&str>) -> Vec<(String, String, Option<String>)> {
+    fn walk(node: &UiNode, heading: Option<&str>, out: &mut Vec<(String, String, Option<String>)>) {
+        let here = crate::date::heading_of(node)
+            .or_else(|| crate::date::group_heading(node))
+            .or_else(|| heading.map(str::to_owned));
+        if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
+            let item = if node.kind == "ui.TreeView" {
+                crate::adapter::kind("TreeViewNode")
+            } else {
+                crate::adapter::kind("ListItem")
+            };
+            out.push((node.key.clone(), item, here.clone()));
+        }
+        for child in &node.children {
+            walk(child, here.as_deref(), out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, under, &mut out);
+    out
+}
+
 /// The first node of `kind` at or under `node`.
-fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+pub(crate) fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     if node.kind == kind {
         return Some(node);
     }
@@ -308,13 +407,20 @@ impl RowSource for RemoteRows {
         self.index_of_key(key)
     }
 
-    /// Ask the app for the rows of `range`. The rows held outside it are kept until the app
-    /// answers, so a list that asks for more than it did a frame ago shows them meanwhile.
-    fn request_range(&mut self, range: Range<usize>) {
-        // The app renders what the list shows and forgets the rest: it hears of every range.
-        if self.asked.as_ref() != Some(&range) {
-            self.wanted = Some(range);
+    /// Ask the app for the rows of `range`, and for the document of the row at `open`. The rows
+    /// held outside the range are kept until the app answers, so a list that asks for more than
+    /// it did a frame ago shows them meanwhile.
+    fn request_range(&mut self, range: Range<usize>, open: Option<String>) {
+        // The app renders what the list shows and forgets the rest: it hears of every range, and
+        // of the row that opened or closed, whose document it renders or drops.
+        let asked = Asked { range, open };
+        if self.asked.as_ref() != Some(&asked) {
+            self.wanted = Some(asked);
         }
+    }
+
+    fn rendered(&self, key: &str) -> bool {
+        self.rows.contains_key(key)
     }
 
     fn read(
@@ -326,8 +432,7 @@ impl RowSource for RemoteRows {
             let Some(row) = self.rows.get(key) else {
                 return Ok(false);
             };
-            let item_kind = kind("ListItem");
-            let Some(item) = find_kind(row, &item_kind) else {
+            let Some(item) = find_kind(row, &self.item) else {
                 return Ok(false);
             };
             prefixed(item, &self.prefix)
@@ -339,11 +444,45 @@ impl RowSource for RemoteRows {
             let Ok(mut reconciler) = self.reconciler.try_borrow_mut() else {
                 return Ok(false);
             };
-            let mut source = NodeSource::new(&row, description, &mut reconciler);
+            let mut source =
+                NodeSource::under_heading(&row, description, &mut reconciler, self.under.clone());
             read(&mut source)?;
         }
         // The row's controls hold the states their bindings keep now that it is read: show
         // what they are bound to.
+        if let (Some(shown), Ok(reconciler)) = (self.rows.get(key), self.reconciler.try_borrow()) {
+            crate::window::show_bound(shown, &self.prefix, &self.bound.borrow(), &reconciler);
+        }
+        Ok(true)
+    }
+
+    fn read_props(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        // What its props say does not depend on the keys its nodes carry in the window's tree:
+        // the row is read as the app sent it.
+        let Some(item) = self
+            .rows
+            .get(key)
+            .and_then(|row| find_kind(row, &self.item))
+        else {
+            return Ok(false);
+        };
+        let Some(description) = description_of(item) else {
+            return Ok(false);
+        };
+        let Ok(mut reconciler) = self.reconciler.try_borrow_mut() else {
+            return Ok(false);
+        };
+        read(&mut NodeSource::props_of(
+            item,
+            description,
+            &mut reconciler,
+            self.under.clone(),
+        ))?;
+        drop(reconciler);
         if let (Some(shown), Ok(reconciler)) = (self.rows.get(key), self.reconciler.try_borrow()) {
             crate::window::show_bound(shown, &self.prefix, &self.bound.borrow(), &reconciler);
         }
@@ -372,11 +511,19 @@ impl RowSource for RemoteRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::kind;
     use crate::{Binding, Value};
 
     fn rows() -> RemoteRows {
         let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
-        RemoteRows::new(Lane::Root, "list", "", reconciler, Rc::default())
+        RemoteRows::new(
+            Lane::Root,
+            "list",
+            &kind("ListItem"),
+            "",
+            reconciler,
+            Rc::default(),
+        )
     }
 
     #[test]
@@ -412,6 +559,38 @@ mod tests {
         ));
     }
 
+    /// The rows a list holds are read in the order the list lists them, which is its model's
+    /// order — the keys a range arrived in — and never the order a hash of them happens to
+    /// give: what is read first is the row a person meets first, in this process and the next.
+    #[test]
+    fn the_rows_are_read_in_the_order_the_list_lists_them() {
+        let mut rows = rows();
+        let shown = vec!["v/c".to_owned(), "v/a".to_owned(), "v/b".to_owned()];
+        let rendered = shown
+            .iter()
+            .map(|key| UiNode::empty(&kind("ListItem"), key))
+            .collect();
+        rows.rows(3, 0, shown.clone(), rendered);
+        assert_eq!(rows.in_order(), shown, "the model's order, key for key");
+        // A row the list holds outside the order it names now — a row of a range it no longer
+        // shows, kept until the app answers for the next — comes after the rows it lists, by
+        // key, so it never stands in front of the first row.
+        rows.rows(
+            3,
+            0,
+            Vec::new(),
+            vec![
+                UiNode::empty(&kind("ListItem"), "v/z"),
+                UiNode::empty(&kind("ListItem"), "v/y"),
+            ],
+        );
+        assert_eq!(
+            rows.in_order(),
+            ["v/c", "v/a", "v/b", "v/y", "v/z"],
+            "the held rows follow the listed ones"
+        );
+    }
+
     /// A row whose bound control changed is the row the list reads again; a row whose controls
     /// show what they did is left alone, so a change of a row costs a row.
     #[test]
@@ -421,6 +600,7 @@ mod tests {
         let mut rows = RemoteRows::new(
             Lane::Root,
             "list",
+            &kind("ListItem"),
             "",
             Rc::clone(&reconciler),
             Rc::clone(&bound),
@@ -455,19 +635,148 @@ mod tests {
         assert!(rows.take_changes().is_empty(), "read once");
     }
 
+    /// A row's day fact that says the day of the heading over its list is the heading's: what
+    /// the list reads of the row leaves it out, and keeps the time of day it is due.
+    #[test]
+    fn a_row_under_the_heading_its_list_says_keeps_only_its_time() {
+        let today = ui::clock::today();
+        let day = today.format("%Y-%m-%d").to_string();
+        let mut rows = RemoteRows::new(
+            Lane::Root,
+            "list",
+            &kind("ListItem"),
+            "",
+            Rc::new(RefCell::new(Reconciler::new(Rc::default()))),
+            Rc::default(),
+        );
+        // The instant today's person's clock shows at nine.
+        let at_nine = {
+            use chrono::TimeZone;
+            chrono::Local
+                .with_ymd_and_hms(2026, 6, 30, 9, 0, 0)
+                .single()
+                .expect("nine in the morning exists")
+                .to_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        let mut item = UiNode::empty(&kind("ListItem"), "list/v/a");
+        let mut row = UiNode::empty(&kind("ListRow"), "list/v/a/row");
+        for (name, value) in [
+            ("title", Value::text("Water the plants")),
+            ("meta", Value::text(&day)),
+            ("meta:as", Value::text("date")),
+            ("meta:time", Value::text(&at_nine)),
+        ] {
+            row.props.insert(name.to_owned(), value);
+        }
+        item.children.push(row);
+        rows.rows(1, 0, vec!["list/v/a".into()], vec![item]);
+        let meta = |rows: &mut RemoteRows| {
+            let mut meta = None;
+            rows.read("list/v/a", &mut |source| {
+                source.components("row", &mut |row| {
+                    meta = row.prop("meta");
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .expect("the row is read");
+            meta
+        };
+        let said = |meta: Option<ui::component::Value>| match meta {
+            Some(ui::component::Value::Text(text)) => text,
+            other => panic!("the row states its day as words: {other:?}"),
+        };
+        assert_eq!(
+            said(meta(&mut rows)),
+            ui::format::day_fact_today(
+                today,
+                Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine"))
+            )
+            .text,
+            "under no heading the row says the day it is due, with the time"
+        );
+        rows.under(Some(ui::format::day_fact_today(today, None).text));
+        assert_eq!(
+            said(meta(&mut rows)),
+            ui::format::time(&chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("nine")),
+            "the heading says the day: the row keeps the time of day it is due"
+        );
+    }
+
     #[test]
     fn a_range_not_sent_is_asked_for_once() {
         let mut rows = rows();
         rows.rows(100, 0, vec!["v/0".into()], Vec::new());
-        rows.request_range(0..20);
+        rows.request_range(0..20, None);
         assert!(rows.wants(), "the window owes the app the ask");
         assert_eq!(
             rows.take_wanted(),
-            Some((Lane::Root, "list".to_owned(), 0..20))
+            Some((
+                Lane::Root,
+                "list".to_owned(),
+                Asked {
+                    range: 0..20,
+                    open: None,
+                }
+            ))
         );
-        rows.request_range(0..20);
+        rows.request_range(0..20, None);
         assert_eq!(rows.take_wanted(), None, "asked once");
         assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
+    }
+
+    /// The app names a list shorter than the one the window holds: the list hears it, so it
+    /// settles where it now ends and asks for the rows it shows rather than staying empty.
+    #[test]
+    fn a_list_the_app_names_shorter_is_a_change_of_its_rows() {
+        let mut rows = rows();
+        rows.rows(100, 0, vec!["v/0".into()], Vec::new());
+        let _ = rows.take_changes();
+        rows.request_range(90..100, None);
+        assert!(rows.take_wanted().is_some(), "asked for the range it shows");
+        // The app reads a row past the list's end: the range it shows holds nothing, and the
+        // list it names is the one it holds.
+        rows.rows(50, 90, Vec::new(), Vec::new());
+        assert_eq!(rows.len(), 50, "the list is as long as the app names it");
+        assert_eq!(
+            rows.take_changes(),
+            [ListModelChange::RowsRemoved {
+                index: 50,
+                count: 50
+            }],
+            "the list hears that its last rows went"
+        );
+    }
+
+    /// The row standing open into its item is the one whose document the app renders: the list
+    /// asks again when it opens, before or within the range it shows, and once for each.
+    #[test]
+    fn the_row_that_opens_is_asked_for_with_the_range() {
+        let mut rows = rows();
+        rows.rows(100, 0, vec!["v/0".into()], Vec::new());
+        rows.request_range(0..20, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked),
+            Some(Asked {
+                range: 0..20,
+                open: None,
+            })
+        );
+        rows.request_range(0..20, Some("v/4".to_owned()));
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.open),
+            Some(Some("v/4".to_owned())),
+            "the row the person opened is asked for once"
+        );
+        rows.request_range(0..20, Some("v/4".to_owned()));
+        assert_eq!(rows.take_wanted(), None, "asked once");
+        rows.request_range(0..20, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.open),
+            Some(None),
+            "the row that closed takes its document with it"
+        );
     }
 }

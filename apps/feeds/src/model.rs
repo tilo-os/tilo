@@ -63,15 +63,6 @@ pub enum FeedKind {
 }
 
 impl FeedKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            FeedKind::Rss => "RSS",
-            FeedKind::Atom => "Atom",
-            FeedKind::Json => "JSON",
-            FeedKind::Gemini => "Gemini",
-        }
-    }
-
     /// The form OPML and the reader's "via" line name it by.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -434,12 +425,12 @@ impl ReadTheme {
         ReadTheme::Sepia,
         ReadTheme::Dark,
     ];
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            ReadTheme::System => "System",
-            ReadTheme::Light => "Light",
-            ReadTheme::Sepia => "Sepia",
-            ReadTheme::Dark => "Dark",
+            ReadTheme::System => "feeds-theme-system",
+            ReadTheme::Light => "feeds-theme-light",
+            ReadTheme::Sepia => "feeds-theme-sepia",
+            ReadTheme::Dark => "feeds-theme-dark",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -464,11 +455,11 @@ pub enum ReadFont {
 
 impl ReadFont {
     pub const ALL: [ReadFont; 3] = [ReadFont::Sans, ReadFont::Serif, ReadFont::Mono];
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            ReadFont::Sans => "Sans",
-            ReadFont::Serif => "Serif",
-            ReadFont::Mono => "Mono",
+            ReadFont::Sans => "feeds-font-sans",
+            ReadFont::Serif => "feeds-font-serif",
+            ReadFont::Mono => "feeds-font-mono",
         }
     }
     pub fn as_str(self) -> &'static str {

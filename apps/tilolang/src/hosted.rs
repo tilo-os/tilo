@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_ui_host::AppWindow;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
 /// The variable the launcher sets for a window whose instance a tilolang host runs.
@@ -337,6 +338,16 @@ impl ui::component_lifecycle::HostIntents for HostedWindow {
     }
 }
 
+/// The window is named by what it shows: the item it shows as its page, else the page, the record,
+/// the place its instance's composed shell names in its content header. Two windows of the app
+/// read apart in the desktop's tabs, the switcher and assistive technology without either being
+/// opened.
+impl ui::component_lifecycle::WindowTitle for HostedWindow {
+    fn window_title(&self) -> Option<&str> {
+        self.view().and_then(tilo_ui_host::AppWindow::title)
+    }
+}
+
 /// The window stands for what it shows (the UI host's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
@@ -348,6 +359,10 @@ impl ui::widget::Decorator for HostedWindow {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
             request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
+            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
             return;
         }
         if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
@@ -364,6 +379,10 @@ impl ui::widget::Decorator for HostedWindow {
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::component_lifecycle::WindowActivation>() {
             request.provide::<dyn ui::component_lifecycle::WindowActivation>(self);
+            return;
+        }
+        if request.wants::<dyn ui::component_lifecycle::WindowTitle>() {
+            request.provide::<dyn ui::component_lifecycle::WindowTitle>(self);
             return;
         }
         if request.wants::<dyn ui::component_lifecycle::HostIntents>() {
@@ -456,7 +475,7 @@ impl ui::widget::Decorator for HostedWindow {
             }
         }
         self.content_mut()
-            .draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn take_structure_dirty(&mut self) -> bool {

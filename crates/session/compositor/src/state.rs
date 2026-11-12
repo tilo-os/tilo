@@ -8,6 +8,7 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -43,10 +44,10 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xwayland_shell::XWaylandShellState;
 
 use crate::app_liveness;
-use crate::host::SurfaceHost;
-use crate::input::{HostKey, InputEvent, KeyModifiers};
-use crate::keys::{HostKeys, KeyClaim};
+use crate::input::InputEvent;
+use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
+use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers, SurfaceHost};
 
 /// Per-client data every Wayland client carries.
 #[derive(Default)]
@@ -180,8 +181,10 @@ pub struct State {
     pub(crate) layers: crate::layer::Layers,
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
+    /// The buffers the hosted surfaces' frames are drawn from, by the frame they hold.
+    pub(crate) uploads: crate::uploads::Uploads,
     /// The outputs the hosted surfaces were last told of.
-    told_outputs: Vec<crate::output::HostedOutput>,
+    told_outputs: Vec<HostedOutput>,
     /// The connector the person made primary, as the configuration names it, whether or not it is
     /// lit right now.
     primary_output: Option<String>,
@@ -228,6 +231,9 @@ pub struct State {
     /// the desk draws a floating window's bar and its lift around it, and the window beneath the
     /// card is drawn around it, as a window under a floating one is.
     pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
+    /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
+    /// host drew and no longer draws is what the screen keeps until it is drawn again.
+    pub(crate) layer_counts: Vec<(usize, usize)>,
     /// The shadows and edges drawn so far.
     pub(crate) frame_images: crate::window_frame::FrameImages,
     /// The windows that closed, kept so the desktop can animate them away.
@@ -291,6 +297,10 @@ pub struct State {
     /// Whether the switch in flight still owes frames: the person is watching the desk move. The
     /// session says, frame by frame.
     pub(crate) switch_holding: AtomicBool,
+    /// The frames each window's client committed, by window id: a window still shows the same count,
+    /// and one whose app is drawing moves. A tool reads it to prove a desk is quiet or to count an
+    /// app's frames in a real session. The entry goes with the window.
+    pub(crate) committed: std::collections::HashMap<u64, u64>,
     /// The serial of the next frame drawn. Frames are retired in order, so a presenter says how far
     /// the display got by its serial.
     frame_serial: std::sync::atomic::AtomicU64,
@@ -313,6 +323,29 @@ fn shm_formats() -> Vec<smithay::reexports::wayland_server::protocol::wl_shm::Fo
     ]
 }
 
+/// The seat every client's input arrives on: a keyboard, a pointer and a touch screen. Its
+/// keyboard starts on the US layout, which always compiles; a person's own layout replaces it once
+/// settings reach the compositor. Stated outright, because an empty name would type the machine's
+/// own layout (`XKB_DEFAULT_*`) until then — on a machine set up in German, the first keymap every
+/// client gets would be German.
+fn seat(display: &DisplayHandle) -> (SeatState<State>, Seat<State>) {
+    let mut seat_state = SeatState::new();
+    let mut seat = seat_state.new_wl_seat(display, "seat0");
+    let us = XkbConfig {
+        rules: "evdev",
+        model: "pc105",
+        layout: "us",
+        variant: "",
+        options: Some(String::new()),
+    };
+    if let Err(error) = seat.add_keyboard(us, 400, 30) {
+        tracing::warn!(?error, "keyboard: default keymap did not compile");
+    }
+    seat.add_pointer();
+    seat.add_touch();
+    (seat_state, seat)
+}
+
 impl State {
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
@@ -320,24 +353,7 @@ impl State {
         let shm_state = ShmState::new::<Self>(display, shm_formats());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
-        let mut seat_state = SeatState::new();
-        let mut seat = seat_state.new_wl_seat(display, "seat0");
-        // The US layout always compiles; a person's layout replaces it once settings reach the
-        // compositor. Stated outright, because an empty name would type the machine's own layout
-        // (`XKB_DEFAULT_*`) until then — on a machine set up in German, the first keymap every
-        // client gets would be German.
-        let us = XkbConfig {
-            rules: "evdev",
-            model: "pc105",
-            layout: "us",
-            variant: "",
-            options: Some(String::new()),
-        };
-        if let Err(error) = seat.add_keyboard(us, 400, 30) {
-            tracing::warn!(?error, "keyboard: default keymap did not compile");
-        }
-        seat.add_pointer();
-        seat.add_touch();
+        let (seat_state, seat) = seat(display);
         let protocols = crate::protocols::Protocols::new(display);
         let selections = crate::selection::Selections::new(display, &protocols.primary_selection);
         crate::toplevel_icon::advertise(display);
@@ -358,6 +374,7 @@ impl State {
             layers: crate::layer::Layers::new(display),
             policy,
             hosts: Vec::new(),
+            uploads: crate::uploads::Uploads::default(),
             told_outputs: Vec::new(),
             primary_output: None,
             told_monitors: Vec::new(),
@@ -389,6 +406,7 @@ impl State {
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
             covers: std::collections::BTreeMap::new(),
+            layer_counts: Vec::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
@@ -414,6 +432,7 @@ impl State {
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
             switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency::default(),
             switch_holding: AtomicBool::new(false),
+            committed: std::collections::HashMap::new(),
             frame_serial: std::sync::atomic::AtomicU64::new(1),
             frames_presented: std::sync::atomic::AtomicU64::new(0),
             retired: std::sync::Mutex::new(None),
@@ -486,12 +505,12 @@ impl State {
 
     /// The outputs as hosted surfaces are told them: each one's logical rectangle and the scale it
     /// draws at.
-    pub(crate) fn hosted_outputs(&self) -> Vec<crate::output::HostedOutput> {
+    pub(crate) fn hosted_outputs(&self) -> Vec<HostedOutput> {
         self.space
             .outputs()
             .filter_map(|output| {
                 let rect = self.space.output_geometry(output)?;
-                Some(crate::output::HostedOutput {
+                Some(HostedOutput {
                     rect: (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
                     scale: output.current_scale().fractional_scale(),
                 })
@@ -589,13 +608,7 @@ impl State {
             .elements()
             .filter(|window| {
                 let holding = self.protocols.idle_inhibitors.iter().any(|surface| {
-                    surface.is_alive()
-                        && (window
-                            .toplevel()
-                            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-                            || window
-                                .x11_surface()
-                                .is_some_and(|x11| x11.wl_surface().as_ref() == Some(surface)))
+                    surface.is_alive() && surface_of(window).as_ref() == Some(surface)
                 });
                 holding
                     && self.space.element_location(window).is_some_and(|location| {
@@ -638,6 +651,7 @@ impl State {
             self.closing.remove(0);
         }
         self.closing.retain(|closing| closing.info.id != info.id);
+        self.committed.remove(&info.id);
         let snapshot = self.snapshots.take(info.id);
         self.closing.push(Closing {
             info,
@@ -797,6 +811,11 @@ impl State {
                 .iter()
                 .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
         }
+        // A layer surface over the windows (quick settings, a panel's popover) is drawn over every
+        // hosted surface, so the pointer on it is its own, as on the desk under it.
+        if self.layer_surface_under(point, true).is_some() {
+            return None;
+        }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
             self.hosts.iter().rposition(|host| {
@@ -853,8 +872,13 @@ impl State {
         {
             return;
         }
-        // Input changes what shows: hover, a press, the pointer itself.
-        self.mark_redraw_all();
+        // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
+        // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or
+        // the windows it moves), and a frame drawn for the key itself would hold that answer back
+        // to the display's next refresh.
+        if !matches!(event, InputEvent::Key { .. } | InputEvent::Switch { .. }) {
+            self.mark_redraw_all();
+        }
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {
@@ -903,6 +927,7 @@ impl State {
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]).
     pub(crate) fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+        self.sync_keyboard_owner();
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -913,6 +938,7 @@ impl State {
         };
         // evdev codes sit 8 below their XKB keycodes.
         let code = keycode.saturating_add(8);
+        let moves_caret = Cell::new(false);
         let routed = keyboard.input(
             self,
             code.into(),
@@ -938,11 +964,7 @@ impl State {
                 let latin = handle
                     .raw_latin_sym_or_raw_current_sym()
                     .unwrap_or(unmodified);
-                let text = if pressed {
-                    state.typed(keysym, modifiers)
-                } else {
-                    None
-                };
+                let text = pressed.then(|| state.typed(keysym, modifiers)).flatten();
                 let key = HostKey {
                     keycode,
                     pressed,
@@ -953,6 +975,14 @@ impl State {
                     text,
                     modifiers,
                 };
+                // Typing and the plain navigation keys move a field's caret; a chord and a
+                // modifier do not. What it moved waits for the field to commit before a surface
+                // opens at it.
+                moves_caret.set(
+                    !handle.modified_sym().is_modifier_key()
+                        && (key.text.is_some()
+                            || !(modifiers.ctrl || modifiers.alt || modifiers.logo)),
+                );
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
                         // A held modifier's release also reaches what else answers it: a surface
@@ -1008,6 +1038,9 @@ impl State {
                 {
                     self.key_delivered(&focus, keycode);
                     self.note_input_on(&focus);
+                    if moves_caret.get() {
+                        self.note_caret_may_move();
+                    }
                 }
             }
         }
@@ -1338,15 +1371,8 @@ impl State {
     /// Give the window with `id` the keyboard, for a seat's keys: it is not raised and stays
     /// inactive, so the person's desk looks as it did.
     pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
-        let surface = self.mapped_window(id).and_then(|window| {
-            window
-                .toplevel()
-                .map(|toplevel| toplevel.wl_surface().clone())
-                .or_else(|| crate::xwayland::x11_wl_surface(window))
-        });
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, surface, serial);
-        }
+        let surface = self.mapped_window(id).and_then(surface_of);
+        self.set_keyboard_focus(surface, serial);
     }
 
     pub(crate) fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -1398,13 +1424,7 @@ impl State {
         if let Some(toplevel) = window.toplevel() {
             toplevel.send_pending_configure();
         }
-        let surface = window
-            .toplevel()
-            .map(|toplevel| toplevel.wl_surface().clone())
-            .or_else(|| crate::xwayland::x11_wl_surface(window));
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, surface, serial);
-        }
+        self.set_keyboard_focus(surface_of(window), serial);
     }
 
     /// The modal dialog in front of `window` : its own modal dialog, or that dialog's, and so on.
@@ -1518,7 +1538,35 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all();
         }
-        // A card an app draws stays in front of the windows it floats over.
+        // A window floating over the desk stands in front of the strips' windows, a focused or
+        // maximized one included; the dialogs stay in front of the windows they belong to, and a
+        // card an app draws stays in front of them all.
+        let floats: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| {
+                describe(self, window).is_some_and(|info| self.covers.contains_key(&info.id))
+            })
+            .cloned()
+            .collect();
+        if !floats.is_empty() {
+            for window in floats {
+                self.space.raise_element(&window, false);
+            }
+            let dialogs: Vec<_> = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.parent().is_some())
+                })
+                .cloned()
+                .collect();
+            for window in dialogs {
+                self.space.raise_element(&window, false);
+            }
+        }
         let cards: Vec<_> = self
             .space
             .elements()
@@ -1551,6 +1599,14 @@ impl State {
             return;
         };
         if self.locked() || self.focused_window().is_some_and(|info| info.id == id) {
+            return;
+        }
+        // A panel over the windows that holds the keyboard keeps it while it shows: the window
+        // gets it back when the panel is hidden.
+        if self
+            .keyboard_focus()
+            .is_some_and(|focus| self.layers.shows_surface(&focus))
+        {
             return;
         }
         if let Some(window) = window_of(self, id) {
@@ -1613,6 +1669,11 @@ const X11_IDS: u64 = 1 << 40;
 const X11_DISPLAY_SHIFT: u32 = 32;
 
 /// The id of `window` , when it has one.
+/// The `wl_surface` a window draws into: its toplevel's, or an X11 window's once Xwayland told us.
+pub(crate) fn surface_of(window: &Window) -> Option<WlSurface> {
+    smithay::wayland::seat::WaylandFocus::wl_surface(window).map(std::borrow::Cow::into_owned)
+}
+
 pub(crate) fn window_id(state: &State, window: &Window) -> Option<u64> {
     if let Some(toplevel) = window.toplevel() {
         return window_id_of(toplevel.wl_surface());
@@ -1740,6 +1801,30 @@ impl State {
         Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
     }
 
+    /// The frames the window `id` 's client committed since it opened: a window that shows the same
+    /// thing keeps its count, so a desk that draws nothing between two reads has not moved.
+    pub(crate) fn committed_frames(&self, id: u64) -> u64 {
+        self.committed.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The window whose client draws with `root` , the surface of its toplevel or the surface an X11
+    /// window paints into.
+    fn committed_window(&self, root: &WlSurface) -> Option<u64> {
+        if let Some(id) = window_id_of(root) {
+            return Some(id);
+        }
+        self.space
+            .elements()
+            .chain(self.unmapped.iter())
+            .find(|window| {
+                window
+                    .x11_surface()
+                    .and_then(smithay::xwayland::X11Surface::wl_surface)
+                    .is_some_and(|surface| &surface == root)
+            })
+            .and_then(|window| describe(self, window).map(|info| info.id))
+    }
+
     /// The keys that type `ch` on the active layout, as the keymap itself says: what a synthesised
     /// keystroke for that character must press.
     pub(crate) fn stroke_for(&mut self, ch: char) -> Option<crate::typing::Stroke> {
@@ -1753,6 +1838,23 @@ impl State {
             // Every key a real keyboard sends arrives as an evdev code in this range; a keymap also
             // binds codes no keyboard sends.
             crate::typing::stroke_for(keymap, layout, ch, |code| (1..=255).contains(&code))
+        })
+    }
+
+    /// Where the active layout types each ASCII mark, by the keys [`Self::stroke_for`] presses.
+    pub(crate) fn typed_marks(&mut self) -> Vec<crate::typing::TypedMark> {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return Vec::new();
+        };
+        keyboard.with_xkb_state(self, |context| {
+            let Ok(xkb) = context.xkb().lock() else {
+                return Vec::new();
+            };
+            let layout = xkb.active_layout().0;
+            // Safety: the keymap reference never outlives the `Xkb` it borrows from, which the lock
+            // holds for this scan.
+            let keymap = unsafe { xkb.keymap() };
+            crate::typing::typed_marks(keymap, layout, |code| (1..=255).contains(&code))
         })
     }
 
@@ -1877,6 +1979,11 @@ impl CompositorHandler for State {
         self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
             let root = root_surface(surface);
+            // A frame this client drew, counted against its window: a still window keeps one count
+            // and an app that draws moves it, which is what a tool reads to tell the two apart.
+            if let Some(id) = self.committed_window(&root) {
+                *self.committed.entry(id).or_default() += 1;
+            }
             // A key this client was given is answered by its next commit.
             self.commit_answered(&root);
             // The icon a client set takes effect on this commit, like any other double-buffered
@@ -2317,12 +2424,16 @@ impl State {
 
     /// The window whose surface has keyboard focus.
     pub(crate) fn focused_window(&self) -> Option<WindowInfo> {
-        let focus = self.seat.get_keyboard()?.current_focus()?;
+        let toplevel = self.focused_element()?.toplevel()?;
+        Some(window_info(&self.display, &self.icons, toplevel))
+    }
+
+    /// The window, of a Wayland or an X11 client, whose surface the keyboard belongs to.
+    pub(crate) fn focused_element(&self) -> Option<&Window> {
+        let focus = self.keyboard_focus()?;
         self.space
             .elements()
-            .filter_map(Window::toplevel)
-            .find(|toplevel| toplevel.wl_surface() == &focus)
-            .map(|toplevel| window_info(&self.display, &self.icons, toplevel))
+            .find(|window| surface_of(window).as_ref() == Some(&focus))
     }
 
     /// The app of the window `surface` belongs to: its toplevel's app id. A surface of no window (a

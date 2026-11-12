@@ -35,7 +35,9 @@ impl AppBrokerState {
     /// exactly as the same agent's app action in that turn is admitted: the run the agent works
     /// for the turn's message, decided by [`TrackerRuns::authorize_action`] over the person's,
     /// the agent's and the run's live grants, and refused in the same words the app action
-    /// hears. A caller working no turn takes none of them.
+    /// hears. A caller working no turn takes none of them — unless it works in a run of its own
+    /// (`run`, an agent door connection's [`super::TaskRunHost`]): that run is what admits it,
+    /// turn or none, exactly as it admits the connection's app actions.
     ///
     /// A step whose grants ask first is a turn's question on the system's own sheet, through the
     /// one path the app action's ask takes ([`Self::conversation_gate`]): it is held here, and
@@ -45,18 +47,24 @@ impl AppBrokerState {
     /// twice.
     ///
     /// # Errors
-    /// The caller works no turn, the turn ended, the turn's grants refuse the step, or the
-    /// person declined it.
+    /// The caller works no turn and no run, the turn or run ended, its grants refuse the step,
+    /// or the person declined it.
     fn admit_turn_step(
         &self,
         caller: &Caller,
         workspace: &str,
         steps: &dyn HostStepServices,
         (descriptor, argument): (&tilo_actions::ActionDescriptor, &Option<String>),
-        turn: Option<&tilo_action_policy::turn::Turn>,
+        (run, turn): (
+            Option<&super::TaskRunHost>,
+            Option<&tilo_action_policy::turn::Turn>,
+        ),
         confirmed: bool,
     ) -> Result<TurnStep, ActionHostError> {
-        let (_, run) = self.turn_step_run(caller, workspace, turn)?;
+        // A connection's own run (an agent door's) asks its person on the desk's sheet, as its
+        // app actions do; a turn of an issue's run has no sheet a session step could ask on.
+        let door_run = run.is_some();
+        let (_, run) = self.turn_step_run(caller, workspace, (run, turn))?;
         if confirmed {
             return self
                 .authorize_turn_step(
@@ -95,6 +103,9 @@ impl AppBrokerState {
         // The turn's grants ask first. A turn that answers a person's message has no issue to
         // hang the question on: it goes to the system's own sheet, exactly as the same agent's
         // app action in the turn does (`super::conversation_ask`).
+        if door_run {
+            return Err(ActionHostError::confirmation_required());
+        }
         if !crate::services::is_conversation_turn(&run.issue) {
             // A run of an issue asks on its issue, which a session step has no sheet for:
             // nothing is asked, and the caller is told so at once — never that a question
@@ -161,13 +172,17 @@ impl AppBrokerState {
         }
     }
 
-    /// The run a turn's host step answers: the going run of `caller`'s agent for `turn`, and the
-    /// workspace's tracker that decides it.
+    /// The run a turn's host step answers: the going run of `caller`'s agent for `turn`, or the
+    /// run the connection works in (`run`, by its issue), and the workspace's tracker that
+    /// decides it.
     fn turn_step_run(
         &self,
         caller: &Caller,
         workspace: &str,
-        turn: Option<&tilo_action_policy::turn::Turn>,
+        (run, turn): (
+            Option<&super::TaskRunHost>,
+            Option<&tilo_action_policy::turn::Turn>,
+        ),
     ) -> Result<
         (
             Arc<dyn crate::services::TrackerRuns>,
@@ -176,11 +191,12 @@ impl AppBrokerState {
         ActionHostError,
     > {
         let actor = super::BrokerActor::for_caller(caller);
-        let turn = turn
-            .or_else(|| actor.turn())
-            .ok_or_else(|| ActionHostError::Refused {
+        let turn = turn.or_else(|| actor.turn());
+        if run.is_none() && turn.is_none() {
+            return Err(ActionHostError::Refused {
                 reason: "a session step is a step of a turn's: this agent works no turn".into(),
-            })?;
+            });
+        }
         let agent = actor.id().trim_start_matches("agent:");
         let service = self
             .tracker_runs(workspace)
@@ -192,7 +208,16 @@ impl AppBrokerState {
             .runs(workspace)
             .map_err(|reason| ActionHostError::Unavailable { reason })?
             .into_iter()
-            .find(|run| run.active && run.agent == agent && run.turn.as_ref() == Some(turn))
+            .find(|held| {
+                held.active
+                    && held.agent == agent
+                    && match run {
+                        // The run the connection works in, by its issue: its turn, if it has
+                        // one, is the run's own.
+                        Some(host) => held.issue == host.issue(),
+                        None => held.turn.as_ref() == turn,
+                    }
+            })
             .ok_or_else(|| ActionHostError::Refused {
                 reason: format!("the turn this step answers is no longer going ({agent})"),
             })?;
@@ -433,7 +458,7 @@ impl AppBrokerState {
                     workspace_id,
                     steps,
                     (&descriptor, &argument),
-                    turn,
+                    (run, turn),
                     false,
                 )
                 .map_err(abandon)?
@@ -474,7 +499,7 @@ impl AppBrokerState {
                 witnessed,
             )
         {
-            return Err(abandon(ActionHostError::ConfirmationRequired));
+            return Err(abandon(ActionHostError::confirmation_required()));
         }
         let mut request = request.clone();
         if by_turn && run_argument != argument {
@@ -515,7 +540,7 @@ impl AppBrokerState {
                     witnessed,
                 )
             {
-                return Err(ActionHostError::ConfirmationRequired);
+                return Err(ActionHostError::confirmation_required());
             }
             if by_turn {
                 // The turn still goes, and still lets this agent take this step, with what the
@@ -525,7 +550,7 @@ impl AppBrokerState {
                     workspace_id,
                     steps,
                     (&descriptor, &run_argument),
-                    turn,
+                    (run, turn),
                     turn_confirmed,
                 )? {
                     TurnStep::Run { .. } => {}
@@ -550,6 +575,10 @@ impl AppBrokerState {
             address,
             argument: run_argument.as_deref(),
             task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
+            run: request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref()),
         };
         if descriptor.contract.is_live() {
             let view = match steps.watch(&step) {
@@ -657,7 +686,6 @@ pub(crate) mod signed_test_support {
 
     struct NativeOwnerReceipts {
         owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
-        key: ed25519_dalek::SigningKey,
     }
 
     impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerReceipts {
@@ -673,10 +701,7 @@ pub(crate) mod signed_test_support {
             request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         ) -> tilo_peer_state::owner_commit::CommitFuture {
             let owner = self.owner.clone();
-            let key = self.key.clone();
-            Box::pin(async move {
-                owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
-            })
+            Box::pin(async move { owner.commit_effect_receipt(&request, tilo_clock::wall()) })
         }
     }
 
@@ -776,10 +801,7 @@ pub(crate) mod signed_test_support {
             .unwrap();
             let publisher = PeerPublisher::with_optional_owner_commit(
                 None,
-                Arc::new(NativeOwnerReceipts {
-                    owner,
-                    key: key.clone(),
-                }),
+                Arc::new(NativeOwnerReceipts { owner }),
             );
             let person = principal_id_for_root(certificate.user_public_key);
             workspace.set_owner(person.clone());
@@ -1696,7 +1718,7 @@ mod identity_admin_tests {
         ] {
             assert_eq!(
                 invoked(&state, &person, &request(step, None)),
-                Err(ActionHostError::ConfirmationRequired),
+                Err(ActionHostError::confirmation_required()),
                 "{step} needs the person's confirmation"
             );
         }
@@ -1967,7 +1989,7 @@ mod settings_records_tests {
         assert_eq!(minutes(), 1);
         assert_eq!(
             invoked(&state, &person, &lock_after(0, None)),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "never locking asks first"
         );
         assert_eq!(minutes(), 1);

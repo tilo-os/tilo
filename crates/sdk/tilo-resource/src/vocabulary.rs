@@ -147,7 +147,11 @@ pub type Builds = Arc<dyn Fn(&ActionArgs, i64) -> Result<Built, String> + Send +
 #[derive(Clone)]
 pub struct Declaration {
     pub id: &'static str,
+    /// What a person reads it by, in the language it was declared in.
     pub label: String,
+    /// The declared word [`Self::label`] is the source text of, read in the
+    /// person's language each time the action is published.
+    pub word: Option<crate::label::Word>,
     /// The other words people use for the action
     /// ([`tilo_actions::ActionSpec::keywords`]).
     pub keywords: Vec<String>,
@@ -199,6 +203,10 @@ pub struct Declaration {
     /// what the surface publishes of it. A parameter without one is
     /// published as its schema says.
     pub param_types: Vec<(&'static str, ParamFieldType)>,
+    /// The type of the value it answers with, when the code declares one
+    /// ([`JsonSchema::field_type`](crate::JsonSchema::field_type)): what the
+    /// surface publishes of its result.
+    pub result_type: Option<ParamFieldType>,
 }
 
 /// How a parameter's [`FieldType`](crate::FieldType) is worked out,
@@ -212,6 +220,14 @@ impl AsRef<Self> for Declaration {
 }
 
 impl Declaration {
+    /// What a person reads it by now, in their language.
+    #[must_use]
+    pub fn shown_label(&self) -> String {
+        self.word
+            .as_ref()
+            .map_or_else(|| self.label.clone(), crate::label::Word::read)
+    }
+
     /// The declaration `id` of the resource `vocabulary`, labelled `label`,
     /// taking `params`, built by `build`.
     pub(crate) fn new(
@@ -224,6 +240,7 @@ impl Declaration {
         Self {
             id,
             label,
+            word: None,
             keywords: Vec::new(),
             icon: None,
             description: None,
@@ -242,6 +259,7 @@ impl Declaration {
             build,
             invokes: None,
             param_types: Vec::new(),
+            result_type: None,
         }
     }
 }
@@ -255,6 +273,8 @@ pub struct Vocabulary {
     pub app: &'static str,
     /// [`Resource::LABEL`].
     pub label: &'static str,
+    /// [`Resource::CATALOGUE`].
+    pub catalogue: Option<&'static crate::label::Catalogue>,
     /// [`Resource::ACTION_TYPE`].
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
@@ -353,6 +373,7 @@ impl<R: Resource> VocabularyOf<R> {
         kind: R::KIND,
         app: R::APP_ID,
         label: R::LABEL,
+        catalogue: R::CATALOGUE,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
         record_table: R::RECORD_TABLE,

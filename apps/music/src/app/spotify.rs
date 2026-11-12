@@ -169,8 +169,12 @@ impl Music {
         else {
             return;
         };
-        let resource = tilo_actions::ResourceSpec::new("music.library", "music.library", "Music")
-            .with_action(spec.clone());
+        let resource = tilo_actions::ResourceSpec::new(
+            "music.library",
+            "music.library",
+            crate::i18n::CATALOG.t("music-resource-library"),
+        )
+        .with_action(spec.clone());
         let arguments = effect.arguments();
         let Ok(binding) =
             tilo_actions::ActionBinding::new(&resource, &spec, move |()| arguments.clone())

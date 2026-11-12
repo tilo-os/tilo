@@ -2,8 +2,8 @@
 //! when told something changed (or, where nothing can tell it, on the clock
 //! readers used to poll at).
 use super::{
-    Budget, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, Reply,
-    UNANNOUNCED_RECHECK, hold_until_stale, next_unannounced_recheck, read_unchanged,
+    Budget, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    UNANNOUNCED_RECHECK, hold_until_changed, next_unannounced_recheck, read_unchanged,
 };
 use std::cell::Cell;
 use std::sync::{
@@ -115,10 +115,9 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
+        record_kind: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
-        record_kind: None,
-        creation: None,
         revalidate: Arc::new(move || {
             if custody.load(Ordering::Acquire) {
                 Ok(())
@@ -261,7 +260,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
             false,
         )
         .is_none(),
-        "with the budget spent the wait answers Stale and the Open decides"
+        "with the budget spent the wait ends and the Open decides"
     );
     assert_eq!(service.captures.load(Ordering::Acquire), 0);
     drop(held);
@@ -283,8 +282,9 @@ async fn an_announced_wait_checks_again_only_when_woken() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
     let stale = Cell::new(false);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
+        None,
         || {},
         || {
             checks.set(checks.get() + 1);
@@ -311,7 +311,7 @@ async fn an_announced_wait_checks_again_only_when_woken() {
     stale.set(true);
     let started = tokio::time::Instant::now();
     wake.notify_one();
-    assert_eq!(held.await, Ok(Reply::Stale));
+    assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 3);
     assert!(started.elapsed() < UNANNOUNCED_RECHECK);
 }
@@ -321,8 +321,9 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
     let started = tokio::time::Instant::now();
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
+        None,
         || {},
         || {
             checks.set(checks.get() + 1);
@@ -330,7 +331,7 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
             Ok((checks.get() < 6).then_some(false))
         },
     );
-    assert_eq!(held.await, Ok(Reply::Stale));
+    assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 6);
     assert!(
         started.elapsed() <= UNANNOUNCED_RECHECK * 5,
@@ -342,8 +343,9 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
 async fn a_change_while_checking_is_not_missed() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let checks = Cell::new(0_u32);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
+        None,
         || {},
         || {
             checks.set(checks.get() + 1);
@@ -358,7 +360,7 @@ async fn a_change_while_checking_is_not_missed() {
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), held).await,
-        Ok(Ok(Reply::Stale))
+        Ok(Ok(()))
     );
     assert_eq!(checks.get(), 2);
 }
@@ -367,8 +369,9 @@ async fn a_change_while_checking_is_not_missed() {
 async fn a_replaced_wait_is_refused() {
     let wake = Arc::new(tokio::sync::Notify::new());
     let replaced = Cell::new(false);
-    let held = hold_until_stale(
+    let held = hold_until_changed(
         &wake,
+        None,
         || {},
         || {
             if replaced.get() {
@@ -399,4 +402,85 @@ async fn clocked_waits_share_their_recheck_ticks() {
     if tokio::time::Instant::now() < first {
         assert_eq!(next_unannounced_recheck(), first);
     }
+}
+
+/// A held read of a sealed record whose write this device holds no key for
+/// yet ends once the key arrives, with nothing written to the record.
+#[tokio::test]
+async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
+    use tilo_channels::{ChannelKeyAccess, testing};
+    let workspace = Arc::new(testing::Workspace::default());
+    let workspace_id = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let route = collab_types::ChannelRoute::new("so.tilo.notes", "note");
+    let policy = testing::Policy::readers([1, 2]);
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let [founder, reader] = [0_u8, 1].map(|id| {
+        let seed = id + 1;
+        let service = tilo_channels::ChannelEncryption::open(
+            tilo_channels::ChannelEncryptionConfig {
+                state: Arc::new(tilo_channels::ChannelsDir::new(
+                    dirs[usize::from(id)].path(),
+                )),
+                vault: channel_crypto::VaultKey::new([seed; 32]),
+                signer: Arc::new(testing::key(seed)),
+                role: tilo_channels::Role::Participant,
+            },
+            Box::new(testing::Directory {
+                policy: policy.clone(),
+            }),
+            Arc::new(tilo_channels::Gates::default()),
+        )
+        .unwrap();
+        let endpoint = testing::Endpoint::join(&workspace, workspace_id, usize::from(id));
+        (ChannelKeyAccess::new(service), endpoint)
+    });
+    let keys = tilo_channels::ChannelKeyProvider::default();
+    keys.set(Some(reader.0.clone()));
+    let keys_here = || {
+        keys.get()
+            .and_then(|access| access.record_keys(workspace_id, &route))
+            .is_some_and(|keys| keys.is_ok())
+    };
+    let mut now = tilo_clock::now();
+    let mut pass = |(access, endpoint): &(ChannelKeyAccess, testing::Endpoint)| {
+        now = now.checked_add(Duration::from_secs(60)).unwrap();
+        access.access_record(workspace_id, &route);
+        access.pump_at(endpoint, now);
+    };
+    // The founder's group exists; the reader has heard of it and holds none
+    // of its keys.
+    pass(&founder);
+    pass(&reader);
+    assert!(!keys_here());
+
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::Pending, false);
+    let held = hold_until_changed(
+        &wake,
+        Some(&keys),
+        || {},
+        || {
+            if keys_here() {
+                *service.owner.lock().unwrap() = Owner::At([2; 32]);
+            }
+            Ok(holds(&service, &custody, None, false).then_some(true))
+        },
+    );
+    tokio::pin!(held);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), held.as_mut())
+            .await
+            .is_err(),
+        "the record is still arriving"
+    );
+    // The founder admits the reader, whose service takes its Welcome in.
+    pass(&founder);
+    pass(&reader);
+    assert!(keys_here());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), held).await,
+        Ok(Ok(())),
+        "keys arriving end the wait, with nothing written to the record"
+    );
 }

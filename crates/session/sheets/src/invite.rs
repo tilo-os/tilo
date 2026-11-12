@@ -44,7 +44,7 @@ pub const CODE_MODULE_MAX_PX: u32 = 5;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct InviteLinks {}
 
-#[resource(kind = "invite.links", label = "Invitations")]
+#[resource(kind = "invite.links")]
 impl InviteLinks {}
 
 /// What the sheet asks of the shell.
@@ -454,14 +454,9 @@ pub fn answer(asked: &[InviteEffect], invitations: &dyn Invitations) {
     }
 }
 
-/// Carry out what the person pressed in the sheet since it was last shown,
-/// and say how many presses there were, so that a host shows the sheet again
-/// only when something was asked.
-pub fn drive(seat: &InviteSeat, invitations: &dyn Invitations) -> usize {
-    let asked = seat.take_asked();
-    let presses = asked.len();
-    answer(&asked, invitations);
-    presses
+/// Carry out what the person pressed in the sheet since it was last shown.
+pub fn drive(seat: &InviteSeat, invitations: &dyn Invitations) {
+    answer(&seat.take_asked(), invitations);
 }
 
 /// What the person picked in the sheet: the part to bring someone in at, and

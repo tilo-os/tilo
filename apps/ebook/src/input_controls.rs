@@ -28,6 +28,7 @@ use ui::widget::{
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
+use ui::widget::DrawChild;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
 /// text: each keystroke is a field edit of the note's text the library's
@@ -347,7 +348,7 @@ impl NumberControls {
             control.input.set_value(value);
         }
         control.input.apply_layout_external(rect);
-        control.input.draw(
+        control.input.draw_child(
             scene,
             transform,
             text_renderer,
@@ -462,7 +463,7 @@ impl NoteComposer {
         };
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name("Edit note")
+                .with_name(crate::resource::CATALOG.t("ebook-a11y-edit-note"))
                 .with_state(AccessState::new().modal(true))
                 .with_children(vec![
                     input,
@@ -504,7 +505,11 @@ impl NoteComposer {
 
     /// Open the editor on note `id`; it shows the note on the next sync.
     pub(crate) fn open(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
-        self.editor = Some(NoteEditor::new(id, "Write a note", library));
+        self.editor = Some(NoteEditor::new(
+            id,
+            &crate::resource::CATALOG.t("ebook-write-note"),
+            library,
+        ));
     }
 
     pub(crate) fn close(&mut self) {
@@ -570,7 +575,7 @@ impl NoteComposer {
         let pad = f64::from(rhythm.section);
         let inner_width = ui::num::f32_of_f64((width - pad * 2.0).max(1.0));
         let excerpt = if annotation.excerpt.trim().is_empty() {
-            "Selected passage".to_string()
+            crate::resource::CATALOG.t("ebook-selected-passage")
         } else {
             format!("\u{201C}{}\u{201D}", annotation.excerpt)
         };
@@ -607,13 +612,15 @@ impl NoteComposer {
         let card = Rect::new(x0, y0, x0 + width, y0 + height);
         let left = card.x0 + pad;
         let excerpt_y = card.y0 + pad + header + gap;
+        let delete_note = crate::resource::CATALOG.t("ebook-action-delete-note");
         let input_y = excerpt_y + f64::from(excerpt_height) + gap;
         let input_rect = Rect::new(left, input_y, card.x1 - pad, input_y + input_height);
         let button_y = input_rect.y1 + f64::from(rhythm.section);
-        let save_w = ButtonFace::new(Rect::ZERO, "Save")
+        let save = crate::resource::CATALOG.t("ebook-save");
+        let save_w = ButtonFace::new(Rect::ZERO, &save)
             .role(ButtonRole::Primary)
             .intrinsic_width(text_renderer, theme);
-        let delete_w = ButtonFace::new(Rect::ZERO, "Delete note")
+        let delete_w = ButtonFace::new(Rect::ZERO, &delete_note)
             .role(ButtonRole::Destructive)
             .intrinsic_width(text_renderer, theme);
         NoteLayout {
@@ -687,12 +694,14 @@ impl NoteComposer {
         self.delete = layout.delete;
         self.save = layout.save;
         let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let delete_note = crate::resource::CATALOG.t("ebook-action-delete-note");
+        let save = crate::resource::CATALOG.t("ebook-save");
         Button::paint(
             scene,
             transform,
             text_renderer,
             &on_panel,
-            &ButtonFace::new(self.delete, "Delete note")
+            &ButtonFace::new(self.delete, &delete_note)
                 .role(ButtonRole::Destructive)
                 .hovered(self.delete.contains(self.cursor)),
         );
@@ -701,7 +710,7 @@ impl NoteComposer {
             transform,
             text_renderer,
             &on_panel,
-            &ButtonFace::new(self.save, "Save")
+            &ButtonFace::new(self.save, &save)
                 .role(ButtonRole::Primary)
                 .hovered(self.save.contains(self.cursor)),
         );
@@ -931,7 +940,7 @@ impl SchemeColorSheet {
         };
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name("Choose colour")
+                .with_name(crate::resource::CATALOG.t("ebook-a11y-choose-colour"))
                 .with_bounds(self.panel)
                 .with_state(AccessState::new().modal(true))
                 .with_children(picker.accessibility().into_iter().collect()),
@@ -989,7 +998,7 @@ impl SchemeColorSheet {
             &spec,
         );
         picker.apply_layout_external(layout.body);
-        picker.draw(
+        picker.draw_child(
             scene,
             transform,
             text_renderer,

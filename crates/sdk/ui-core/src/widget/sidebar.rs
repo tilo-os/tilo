@@ -2,8 +2,9 @@
 //!
 //! A widget app uses [`crate::widget::NavShell`]; an app that paints its whole window itself holds
 //! a `SidebarDrawer` instead. The drawer owns the same decisions the shell makes, from the same
-//! metrics: docked beside the content while it fits above the content's minimum (shrinking toward
-//! its own minimum first), the eased reveal, and the person's show/hide choice per size class. Too
+//! metrics: docked beside the content while it fits above the content's minimum and the pane it
+//! leaves keeps a column's width ([`crate::widget::arrange::column_min_width`]), shrinking toward
+//! its own minimum first, the eased reveal, and the person's show/hide choice per size class. Too
 //! narrow to dock, a panel that asked for the push layout ([`SidebarDrawer::with_push`]: a list of
 //! rows the drawer would cover, as `NavShell` decides from the content's kind) takes turns with the
 //! content: open, the list fills the window ([`SidebarDrawer::is_push`]) and the toggle in the
@@ -57,7 +58,7 @@ pub struct SidebarDrawer {
     /// Authored at 1× (HIG §9.6, [`AuthoredExtent`]); resolved through the
     /// factors [`Self::scale_for`] caches.
     breakpoint: AuthoredExtent,
-    content_min_width: Option<AuthoredExtent>,
+    content_min: Option<ContentMinimum>,
     docked_width: AuthoredExtent,
     overlay_width: AuthoredExtent,
     /// Width left behind when collapsed while docked. `0.0` ⇒ fully hidden.
@@ -67,6 +68,10 @@ pub struct SidebarDrawer {
     /// handed to [`Self::scale_for`]; `1.0` until then.
     responsive_scale: f64,
     ui_scale: f64,
+    /// One `rem` in logical pixels ([`crate::widget::arrange::rem_of`]): the unit the width
+    /// classes are measured in, so the content beside the panel keeps a column's width at every
+    /// text size.
+    rem: f32,
     /// The `s2` gap an overlay drawer floats inside, from the same theme.
     float_inset: f64,
     flap: FlapState,
@@ -121,6 +126,15 @@ pub struct SidebarDrawer {
     sheet_grip: f64,
 }
 
+/// The minimum the content beside the panel keeps, and the width class it is in there: an authored
+/// minimum is a column's ([`crate::widget::arrange::column_min_width`]), and a content kind states
+/// its own ([`crate::widget::ContentKind::beside_sidebar_class`]).
+#[derive(Clone, Copy, Debug)]
+struct ContentMinimum {
+    extent: AuthoredExtent,
+    class: crate::widget::arrange::WidthClass,
+}
+
 /// The drawer's show/hide button in a painted header row: its rect, hover
 /// and press, and the platform the shortcut is spelled for.
 #[derive(Clone, Debug, Default)]
@@ -144,12 +158,13 @@ impl SidebarDrawer {
         Self {
             side: SidebarSide::Left,
             breakpoint: AuthoredExtent::text(DEFAULT_DRAWER_BREAKPOINT),
-            content_min_width: None,
+            content_min: None,
             docked_width: AuthoredExtent::text(DEFAULT_DRAWER_DOCKED_WIDTH),
             overlay_width: AuthoredExtent::text(DEFAULT_DRAWER_WIDTH),
             rail_width: AuthoredExtent::icon(0.0),
             responsive_scale: 1.0,
             ui_scale: 1.0,
+            rem: crate::tokens::typography::REFERENCE_BODY_PX,
             float_inset: f64::from(Spacing::BASE.s2),
             flap: FlapState::open_when_docked(),
             outer: Rect::ZERO,
@@ -199,15 +214,22 @@ impl SidebarDrawer {
     #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = AuthoredExtent::text(px);
-        self.content_min_width = None;
+        self.content_min = None;
         self
     }
-    /// Dock only while the content column keeps this authored minimum;
-    /// the docked panel shrinks toward its minimum width first. The actual
-    /// sidebar and icon rail widths remain independently scaled.
+    /// Dock only while the content column keeps this authored minimum, and
+    /// never narrower than a column
+    /// ([`crate::widget::arrange::column_min_width`]): a pane below that is
+    /// a phone's screen, so the panel folds behind the bar's toggle instead
+    /// of standing beside it. The docked panel shrinks toward its minimum
+    /// width first. The actual sidebar and icon rail widths remain
+    /// independently scaled.
     #[must_use]
     pub fn content_min_width(mut self, px: f64) -> Self {
-        self.content_min_width = Some(AuthoredExtent::text(px));
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(px),
+            class: crate::widget::arrange::WidthClass::Medium,
+        });
         self
     }
     /// Dock while the content keeps the minimum its kind needs
@@ -220,7 +242,11 @@ impl SidebarDrawer {
     #[must_use]
     pub fn content_kind(mut self, kind: crate::widget::ContentKind) -> Self {
         self.push = kind == crate::widget::ContentKind::List;
-        self.content_min_width(f64::from(kind.min_width(&Metrics::BASE)))
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(f64::from(kind.min_width(&Metrics::BASE))),
+            class: kind.beside_sidebar_class(),
+        });
+        self
     }
     /// The content is a column in its own right — a page or a cheatsheet a
     /// person keeps in view beside the panel — so the panel docks while it
@@ -230,6 +256,20 @@ impl SidebarDrawer {
     #[must_use]
     pub fn content_is_column(self, min_width: f64) -> Self {
         self.content_min_width(min_width)
+    }
+    /// The content is a surface drawn at whatever room it gets — pages
+    /// scaled to fit, a picture, a map — not a column of text, so it works
+    /// narrower than a column: the panel docks beside it while it keeps
+    /// `min_width`, and floats over it below that
+    /// ([`crate::widget::ContentKind::Canvas`]).
+    #[must_use]
+    pub fn content_surface(mut self, min_width: f64) -> Self {
+        self.push = false;
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(min_width),
+            class: crate::widget::ContentKind::Canvas.beside_sidebar_class(),
+        });
+        self
     }
     /// The narrowest the docked panel shrinks to beside the content before
     /// it floats: the panel's own minimum (`metrics.panel_min_width`) unless
@@ -313,7 +353,7 @@ impl SidebarDrawer {
     }
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = self.breakpoint.with_px(px);
-        self.content_min_width = None;
+        self.content_min = None;
     }
 
     /// Adopt the theme's scale so the authored breakpoint and the
@@ -324,6 +364,7 @@ impl SidebarDrawer {
     pub fn scale_for(&mut self, theme: &Theme) {
         self.responsive_scale = theme.responsive_scale();
         self.ui_scale = f64::from(theme.ui_scale);
+        self.rem = crate::widget::arrange::rem_of(theme);
         self.float_inset = f64::from(theme.tokens.spacing.s2);
         self.rail_column = if self.rail_labels.is_empty() {
             f64::from(theme.tokens.metrics.rail_width)
@@ -363,10 +404,21 @@ impl SidebarDrawer {
     /// The breakpoint as laid out (text-sized): with a content minimum,
     /// the panel at its narrowest beside that minimum.
     pub fn resolved_breakpoint(&self) -> f64 {
-        self.content_min_width.map_or_else(
+        self.resolved_content_min().map_or_else(
             || self.resolve_extent(self.breakpoint),
-            |minimum| self.narrowest_docked_width() + self.resolve_extent(minimum),
+            |minimum| self.narrowest_docked_width() + minimum,
         )
+    }
+
+    /// The content's minimum as laid out: its own, and never narrower than a column
+    /// ([`crate::widget::arrange::column_min_width`]). A pane below a column's width is a
+    /// phone's screen, so the panel folds behind the bar's toggle instead of standing beside it.
+    fn resolved_content_min(&self) -> Option<f64> {
+        self.content_min.map(|minimum| {
+            self.resolve_extent(minimum.extent).max(f64::from(
+                crate::widget::arrange::class_min_width(minimum.class, self.rem),
+            ))
+        })
     }
     /// The narrowest the docked panel shrinks to before it stops docking:
     /// its own minimum width ([`Self::panel_min_width`], or the docked width
@@ -390,10 +442,10 @@ impl SidebarDrawer {
     /// beside it.
     fn docked_width_in(&self, extent: f64) -> f64 {
         let docked = self.resolved_docked_width();
-        let Some(minimum) = self.content_min_width else {
+        let Some(minimum) = self.resolved_content_min() else {
             return docked;
         };
-        let beside = extent - self.resolve_extent(minimum);
+        let beside = extent - minimum;
         docked.min(beside).max(self.narrowest_docked_width())
     }
     /// The docked width as laid out (with the rail, where it has one).
@@ -911,9 +963,9 @@ impl SidebarDrawer {
         }
         let extent = self.outer.width();
         let maximum = self.resize_max_width + self.rail_column_width();
-        let maximum = self.content_min_width.map_or(maximum, |minimum| {
-            maximum.min((extent - self.resolve_extent(minimum)).max(0.0))
-        });
+        let maximum = self
+            .resolved_content_min()
+            .map_or(maximum, |minimum| maximum.min((extent - minimum).max(0.0)));
         let share = self.sidebar_rect.width() / extent;
         let (position, min, max) = match self.side {
             SidebarSide::Left => (share, 0.0, (maximum / extent).min(1.0)),
@@ -1140,32 +1192,73 @@ mod tests {
         );
     }
 
+    /// The content beside the panel is never a phone's screen: an authored minimum under a
+    /// column's width ([`crate::widget::arrange::column_min_width`]) is raised to one, so the panel
+    /// stops where the content still reads and the handle stays usable.
     #[test]
-    fn adaptive_sidebar_resize_keeps_the_content_minimum_and_handle_available() {
+    fn a_panel_keeps_a_column_for_the_content_however_narrow_its_authored_minimum() {
+        let theme = Theme::dark();
+        let column = f64::from(crate::widget::arrange::column_min_width(
+            crate::widget::arrange::rem_of(&theme),
+        ));
         for side in [SidebarSide::Left, SidebarSide::Right] {
             let mut drawer = SidebarDrawer::new()
                 .side(side)
                 .with_rail()
                 .content_min_width(360.0);
-            drawer.scale_for(&Theme::dark());
+            drawer.scale_for(&theme);
             let area = Rect::new(40.0, 20.0, 800.0, 740.0);
             drawer.resolve(area);
             drawer.snap(true);
             drawer.resolve(area);
+            assert!(drawer.is_docked(), "the panel docks beside a column");
+            assert_eq!(drawer.content_rect().width(), column);
+            assert!(
+                drawer.sidebar_rect().width() + column <= area.width() + 0.5,
+                "the panel and the content's column fit the window"
+            );
+            assert!(drawer.resize_accessibility().is_some());
+            // Asking for more gives the panel no more: what stands beside it is a column.
             let value = match side {
                 SidebarSide::Left => "90%",
                 SidebarSide::Right => "10%",
             };
-            assert!(drawer.perform_resize_action(
-                drawer.resize_target(),
-                &crate::a11y::Action::SetValue(value.into()),
-            ));
+            let target = drawer.resize_target();
+            drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
             drawer.resolve(area);
             assert!(drawer.is_docked(), "resize must not turn into an overlay");
-            assert_eq!(drawer.content_rect().width(), 360.0);
-            assert_eq!(drawer.list_rect().width(), 324.0);
-            assert!(drawer.resize_accessibility().is_some());
+            assert_eq!(drawer.content_rect().width(), column);
         }
+    }
+
+    /// A surface drawn to the room it gets (pages, a picture) is no column of text: the panel
+    /// docks beside it narrower than a column, down to the surface's own minimum, and floats over
+    /// it only below that.
+    #[test]
+    fn a_panel_docks_beside_a_surface_narrower_than_a_column() {
+        let theme = Theme::dark();
+        let column = f64::from(crate::widget::arrange::column_min_width(
+            crate::widget::arrange::rem_of(&theme),
+        ));
+        let surface = 360.0;
+        assert!(surface < column, "the surface's minimum is under a column");
+        let mut drawer = SidebarDrawer::new()
+            .right()
+            .docked_width(300.0)
+            .content_surface(surface);
+        drawer.scale_for(&theme);
+        let area = Rect::new(0.0, 0.0, 600.0, 700.0);
+        drawer.resolve(area);
+        drawer.snap(true);
+        drawer.resolve(area);
+        assert!(drawer.is_docked(), "the panel docks beside the surface");
+        assert!((drawer.content_rect().width() - surface).abs() < 0.5);
+        let narrow = Rect::new(0.0, 0.0, surface + 150.0, 700.0);
+        drawer.resolve(narrow);
+        assert!(
+            drawer.is_overlay(),
+            "below the surface's minimum the panel floats"
+        );
     }
 
     #[test]

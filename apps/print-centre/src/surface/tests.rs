@@ -52,7 +52,7 @@ ui::action_contract_tests! {
     seed: ui::automerge::AutoCommit::new(),
     registry: registry(),
     resources: |_| populated_resources(),
-    palette: ["Print a document", "Open print queue", "Find network printers", "Open printer"],
+    palette: ["Print document", "Open print queue", "Find network printers", "Open printer"],
 }
 
 /// Print Centre's own widget in a captured frame, without the window
@@ -182,7 +182,10 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         })
         .unwrap();
         let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Confirm cancel"), "{frame}");
+        assert!(
+            frame.contains(&crate::locales::CATALOG.t("print-centre-confirm-cancel")),
+            "{frame}"
+        );
 
         // Steps with nothing to act on are refused: no search found a
         // printer to add, no page was scanned, no document is set up.
@@ -828,6 +831,27 @@ fn returning_to_scanning_preserves_unsaved_edits_and_pending_work() {
     assert_eq!(centre.scan.pages.len(), 3);
     assert_eq!(centre.scan.pages[1].png, edited);
     assert_eq!(centre.scan.selected, 2);
+}
+
+#[test]
+fn a_scanned_page_is_decoded_by_the_toolkits_codec() {
+    // What the scanner wrote, decoded where the scan job runs: the page's
+    // own pixels, and its format is the codec's business, not a PNG-only
+    // decoder's.
+    let pixels: Vec<u8> = (0..4_u8)
+        .flat_map(|row| [row, 0, 0, 255].repeat(3))
+        .collect();
+    let png = ui::png::encode_rgba8(3, 4, &pixels).expect("the fixture encodes");
+    let page = decode_scanned_page(png.clone(), "eng", "English").expect("the page decodes");
+    assert_eq!((page.width, page.height), (3, 4));
+    assert_eq!(page.rgba.as_ref(), pixels.as_slice());
+    assert_eq!(page.png.as_ref(), png.as_slice());
+
+    let refused = match decode_scanned_page(b"not an image".to_vec(), "eng", "English") {
+        Err(refused) => refused,
+        Ok(page) => panic!("bytes that are no image are refused, not {:?}", page.width),
+    };
+    assert!(refused.contains("invalid image"), "{refused}");
 }
 
 #[test]

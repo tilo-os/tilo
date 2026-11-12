@@ -25,7 +25,7 @@ use crate::model::{
     ImageAnalysis, LibraryPhoto, MAX_LABELS, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
 };
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// Bring a library written before every picture was named by its content
 /// up to date. A picture's origin path is no longer stored, and a photograph
@@ -94,7 +94,6 @@ fn item_views(field: &str, _item: &Id) -> Vec<ui::tilo_actions::ResourceViewSpec
 
 #[resource(
     kind = "photos.library",
-    label = "Photos",
     children = PhotoLibrary::places,
     item_views = item_views,
     search = crate::search::library_search_entries,
@@ -170,7 +169,7 @@ impl PhotoLibrary {
     /// Remove from library.
     ///
     /// Removes the photograph and every album's mention of it.
-    #[action(item = photos, destructive)]
+    #[action(item = photos, destructive, label = "photos-confirm-remove")]
     pub fn remove_photo(&mut self, photo: &Id) -> Result<(), Refusal> {
         self.photos.remove(photo).ok_or(GONE)?;
         for (_, album) in self.albums.iter_mut() {
@@ -182,7 +181,7 @@ impl PhotoLibrary {
     /// Rotate right.
     ///
     /// Turns the photograph a quarter turn clockwise.
-    #[action(item = photos)]
+    #[action(item = photos, label = "photos-command-rotate-right")]
     pub fn rotate_right(&mut self, photo: &Id) -> Result<(), Refusal> {
         let photo = self.photos.get_mut(photo).ok_or(GONE)?;
         photo.edits = photo.edits.rotated_right();
@@ -192,7 +191,7 @@ impl PhotoLibrary {
     /// Rotate left.
     ///
     /// Turns the photograph a quarter turn anticlockwise.
-    #[action(item = photos)]
+    #[action(item = photos, label = "photos-command-rotate-left")]
     pub fn rotate_left(&mut self, photo: &Id) -> Result<(), Refusal> {
         let photo = self.photos.get_mut(photo).ok_or(GONE)?;
         photo.edits = photo.edits.rotated_left();
@@ -548,7 +547,9 @@ impl ResourceApp for PhotosShell {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Some(image) = crate::pixels::decode(file.bytes()) else {
+        // The header names the picture's size, which is all the record needs:
+        // its pixels are decoded off the frame when the window shows it.
+        let Some((width, height)) = crate::pixels::size(file.bytes()) else {
             tracing::warn!(
                 name = file.name(),
                 "photos: the launched file is not an image"
@@ -562,7 +563,7 @@ impl ResourceApp for PhotosShell {
                 return Vec::new();
             }
         };
-        let open = OpenImage::new(file.name(), image.w, image.h, hash);
+        let open = OpenImage::new(file.name(), width, height, hash);
         vec![import(&LibraryPhoto::from_image(open))]
     }
 
@@ -643,5 +644,25 @@ mod agent_disclosure_tests {
             &PhotosEffect::ReadLibraryAnalysis,
         );
         assert_eq!(analysis["phase"], "idle", "{analysis:#}");
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("photos-library"), "Bibliothek");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("photos-library"), "Library");
     }
 }

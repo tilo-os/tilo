@@ -1,6 +1,7 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
 use tilo_agent_participant::ReplicaActor;
+use tilo_session_client::Outbox;
 use ui::feedback::{Destination, Draft, Submission};
 
 async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
@@ -39,7 +40,7 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     )
     .unwrap();
     let mutation = collab_types::DocumentMutation::Snapshot(doc.save());
-    browser.peer.publish(route.clone(), &mutation).unwrap();
+    browser.peer.write(route.clone(), &mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
     | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
     browser
@@ -108,7 +109,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -130,7 +131,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    let mutation = queued.take_mutation().unwrap();
+    let mutation = queued.take_mutation().unwrap().unwrap();
     browser.peer.close();
     drop(browser);
     browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
@@ -200,7 +201,11 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    publish_participant(&mut browser, &route, &maintainer.take_mutation().unwrap());
+    publish_participant(
+        &mut browser,
+        &route,
+        &maintainer.take_mutation().unwrap().unwrap(),
+    );
     let before = resolved_status(&mut browser, &submission).await;
     browser.peer.close();
     drop(browser);
@@ -288,7 +293,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -365,7 +370,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .prepare_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
         )
@@ -438,9 +443,12 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
             ),
         ))
         .await;
-    assert!(
-        !matches!(triage.status, ReceiptStatus::Completed { .. }),
-        "triage needs Write, which a commenter does not have: {triage:?}"
+    assert_eq!(
+        triage.status,
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted
+        },
+        "triage is the record's, but needs more than a commenter holds: {triage:?}"
     );
     visitor.peer.close();
     owner_browser.peer.close();
@@ -578,7 +586,7 @@ fn submit_local_participant(
             false,
         )
         .unwrap();
-    if let Some(mutation) = replica.take_mutation() {
+    if let Some(mutation) = replica.take_mutation().unwrap() {
         publish_participant(browser, route, &mutation);
     }
 }
@@ -592,7 +600,7 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
         .iter()
         .map(|(_, bytes)| bytes.clone())
         .collect();
-    common::open_in(
+    crate::common::open_in(
         &route.cluster_id,
         &route.app_id,
         person,
@@ -610,7 +618,7 @@ fn publish_participant(
     route: &DocumentRoute,
     mutation: &collab_types::DocumentMutation,
 ) {
-    browser.peer.publish(route.clone(), mutation).unwrap();
+    browser.peer.write(route.clone(), mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
     | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
     browser

@@ -155,10 +155,10 @@ async fn once(
         return Outcome::Wait;
     }
     let dial = |via: TransportHint, reach: Reach| {
-        let key = identity.device_signing_key.clone();
+        let signer = Arc::clone(&identity.signer);
         async move {
             reach
-                .session(connect, &via, key)
+                .session(connect, &via, signer)
                 .await
                 .map(|linked| Dialled { linked, via })
         }

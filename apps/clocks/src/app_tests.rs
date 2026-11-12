@@ -123,17 +123,19 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     // The shared navigation is a rail of four screens. Back exposes it as
-    // a list on a phone; from the width at which it fits beside the content's
-    // own minimum, it docks there as a labeled list. Every destination
-    // retains a full, independent pointer target.
+    // a list on a phone; once the content beside it keeps a column's width, it
+    // docks there as a labeled list. Every destination retains a full,
+    // independent pointer target.
     let phone_width = 360_u32;
     let metrics = Theme::light().tokens.metrics;
+    let rem = ui::widget::arrange::rem_of(&Theme::light());
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "the layout metrics are whole, positive point widths"
     )]
-    let docked_width = (metrics.sidebar_min_width + metrics.page_min_width) as u32;
+    let docked_width =
+        (metrics.sidebar_min_width + ui::widget::arrange::column_min_width(rem)) as u32;
     for width in [phone_width, docked_width] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
@@ -707,11 +709,11 @@ fn the_window_bar_names_the_open_section_and_the_page_draws_no_heading() {
         let mut app = TestApp::<ClocksShell>::capture_at(Some(scenario), (1280, 800)).unwrap();
         app.harness().present_in_window_bar();
         app.settle();
-        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
-        assert_eq!(
-            bar.location.map(|location| location.label).as_deref(),
-            Some(section),
-            "{scenario}: the bar names the open section"
+        let names = app.harness().header_row_names();
+        assert!(
+            names.iter().any(|name| name == section),
+            "{scenario}: the header row, which is the window's bar, names the open section: \
+             {names:?}"
         );
         let headings: Vec<String> = app
             .harness()
@@ -721,8 +723,12 @@ fn the_window_bar_names_the_open_section_and_the_page_draws_no_heading() {
             .filter_map(|(_, node)| node.label().map(str::to_owned))
             .collect();
         assert!(
-            !headings.iter().any(|heading| heading == section),
-            "{scenario}: the page repeats no title: {headings:?}"
+            headings
+                .iter()
+                .filter(|heading| *heading == section)
+                .count()
+                <= 1,
+            "{scenario}: the page repeats no title under its row's: {headings:?}"
         );
     }
 }

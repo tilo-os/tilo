@@ -21,11 +21,11 @@
 use settings::categories::Category;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::Affine;
 
 use crate::support::{Window, click_category, selected, window, window_row, window_rows};
+use ui::widget::DrawChild;
 
 // Tall enough for the complete category corpus. Sidebar scrolling itself is
 // covered by Scrollable's integration tests; this suite exercises category
@@ -47,7 +47,7 @@ fn renders_something(app: &mut Window) -> bool {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::empty();
         let mut scene = Scene::new();
-        shell.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        shell.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         !scene.encoding().is_empty()
     })
     .expect("settings shows its shell")

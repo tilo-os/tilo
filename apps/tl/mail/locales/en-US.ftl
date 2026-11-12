@@ -20,6 +20,9 @@ d-b5k7mvka = Trouble
 
 d-33f3rqw2 = Online
 
+d-hzbwof46 = Fetched
+    .doc = When the account's mail was last taken in from its server, as the clock the person read it at: the epoch when it never was.
+
 d-jxc5rufs = Signature
     .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
 
@@ -28,6 +31,8 @@ d-ehmoyzk2 = Mailboxes
 d-qybqg4dl = Threads
 
 d-weesm3yb-filter-online = Online
+
+d-weesm3yb-filter-fetched = Fetched
 
 d-ecbhcqdr = Mailbox
     .doc = A mailbox of an account.
@@ -217,11 +222,15 @@ d-su4h67i5-filter-hold = Hold
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
 
+d-arnkrvgw = Check now
+    .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
+
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
 d-ygbvdl5l = New message
-    .doc = Starts a message from the first account.
+    .doc = Starts a message from the first account, where there is one: a window with no account offers nothing to press and says where an account comes from, rather than a control that cannot run.
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-hirareiw = Reply
     .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
@@ -243,21 +252,28 @@ d-q6ltvsjf = Forward
 
 d-eqvgypxr = Archive
     .doc = Archives the conversation: its messages leave the inbox.
+    .w-it-is-not-in-the-inbox = It is not in the inbox
 
 d-eef4pxgf = Move to inbox
     .doc = Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again.
+    .w-it-is-in-the-inbox = It is in the inbox
 
 d-taywgw3n = Move to
     .doc = Moves the conversation to another mailbox of its account.
+    .w-it-is-in-already = It is in { $name } already
 
 d-xytb2lle = Delete
     .doc = Deletes the conversation: its messages go to the trash.
+    .w-it-is-in-the-trash = It is in the trash
 
 d-le4lvs2c = Flag
     .doc = Flags or unflags the conversation.
+    .w-unflag = Unflag
+    .w-flag = Flag
 
 d-6bwt463c = Snooze
     .doc = Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open.
+    .w-pick-a-moment-still-to-come = Pick a moment still to come
 
 d-kl4ikisg = Snooze an hour
     .doc = Puts the conversation away for an hour, the snooze people reach for most.
@@ -270,18 +286,27 @@ d-wl2c3dxh = Bring back
 
 d-ck5k6uop = Label
     .doc = Gives the conversation a label, or takes one away: `on` says which.
+    .w-a-label-needs-a-name = A label needs a name
 
 d-vydc2hnq = Rename label
     .doc = Renames one of the person's labels, all the conversations that carry it with it.
+    .w-a-label-needs-a-name = A label needs a name
+    .w-you-have-a-label = You have a label { $name }
 
 d-phsy7vhs = Delete label
     .doc = Deletes one of the person's labels, and takes it off every conversation that carries it.
 
 d-xp4s2kl7 = Cancel scheduled send
     .doc = Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment.
+    .w-it-is-not-waiting-to-go = It is not waiting to go
+    .w-it-went-already = It went already
+    .w-scheduled-send-cancelled = Scheduled send cancelled
 
 d-xxxfkczs = Send later
     .doc = Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open.
+    .w-this-message-went-already = This message went already
+    .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-pick-a-moment-still-to-come = Pick a moment still to come
 
 d-jysss72s = Send tomorrow morning
     .doc = Sends the message at nine tomorrow, the moment people reach for most when they write in the evening and do not want it to arrive then.
@@ -291,24 +316,48 @@ d-sqtuwk6b = Mark all read
 
 d-gkqpzio6 = Mute
     .doc = Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is brought back, whatever its new messages do.
+    .w-unmute = Unmute
+    .w-mute = Mute
 
 d-trjwm3gb = Mark as unread
     .doc = Marks the conversation read, or unread again.
+    .w-mark-as-read = Mark as read
+    .w-mark-as-unread = Mark as unread
 
 d-7zk6ua6p = Send from
     .doc = Sends the message from another of the person's accounts.
+    .w-this-message-went-already = This message went already
 
 d-qrcwx7a6 = Delete draft
     .doc = Throws a message being written away.
 
 d-qcfc2rhb = Send
     .doc = Sends the message from its account.
+    .w-this-message-went-already = This message went already
+    .w-it-goes-to-nobody-yet = It goes to nobody yet
 
 d-twebu5cb = Undo send
     .doc = Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was.
+    .w-it-has-not-been-sent = It has not been sent
+    .w-it-went-already = It went already
+    .w-taken-back-before-it-went = Taken back before it went
 
 d-a4rv5wm6 = Answer
     .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted.
+    .w-say-something-first = Say something first
+
+d-dqdt6fce = Place title
+    .w-all-mail = All mail
+
+d-k2js7gyd = Delivery says
+    .w-taken-back-and-a-draft-again = Taken back, and a draft again
+    .w-sent = Sent
+    .w-sending = Sending
+    .w-not-sent = Not sent: { $reason }
+    .w-not-known-whether-it-was-sent = Not known whether it was sent
+    .w-sending-in-a-moment = Sending in a moment
+    .w-waiting-to-send = Waiting to send
+    .w-waiting-to-go-online = Waiting to go online: { $reason }
 
 d-gcixhwyt = New draft~present
 
@@ -346,6 +395,12 @@ d-4hds3dwy = Answer~present
 
 d-5wix2354 = Compose
     .w-to = To { $to }
+
+d-dhradxj7 = Account notice
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Can't reach { $name }
+    .w-last-fetched = { $reason }. Last fetched { $fetched }
+    .w-try-again = Try again
 
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Add a mail account in Settings

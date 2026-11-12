@@ -1903,6 +1903,42 @@ pub fn item_collections(record: &RecordDesc, value: &dyn Any) -> Vec<ItemCollect
     out
 }
 
+/// Every item the record `table` names holds, by the collection field holding
+/// it: the id and the label each item is offered under, in the order the
+/// collection keeps them. Nothing is left out: [`item_collections`] is the
+/// page a publication carries, which a record with thousands of items is not.
+#[must_use]
+pub fn record_items(
+    table: &'static ModelTable,
+    record: &dyn Any,
+) -> Vec<(&'static str, Vec<(crate::Id, String)>)> {
+    let Some(desc) = table.record() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (index, field) in desc.fields.iter().enumerate() {
+        let Some(items) = field.items else {
+            continue;
+        };
+        let Some(inner) = (desc.field)(record, index) else {
+            continue;
+        };
+        let Some(list) = (items.list)(inner) else {
+            continue;
+        };
+        let mut found = Vec::with_capacity(list.count());
+        for at in 0..list.count() {
+            let Some((id, _)) = list.item(at) else {
+                continue;
+            };
+            let label = (items.label_of_item)(inner, &id).unwrap_or_else(|| id.as_str().to_owned());
+            found.push((id, label));
+        }
+        out.push((field.name, found));
+    }
+    out
+}
+
 /// [`Fields::item_collection_sizes`](crate::Fields::item_collection_sizes)
 /// of a record.
 #[must_use]

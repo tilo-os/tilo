@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use collab_types::Ed25519PublicKey;
 use fs_protocol::{FileActor, FileProvenance, FileRecordId};
-use iroh::endpoint::{Endpoint, presets};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
 use crate::fs::QuickFS;
@@ -23,7 +22,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = test_relay::direct_endpoint().await;
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));

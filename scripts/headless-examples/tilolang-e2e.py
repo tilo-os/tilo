@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tilolang apps end to end, as real and independent Tilo apps.
 
-Builds the notes, chat, todo and today packages with `tilolang build`, installs
+Builds the notes, chat, tasks and today packages with `tilolang build`, installs
 them into a headless nested Tilo session (dist/dev/nested-session.sh) that
 renders on lavapipe and never opens this machine's GPU (`--software`), and
 checks through the semantic control surface (tilo-control) what an installed
@@ -16,24 +16,48 @@ app gets on a real system:
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
-  hosted-here the session's own workspace is hosted by this device: no app waits
-             on a host, each shows its own state as first opened (first-*.png)
+  hosts      each app's window holds none of its data (TILO_TILOLANG_HOSTED): its
+             instance runs in a tilolang host, and the apps of one publisher in one
+             workspace share one host process, handed every window's instance
+  hosted-here the session's own workspace is one this device holds, so no app waits
+             on a host: each shows its own state as first opened (first-*.png)
   snapshot   a PNG of the nested session per app, in OUT
+  windows    a second window of Tasks, opened as a person opens one from search (its row
+             with Ctrl+Enter), is a second window of the same process and its instance runs
+             in the same host; a task typed into either window shows in the other at once, and
+             each window names the controls of its own content where it stands
+  titles     each tab is named by the page its window shows, not by its app: the two windows of
+             Tasks read Today, the place both stand on, not Tasks, the app's name, so a person
+             reads which page a window is at without opening it (titles-window-*.png)
+  today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
+             show in Today's window, which holds none of them itself (today-*.png); one is
+             marked done by its box, a checkbox Tasks' window names ("Mark ... done"), another
+             from its row's menu, pressed by name as a tool presses it, and Today's "Morning
+             cleanup", pressed by name, runs on them and asks the person before changing Tasks
+             and Notes
+  places     a window grouped beside another, too narrow for Tasks' sidebar, still reaches its
+             places through its own toggle, pressed by name as a tool presses a control, though
+             another window goes by that name too: Inbox chosen there takes that window to the
+             Inbox, the other staying where it was (places-*.png)
+  reopened   a task Tasks holds before the session stops shows in Today's card after it starts
+             again and Today opens: Today reads what Tasks' record already held, not only what
+             arrives while it is open (today-reopened.png)
+  record-open a task no window shows opens from search: Enter on its row takes a window of
+             Tasks to it, the task as its page, its tab named by it; Ctrl+Enter opens a window
+             of its own beside, named by the task (record-open*.png)
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
   read       the door's `read` of tilolang Notes lists the workspace's records, and
              the notebook's read lists its notes by the ids a read takes
-  idle       each app untouched for 10 s, native Notes included: one that commits no
-             frame wakes no thread at all; one that animates commits one frame per
-             pose and no more
+  idle       each app untouched for 10 s, native Notes and the tilolang host that
+             runs the apps' instances included: every thread of them sleeps
   routes     the broker's route access, as the attested launch of an app: the
-             collaboration probe (crates/dev/collab-probe) is installed as
-             Today, whose surface declares that it reads Notes' kinds, and as
-             Todo, which declares no read. Today joins Notes' route read-only
-             and every write there is refused; Todo cannot join it at all.
-             This runs in a second start of the same throwaway session, with
-             the probe packages installed in place of Today and Todo.
+             collaboration probe (crates/dev/collab-probe) is installed as Today
+             (which declares that it reads Notes' kinds) and as Tasks (which
+             declares no read), in a second start of the same throwaway session.
+             Tasks cannot join Notes' route at all; Today joins it to read, and
+             its write is refused.
 
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -53,30 +77,131 @@ import json
 import os
 import re
 import shutil
-import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this checks and the tools that act in it: one harness for every
 # check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
-from real_apps import (BUILD, Failed, Session, app_id, prepare, run,  # noqa: E402
+from real_apps import (BUILD, Failed, Session, prepare, run,  # noqa: E402
                        start_session, stop_session, until)
 
+
+def app_id(name: str) -> str:
+    """The application id of the tilolang package `name` (its directory under apps/tl)."""
+    return f"so.tilo.lang.{name}"
+
+
 BIN = BUILD / "bin"
+DESK_RESOURCE = "desktop:desk"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
 PROBE_RUNTIME = "0.1.0+probe"
 # The routes the probe tries as each app: Today declares that it reads Notes'
-# kinds; Todo declares no read.
+# kinds; Tasks declares no read.
 PROBE_ROUTES = {
     "today": ["so.tilo.lang.notes", "so.tilo.lang.today"],
-    "todo": ["so.tilo.lang.notes"],
+    "tasks": ["so.tilo.lang.notes"],
 }
+
+
+# --- words ----------------------------------------------------------------------
+#
+# Every control and action is found by what the session names it in its own language: the words
+# a catalogue gives its key there, never English written into this check. A German session (LANG
+# =de_DE.UTF-8) presses "Morgenroutine" where an English one presses "Morning cleanup".
+
+def session_language() -> str:
+    """The language the session speaks, as the locale this check runs in names it (`de-DE`)."""
+    for name in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        value = os.environ.get(name, "").split(":")[0].split(".")[0]
+        if value and value not in ("C", "POSIX"):
+            return value.replace("_", "-")
+    return "en-US"
+
+
+LANGUAGE = session_language()
+
+
+def fluent(path: Path) -> dict[str, str]:
+    """The messages and attributes of the Fluent catalogue at `path` (`key`, `key.attr`), each its
+    pattern on one line, the default variant of a selector standing for the selector."""
+    found: dict[str, str] = {}
+    key = base = None
+    if not path.is_file():
+        return found
+    for line in path.read_text().splitlines():
+        entry = re.fullmatch(r"([A-Za-z][\w-]*) =\s?(.*)", line)
+        attribute = re.fullmatch(r"\s+\.([\w-]+) =\s?(.*)", line)
+        default = re.fullmatch(r"\s+\*\[[^\]]*\]\s?(.*)", line)
+        if entry:
+            base = key = entry.group(1)
+            found[key] = entry.group(2)
+        elif attribute and base:
+            key = f"{base}.{attribute.group(1)}"
+            found[key] = attribute.group(2)
+        elif default and key:
+            found[key] = re.sub(r"\{\s*\$[\w-]+\s*->\s*$", "", found[key]) + default.group(1)
+    return found
+
+
+def say(unit: str, key: str, language: str | None = None, **args) -> str:
+    """The words `key` reads in `language` (the session's) in the catalogues of `unit`, the
+    directory holding its `locales/`: its translation, else its source, with `args` placed."""
+    locales = REPO / unit / "locales"
+    language = language or LANGUAGE
+    shipped = [language, *sorted(p.stem for p in locales.glob(f"{language.split('-')[0]}-*.ftl"))]
+    words = next((fluent(locales / f"{each}.ftl")[key] for each in shipped
+                  if key in fluent(locales / f"{each}.ftl")), None)
+    words = words if words is not None else fluent(locales / "en-US.ftl").get(key)
+    if words is None:
+        raise Failed(f"{unit}'s catalogues hold no {key!r}")
+    for name, value in args.items():
+        words = re.sub(r"\{\s*\$" + name + r"\s*\}", str(value), words)
+    return words
+
+
+def window_language(name: str) -> str:
+    """The language a window of the tilolang app `name` reads in: the session's when the app
+    ships it, its source language otherwise (`tilo_history::window_language`)."""
+    locales = REPO / "apps/tl" / name / "locales"
+    if (locales / f"{LANGUAGE}.ftl").is_file():
+        return LANGUAGE
+    same = sorted(locales.glob(f"{LANGUAGE.split('-')[0]}-*.ftl"))
+    return same[0].stem if same else "en-US"
+
+
+def app_id_of(name: str, declared: str) -> str:
+    """The stable id the tilolang app `name` keeps its declaration `declared` under (`app.ids`)."""
+    for line in (REPO / "apps/tl" / name / "app.ids").read_text().splitlines():
+        left, _, right = line.partition(" = ")
+        if left.strip() == declared:
+            return right.strip()
+    raise Failed(f"apps/tl/{name} declares no {declared!r}")
+
+
+def tasks_place(key: str) -> str:
+    """What Tasks' window calls its place `key` (`today`, `inbox`): the filter's own words."""
+    return say("apps/tl/tasks", f"d-{app_id_of('tasks', 'Task')}-filter-{key}",
+               window_language("tasks"))
+
+
+def toolkit_word(name: str, key: str) -> str:
+    """The toolkit's word `key` as a window of the tilolang app `name` reads it."""
+    return say("crates/sdk/ui-core", key, window_language(name))
+
+
+def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
+    """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
+    view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
+    key = f"d-{app_id_of(name, declared)}" + (f".{attribute}" if attribute else "")
+    return say(f"apps/tl/{name}", key, window_language(name), **args)
 
 
 # --- /proc --------------------------------------------------------------------
@@ -92,11 +217,11 @@ def children(pid: int) -> list[int]:
 
 
 def descendants(pid: int) -> list[int]:
-    out, todo = [], [pid]
-    while todo:
-        for child in children(todo.pop()):
+    out, pending = [], [pid]
+    while pending:
+        for child in children(pending.pop()):
             out.append(child)
-            todo.append(child)
+            pending.append(child)
     return out
 
 
@@ -163,18 +288,6 @@ def switches(pid: int) -> dict[str, int]:
     return out
 
 
-def anon_kib(pid: int) -> int | None:
-    """The anonymous memory `pid` holds, in KiB."""
-    try:
-        status = Path(f"/proc/{pid}/status").read_text()
-    except OSError:
-        return None
-    for line in status.splitlines():
-        if line.startswith("RssAnon:"):
-            return int(line.split()[1])
-    return None
-
-
 def host_pids(session_pid: int) -> list[int]:
     """The tilolang hosts of the session."""
     return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-host")]
@@ -182,11 +295,11 @@ def host_pids(session_pid: int) -> list[int]:
 
 # --- checks ---------------------------------------------------------------------
 
-def check_registry(session: Session, names=APPS) -> dict:
+def check_registry(session: Session) -> dict:
     # A cold query starts the index's refresh and may answer before it has
     # every application (docs/headless-testing.md): ask again until it does.
     found = {}
-    for name in names:
+    for name in APPS:
         hits = until(f"{app_id(name)} among the session's applications", lambda: [
             a for a in session.actions(app_id(name))
             if a.get("provider") == "applications" and a.get("id") == app_id(name)
@@ -243,17 +356,483 @@ def check_processes(session: Session, session_pid: int) -> dict:
     return out
 
 
-def own_action(session: Session, name: str, title: str, kind: str):
-    for action in session.actions(title):
-        if (action.get("application") == app_id(name) and action.get("title") == title
-                and action.get("operation_kind") == kind and action["id"].startswith(app_id(name))):
-            return action
-    return None
+def check_hosts(session: Session, processes: dict, session_pid: int) -> dict:
+    """Every app's window is its window alone, and one host of the workspace and the apps'
+    publisher runs every window's instance."""
+    hosts = until("the workspace's tilolang host", lambda: host_pids(session_pid) or None, 30)
+    if len(hosts) != 1:
+        raise Failed(f"the apps of one publisher in one workspace run in {len(hosts)} hosts")
+    for app, seen in processes["apps"].items():
+        if environ(seen["pid"]).get("TILO_TILOLANG_HOSTED") != "1":
+            raise Failed(f"{app}'s window holds its own data: it was not launched as a hosted window")
+    def handed():
+        lines = log_lines(session, "tilolang instance handed over")
+        apps = {line.get("package_id") for line in lines}
+        return lines if all(app in apps for app in processes["apps"]) else None
+    lines = until("every window's instance handed to the host", handed, 30)
+    return {"host": hosts[0], "handed": len(lines)}
+
+
+def png_rgb(path: Path) -> tuple[int, int, int, bytes]:
+    """A snapshot's width, height, channels and decoded pixels."""
+    data = path.read_bytes()
+    pos, width, height, channels, packed = 8, 0, 0, 0, bytearray()
+    while pos + 12 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, payload = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, colour = struct.unpack(">IIBB", payload[:10])
+            channels = {2: 3, 6: 4}.get(colour, 0) if depth == 8 else 0
+        elif kind == b"IDAT":
+            packed += payload
+    if not channels:
+        raise Failed(f"{path} is no 8-bit RGB(A) PNG")
+    raw, stride = zlib.decompress(bytes(packed)), width * channels
+    out, above, offset = bytearray(), bytearray(stride), 0
+    for _ in range(height):
+        kind, row = raw[offset], bytearray(raw[offset + 1:offset + 1 + stride])
+        offset += stride + 1
+        for i in range(stride):
+            left = row[i - channels] if i >= channels else 0
+            corner = above[i - channels] if i >= channels else 0
+            if kind == 1:
+                row[i] = (row[i] + left) & 0xff
+            elif kind == 2:
+                row[i] = (row[i] + above[i]) & 0xff
+            elif kind == 3:
+                row[i] = (row[i] + (left + above[i]) // 2) & 0xff
+            elif kind == 4:
+                p = left + above[i] - corner
+                pa, pb, pc = abs(p - left), abs(p - above[i]), abs(p - corner)
+                row[i] = (row[i] + (left if pa <= pb and pa <= pc else above[i] if pb <= pc else corner)) & 0xff
+        out += row
+        above = row
+    return width, height, channels, bytes(out)
+
+
+def window_pixels(shot: tuple[int, int, int, bytes], rect: list[int]) -> bytes:
+    """The pixels of `rect`, `[x, y, width, height]` on the desktop, in the snapshot `shot`."""
+    width, height, channels, pixels = shot
+    x, y, w, h = rect
+    x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, width), min(y + h, height)
+    if x1 - x0 < 64 or y1 - y0 < 64:
+        raise Failed(f"a window at {rect} is not on the {width}x{height} desktop to be seen")
+    return b"".join(pixels[(row * width + x0) * channels:(row * width + x1) * channels]
+                    for row in range(y0, y1))
+
+
+def search_beside(session: Session, title: str, beside: bool = True) -> None:
+    """Open what is called `title` in a window of its own, as a person does: search
+    (Super+Space), its name, and Ctrl+Enter on its row; without `beside`, Enter opens it
+    where its app shows it."""
+    session.control({"op": "key_down", "key": "Super"})
+    session.control({"op": "key", "key": "Space"})
+    session.control({"op": "key_up", "key": "Super"})
+    session.control({"op": "type", "text": title})
+    def settled():
+        answer = session.control({"op": "search_rows"})["answer"]
+        if answer["query"] != title or answer["searching"]:
+            return None
+        rows = answer["rows"]
+        index = next((i for i, row in enumerate(rows) if row["title"] == title
+                      and "window" not in (row.get("kind") or "").lower()), None)
+        return (index, rows) if index is not None else None
+    index, rows = until(f"search's row for {title!r}", settled, 30)
+    for _ in range(index):
+        session.control({"op": "key", "key": "ArrowDown"})
+    if not beside:
+        session.control({"op": "key", "key": "Enter"})
+        return
+    session.control({"op": "modifiers", "ctrl": True})
+    try:
+        session.control({"op": "key", "key": "Enter"})
+    finally:
+        session.control({"op": "modifiers", "ctrl": False})
+
+
+def check_windows(session: Session, processes: dict, session_pid: int, out: Path) -> dict:
+    """A second window of Tasks, opened from search as a person opens one, is a window of the
+    process Tasks' first window is, and its instance runs in the host the first one's does. A
+    task typed into the first window shows in the second at once, and each window names the
+    controls of its own content: a tool or an assistive technology pressing one presses the
+    window it stands in."""
+    tasks = app_id("tasks")
+    first = [w for w in session.windows() if w.get("app_id") == tasks]
+    if len(first) != 1:
+        raise Failed(f"{tasks} shows {len(first)} windows before a second is asked for")
+    hosts = host_pids(session_pid)
+    def handed() -> int:
+        return len([line for line in log_lines(session, "tilolang instance handed over")
+                    if line.get("package_id") == tasks])
+    before_handed = handed()
+    search_beside(session, say("apps/tl/tasks", "d-so-tilo-lang-tasks"))
+    windows = until(f"a second window of {tasks}", lambda: (lambda shown: shown if len(shown) == 2
+                    else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
+    until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
+    procs = [p for p in descendants(session_pid) if environ(p).get("TILO_PACKAGE_ID") == tasks
+             and exe(p).endswith("/bin/tilolang-app")]
+    if procs != [processes["apps"][tasks]["pid"]]:
+        raise Failed(f"{tasks}'s second window started another process: {procs}")
+    if host_pids(session_pid) != hosts:
+        raise Failed(f"{tasks}'s second window's instance runs elsewhere: hosts {hosts} became "
+                     f"{host_pids(session_pid)}")
+    def shot(name: str | None) -> list[bytes]:
+        """Each window in front in turn, as it shows then: the strip shows one at a time. Without a
+        `name` nothing is captured: the pass only brings each window forward."""
+        seen = []
+        for i, window in enumerate(windows):
+            focus(session, window)
+            time.sleep(1.0)
+            if name is None:
+                continue
+            rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+            path = out / f"tasks-window-{i}-{name}.png"
+            session.control_cmd("snapshot", str(path))
+            seen.append(window_pixels(png_rgb(path), rect))
+        return seen
+    # A window brought forward stands where the strip's pan puts it, and the strip already holds the
+    # window it has just opened in view: this pass settles where each stands, so the two captures
+    # below compare what the windows show and not where the strip settled.
+    shot(None)
+    before = shot("before")
+    if shot("still") != before:
+        raise Failed(f"{tasks}'s windows change while nothing happens: nothing could tell an edit")
+    # Typed into the first window's own field, as a person adds a task there.
+    focus(session, windows[0])
+    time.sleep(0.5)
+    session.control({"op": "type", "text": "Water the plants"})
+    session.control({"op": "key", "key": "Enter"})
+    after = until("the task in both of Tasks' windows", lambda: (lambda now: now if all(
+        a != b for a, b in zip(now, before)) else None)(shot("after")), 30, 1.0)
+    # Then into the second: the workspace's committed read of the first task reached both
+    # instances, and each still sends what its person does next.
+    focus(session, windows[1])
+    time.sleep(0.5)
+    session.control({"op": "type", "text": "Call the plumber"})
+    session.control({"op": "key", "key": "Enter"})
+    until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
+        a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
+    # What each window offers by name, listed while it is the one in front: the desk names the
+    # controls of the window an app drew, so a window whose instance is not a tab of the desk's
+    # names nothing of its content at all.
+    typed = ["Water the plants", "Call the plumber"]
+    listed = {}
+    for window in windows:
+        names = window_controls(session, window)
+        listed[str(window["tab"])] = names
+        missing = [title for title in typed if title not in names]
+        if missing:
+            raise Failed(f"{tasks}'s window {window['tab']} names no control of its own: "
+                         f"{missing} not among the controls it lists: {names}")
+    return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
+            "controls": listed,
+            "process": procs[0], "host": hosts[0], "changed": len(after)}
+
+
+def check_titles(session: Session, out: Path) -> dict:
+    """Each tab is named by what its window shows, not by its app: the two windows of Tasks read
+    Today, the place both stand on, where both read Tasks, the app's name, before. A person reads
+    which page a window is at without opening it, and the app's own glyph says which app it is."""
+    tasks = app_id("tasks")
+    found = [w for w in session.windows() if w.get("app_id") == tasks]
+    if len(found) != 2:
+        raise Failed(f"{tasks} shows {len(found)} windows, not the two this check reads")
+    titles = {w["tab"]: w.get("title") for w in found}
+    today = tasks_place("today")
+    if set(titles.values()) != {today}:
+        raise Failed(f"{tasks}'s tabs read {titles}: a tab names its app, not the page its window "
+                     f"shows (both windows stand on Tasks' Today)")
+    # Both tabs as the strip shows them, each window in front in turn: titles-*.png.
+    for index, (tab, title) in enumerate(titles.items()):
+        window = next(w for w in found if w.get("tab") == tab)
+        focus(session, window)
+        time.sleep(1.0)
+        session.control_cmd("snapshot", str(out / f"titles-window-{index}.png"))
+    return {"titles": {str(tab): title for tab, title in titles.items()},
+            "page": today, "app_name": say("apps/tl/tasks", "d-so-tilo-lang-tasks")}
+
+
+def press_in(session: Session, window: dict, name: str) -> None:
+    """Press the control `name` `window` draws, by name, as a tool or an agent presses a control:
+    the press reaches the window in front, and never another window's control of that name."""
+    focus(session, window)
+    until(f"window {window['tab']} in front", lambda: any(
+        shown.get("tab") == window["tab"] and shown.get("active")
+        for shown in session.windows()), 30)
+    until(f"{name!r} among the controls of window {window['tab']}",
+          lambda: name in window_controls(session, window), 30)
+    session.click_named(name)
+
+
+def tasks_titles(session: Session) -> list[str]:
+    """What the tabs of Tasks' windows read, in the strip's order."""
+    return sorted(w.get("title") for w in session.windows() if w.get("app_id") == app_id("tasks"))
+
+
+def check_record_open(session: Session, out: Path) -> dict:
+    """A task no window shows opens from search. With both windows of Tasks on Today, Enter on an
+    Inbox task's row opens it where Tasks shows it: a window of Tasks goes to the Inbox, opens the
+    task's row into its page and comes forward, its tab named by the task, and no window is added.
+    Ctrl+Enter on the row then opens a window of its own beside it, as Ctrl+Enter opens an app's,
+    showing the task's page, in front and named by the task."""
+    tasks = app_id("tasks")
+    title = "Book the ferry"
+    def tasks_windows() -> list[dict]:
+        return [w for w in session.windows() if w.get("app_id") == tasks]
+    def shows_page(window: dict) -> None:
+        # The task's page stands in the window: the controls of its fields, which its row has not.
+        names: list[str] = []
+        def shows_task() -> bool:
+            names[:] = window_controls(session, window)
+            return toolkit_word("tasks", "date-field-add") in names
+        try:
+            until(f"window {window['tab']} showing the page of {title!r}", shows_task, 30)
+        except Failed:
+            raise Failed(f"window {window['tab']} named {title!r} shows no task's page: {names}") from None
+    before = tasks_windows()
+    if [w.get("title") for w in before] != [tasks_place("today")] * len(before):
+        raise Failed(f"Tasks' windows do not all stand on Today: {before}")
+    new_task = app_word("tasks", "new_task")
+    made = until(new_task, lambda: app_action(session, tasks, new_task, "Document"))
+    invoke_found(session, made, {"title": title})
+    search_beside(session, title, beside=False)
+    shown = until(f"a window of Tasks named {title!r}", lambda: next(
+        (w for w in tasks_windows() if w.get("title") == title and w.get("active")), None), 30)
+    if len(tasks_windows()) != len(before):
+        raise Failed(f"Enter opened another window: {tasks_windows()}")
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "record-open-in-place.png"))
+    shows_page(shown)
+    search_beside(session, title)
+    def opened_beside() -> dict | None:
+        new = [w for w in tasks_windows() if w["tab"] not in {b["tab"] for b in before}]
+        return new[0] if len(new) == 1 and new[0].get("title") == title else None
+    beside = until(f"a window of its own named {title!r}", opened_beside, 30)
+    if not beside.get("active"):
+        raise Failed(f"the window opened for the task is not in front: {beside}")
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "record-open-beside.png"))
+    shows_page(beside)
+    return {"in_place": {"tab": shown["tab"], "title": shown.get("title")},
+            "beside": {"tab": beside["tab"], "title": beside.get("title")},
+            "titles": tasks_titles(session)}
+
+
+def check_places(session: Session, out: Path) -> dict:
+    """A window grouped beside another is too narrow for Tasks' sidebar, and still reaches its
+    places: its own sidebar toggle shows them — pressed by name, as a tool presses a control, even
+    though another window goes by that name too — and Inbox chosen there takes that window to the
+    Inbox while the other stays where it was."""
+    tasks = app_id("tasks")
+    inbox, today = tasks_place("inbox"), tasks_place("today")
+    window = next(w for w in session.windows()
+                  if w.get("app_id") == tasks and w.get("title") == today)
+    def tabs() -> dict[str, str]:
+        return {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
+
+    others = {tab: title for tab, title in tabs().items() if tab != window["tab"]}
+    press_in(session, window, toolkit_word("tasks", "window-toolbar-show-sidebar"))
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "places-sidebar.png"))
+    press_in(session, window, inbox)
+    _ = until(f"window {window['tab']} on the Inbox, the other windows as they were",
+              lambda: (seen := tabs()).get(window["tab"]) == inbox
+              and all(seen.get(tab) == title for tab, title in others.items()), 30)
+    time.sleep(1.0)
+    session.control_cmd("snapshot", str(out / "places-inbox.png"))
+    return {"titles": tabs()}
+
+
+def window_controls(session: Session, window: dict) -> list[str]:
+    """The controls the desk names in `window`, with the window in front: what its app drew of its
+    own content — its rows, its lists — named where the window stands."""
+    focus(session, window)
+    until(f"window {window['tab']} in front", lambda: any(
+        shown.get("tab") == window["tab"] and shown.get("active")
+        for shown in session.windows()), 30)
+    time.sleep(0.5)
+    shown = next((shown for shown in session.windows() if shown.get("tab") == window["tab"]), None)
+    if shown is None:
+        raise Failed(f"window {window['tab']} is not on the desk to be read")
+    rect = shown.get("rect")
+    if rect is None:
+        # Not drawn yet: it names nothing, and a caller waiting for a name asks again.
+        return []
+    x, y, width, height = rect
+    return [target["name"] for target in session.targets()
+            if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
+
+
+def today_shown(session: Session, out: Path, name: str) -> bytes:
+    """Today's window in front, as it shows now, captured as today-`name`.png: its pixels."""
+    today = app_id("today")
+    window = next(w for w in session.windows() if w.get("app_id") == today)
+    focus(session, window)
+    time.sleep(1.0)
+    rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
+    path = out / f"today-{name}.png"
+    session.control_cmd("snapshot", str(path))
+    return window_pixels(png_rgb(path), rect)
+
+
+def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
+    """Capture Today's window before Tasks holds a task, into `held`."""
+    held.append(today_shown(session, out, "before"))
+    return {"before": str(out / "today-before.png")}
+
+
+def named(session: Session) -> list[str]:
+    """The controls the desk names now, by the names a tool presses them by."""
+    return [target["name"] for target in session.targets()]
+
+
+def check_today(session: Session, out: Path, before: bytes) -> dict:
+    """Today's Tasks card, which held nothing before Tasks held a task, shows the tasks typed
+    into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
+    them as its own controls. Two of them are finished in Tasks: one by its box, the other from its
+    row's menu, opened where the row stands and run by the command a tool presses by name, both
+    standing in Tasks' history. Its "Morning cleanup" is a control of that window too, pressed here
+    as a tool or an assistive technology presses it: with tasks done in Tasks it clears them and
+    files "Morning: 2 done" in Notes, or asks the person's leave to change those two apps, which
+    this check denies: an app's change of another app is made only with the person's leave
+    (`docs/architecture/apps.md`)."""
+    today = app_id("today")
+    held = ["Water the plants", "Call the plumber"]
+    # What Today's window offers by name: the card's rows, read off Tasks' record, and the
+    # cleanup its header shows.
+    focus(session, next(w for w in session.windows() if w.get("app_id") == today))
+    until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
+        title in shown for title in held) else None)(named(session)), 30)
+    cleanup = app_word("today", "morning_cleanup")
+    session.wait_target(cleanup)
+    done = mark_done(session, held[0])
+    menu = menu_complete(session, held[1])
+    # The tasks the two checks above finished: what the cleanup counts, in the words Today files
+    # its note with in the person's language.
+    finished = 2
+    note = app_word("today", "morning_cleanup", "w-morning-done", n=finished)
+    allow, deny = (say("crates/session/sheets", key) for key in ("portal-allow-once", "portal-deny"))
+    named_before = named(session)
+    # The cleanup, pressed on Today's window: the app runs it, which either files its note in
+    # Notes and clears the tasks done, or asks the person's leave for the two apps it changes.
+    session.click_named(cleanup)
+
+    def ran():
+        shown = named(session)
+        if note in shown:
+            return "answered"
+        return "consent" if allow in shown else None
+    how = until("Today's cleanup to run", ran, 30)
+    denied = 0
+    if how == "consent":
+        # Each question the cleanup asks is denied, as a person who gives no leave answers it.
+        quiet = time.monotonic() + 3
+        while time.monotonic() < quiet:
+            if allow in named(session):
+                session.click_named(deny)
+                denied += 1
+                quiet = time.monotonic() + 3
+            time.sleep(0.3)
+        for title in (title for title in held if title in named_before):
+            if title not in named(session):
+                raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
+        if note in named(session):
+            raise Failed("the note is named without the change it describes")
+    # What the person sees of it, as the pictures the desk drew before and after.
+    after = today_shown(session, out, "after")
+    width = 4  # a snapshot holds RGBA pixels
+    moved = sum(1 for i in range(0, min(len(after), len(before)), width)
+                if after[i:i + width] != before[i:i + width]) / max(1, len(before) // width)
+    return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
+            "note": note if how == "answered" else None,
+            "asked_consent": how == "consent", "denied": denied, "controls": len(named_before),
+            "moved": round(moved, 3), "done": done, "menu": menu}
+
+
+# The task Tasks holds when the session stops, which Today's card lists after it starts again.
+KEPT_TASK = "Book the dentist"
+
+
+def keep_task(session: Session) -> dict:
+    """Type a task into the window of Tasks on Today, due there and not done, and see it list it:
+    what Tasks' record holds when the session stops."""
+    tasks = app_id("tasks")
+    window = next(w for w in session.windows()
+                  if w.get("app_id") == tasks and w.get("title") == tasks_place("today"))
+    focus(session, window)
+    time.sleep(0.5)
+    session.control({"op": "type", "text": KEPT_TASK})
+    session.control({"op": "key", "key": "Enter"})
+    until(f"{KEPT_TASK!r} in Tasks' window", lambda: KEPT_TASK in window_controls(session, window), 30)
+    return {"task": KEPT_TASK}
+
+
+def check_reopened(session: Session, out: Path) -> dict:
+    """The session started again on the state the first start left, and Today opened in it:
+    Today's Tasks card lists the task Tasks' record held before the stop. Today reads what that
+    record already holds when it opens, not only what arrives while it is open."""
+    today = app_id("today")
+    window = session.launch(today)
+    until(f"{KEPT_TASK!r} in Today's card", lambda: KEPT_TASK in window_controls(session, window), 60)
+    today_shown(session, out, "reopened")
+    return {"task": KEPT_TASK, "window": {"group": window["group"], "tab": window["tab"]},
+            "shot": str(out / "today-reopened.png")}
+
+
+def mark_done(session: Session, title: str) -> dict:
+    """Mark the task `title` done by its box in Tasks' window, pressed by name as a screen reader
+    or an agent presses it: the box is a checkbox of its own, named for what it does. The workspace
+    takes the change, so it stands in Tasks' history; a change it refused would leave none."""
+    tasks = app_id("tasks")
+    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    box = say("crates/sdk/ui-core", "list-row-check", window_language("tasks"), title=title)
+    session.wait_target(box)
+    before = history_total(session, "tasks")
+    refused = len([line for line in session.log().splitlines()
+                   if "a change the workspace refuses" in line and tasks in line])
+    session.click_named(box)
+    after = until(f"{title!r} done in Tasks' history",
+                  lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
+    if len([line for line in session.log().splitlines()
+            if "a change the workspace refuses" in line and tasks in line]) > refused:
+        raise Failed(f"the workspace refused {title!r} marked done")
+    return {"box": box, "history": [before, after]}
+
+
+def menu_complete(session: Session, title: str) -> dict:
+    """A task's row menu, opened where the row stands, and the command in it a tool presses by
+    name as a screen reader presses it: Complete marks the task done, the menu closes on it, and
+    the change stands in Tasks' history — the workspace took it. Nothing of the window may name
+    Complete before the menu opens, so the press reaches the menu's command and no button of a
+    page that says the same word."""
+    tasks = app_id("tasks")
+    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    session.wait_target(title)
+    complete = app_word("tasks", "check", "w-complete")
+    shown = named(session)
+    if complete in shown:
+        raise Failed(f"the window names {complete} before {title!r}'s menu opens: {shown}")
+    session.click_named(title, verb="show-context-menu")
+    session.wait_target(complete)
+    before = history_total(session, "tasks")
+    session.click_named(complete)
+    after = until(f"{title!r} completed from its menu in Tasks' history",
+                  lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
+    if any(target["name"] == complete for target in session.targets()):
+        raise Failed(f"{title!r}'s menu stood open after {complete}")
+    return {"task": title, "command": complete, "history": [before, after]}
+
+
+def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
+    """Invoke the action the listing printed, as the tools do: its own provider and id."""
+    return session.invoke(found["provider"], found["id"], args)
 
 
 def history_total(session: Session, name: str) -> int:
-    history = until(f"{app_id(name)}'s history action", lambda: own_action(session, name, "History", "View"))
-    answer = session.invoke("app-actions", history["id"])
+    history = until(f"{app_id(name)}'s history action",
+                    lambda: app_operation(session, app_id(name), "history"))
+    answer = invoke_found(session, history)
     try:
         return answer["receipt"]["update"]["output"]["value"]["total"]
     except (KeyError, TypeError):
@@ -262,7 +841,8 @@ def history_total(session: Session, name: str) -> int:
 
 def check_actions(session: Session) -> dict:
     out = {}
-    news = {"notes": "New note", "chat": "New chat", "todo": "New item"}
+    news = {name: app_word(name, action) for name, action in
+            [("notes", "new_note"), ("chat", "new_channel"), ("tasks", "new_task")]}
     for name in APPS:
         published = until(
             f"{app_id(name)}'s actions",
@@ -270,9 +850,10 @@ def check_actions(session: Session) -> dict:
         )
         out[app_id(name)] = {"published": len(published)}
     for name, title in news.items():
-        action = until(f"{app_id(name)}'s {title!r}", lambda: own_action(session, name, title, "Document"))
+        action = until(f"{app_id(name)}'s {title!r}",
+                       lambda: app_action(session, app_id(name), title, "Document"))
         before = history_total(session, name)
-        state = session.invoke("app-actions", action["id"])["receipt"]["update"]["state"]
+        state = invoke_found(session, action)["receipt"]["update"]["state"]
         after = until(f"{title!r} in {app_id(name)}'s history",
                       lambda: (lambda t: t if t > before else None)(history_total(session, name)), 15)
         out[app_id(name)].update(invoked=title, state=state, history=[before, after])
@@ -286,14 +867,30 @@ def value_of(answer: dict):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
 
-def app_action(session: Session, app: str, title: str):
-    """The first action called `title` that the window of `app` publishes. Its application is
-    `app` exactly: so.tilo.notes never matches so.tilo.lang.notes. (An app out of focus lists
-    its actions under directory ids, which do not start with the app's id.)"""
-    for action in session.actions(title):
-        if action.get("application") == app and action.get("title") == title:
+def app_operation(session: Session, app: str, operation: str):
+    """The action `operation` (`history`, `read`, `activate-window`) the window of `app`
+    publishes, by the operation it names whatever language its title reads in. Its application is
+    `app` exactly."""
+    for action in session.actions(""):
+        if action.get("application") == app and action.get("operation") == operation:
             return action
     return None
+
+
+def app_action(session: Session, app: str, title: str, kind: str | None = None):
+    """The first action called `title` that the window of `app` publishes, of the kind its effect
+    has when `kind` names one (`View`, `Document`). Its application is `app` exactly: so.tilo.notes
+    never matches so.tilo.lang.notes."""
+    for action in session.actions(title):
+        if (action.get("application") == app and action.get("title") == title
+                and kind in (None, action.get("operation_kind"))):
+            return action
+    return None
+
+
+def focus(session: Session, window: dict) -> None:
+    """Bring the tab of `window` to the front, as the desk's own verb does."""
+    session.invoke("so.tilo.session", f"{DESK_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
 def check_native(session: Session, out: Path) -> dict:
@@ -303,9 +900,9 @@ def check_native(session: Session, out: Path) -> dict:
                     lambda: {w.get("app_id"): w for w in session.windows() if w.get("app_id") == NATIVE})
     session.answering(NATIVE, 30)
     # Connected: its window publishes its actions.
-    until(f"{NATIVE}'s actions", lambda: app_action(session, NATIVE, "Show this window"), 60)
+    until(f"{NATIVE}'s actions", lambda: app_operation(session, NATIVE, "activate-window"), 60)
     w = windows[NATIVE]
-    session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
+    focus(session, w)
     time.sleep(0.5)
     path = out / "native-notes.png"
     session.control_cmd("snapshot", str(path))
@@ -316,8 +913,8 @@ def check_activation(session: Session) -> dict:
     """"Show this window" answers for a tilolang app as it does for the native app."""
     out = {}
     for app in (NATIVE, app_id("notes")):
-        action = until(f"{app}'s 'Show this window'", lambda: app_action(session, app, "Show this window"))
-        out[app] = value_of(session.invoke("app-actions", action["id"]))
+        action = until(f"{app}'s 'Show this window'", lambda: app_operation(session, app, "activate-window"))
+        out[app] = value_of(invoke_found(session, action))
     if out[app_id("notes")] != out[NATIVE]:
         raise Failed(f"'Show this window' answers differently from native Notes: {out}")
     return out
@@ -327,25 +924,25 @@ def check_read(session: Session) -> dict:
     """An agent or a script reads what a tilolang app holds through the door's `read`, as it
     reads a native app's content: the workspace's records, then one of them by its id."""
     action = until("tilolang Notes' 'Read the content'",
-                   lambda: app_action(session, app_id("notes"), "Read the content"))
-    answer = value_of(session.invoke("app-actions", action["id"]))
+                   lambda: app_operation(session, app_id("notes"), "read"))
+    answer = value_of(invoke_found(session, action))
     # Notes' root record, whatever its type is called: the one record of the app's own kinds.
     prefix = f"tl.{app_id('notes')}."
     notebook = next((r for r in answer.get("records", []) if r.get("kind", "").startswith(prefix)), None)
     if notebook is None:
         raise Failed(f"the workspace's read lists no record of Notes: {json.dumps(answer)[:2000]}")
     kind = notebook["kind"]
-    read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
+    read = value_of(invoke_found(session, action, {"item": notebook["item"]}))
     # The collection of notes, whatever the root calls it: its field listing Notes' notes.
     notes = next((f for f in read.get("fields", {}).values() if isinstance(f, dict)
                   and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
-    native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
+    native = until("native Notes' 'Read the content'", lambda: app_operation(session, NATIVE, "read"))
     return {
         "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},
-        "native": sorted(value_of(session.invoke("app-actions", native["id"]))),
+        "native": sorted(value_of(invoke_found(session, native))),
     }
 
 
@@ -353,7 +950,7 @@ def snapshots(session: Session, windows: dict, out: Path, prefix: str = "") -> d
     shots = {}
     for name in APPS:
         w = windows[app_id(name)]
-        session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
+        focus(session, w)
         time.sleep(0.5)
         path = out / f"{prefix}{name}.png"
         session.control_cmd("snapshot", str(path))
@@ -368,56 +965,38 @@ def native_pid(session_pid: int) -> int | None:
 
 
 def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
-    """Every app, native Notes among them, left untouched for 10 s. An app that commits no frame
-    is settled, and every thread of it sleeps: zero context switches. An app that commits frames
-    is animating, which in this session is only the connecting spinner of an app whose
-    workspace never syncs and that holds nothing to show (Today; native Notes): one frame per
-    pose of the spinner and no more, with its context switches per frame recorded."""
+    """Every app, native Notes and the tilolang host that runs the apps' instances, left untouched
+    for 10 s: every thread of them sleeps. Nothing animates here and this session reports no
+    per-window frame count, so a thread that woke woke for work nobody asked for."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
     native = native_pid(session_pid)
     if native is None:
         raise Failed("native Notes is not running to be held to the same idle")
     pids[NATIVE] = native
-    before = {app: switches(pid) for app, pid in pids.items()}
-    seqs = {app: frame_seq(session, app) for app in pids}
-    start = time.monotonic()
+    hosts = host_pids(session_pid)
+    if not hosts:
+        raise Failed("no tilolang host runs the apps' instances to be held to the same idle")
+    pids.update({f"host {host}": host for host in hosts})
+    before = {who: switches(pid) for who, pid in pids.items()}
     time.sleep(seconds)
-    elapsed = time.monotonic() - start
-    poses = elapsed * INDICATOR_POSES_PER_SECOND
     out, problems = {}, []
-    for app, pid in pids.items():
+    for who, pid in pids.items():
         after = switches(pid)
-        frames = frame_seq(session, app) - seqs[app]
-        woke = {t: after[t] - before[app].get(t, 0) for t in after if after[t] != before[app].get(t, 0)}
-        total = sum(woke.values())
-        out[app] = {"frames": frames, "switches": total, "threads": woke}
-        if frames == 0 and woke:
-            problems.append(f"{app} drew nothing and woke: {woke}")
-        elif frames > poses + 1:
-            problems.append(f"{app} committed {frames} frames in {elapsed:.1f} s, more than its "
-                            f"spinner's {poses:.0f} poses")
-        if frames:
-            out[app]["switches_per_frame"] = round(total / frames, 1)
+        woke = {t: after[t] - before[who].get(t, 0) for t in after if after[t] != before[who].get(t, 0)}
+        out[who] = {"switches": sum(woke.values()), "threads": woke}
+        if woke:
+            problems.append(f"{who} woke with nothing to do: {woke}")
     if problems:
         raise Failed(f"{'; '.join(problems)} ({json.dumps(out)})")
     return out
-
-
-def frame_seq(session: Session, app: str) -> int:
-    frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
-    return max((f.get("frame_seq") or 0 for f in frames if f["app_id"] == app), default=0)
-
-
-# The poses a second of a looping indicator (ui_core::animation::INDICATOR_STEP).
-INDICATOR_POSES_PER_SECOND = 30
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def log_lines(session: Session, pattern: str) -> list[dict]:
-    """The shell log's tracing lines matching `pattern`, each as its `key=value` fields."""
+    """The session log's tracing lines matching `pattern`, each as its `key=value` fields."""
     out = []
     for line in ANSI.sub("", session.log()).splitlines():
         if re.search(pattern, line):
@@ -425,26 +1004,24 @@ def log_lines(session: Session, pattern: str) -> list[dict]:
     return out
 
 
-def presented(session: Session, app: str) -> bool:
-    """Whether `app` is up and answering, its window painted."""
-    return session.answering(app, 30)
-
-
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
-    """The session's own workspace is hosted by this device: its apps wait on no other host
-    (it syncs with nothing, or with this device's own workspace host, which is there
-    already), and each shows its own state at once."""
-    told = session.control_json("state-dump")["workspace_sync"]
-    waiting = [workspace for workspace in told if workspace["state"] not in (None, "synced")]
+    """The session's own workspace is hosted by this device: this device holds it (the desk's
+    dump names it among the workspaces kept here, not as a replica still on its way from
+    another device), so its apps wait on no host and each shows its own state at once."""
+    state = session.state_dump()
+    held = {row["workspace"] for row in state.get("held_workspaces") or []}
+    waiting = [w["name"] or w["room"] for w in state["workspace_tree"]["workspaces"]
+               if w["id"] not in held]
     if waiting:
-        raise Failed(f"the session's own workspace waits on a host: {waiting}")
-    return {"workspace_sync": told,
+        raise Failed(f"the session's own workspace is held by another device, so its apps wait "
+                     f"on that host: {waiting}")
+    return {"held_workspaces": state["held_workspaces"],
             "snapshots": snapshots(session, windows, out, "first-")}
 
 
 def probe_packages(state: Path, out: Path) -> list[Path]:
     """The probe as Today (whose surface declares that it reads Notes' kinds)
-    and as Todo (which declares no read): each package is the app's own, with
+    and as Tasks (which declares no read): each package is the app's own, with
     the probe as its entrypoint and the routes to try in its payload. Bakes the
     probe's runtime bundle into the session, signed by its runtime publisher."""
     probe = REPO / "target/debug/tilo-collab-probe"
@@ -480,27 +1057,40 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     return tapps
 
 
+def open_probes(session: Session) -> None:
+    """The probe packages up, each with a window: one the desk already shows is left to it (a
+    workspace's record says what was open in it), the rest opened as a person opens an app."""
+    def up():
+        windows = {window.get("app_id") for window in session.windows()}
+        missing = [name for name in PROBE_ROUTES if app_id(name) not in windows]
+        for name in missing:
+            opened = next((action for action in session.actions(app_id(name))
+                           if action.get("provider") == "applications"
+                           and action.get("id") == app_id(name)), None)
+            if opened is not None:
+                session.invoke("applications", opened["id"])
+        return windows if not missing else None
+    until("a window of each probe package", up, 120)
+
+
 def check_routes(session: Session) -> dict:
-    """Launch the probe as Today and as Todo and read what the broker let
+    """Launch the probe as Today and as Tasks and read what the broker let
     each do on the routes it tried."""
-    # As in the first start, the applications are listed before any opens:
-    # an app opened in the session's first moments, before its broker has
-    # bound, is refused ("native app authorship broker unavailable").
-    check_registry(session, [*PROBE_ROUTES, "notes"])
-    for name in PROBE_ROUTES:
-        session.invoke("applications", app_id(name))
+    open_probes(session)
     pattern = re.compile(r"\[app (\S+) stdout\] probe: ROUTE (\S+) (.*)")
+    # Each probe's answer on each route it tries: a log line said twice is one answer.
+    wanted = {(app_id(who), route) for who, routes in PROBE_ROUTES.items() for route in routes}
     def answered():
         lines = [m.groups() for m in pattern.finditer(session.log())]
-        return lines if len(lines) >= sum(map(len, PROBE_ROUTES.values())) else None
+        return lines if wanted <= {(who, route) for who, route, _ in lines} else None
     lines = until("the probes' route answers", answered, 60)
     result = {f"{who} -> {route}": answer for who, route, answer in lines}
     today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
-    todo = result.get(f"{app_id('todo')} -> {app_id('notes')}", "")
+    tasks = result.get(f"{app_id('tasks')} -> {app_id('notes')}", "")
     if not (today.startswith("JOINED") and "WRITE-REFUSED" in today and "changes nothing" in today):
         raise Failed(f"Today's declared read of Notes was not a read-only join: {today!r}")
-    if not todo.startswith("JOIN-REFUSED"):
-        raise Failed(f"Todo, which declares no read of Notes, joined its route: {todo!r}")
+    if not tasks.startswith("JOIN-REFUSED"):
+        raise Failed(f"Tasks, which declares no read of Notes, joined its route: {tasks!r}")
     return result
 
 
@@ -524,10 +1114,13 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="notes")
     running["proc"] = proc
     pid = proc.pid
+    # Today's window before Tasks holds a task, which its card is held to after.
+    today_before: list[bytes] = []
     ok = run_checks(summary, [
         ("registry", lambda: check_registry(session)),
         ("launch", lambda: launch_all(session)),
         ("processes", lambda: check_processes(session, pid)),
+        ("hosts", lambda: check_hosts(session, summary["checks"]["processes"], pid)),
         # Before anything is in them: the session's own workspace is this device's to
         # host, so no app waits on a host and each shows its own state.
         ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),
@@ -536,18 +1129,38 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("native", lambda: check_native(session, out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),
+        # Before the checks that type into the desk: every app's threads are held to sleeping
+        # on a desk no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
+        ("today-before", lambda: hold_today(session, out, today_before)),
+        ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),
+        ("titles", lambda: check_titles(session, out)),
+        ("today", lambda: check_today(session, out, today_before[0])),
+        ("kept", lambda: keep_task(session)),
+        # After a task was typed into a window, as a person opens tasks after typing one.
+        ("record-open", lambda: check_record_open(session, out)),
+        ("places", lambda: check_places(session, out)),
     ])
     stop_session(proc)
     running["proc"] = None
-    # The second start writes its own shell log over this one.
+    # The next start writes its own session log over this one.
     shutil.copy(state / "logs/session.log", out / "shell-apps.log")
     if not ok:
         return False
-    # Route access, with the probe installed as Today and as Todo. The probes first: until
+    if "kept" not in summary["failed"]:
+        # The same session started again, with what Tasks held when it stopped, and Today opened.
+        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS],
+                                      "reopened", apps="notes")
+        running["proc"] = proc
+        run_checks(summary, [("reopened", lambda: check_reopened(session, out))])
+        stop_session(proc)
+        running["proc"] = None
+        shutil.copy(state / "logs/session.log", out / "shell-reopened.log")
+    # Route access, with the probe installed as Today and as Tasks. The probes first: until
     # a package names the probe's runtime, the collection after each install reclaims it.
     tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
-    proc, session = start_session(state, out, tapps, "routes")
+    # Only the packages this check is about: the probe as Today and Tasks, and Notes.
+    proc, session = start_session(state, out, tapps, "routes", apps="")
     running["proc"] = proc
     run_checks(summary, [("routes", lambda: check_routes(session))])
     stop_session(proc)

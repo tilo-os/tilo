@@ -41,12 +41,12 @@ mod record;
 #[cfg(feature = "samples")]
 mod sample;
 mod usage;
+mod window;
 mod workspaces;
 
 use ui::time::{Duration, SystemTime};
 
 use ui::framework::{Publishes, RecordEnv};
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::RemoteActionTarget;
@@ -136,6 +136,11 @@ impl Nav {
     /// Show `place`, as a capture stages it.
     #[cfg(feature = "samples")]
     pub(crate) fn show(&self, place: Place) {
+        self.show_place(place);
+    }
+
+    /// Show `place`: what a link or the person's own card asks for.
+    pub(crate) fn show_place(&self, place: Place) {
         self.place.set(Some(place.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
     }
@@ -258,11 +263,11 @@ impl Doors {
 }
 
 pub(crate) fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::locales::CATALOG.t(key)
 }
 
 pub(crate) fn trf(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    I18nManager::format(key, args)
+    crate::locales::CATALOG.t_args(key, args)
 }
 
 /// When `at_ms` was, as "5 minutes ago".
@@ -277,37 +282,11 @@ pub(crate) fn ago(at_ms: i64) -> String {
     ui::format_relative_time(at, ui::time::wall())
 }
 
-/// Who `author` is, as a line names them: "You", a person's name, or an
-/// agent with whom it acted for.
-pub(crate) fn who(author: &wire::Author) -> String {
-    match (author.relation, &author.on_behalf_of) {
-        (wire::Relation::Reader, _) => tr("console-you"),
-        (wire::Relation::Software, Some(person)) => trf(
-            "console-agent-for",
-            &[
-                ("agent", author.name.clone().into()),
-                ("person", person.clone().into()),
-            ],
-        ),
-        _ => author.name.clone(),
-    }
-}
-
 /// A row led by `author`'s face: a person's round avatar, or an agent's
-/// square one with the agent mark, so the two are never mistaken, tinted by
-/// the client it is an agent of.
+/// square one with the agent mark, so the two are never mistaken — both in
+/// the colour presence paints them in.
 pub(crate) fn faced(row: ListRow, author: &wire::Author) -> ListRow {
-    let row = row.avatar(author.name.clone(), author.identity.clone());
-    match author.relation {
-        wire::Relation::Software => {
-            let row = row.square().avatar_glyph(ui::icons::Icon::Bot);
-            match client::of(&author.name).hue() {
-                Some(hue) => row.avatar_hue(hue),
-                None => row,
-            }
-        }
-        wire::Relation::Reader | wire::Relation::Person => row,
-    }
+    ui::author_face(row, author)
 }
 
 /// A page of the window: its content in a readable column that scrolls.
@@ -338,7 +317,6 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }
@@ -380,13 +358,13 @@ impl ResourceApp for App {
         // Opening the run a link names shows its page here, in this window.
         let opened = nav.clone();
         cx.effects(move |effect: ConsoleEffect, _cx| {
-            match effect.agent() {
+            match effects::agent(&effect) {
                 Some((client, command)) => opened.show_agent(client, command),
-                None => {
-                    if let ConsoleEffect::ViewRun { run } = &effect {
-                        opened.show_run(run);
-                    }
-                }
+                None => match &effect {
+                    ConsoleEffect::ViewRun { run } => opened.show_run(run),
+                    ConsoleEffect::ViewConnect => opened.show_place(Place::Connect),
+                    _ => {}
+                },
             }
             Ok(ui::framework::Effected::done())
         });
@@ -464,13 +442,14 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
 
     let place = nav.place();
     // The run shown in place of the list has one way back to it, the shell's:
-    // leading the header at every width, and the narrow window's own Back
+    // leading the window's bar at every width, and the narrow window's own Back
     // where the places push under it.
     let (open, close) = (nav.clone(), nav.clone());
     let shell = ui::widget::NavShell::new()
         .content_kind(ui::widget::ContentKind::Page)
         .with_id("console.shell")
         .mode(ui::widget::NavMode::Push)
+        .with_window_toolbar()
         .with_pane_state(&nav.pane)
         .sidebar(Box::new(sidebar))
         .sidebar_header(tr("console-title"), Vec::new())
@@ -478,29 +457,32 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
             move || open.run.get().is_some() || open.agent.get().is_some(),
             move || close.back(),
         );
-    Box::new(match place {
+    // What the window shows names it, in its bar and so in its tab: an agent's
+    // card is its client's, every other place its own.
+    let (shell, location) = match place {
         Place::Agents if nav.run.get().is_none() && nav.agent.get().is_some() => {
             let client = nav.agent.get().unwrap_or_default();
-            shell
-                .content(agent_card::view(cx, nav, reads, &client))
-                .content_header(client, Vec::new())
+            let shell = shell.content(agent_card::view(cx, nav, reads, &client));
+            (shell, client)
         }
-        Place::Agents => {
-            let (content, actions) = agents::view(cx, nav, reads);
-            shell
-                .content(content)
-                .content_header(tr(place.label()), actions)
-        }
-        Place::Workspaces => shell
-            .content(workspaces::view(cx, reads))
-            .content_header(tr(place.label()), Vec::new()),
-        Place::Connect => shell
-            .content(connect::view(cx, reads))
-            .content_header(tr(place.label()), Vec::new()),
-        Place::Usage => shell
-            .content(usage::view())
-            .content_header(tr(place.label()), Vec::new()),
-    })
+        Place::Agents => (
+            shell.content(agents::view(cx, nav, reads)),
+            tr(place.label()),
+        ),
+        Place::Workspaces => (
+            shell.content(workspaces::view(cx, reads)),
+            tr(place.label()),
+        ),
+        Place::Connect => (shell.content(connect::view(cx, reads)), tr(place.label())),
+        Place::Usage => (shell.content(usage::view()), tr(place.label())),
+    };
+    let link = shell.window_bar_link();
+    Box::new(window::ConsoleWindow::new(
+        Box::new(shell),
+        cx.toolbar(),
+        link,
+        location,
+    ))
 }
 
 ui::dev_reload_entry!(App);

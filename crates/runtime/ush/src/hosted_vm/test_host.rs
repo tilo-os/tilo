@@ -58,6 +58,7 @@ pub fn selling() -> Plans {
             add_payment_method: ADD_CARD.into(),
             manage_billing: Some(MANAGE_BILLING.into()),
             raise_limit: Some("https://tilo.sh/billing/plan?account={account}".into()),
+            browser_free_actions: None,
         }),
         ..Plans::default()
     }

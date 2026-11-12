@@ -112,3 +112,172 @@ mail-select-all = Select all
 mail-show-quoted = Show quoted text
 mail-show-plain = Show plain text
 mail-show-formatted = Show formatted
+
+## What the window and its parts are called for assistive technology
+
+mail-title = Mail
+mail-a11y-queued-message = Queued message
+mail-a11y-outbox = Outbox
+mail-a11y-outbox-empty = Nothing is waiting to be sent
+mail-a11y-no-message = No message selected
+mail-a11y-message-actions = Message actions
+mail-a11y-bulk-select = Select messages
+mail-a11y-bulk-done = Done selecting messages
+mail-a11y-thread-messages = { $count ->
+    [one] { $count } message in this conversation
+   *[other] { $count } messages in this conversation
+}
+mail-a11y-preview-unread = Preview, still unread
+mail-a11y-download-first = Download this attachment before saving it
+mail-a11y-syncing = Syncing mail
+mail-compose-placeholder-body = Write your message
+mail-compose-a11y = Compose email
+mail-compose-a11y-description = Email composer
+mail-shortcuts-title = Keyboard shortcuts
+
+## Window and accessibility copy
+mail-a11y-mailboxes = Mailboxes
+
+## What the window shows
+mail-view-drawer = Folder drawer
+mail-view-reading = Reading pane
+mail-view-list = Message list
+mail-view-all = Folders, message list, and reading pane
+
+## Facts, property labels and section titles
+mail-a11y-current-view = Current view: { $view }
+mail-a11y-reading = Reading: { $subject }
+mail-a11y-save-attachment = Save attachment { $file } ({ $size })
+mail-a11y-refused = The server refused this message: { $reason }
+mail-a11y-cancel-sending = Cancel sending to { $to }
+mail-a11y-outbox-row = To { $to }: { $subject }
+mail-a11y-no-messages = No messages in { $folder }
+mail-status-send-failed = Send failed: { $error }
+mail-purge-body = { $count ->
+    [one] One message in Trash will be deleted from this mailbox and the server. This can’t be undone.
+   *[other] { $count } messages in Trash will be deleted from this mailbox and the server. This can’t be undone.
+}
+mail-status-attach-failed = Couldn’t attach { $name }: { $error }
+mail-status-attached = Attached { $name }
+
+mail-status-picker-failed = Couldn’t open attachment picker: { $error }
+
+mail-status-archived = { $count ->
+    [one] Archived one message
+   *[other] Archived { $count } messages
+}
+mail-status-trashed = { $count ->
+    [one] Moved one message to Trash
+   *[other] Moved { $count } messages to Trash
+}
+mail-status-marked-read = { $count ->
+    [one] Marked one message read
+   *[other] Marked { $count } messages read
+}
+mail-status-marked-unread = { $count ->
+    [one] Marked one message unread
+   *[other] Marked { $count } messages unread
+}
+mail-status-deleted = { $count ->
+    [one] Deleted one message
+   *[other] Deleted { $count } messages
+}
+mail-status-account-not-saved = Selected account, but could not save that preference: { $error }
+mail-status-purged = { $count ->
+    [one] Permanently deleted one trashed message
+   *[other] Permanently deleted { $count } trashed messages
+}
+mail-status-purge-nothing = Nothing was deleted; the selected messages changed before confirmation
+mail-status-preferences-not-saved = Could not save your Mail preferences: { $error }
+
+mail-from = From { $sender }
+mail-status-copy-cancelled = Attachment save cancelled
+mail-status-copy-saved = Saved a copy as { $file }
+mail-status-selection-cancelled = Attachment selection cancelled
+mail-status-selection-composer-closed = Attachment selection cancelled because the composer was closed
+mail-status-picker-disconnected = Attachment picker disconnected before selecting a file
+mail-status-choose-file = Choose a file to attach
+
+## What the window shows
+mail-attachment-not-downloaded = Attachment content is not downloaded yet
+mail-draft-subject = Draft: { $subject }
+mail-not-sent-yet = This message has not been sent yet.
+mail-no-subject = No subject
+mail-to = To { $recipient }
+mail-preview = Preview
+mail-preview-unread = Preview, still unread
+
+mail-row-name = { $sender }: { $subject }
+mail-list-name = { $folder } messages
+mail-selected-count = { $count } selected
+mail-bulk-select-all = Select all visible messages
+mail-bulk-archive = Archive selected messages
+mail-bulk-read = Mark selected messages read
+mail-bulk-unread = Mark selected messages unread
+mail-bulk-purge = Delete selected trashed messages permanently
+mail-bulk-delete = Move selected messages to Trash
+mail-draft-subject-to = Draft: { $subject }, to { $to }
+
+## What the folders are called
+mail-folder-inbox = Inbox
+mail-folder-starred = Starred
+mail-folder-sent = Sent
+mail-folder-drafts = Drafts
+mail-folder-archive = Archive
+mail-folder-trash = Trash
+mail-folder-junk = Junk
+mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
+mail-first-run-message = Email accounts are added in Settings, under External Accounts.
+
+## The window bar's slots
+mail-bulk-done = Done
+mail-delete = Delete
+mail-delete-permanently = Delete permanently
+mail-reply = Reply
+mail-reply-all = Reply all
+mail-forward = Forward
+mail-move-to-inbox = Move to Inbox
+mail-star = Star
+mail-add-account = Add account
+mail-new-message = New message
+mail-cancel-sending = Cancel sending
+mail-bar-discard-draft = Discard draft
+mail-close-keep-draft = Close and keep in Drafts
+
+## Attaching a file, and saving a received one
+mail-compose-attach-file = Attach file
+mail-save-attachment = Save attachment
+
+## Actions
+
+mail-effects-compose = Compose message
+mail-effects-contact-recipients = Choose a recipient
+mail-effects-account-settings = Account settings
+mail-effects-prepare-contact-draft = Draft to a contact
+mail-effects-refresh = Refresh folder
+mail-effects-prepare-calendar-invitation = Prepare calendar invitation
+mail-effects-open = Open
+mail-effects-read-message = Read message
+mail-effects-load-remote-content = Load remote images
+mail-effects-always-load-remote-content = Always load remote images
+mail-effects-search-messages = Search messages
+mail-effects-draft-reply = Draft reply
+mail-effects-open-attachment = Open attachment
+mail-effects-content = Get content
+mail-effects-export-content = Export content
+mail-mailbox = Mail
+mail-mailbox-mark-read = Mark read
+mail-mailbox-trash = Move to Trash
+mail-mailbox-move-messages = Move messages
+mail-mailbox-ingest = Add fetched messages
+mail-mailbox-server-applied = Server applied the update
+mail-mailbox-start-draft-body = Start the draft body
+mail-mailbox-create-draft = New draft
+mail-mailbox-show-draft = Show the draft
+mail-mailbox-attach = Attach to draft
+mail-mailbox-send-message = Send message
+mail-mailbox-deliver-message = Deliver message
+mail-mailbox-draft-message = Draft message
+mail-trusted-senders = Trusted senders
+mail-trusted-senders-trust = Trust this sender
+mail-trusted-senders-distrust = Stop trusting this sender

@@ -5,24 +5,24 @@ kind = "video-player.library"
 label = "Video Player"
 version = 1
 fields = [
-  { path = "playlists", type = "Collection<Playlist>", stored = "collection" },
-  { path = "playlists.*.name", type = "String", label = true },
-  { path = "items", type = "Collection<PlaylistItem>", stored = "collection" },
-  { path = "items.*.playlist", type = "Id", readonly = true },
-  { path = "items.*.media_ref", type = "String", readonly = true },
-  { path = "items.*.title", type = "String", label = true },
-  { path = "annotations", type = "Collection<TimestampAnnotation>", stored = "collection" },
-  { path = "annotations.*.media_ref", type = "String", readonly = true },
-  { path = "annotations.*.time_ms", type = "u64" },
-  { path = "annotations.*.text", type = "String", label = true },
-  { path = "transports", type = "BTreeMap<String, SharedTransport>", readonly = true },
+  { path = "playlists", type = { collection = { named = "Playlist" } }, stored = "collection" },
+  { path = "playlists.*.name", type = "text", label = true },
+  { path = "items", type = { collection = { named = "PlaylistItem" } }, stored = "collection" },
+  { path = "items.*.playlist", type = "text", readonly = true },
+  { path = "items.*.media_ref", type = "text", readonly = true },
+  { path = "items.*.title", type = "text", label = true },
+  { path = "annotations", type = { collection = { named = "TimestampAnnotation" } }, stored = "collection" },
+  { path = "annotations.*.media_ref", type = "text", readonly = true },
+  { path = "annotations.*.time_ms", type = "int" },
+  { path = "annotations.*.text", type = "text", label = true },
+  { path = "transports", type = { map = { named = "SharedTransport" } }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "create-playlist"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -30,33 +30,33 @@ id = "delete-playlist"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "playlist", required = true, schema = { type = "string" } },
+  { name = "playlist", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-to-playlist"
 kind = "undoable"
 params = [
-  { name = "playlist", required = true, schema = { type = "string" } },
-  { name = "media_ref", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "playlist", type = "text", required = true, schema = { type = "string" } },
+  { name = "media_ref", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-to-watch-later"
 kind = "undoable"
 params = [
-  { name = "media_ref", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "media_ref", type = "text", required = true, schema = { type = "string" } },
+  { name = "title", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-annotation"
 kind = "undoable"
 params = [
-  { name = "media_ref", required = true, schema = { type = "string" } },
-  { name = "time_ms", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "media_ref", type = "text", required = true, schema = { type = "string" } },
+  { name = "time_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -64,18 +64,61 @@ id = "delete-annotation"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "annotation", required = true, schema = { type = "string" } },
+  { name = "annotation", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-transport"
 kind = "undoable"
 params = [
-  { name = "media_ref", required = true, schema = { type = "string" } },
-  { name = "playing", required = true, schema = { type = "boolean" } },
-  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "rate", required = true, schema = { type = "number" } },
-  { name = "epoch_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "media_ref", type = "text", required = true, schema = { type = "string" } },
+  { name = "playing", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "position_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "rate", type = "float", required = true, schema = { type = "number" } },
+  { name = "epoch_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "open-video"
+kind = "read"
+params = [
+  { name = "path", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "clear-recent"
+destructive = true
+kind = "read"
+
+[[resources.types]]
+name = "Playlist"
+fields = [
+  { name = "name", type = "text" },
+]
+
+[[resources.types]]
+name = "PlaylistItem"
+fields = [
+  { name = "playlist", type = "text" },
+  { name = "media_ref", type = "text" },
+  { name = "title", type = "text" },
+]
+
+[[resources.types]]
+name = "SharedTransport"
+fields = [
+  { name = "playing", type = "bool" },
+  { name = "position_ms", type = "int" },
+  { name = "rate", type = "float" },
+  { name = "epoch_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "TimestampAnnotation"
+fields = [
+  { name = "media_ref", type = "text" },
+  { name = "time_ms", type = "int" },
+  { name = "text", type = "text" },
 ]
 
 [[resources]]
@@ -83,14 +126,14 @@ kind = "video-player.recent"
 label = "Recent videos"
 version = 1
 fields = [
-  { path = "devices", type = "BTreeMap<String, DeviceVideos>" },
+  { path = "devices", type = { map = "any" } },
 ]
 
 [[resources.verbs]]
 id = "keep"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
   { name = "rows", required = true, schema = {} },
 ]
 
@@ -98,8 +141,8 @@ params = [
 id = "stood"
 kind = "undoable"
 params = [
-  { name = "device", required = true, schema = { type = "string" } },
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "position_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 

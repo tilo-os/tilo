@@ -4,6 +4,7 @@ use super::{
     ElementState, FrameHarness, HashMap, InspectionNode, Key, WindowEvent, collect_inspection,
 };
 use crate::action_palette::{ActionPaletteBox, PendingOperation};
+use crate::widget::DrawChild;
 
 #[derive(Default)]
 pub(super) struct CallerPalette {
@@ -219,7 +220,7 @@ impl FrameHarness {
             );
             let (origin, width) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, width, &mut self.text);
-            palette.draw(
+            palette.draw_child(
                 &mut self.scene,
                 transform,
                 &mut self.text,
@@ -246,8 +247,8 @@ impl FrameHarness {
             paint_key: None,
             semantics: None,
             children: vec![
-                collect_inspection(field, "caller-palette", &mut counts),
-                collect_inspection(results, "caller-palette", &mut counts),
+                collect_inspection(field, "caller-palette", &mut counts, None),
+                collect_inspection(results, "caller-palette", &mut counts, None),
             ],
         })
     }

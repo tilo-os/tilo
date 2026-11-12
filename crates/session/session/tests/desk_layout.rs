@@ -14,8 +14,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -29,7 +27,7 @@ use tilo_desktop_model::{
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::notifications::NotificationSeverity;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
 /// The app a test installs: a Tilo package whose window is a tab of the desk.
@@ -172,7 +170,7 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Every tab of the desk, with the group it sits in: what a second window or a second tab of a
@@ -294,52 +292,7 @@ fn handed(arguments: &Path, flag: &str) -> String {
 /// Install [`PROBE`] in `home` 's own app store: a package whose entrypoint is the launcher's to
 /// start.
 fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
-    let store = home.data().join("tilo-apps");
-    let payload = store.join("payload").join(PROBE);
-    fs::create_dir_all(payload.join("bin")).unwrap();
-    let manifest = payload.join("manifest.toml");
-    fs::write(
-        &manifest,
-        format!(
-            "[package]\n\
-             id = \"{PROBE}\"\n\
-             version = \"1.0.0\"\n\
-             kind = \"app\"\n\
-             name = \"Probe\"\n\
-             \n\
-             [publisher]\n\
-             identity = \"ed25519:{key}\"\n\
-             signature = \"\"\n\
-             \n\
-             [sandbox]\n\
-             namespaces = [\"user\"]\n\
-             seccomp = \"tilo-default\"\n\
-             landlock = \"strict\"\n\
-             \n\
-             [sandbox.net]\n\
-             mode = \"off\"\n\
-             \n\
-             [entrypoint]\n\
-             bin = \"bin/app\"\n\
-             type = \"gui\"\n\
-             \n\
-             [providers]\n\
-             schemes = [\"probe\"]\n",
-            key = "11".repeat(32),
-        ),
-    )
-    .unwrap();
-    fs::write(
-        store.join("registry.toml"),
-        format!(
-            "[[entry]]\nid = \"{PROBE}\"\nversion = \"1.0.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-            payload = payload.display(),
-            manifest = manifest.display(),
-        ),
-    )
-    .unwrap();
-    home.env().set("TILO_APPS_DATA_DIR", &store);
+    crate::common::probe_app(home, PROBE, "Probe");
 }
 
 #[test]

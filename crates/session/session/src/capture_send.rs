@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use crate::platform::fabric::DeviceId;
 use tilo_capture_studio::{Refusal, Sent};
-use tilo_device_fabric::DeviceId;
 use tilo_service::Wake;
 
 use host_fs::transfer::Failure;
@@ -214,17 +214,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use tilo_device_fabric::link::{
-        FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
-    };
-    use tilo_device_fabric::{
+    use crate::platform::fabric::{
         DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
         FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    };
+    use crate::platform::fabric::{
+        FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
     };
     use tilo_nearby_service::TransferKind;
 
     use super::*;
-    use crate::fabric::Continuity;
+    use crate::platform::fabric::Continuity;
 
     /// One of the person's devices as it last published itself.
     fn device(id: &str, label: &str, online: bool, counter: u64) -> DeviceFabricSnapshot {
@@ -251,8 +251,8 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
-            speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
+            unlock: crate::platform::fabric::UnlockFabricState::default(),
+            speakers: crate::platform::fabric::SpeakerFabricState::default(),
         }
     }
 
@@ -310,15 +310,6 @@ mod tests {
 
         fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
             Some((self.local.clone(), "This laptop".to_owned()))
-        }
-
-        fn send_personal_fabric_action(
-            &self,
-            target: &DeviceId,
-            action: PersonalFabricAction,
-        ) -> Result<[u8; 16], String> {
-            self.try_send_personal_fabric_action(target, action)
-                .map_err(|error| error.to_string())
         }
 
         fn try_send_personal_fabric_action(

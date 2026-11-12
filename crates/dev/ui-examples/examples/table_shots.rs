@@ -33,6 +33,7 @@ use winit::event::{Modifiers, WindowEvent};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::table::{self, Table};
 
@@ -148,7 +149,7 @@ fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     let cw = px_dim(size.0 + MARGIN * 2.0);
     let ch = px_dim(size.1 + MARGIN * 2.0);
     let mut scene = Scene::new();
-    table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    table.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     let mut r = OffscreenRenderer::new(cw, ch);
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());

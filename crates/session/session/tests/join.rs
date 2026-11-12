@@ -14,8 +14,6 @@
               lives until the apps it serves are done"
 )]
 
-mod common;
-
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable as _;
@@ -25,7 +23,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 /// The app whose record the channel carries.
@@ -189,10 +187,7 @@ fn serving(
         person: "Ada".to_owned(),
         launches,
         state: state.map(Path::to_path_buf),
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(lists)),
-            ..SearchOptions::default()
-        },
+        lists,
         ..Options::default()
     });
     session.handle().replace_tree(desk(person));
@@ -288,7 +283,7 @@ fn written(op: &collab_types::SignedOp, key: &str) -> Option<String> {
 
 /// The session's pass until the apps are done, as the session runs its loop.
 fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc::Receiver<T>) -> T {
-    common::wait_for(session, "the apps to finish their calls", |session| {
+    crate::common::wait_for(session, "the apps to finish their calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
@@ -523,7 +518,7 @@ fn apps(socket: &PathBuf, person: &Keys) -> Joined {
 
 #[test]
 fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer() {
-    let home = common::private_home();
+    let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let person = person();
     let mut session = session(&socket, &person.keys);
@@ -578,7 +573,7 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
 #[test]
 fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
     use tilo_actions::remote::ReceiptStatus;
-    let home = common::private_home();
+    let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let person = person();
     let state = home.path().join("state");
@@ -639,7 +634,7 @@ fn the_settings_app_the_app_lists_allow_reaches_every_section() {
 /// each of `declared` whether its manifest asks for the device's system settings reach.
 fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
     use tilo_action_broker::services::LaunchableApplication;
-    let home = common::private_home();
+    let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let lists = AppLists {
         launchable: declared

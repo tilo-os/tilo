@@ -113,6 +113,41 @@ pub(super) fn version_fields(resource: &str, end: &idx::reflect::Ends) -> Vec<Fi
     fields
 }
 
+/// The fields of the versions `ends` the record's changes made that read differently from the
+/// ones `told`, which the store's own writes of those changes told when their actions committed
+/// ([`Inner::provisional_versions`]): the versions themselves, which name the change that made
+/// each now, and each end of a resource a different invocation made — the time a field was last
+/// changed that the record says changed and the provisional versions did not name, say. The
+/// rest reads as told: the record's versions carry the invocation's own time.
+pub(super) fn told_differently(ends: &Ends, told: &Ends) -> BTreeMap<DocId, Vec<FieldKey>> {
+    let mut docs = BTreeMap::new();
+    for (resource, end) in ends {
+        let key = |field: String| FieldKey {
+            resource: resource.clone(),
+            field,
+        };
+        let keys = match told.get(resource) {
+            Some(was) if was.same_invocation(end) && was.first.same_invocation(&end.first) => {
+                let mut keys = vec![key(VERSIONS.to_owned())];
+                keys.extend(
+                    end.fields
+                        .iter()
+                        .filter(|(field, stamp)| {
+                            !was.fields
+                                .get(*field)
+                                .is_some_and(|held| held.same_invocation(stamp))
+                        })
+                        .map(|(field, _)| key(idx::reflect::changed_field(field))),
+                );
+                keys
+            }
+            _ => version_fields(resource, end),
+        };
+        note_derived(&mut docs, doc_of(resource), keys);
+    }
+    docs
+}
+
 /// Name each resource in `ends` as changed in its versions ([`version_fields`]): the record's
 /// changes made them, and a change reaches the views of a resource even when the values it
 /// writes read as the ones the store already held, as they do when the steps were written

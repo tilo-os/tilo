@@ -67,22 +67,25 @@ impl CommentOverlay {
             .iter()
             .filter_map(|hit| {
                 let (target, label): (String, String) = match hit.action {
-                    CommentAction::Close => {
-                        ("books.comments.close".into(), "Close comments".into())
-                    }
+                    CommentAction::Close => (
+                        "books.comments.close".into(),
+                        crate::resource::CATALOG.t("ebook-action-close-comments"),
+                    ),
                     CommentAction::DeleteHighlight(id) => (
                         format!("books.comments.delete-highlight:{id}"),
-                        "Delete highlight and comments".into(),
+                        crate::resource::CATALOG.t("ebook-action-delete-highlight-comments"),
                     ),
-                    CommentAction::Add(id) => {
-                        (format!("books.comments.add:{id}"), "Add comment".into())
-                    }
-                    CommentAction::Edit(id) => {
-                        (format!("books.comments.edit:{id}"), "Edit comment".into())
-                    }
+                    CommentAction::Add(id) => (
+                        format!("books.comments.add:{id}"),
+                        crate::resource::CATALOG.t("ebook-action-add-comment"),
+                    ),
+                    CommentAction::Edit(id) => (
+                        format!("books.comments.edit:{id}"),
+                        crate::resource::CATALOG.t("ebook-action-edit-comment"),
+                    ),
                     CommentAction::Delete(id) => (
                         format!("books.comments.delete:{id}"),
-                        "Delete comment".into(),
+                        crate::resource::CATALOG.t("ebook-action-delete-comment"),
                     ),
                     CommentAction::Swallow => return None,
                 };
@@ -117,7 +120,7 @@ impl CommentOverlay {
         }));
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name("Highlight comments")
+                .with_name(crate::resource::CATALOG.t("ebook-a11y-comments"))
                 .with_description(excerpt)
                 .with_state(AccessState::new().modal(true))
                 .with_children(controls),
@@ -179,7 +182,7 @@ fn gather_content(
         (color, excerpt)
     };
     let excerpt = if excerpt.is_empty() {
-        "Highlighted passage".to_string()
+        crate::resource::CATALOG.t("ebook-highlighted-passage")
     } else {
         format!("\u{201C}{excerpt}\u{201D}")
     };
@@ -196,7 +199,7 @@ fn gather_content(
 fn comment_display(a: &Annotation) -> String {
     let note = a.note.clone();
     if note.trim().is_empty() {
-        "Empty comment".to_string()
+        crate::resource::CATALOG.t("ebook-empty-comment")
     } else {
         note
     }
@@ -266,7 +269,11 @@ impl CommentOverlay {
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
     pub(crate) fn begin_editing(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
-        self.editor = Some(NoteEditor::new(id, "Write a comment", library));
+        self.editor = Some(NoteEditor::new(
+            id,
+            &crate::resource::CATALOG.t("ebook-write-comment"),
+            library,
+        ));
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -411,7 +418,10 @@ impl CommentOverlay {
             ctx,
             cursor,
             delete,
-            (Icon::Trash2, "Delete highlight"),
+            (
+                Icon::Trash2,
+                &crate::resource::CATALOG.t("ebook-action-delete-highlight"),
+            ),
             CommentAction::DeleteHighlight(group),
         );
         let y = y + line + layout.gap;
@@ -490,7 +500,10 @@ impl CommentOverlay {
                     ctx,
                     cursor,
                     edit,
-                    (Icon::Pencil, "Edit comment"),
+                    (
+                        Icon::Pencil,
+                        &crate::resource::CATALOG.t("ebook-action-edit-comment"),
+                    ),
                     CommentAction::Edit(annotation.id),
                 );
             }
@@ -498,7 +511,10 @@ impl CommentOverlay {
                 ctx,
                 cursor,
                 delete,
-                (Icon::Trash2, "Delete comment"),
+                (
+                    Icon::Trash2,
+                    &crate::resource::CATALOG.t("ebook-action-delete-comment"),
+                ),
                 CommentAction::Delete(annotation.id),
             );
             y += height;
@@ -515,7 +531,8 @@ impl CommentOverlay {
     ) {
         let theme = ctx.theme;
         let size = ControlSize::Small;
-        let face = ButtonFace::new(Rect::ZERO, "Add comment")
+        let label = crate::resource::CATALOG.t("ebook-action-add-comment");
+        let face = ButtonFace::new(Rect::ZERO, &label)
             .icon(Icon::Plus)
             .control_size(size);
         let width = face.intrinsic_width(ctx.text, theme);
@@ -525,7 +542,7 @@ impl CommentOverlay {
             layout.ix0() + width,
             y + size.height(theme),
         );
-        let face = ButtonFace::new(add, "Add comment")
+        let face = ButtonFace::new(add, &label)
             .icon(Icon::Plus)
             .control_size(size)
             .hovered(add.contains(cursor));

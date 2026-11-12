@@ -38,8 +38,13 @@ pub use window_actions::{
 pub mod agent_door;
 pub mod agent_runs;
 mod application;
+pub mod browser;
+mod caller;
+pub mod linux_apps;
+pub use caller::Caller;
 mod catalogue;
 mod confirmation;
+mod content_get;
 mod content_put;
 pub mod crash_records;
 pub mod downloaded_apps;
@@ -70,11 +75,12 @@ pub use application::{
     application_provider, application_provider_record, application_record_target,
 };
 pub use confirmation::{
-    Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation,
+    Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation, argument_digest,
 };
 pub use providers::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
-    RECORD_PROVIDER, WORKSPACE_PROVIDER, is_record_provider, record_parts,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX,
+    APPLICATION_START_ACTION, OWN_PROVIDER, RECORD_PROVIDER, SHARE_LINK_ACTION, WORKSPACE_PROVIDER,
+    is_record_provider, record_parts,
 };
 
 pub use catalogue::{
@@ -82,23 +88,26 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
+pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
 pub use content_put::{
-    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
+    HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use record_read::{
-    RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordChange, RecordChanges,
-    RecordCopy, RecordReads,
+    HeldCopies, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE,
+    RecordAddress, RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads,
+    RecordWake, answer_read, read_records,
 };
 pub use search::{Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
 pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
-use crate::context::ActionContext;
+use crate::context::{ActionContext, ActionFacet};
 use crate::door::ActionAddress;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
@@ -113,6 +122,12 @@ pub const REMOTE_ACTIONS_VERSION: u16 = 1;
 /// Upper bound on one encoded frame. Catalogues are the largest messages;
 /// a host that needs more pages them rather than raising this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
+
+/// The most raw bytes one piece of content carries, into a workspace's store
+/// ([`ContentPutStep::Append`]) or out of it ([`ContentGetAnswer`]): hex
+/// doubles them, and the frame stays within
+/// [`MAX_REMOTE_ACTION_FRAME_BYTES`]. A caller splits anything larger.
+pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 
 /// Default number of invocations an [`InvocationLedger`] remembers.
 pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
@@ -167,6 +182,16 @@ impl std::hash::Hash for ExecutionLease {
     }
 }
 impl ExecutionLease {
+    /// A new execution, live until [`Self::close`]: the host that admitted a
+    /// connection mints one for it.
+    #[must_use]
+    pub fn mint() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.live.load(std::sync::atomic::Ordering::Acquire)
@@ -174,389 +199,6 @@ impl ExecutionLease {
     /// Retire observation of this run. This does not cancel any app operation.
     pub fn close(&self) {
         self.live.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-
-/// The authenticated principal behind a request.
-///
-/// Built only by the transport that authenticated the connection — from the
-/// certificate chain a peer presented, or from the admitted identity of a
-/// local connection. It is deliberately not `Deserialize`: a payload cannot
-/// assert who sent it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Caller {
-    principal: CallerPrincipal,
-    user_public_key: Option<[u8; 32]>,
-    device_public_key: Option<[u8; 32]>,
-    workspace: Option<String>,
-    foreign: bool,
-    // Transport-issued execution scope, never accepted from request context.
-    // It narrows invocation ownership without changing the policy principal.
-    execution: Option<ExecutionLease>,
-    // The person a non-person principal acts for, as the host admitted it.
-    acting_for: Option<String>,
-    // The person's own device handed this connection to the agent
-    // (`Self::delegated_to`), rather than the agent being admitted as a member
-    // in its own right and acting for them (`Self::acting_for`).
-    session_delegated: bool,
-    // The Shortcut whose run this person's invocation is a step of.
-    shortcut: Option<String>,
-    // How far the invocation this caller's requests continue was admitted
-    // to reach, set by the host that matched them to it.
-    within: within::Within,
-    // The turn an agent acts inside: the person's message in a conversation
-    // that caused it (`Self::agent_turn`). Every op carries it, so the
-    // receiving device checks it against that message and presence can show
-    // what the agent would click.
-    turn: Option<tilo_action_policy::turn::Turn>,
-}
-
-impl Caller {
-    /// A remote device whose certificate the transport verified to chain to
-    /// `user_public_key`.
-    #[must_use]
-    pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
-        Self {
-            principal: CallerPrincipal::Person(hex::encode(user_public_key)),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: None,
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// A person on a connection the host admitted itself, by the policy
-    /// principal id that admission established.
-    #[must_use]
-    pub fn local_person(principal: impl Into<String>) -> Self {
-        Self {
-            principal: CallerPrincipal::Person(principal.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: None,
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// A delegated agent on a connection the host admitted itself.
-    #[must_use]
-    pub fn local_agent(agent_id: impl Into<String>) -> Self {
-        Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: None,
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// An application on a connection the host admitted itself, by the
-    /// package id that admission established. It holds no role of its own:
-    /// it may use only what it owns and what a workspace grants it.
-    #[must_use]
-    pub fn local_app(app_id: impl Into<String>) -> Self {
-        Self {
-            principal: CallerPrincipal::App(app_id.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: None,
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// A remote agent device whose certificate the transport verified to
-    /// chain to `user_public_key` and whose root-signed delegation names it
-    /// agent `agent_id`. It is its own principal, never the person who
-    /// delegated it.
-    #[must_use]
-    pub fn delegated_agent(
-        agent_id: impl Into<String>,
-        user_public_key: [u8; 32],
-        device_public_key: [u8; 32],
-    ) -> Self {
-        Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: None,
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// An agent acting inside a turn: `person`'s message in `turn`'s
-    /// conversation caused it, and the agent takes part there. It may do
-    /// exactly what that person may, held to the editor preset and to the
-    /// bound its own record carries, and nothing outside a turn. Every op it
-    /// makes carries the turn, so the receiving device checks the cause it
-    /// arrived with. Set only by the host that admitted the turn.
-    #[must_use]
-    pub fn agent_turn(
-        agent_id: impl Into<String>,
-        person: impl Into<String>,
-        turn: tilo_action_policy::turn::Turn,
-    ) -> Self {
-        Self {
-            principal: CallerPrincipal::Agent(agent_id.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: Some(person.into()),
-            session_delegated: true,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: Some(turn),
-        }
-    }
-
-    /// A bot device whose certificate chains to `user_public_key` (its
-    /// installer) and whose root-signed delegation names it installation
-    /// `installation`. It acts for its installer and is never that person.
-    #[must_use]
-    pub fn bot(
-        installation: impl Into<String>,
-        user_public_key: [u8; 32],
-        device_public_key: [u8; 32],
-    ) -> Self {
-        Self {
-            principal: CallerPrincipal::Bot(installation.into()),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
-            workspace: None,
-            foreign: false,
-            execution: None,
-            acting_for: Some(hex::encode(user_public_key)),
-            session_delegated: false,
-            shortcut: None,
-            within: within::Within::NONE,
-            turn: None,
-        }
-    }
-
-    /// Give an already admitted connection its own execution scope. The host
-    /// mints the identifier; no payload, display name or history run selects it.
-    /// This changes invocation ownership, never the caller's permissions.
-    #[must_use]
-    pub fn in_new_execution(mut self) -> Self {
-        self.execution = Some(ExecutionLease {
-            id: uuid::Uuid::new_v4(),
-            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        });
-        self
-    }
-
-    /// Retain a host-issued execution when projecting the same transport into
-    /// another verified action door. A lease conveys ownership and lifetime,
-    /// never certificate custody or additional permissions.
-    #[must_use]
-    pub fn in_execution(mut self, execution: ExecutionLease) -> Self {
-        self.execution = Some(execution);
-        self
-    }
-
-    /// Host-issued execution identity. An identifier alone conveys no authority.
-    #[must_use]
-    pub fn execution_id(&self) -> Option<uuid::Uuid> {
-        self.execution.as_ref().map(|lease| lease.id)
-    }
-
-    #[must_use]
-    pub fn execution_lease(&self) -> Option<ExecutionLease> {
-        self.execution.clone()
-    }
-
-    #[must_use]
-    pub fn execution_is_live(&self) -> bool {
-        self.execution.as_ref().is_some_and(ExecutionLease::is_live)
-    }
-
-    /// A transport ends its own run; retained caller clones cannot reopen it.
-    pub fn retire_execution(&self) {
-        if let Some(lease) = &self.execution {
-            lease.close();
-        }
-    }
-
-    /// Mark whether the caller acts from a foreign device: a Tilo runtime on
-    /// an operating system Tilo does not control, as its certificate says.
-    /// Workspaces it does not govern cap such a caller's role.
-    #[must_use]
-    pub fn from_foreign_device(mut self, foreign: bool) -> Self {
-        self.foreign = foreign;
-        self
-    }
-
-    /// The caller acts for `person`, by that person's policy principal id:
-    /// an agent, a Shortcut or an app the person started. Set only by the
-    /// host that admitted the delegation, never from a payload. It names who
-    /// the actor works for in presence and history; it widens nothing.
-    #[must_use]
-    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
-        self.acting_for = Some(person.into());
-        self
-    }
-
-    /// This person's own device hands the connection to agent `agent_id`,
-    /// acting for them: an MCP client, a local assistant. The agent is the
-    /// principal (its edits, presence and history are the agent's, for the
-    /// person) and it may do only what both the person and the delegation a
-    /// device gives its agents allow. A caller that is not a person is
-    /// returned as it is. Set only by the host that admitted the person.
-    #[must_use]
-    pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
-        let CallerPrincipal::Person(person) = &self.principal else {
-            return self;
-        };
-        self.acting_for = Some(person.clone());
-        self.session_delegated = true;
-        self.principal = CallerPrincipal::Agent(agent_id.into());
-        self
-    }
-
-    /// Whether this agent is one the person's own device handed its session to
-    /// ([`Self::delegated_to`]): it carries the delegation a device gives its
-    /// agents. An agent admitted as a member that acts for a person
-    /// ([`Self::acting_for`]) carries only what the workspace grants it.
-    #[must_use]
-    pub fn is_session_delegated(&self) -> bool {
-        self.session_delegated
-    }
-
-    /// The turn this agent acts inside ([`Self::agent_turn`]), when it was
-    /// admitted as one: the message whose conversation caused its ops, which
-    /// every door it reaches decides it against.
-    #[must_use]
-    pub fn turn(&self) -> Option<&tilo_action_policy::turn::Turn> {
-        self.turn.as_ref()
-    }
-
-    /// The person this caller acts for, when it is not that person.
-    #[must_use]
-    pub fn acting_for_person(&self) -> Option<&str> {
-        self.acting_for.as_deref()
-    }
-
-    /// The caller's invocations are the steps of Shortcut `id`'s run: still
-    /// the person's authority (bounded by the Shortcut's own grants, which
-    /// the runner applies), but the Shortcut is who acts, for the person.
-    /// Set only by the host's Shortcut runner.
-    #[must_use]
-    pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
-        self.shortcut = Some(id.into());
-        self
-    }
-
-    /// The Shortcut whose run this invocation is a step of.
-    #[must_use]
-    pub fn shortcut(&self) -> Option<&str> {
-        self.shortcut.as_deref()
-    }
-
-    /// Who acts, as presence and history name them: the kind of actor, its
-    /// id, and the person it acts for when that is someone else.
-    #[must_use]
-    pub fn actor(&self) -> crate::InteractionActor {
-        match (&self.principal, &self.shortcut) {
-            (CallerPrincipal::Person(person), Some(shortcut)) => crate::InteractionActor::new(
-                format!("shortcut:{shortcut}"),
-                crate::ActorKind::Shortcut,
-            )
-            .acting_for(person.clone()),
-            (CallerPrincipal::Person(person), None) => {
-                crate::InteractionActor::new(person.clone(), crate::ActorKind::Person)
-            }
-            (CallerPrincipal::Agent(agent), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("agent:{agent}"), crate::ActorKind::Agent);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
-                    None => actor,
-                }
-            }
-            (CallerPrincipal::App(app), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("app:{app}"), crate::ActorKind::App);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
-                    None => actor,
-                }
-            }
-            (CallerPrincipal::Bot(bot), _) => {
-                let actor =
-                    crate::InteractionActor::new(format!("bot:{bot}"), crate::ActorKind::Bot);
-                match &self.acting_for {
-                    Some(person) => actor.acting_for(person.clone()),
-                    None => actor,
-                }
-            }
-        }
-    }
-
-    /// Confine the caller to one workspace: the connection was admitted to that
-    /// workspace only, so nothing outside it is offered or reachable.
-    #[must_use]
-    pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
-        self.workspace = Some(workspace.into());
-        self
-    }
-
-    #[must_use]
-    pub const fn principal(&self) -> &CallerPrincipal {
-        &self.principal
-    }
-
-    /// The workspace this caller is confined to, if any.
-    #[must_use]
-    pub fn workspace(&self) -> Option<&str> {
-        self.workspace.as_deref()
-    }
-
-    /// The user root a remote device chains to.
-    #[must_use]
-    pub const fn user_public_key(&self) -> Option<&[u8; 32]> {
-        self.user_public_key.as_ref()
-    }
-
-    #[must_use]
-    pub const fn is_foreign_device(&self) -> bool {
-        self.foreign
-    }
-
-    /// The remote device that sent the request.
-    #[must_use]
-    pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
-        self.device_public_key.as_ref()
     }
 }
 
@@ -601,34 +243,7 @@ pub fn workspace_governance_resource(workspace: &str) -> String {
 /// application starts a privileged process. It is answered under the
 /// host's provider, which a caller names without reading a catalogue, for
 /// the person at this device in the workspace their connection was admitted to.
-pub mod device_pairing {
-    use super::{ActionAddress, RemoteActionTarget};
-
-    /// The provider the host answers pairing under.
-    pub const PROVIDER: &str = "tilo.device-pairing";
-    /// The resource the steps are actions of.
-    pub const RESOURCE: &str = "identity.device.pair";
-    /// Look for a nearby device (`role`); answers the device found.
-    pub const DISCOVER: &str = "discover";
-    /// Admit a discovered device (`role`, `device`, `service`, `confirm`).
-    pub const APPROVE: &str = "approve";
-    /// Forget a discovered device and stop approving it (`device`).
-    pub const REJECT: &str = "reject";
-    /// The devices another of the person's devices found, asking here to be
-    /// the person; answers each with the `ask` that names it.
-    pub const ASKING: &str = "asking";
-    /// Approve or decline one of them (`ask`, `approve`, `confirm`), as its
-    /// notification does.
-    pub const ANSWER: &str = "answer";
-
-    #[must_use]
-    pub fn target(step: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, step),
-        }
-    }
-}
+pub mod device_pairing;
 
 /// The person's settings, kept by the host whether or not the app that shows
 /// them is open: each section a record published with its field edits and
@@ -708,6 +323,38 @@ pub mod identity_admin {
         pub revoked: bool,
         /// Whether it may host workspaces for the person.
         pub can_host: bool,
+        /// What the key is: a device of the person's, or a key acting for
+        /// them.
+        #[serde(default)]
+        pub kind: KeyKind,
+        /// The browser profile it is a tab of, by the profile's id: a
+        /// browser keeps one key per open tab, and the person sees and takes
+        /// back all of one browser's keys as one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub browser: Option<String>,
+    }
+
+    /// What a key the person's root certified is.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum KeyKind {
+        /// One of their devices.
+        #[default]
+        Device,
+        /// A key acting for them: an agent's grant, a script's key.
+        Agent,
+    }
+
+    impl KeyKind {
+        /// What the key `capabilities` certify is.
+        #[must_use]
+        pub fn of(agent: bool, server_key: bool) -> Self {
+            if agent || server_key {
+                Self::Agent
+            } else {
+                Self::Device
+            }
+        }
     }
 }
 
@@ -961,6 +608,16 @@ impl InvocationState {
             InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed {
                 output: output.clone(),
             },
+            // An action that reached something only the person may allow
+            // stopped before it ran: their answer is what it waits on, which
+            // is a refusal to the caller, not a failure of the action.
+            InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
+                ReceiptStatus::Rejected {
+                    error: ActionHostError::ConfirmationRequired {
+                        departure: browser::departure_stated(error.details.as_ref()),
+                    },
+                }
+            }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
                 error: error.clone(),
             },
@@ -974,6 +631,14 @@ impl InvocationState {
         }
     }
 }
+
+/// The failure code an action answers while it runs when what it reached
+/// waits for the person's word ([`DoorError::ConfirmationRequired`]): the
+/// caller's invocation is refused for want of their answer, and their
+/// answer runs it again.
+///
+/// [`DoorError::ConfirmationRequired`]: crate::door::DoorError::ConfirmationRequired
+pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
 /// Why a host would not do what was asked. Every variant means nothing ran.
 ///
@@ -996,8 +661,14 @@ pub enum ActionHostError {
     #[error("the caller may not invoke this action")]
     NotPermitted,
     /// The action requires a confirmation step this request did not carry.
+    ///
+    /// `departure` states the page departure the action's own run reached and
+    /// holds for the person, when it reached one ([`browser::DEPARTURE_FACET`]s):
+    /// what is about to leave, where, and the picture of the filled page, so
+    /// the question they are asked names it rather than a label for it. It is
+    /// empty for an action that asks before it runs anything.
     #[error("the action requires confirmation")]
-    ConfirmationRequired,
+    ConfirmationRequired { departure: Vec<ActionFacet> },
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
@@ -1021,6 +692,15 @@ pub enum ActionHostError {
 }
 
 impl ActionHostError {
+    /// The refusal for want of the person's answer, for an action that
+    /// reached no page departure to name.
+    #[must_use]
+    pub const fn confirmation_required() -> Self {
+        Self::ConfirmationRequired {
+            departure: Vec::new(),
+        }
+    }
+
     /// Stable machine-readable code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -1028,7 +708,7 @@ impl ActionHostError {
             Self::Unavailable { .. } => "remote_actions_unavailable",
             Self::UnknownAction => "unknown_action",
             Self::NotPermitted => "not_permitted",
-            Self::ConfirmationRequired => "action_confirmation_required",
+            Self::ConfirmationRequired { .. } => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
             Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
@@ -1055,15 +735,28 @@ pub const STALE_REVISION_REASON: &str = "the target changed since that revision;
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionHostError")]
 enum WireHostError {
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
     UnknownAction,
     NotPermitted,
-    ConfirmationRequired,
-    InvalidRequest { reason: String },
+    ConfirmationRequired {
+        /// Written even when there is no departure: a refusal is encoded by
+        /// position too, and a part left out is one its reader still expects.
+        #[serde(default)]
+        departure: Vec<ActionFacet>,
+    },
+    InvalidRequest {
+        reason: String,
+    },
     UnknownInvocation,
     InvocationConflict,
-    NotCancellable { reason: String },
-    Refused { reason: String },
+    NotCancellable {
+        reason: String,
+    },
+    Refused {
+        reason: String,
+    },
 }
 
 impl From<ActionHostError> for WireHostError {
@@ -1072,7 +765,9 @@ impl From<ActionHostError> for WireHostError {
             ActionHostError::Unavailable { reason } => Self::Unavailable { reason },
             ActionHostError::UnknownAction => Self::UnknownAction,
             ActionHostError::NotPermitted => Self::NotPermitted,
-            ActionHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            ActionHostError::ConfirmationRequired { departure } => {
+                Self::ConfirmationRequired { departure }
+            }
             ActionHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             ActionHostError::StaleRevision => Self::InvalidRequest {
                 reason: STALE_REVISION_REASON.to_owned(),
@@ -1094,7 +789,9 @@ impl From<WireHostError> for ActionHostError {
             WireHostError::Unavailable { reason } => Self::Unavailable { reason },
             WireHostError::UnknownAction => Self::UnknownAction,
             WireHostError::NotPermitted => Self::NotPermitted,
-            WireHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            WireHostError::ConfirmationRequired { departure } => {
+                Self::ConfirmationRequired { departure }
+            }
             WireHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             WireHostError::UnknownInvocation => Self::UnknownInvocation,
             WireHostError::InvocationConflict => Self::InvocationConflict,
@@ -1102,6 +799,17 @@ impl From<WireHostError> for ActionHostError {
             WireHostError::Refused { reason } => Self::Refused { reason },
         }
     }
+}
+
+/// One member of a workspace present now: a person, or an agent acting in it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Here {
+    /// The member's id: a person's user root key, or an agent's id.
+    pub who: String,
+    /// The name people read for them; the id when the roster names none.
+    pub name: String,
+    /// `person` or `agent`.
+    pub kind: String,
 }
 
 /// A peer that runs actions on behalf of authenticated remote callers.
@@ -1177,12 +885,26 @@ pub trait ActionHost {
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         let _ = (caller, request);
-        Pending::ready(Err(ActionHostError::ConfirmationRequired))
+        Pending::ready(Err(ActionHostError::confirmation_required()))
     }
 
     /// Where this host's callers put content into their workspace's content
     /// store ([`ContentPuts`]); `None` for a host without one.
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        None
+    }
+
+    /// Where this host's callers read content back out of their workspace's
+    /// content store ([`ContentGets`]); `None` for a host without one.
+    fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
+        None
+    }
+
+    /// Who is in the workspace now, as this host's collaboration knows it:
+    /// its people and the agents its roster names. `None` for a host that
+    /// keeps no roster, which reports no presence rather than an empty one.
+    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
+        let _ = caller;
         None
     }
 
@@ -1264,21 +986,11 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
-    /// Ask a device for a workspace record it holds, from `query.offset` on.
-    /// The same authenticated device-to-device route as an action, but
-    /// answered by the device from what its app last made durable, not by
-    /// an action host: a record is readable where it is kept whether or not
-    /// its app is running.
-    RecordRequest {
-        correlation: u64,
-        query: RecordQuery,
-    },
-    /// Answer to [`Self::RecordRequest`] with the same correlation: the next
-    /// piece of the record, or why it is not given.
-    RecordResponse {
-        correlation: u64,
-        result: Result<RecordPiece, ActionHostError>,
-    },
+    /// Retired: records are read through the record door ([`Self::RecordRead`]). Kept in
+    /// place because the variants after it are encoded by position.
+    RetiredRecordRequest,
+    /// Retired with [`Self::RetiredRecordRequest`].
+    RetiredRecordResponse,
     /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
     ConfirmationRequest {
         correlation: u64,
@@ -1306,63 +1018,86 @@ pub enum RemoteActionMessage {
     /// being asked, so the host that placed it reads what the surface can do
     /// as it is rather than as it was when it first joined.
     CatalogueChanged { page: CataloguePage },
+    /// One step of putting bytes into the content store of the device's
+    /// workspace ([`ContentPutStep`]): how a client of another device's
+    /// actions (an agent's MCP session through its own device) hands it a
+    /// file an action then names by `tilo.content:<hash>`.
+    ContentPutRequest {
+        correlation: u64,
+        step: ContentPutStep,
+    },
+    /// Answer to [`Self::ContentPutRequest`] with the same correlation.
+    ContentPutResponse {
+        correlation: u64,
+        result: Result<ContentPutAnswer, ActionHostError>,
+    },
+    /// Ask the device for a piece of content in its workspace's store: what a
+    /// client of another device's actions (an agent's MCP session through its
+    /// own device) downloads a file by, having the file's
+    /// `tilo.content:<hash>` reference.
+    ContentGetRequest {
+        correlation: u64,
+        /// The content's reference, `tilo.content:<hash>`.
+        content: String,
+        /// Where in the content the piece starts.
+        offset: u64,
+        /// How many bytes the piece may carry; zero asks for one piece's
+        /// worth ([`MAX_CONTENT_FRAME_BYTES`]).
+        length: u64,
+    },
+    /// Answer to [`Self::ContentGetRequest`] with the same correlation.
+    ContentGetResponse {
+        correlation: u64,
+        result: Result<ContentGetAnswer, ActionHostError>,
+    },
+    /// Ask the host to put `request` to the person the caller acts for and
+    /// answer with their confirmation of that one invocation
+    /// ([`ActionHost::confirm`]): where they are asked is the host's, and a
+    /// host with nobody to ask answers
+    /// [`ActionHostError::ConfirmationRequired`].
+    Confirm {
+        correlation: u64,
+        request: Box<InvokeRequest>,
+    },
+    /// Answer to [`Self::Confirm`], same correlation.
+    ConfirmResponse {
+        correlation: u64,
+        result: Result<Box<ConfirmedInvocation>, ActionHostError>,
+    },
+    /// Read a record of the caller's workspace through the one record door
+    /// ([`RecordReads`]), decided as every reader of it is; continuing
+    /// `on_behalf_of`, an invocation the host delivered to the caller, it is
+    /// that invocation's caller's read.
+    RecordRead {
+        correlation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_behalf_of: Option<InvocationId>,
+        read: RecordReadRequest,
+    },
+    /// Answer to [`Self::RecordRead`], same correlation: the readings as
+    /// JSON text ([`RecordReadings::readable`]).
+    RecordReading {
+        correlation: u64,
+        result: Result<String, ActionHostError>,
+    },
 }
 
-/// Largest piece of a record one answer carries, before encoding.
-pub const MAX_RECORD_PIECE_BYTES: usize = 384 * 1024;
-
-/// Which record to read, and from where in its stored bytes.
+/// One record a reader asks for over the action door: alone, or `joined`
+/// as the chain of parts whose base it is, once it differs from the revision
+/// `after` or `wait_ms` passed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordQuery {
-    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
-    #[serde(rename = "room", alias = "workspace")]
-    pub workspace: String,
-    /// The application whose record it is.
+pub struct RecordReadRequest {
+    /// The app whose record it is.
     pub app: String,
-    /// The record's id in that workspace.
+    /// Its id there; empty for the app's record of the workspace.
     pub record: String,
-    /// Where in the stored document this piece starts.
-    pub offset: u64,
-}
-
-/// One piece of a stored record document.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordPiece {
-    /// The whole document's length.
-    pub total: u64,
-    /// Where this piece starts.
-    pub offset: u64,
-    /// The piece, hex-encoded so the frame stays self-describing text.
-    bytes: String,
-}
-
-impl RecordPiece {
-    #[must_use]
-    pub fn new(total: u64, offset: u64, bytes: &[u8]) -> Self {
-        Self {
-            total,
-            offset,
-            bytes: hex::encode(bytes),
-        }
-    }
-
-    /// The piece's bytes; `None` when they are not well-formed.
-    #[must_use]
-    pub fn bytes(&self) -> Option<Vec<u8>> {
-        if !self.bytes.len().is_multiple_of(2) || self.bytes.len() > MAX_RECORD_PIECE_BYTES * 2 {
-            return None;
-        }
-        (0..self.bytes.len())
-            .step_by(2)
-            .map(|at| {
-                self.bytes
-                    .get(at..at.saturating_add(2))
-                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            })
-            .collect()
-    }
+    #[serde(default)]
+    pub joined: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// How long to wait for a write past `after`, at most [`MAX_REMOTE_WAIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
 }
 
 impl RemoteActionMessage {
@@ -1402,11 +1137,29 @@ impl RemoteActionMessage {
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
-                | Self::RecordRequest { .. }
+                | Self::RecordRead { .. }
                 | Self::FeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
+                | Self::ContentPutRequest { .. }
+                | Self::ContentGetRequest { .. }
+                | Self::Confirm { .. }
         )
     }
+}
+
+/// `request` put to the person `caller` acts for, answered for
+/// `correlation` ([`ActionHost::confirm`]).
+fn confirmed<H: ActionHost>(
+    host: &H,
+    caller: &Caller,
+    correlation: u64,
+    request: &InvokeRequest,
+) -> Pending<RemoteActionMessage> {
+    host.confirm(caller, request)
+        .map(move |result| RemoteActionMessage::ConfirmResponse {
+            correlation,
+            result: result.map(Box::new),
+        })
 }
 
 /// A versioned [`RemoteActionMessage`], the unit a transport carries.
@@ -1546,29 +1299,56 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::Cancel { invocation } => host
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
-        // A record is read by the device that keeps it, never through an
-        // action host; a host asked for one says so.
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::RecordResponse {
+        // Read by a host's own reader, which answers through its trait object: what a reading is
+        // made of loads with the code that reads records, not with every host's door.
+        RemoteActionMessage::RecordRead {
+            correlation, read, ..
+        } => host.record_reads().map_or_else(
+            || record_read::unanswered(correlation),
+            |reads| reads.answer_read(caller, correlation, read),
+        ),
+        // A question is the person's to answer, on the device they are at.
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
+            confirmation::unanswered(correlation, ActionHostError::confirmation_required()),
+        ),
+        // Uploads over a session are kept by a host that keeps them open
+        // between steps ([`HostedContentPuts`]); a stateless one has none.
+        RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ContentPutResponse {
                 correlation,
                 result: Err(ActionHostError::Unavailable {
-                    reason: "records are read from the device that keeps them".into(),
+                    reason: CONTENT_PUTS_UNAVAILABLE.into(),
                 }),
             })
         }
-        // A question is the person's to answer, on the device they are at.
-        RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
-            confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
-        ),
+        // Content is read from a store a device keeps; a host that keeps
+        // none says so.
+        RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ContentGetResponse {
+                correlation,
+                result: Err(ActionHostError::Unavailable {
+                    reason: CONTENT_GETS_UNAVAILABLE.into(),
+                }),
+            })
+        }
+        RemoteActionMessage::Confirm {
+            correlation,
+            request,
+        } => confirmed(host, caller, correlation, &request),
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::RetiredRecordRequest
+        | RemoteActionMessage::RetiredRecordResponse
+        | RemoteActionMessage::RecordReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1610,24 +1390,43 @@ pub fn refuse(
             invocation: *invocation,
             result: Err(error),
         },
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            RemoteActionMessage::RecordResponse {
+        RemoteActionMessage::RecordRead { correlation, .. } => RemoteActionMessage::RecordReading {
+            correlation: *correlation,
+            result: Err(error),
+        },
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+            confirmation::unanswered(*correlation, error)
+        }
+        RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+            RemoteActionMessage::ContentPutResponse {
                 correlation: *correlation,
                 result: Err(error),
             }
         }
-        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
-            confirmation::unanswered(*correlation, error)
+        RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+            RemoteActionMessage::ContentGetResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
         }
+        RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
+            correlation: *correlation,
+            result: Err(error),
+        },
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::RetiredRecordRequest
+        | RemoteActionMessage::RetiredRecordResponse
+        | RemoteActionMessage::RecordReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
         | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::ContentPutResponse { .. }
+        | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }
@@ -1877,6 +1676,52 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
             update
+        );
+    }
+
+    /// A run that reached something only the person may allow is refused for
+    /// want of their answer, and that refusal carries what the run stated
+    /// about it: the page departure it holds, as it travels to the host that
+    /// asks them.
+    #[test]
+    fn a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated() {
+        let departure = vec![
+            browser::departure_facet("page", "https://visa.example/apply"),
+            browser::departure_facet("kind", "submit"),
+            browser::departure_facet("method", "POST"),
+            browser::departure_facet("destination", "https://visa.example"),
+            browser::departure_facet("picture", "tilo.content:5f2b"),
+        ];
+        let invocation = InvocationId::new();
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Failed {
+                invocation,
+                error: ActionFailure {
+                    code: CONFIRMATION_REQUIRED_CODE.into(),
+                    message: "the person has to allow this".into(),
+                    details: serde_json::to_value(&departure).ok(),
+                    retryable: false,
+                },
+            },
+        );
+        let receipt = state.receipt();
+        let ReceiptStatus::Rejected {
+            error: ActionHostError::ConfirmationRequired { departure: stated },
+        } = &receipt.status
+        else {
+            panic!("a run waiting on the person is a refusal: {receipt:?}");
+        };
+        assert_eq!(*stated, departure);
+        // The refusal travels with it, so a host in another process asks the
+        // person about what leaves and not about a name for it.
+        let error = ActionHostError::ConfirmationRequired {
+            departure: stated.clone(),
+        };
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ActionHostError>(wire).unwrap(),
+            error
         );
     }
 
@@ -2386,78 +2231,6 @@ mod tests {
                 }),
             },
         ]
-    }
-
-    #[test]
-    fn a_record_query_keeps_the_key_peers_on_other_builds_read() {
-        let request = RemoteActionMessage::RecordRequest {
-            correlation: 1,
-            query: RecordQuery {
-                workspace: "studio".into(),
-                app: "dev.tilo.notes".into(),
-                record: "uuid:1".into(),
-                offset: 0,
-            },
-        };
-        let wire = RemoteActionFrame::new(request.clone()).encode().unwrap();
-        let written: serde_json::Value = serde_json::from_slice(&wire).unwrap();
-        let query = &written["message"]["RecordRequest"]["query"];
-        assert_eq!(
-            query["room"], "studio",
-            "a peer on another build reads this"
-        );
-        assert!(
-            query.get("workspace").is_none(),
-            "the frame is not written in two keys"
-        );
-        let older = serde_json::json!({
-            "version": REMOTE_ACTIONS_VERSION,
-            "message": {"RecordRequest": {"correlation": 1, "query": {
-                "workspace": "studio", "app": "dev.tilo.notes", "record": "uuid:1", "offset": 0}}},
-        });
-        let decoded = RemoteActionFrame::decode(&serde_json::to_vec(&older).unwrap())
-            .unwrap()
-            .message;
-        assert_eq!(
-            decoded, request,
-            "a frame written after the rename still reads"
-        );
-    }
-
-    #[test]
-    fn a_record_piece_round_trips_and_action_hosts_never_serve_records() {
-        let bytes: Vec<u8> = (0..=255).collect();
-        let request = RemoteActionMessage::RecordRequest {
-            correlation: 4,
-            query: RecordQuery {
-                workspace: "workspace".into(),
-                app: "dev.tilo.notes".into(),
-                record: "uuid:1".into(),
-                offset: 0,
-            },
-        };
-        assert!(request.is_request());
-        let answer = RemoteActionMessage::RecordResponse {
-            correlation: 4,
-            result: Ok(RecordPiece::new(256, 0, &bytes)),
-        };
-        let wire = RemoteActionFrame::new(answer.clone()).encode().unwrap();
-        let decoded = RemoteActionFrame::decode(&wire).unwrap().message;
-        assert_eq!(decoded, answer);
-        let RemoteActionMessage::RecordResponse {
-            result: Ok(piece), ..
-        } = decoded
-        else {
-            panic!("a record piece")
-        };
-        assert_eq!(piece.bytes(), Some(bytes));
-        assert!(matches!(
-            refuse(&request, ActionHostError::NotPermitted),
-            Some(RemoteActionMessage::RecordResponse {
-                correlation: 4,
-                result: Err(ActionHostError::NotPermitted)
-            })
-        ));
     }
 
     /// Every message round-trips through a frame, frames from another version are refused not

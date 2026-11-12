@@ -179,6 +179,7 @@ pub fn directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
         revision: revision.into(),
         resolve_mode: DirectoryResolveMode::Found,
         result: tilo_actions::ResultSpec::None,
+        operation: tilo_actions::OperationKind::View,
         confirmation_required: false,
         params: Vec::new(),
         query_count: 0,

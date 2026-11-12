@@ -4,7 +4,7 @@
 //! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
 //! `crates/sdk/ui-core/assets/fonts`; a build fetches the pinned font bytes into
 //! a verified artifact cache and prepares this crate's catalog from it in its
-//! own `OUT_DIR`. The OS image installs its catalog once,
+//! profile directory's `font-catalogs`. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -17,7 +17,6 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "faces")]
@@ -35,11 +34,15 @@ pub const MANIFEST: &str = include_str!("../manifest.toml");
 /// extra configuration.
 pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 
-/// The catalog this build prepared from the source checkout, in this crate's
-/// `OUT_DIR`: it is part of the build's output, so wherever the build is
-/// reused the catalog is too. The build names it from its profile directory,
-/// which holds the running program (or its `deps`/`examples`), so it is found
-/// above the program; the build directory's path is not compiled in.
+/// The catalog this build prepared from the source checkout, in the profile
+/// directory's `font-catalogs`: it is part of the build's output, so wherever
+/// the build is reused the catalog is too. A catalog is published there once,
+/// under the name of the manifest it was prepared from, and never rewritten,
+/// so a build — or another job sharing the build directory — that prepares it
+/// again cannot take away the tree a running test or program is reading. The
+/// build names it from its profile directory, which holds the running program
+/// (or its `deps`/`examples`), so it is found above the program; the build
+/// directory's path is not compiled in.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -143,8 +146,7 @@ impl Error {
 /// licence, such as New Computer Modern's GPL-licensed Regular cut, is
 /// `Os`. A catalog directory without its `Os` files is a standalone
 /// catalog, and the toolkit sets text in the faces it has.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Product,
     Os,
@@ -166,18 +168,17 @@ impl Scope {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Manifest {
     pub schema: u32,
     pub font: Vec<Asset>,
 }
 
 /// One pinned font file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Asset {
     pub scope: Scope,
     /// Whether a browser host must deliver this file before first paint.
-    #[serde(default)]
     pub browser_startup: bool,
     /// Path relative to the catalog root.
     pub file: String,
@@ -189,7 +190,7 @@ pub struct Asset {
 }
 
 /// One face of a pinned file (a collection has several).
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Face {
     pub index: u32,
     /// The family the file itself names.
@@ -201,24 +202,67 @@ pub struct Face {
     /// New Computer Modern file says `NewComputerModern` at weight 400,
     /// whether it is the Book, Regular or 8 pt cut. Empty keeps the file's
     /// own family. The file's bytes are never changed.
-    #[serde(default)]
     pub tilo_families: Vec<String>,
 }
 
-/// The compiled-in manifest, parsed once.
+/// One face as the build writes it: index, family, PostScript name, style
+/// and Tilo's families.
+type FaceRow = (
+    u32,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+);
+/// One font as the build writes it: scope, startup, file, bytes, SHA-256,
+/// reserved aliases and faces.
+type FontRow = (
+    Scope,
+    bool,
+    &'static str,
+    u64,
+    &'static str,
+    &'static [&'static str],
+    &'static [FaceRow],
+);
+
+/// `manifest.toml`'s fonts, as the build read them.
+#[allow(
+    clippy::unreadable_literal,
+    reason = "the sizes are written by the build as manifest.toml states them"
+)]
+const FONTS: &[FontRow] = include!(concat!(env!("OUT_DIR"), "/manifest.rs"));
+
+/// The compiled-in manifest, built once.
 pub fn manifest() -> Result<&'static Manifest, Error> {
-    static PARSED: OnceLock<Result<Manifest, String>> = OnceLock::new();
-    PARSED
-        .get_or_init(|| {
-            let manifest: Manifest = toml::from_str(MANIFEST).map_err(|e| e.to_string())?;
-            if manifest.schema == 1 {
-                Ok(manifest)
-            } else {
-                Err("unsupported catalog schema".to_string())
-            }
-        })
-        .as_ref()
-        .map_err(|problem| Error::at("manifest.toml", problem))
+    static BUILT: OnceLock<Manifest> = OnceLock::new();
+    let strings = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+    Ok(BUILT.get_or_init(|| Manifest {
+        schema: 1,
+        font: FONTS
+            .iter()
+            .map(
+                |&(scope, browser_startup, file, bytes, sha256, aliases, faces)| Asset {
+                    scope,
+                    browser_startup,
+                    file: file.to_owned(),
+                    bytes,
+                    sha256: sha256.to_owned(),
+                    reserved_aliases: strings(aliases),
+                    faces: faces
+                        .iter()
+                        .map(|&(index, family, post_script_name, style, families)| Face {
+                            index,
+                            family: family.to_owned(),
+                            post_script_name: post_script_name.to_owned(),
+                            style: style.to_owned(),
+                            tilo_families: strings(families),
+                        })
+                        .collect(),
+                },
+            )
+            .collect(),
+    }))
 }
 
 /// SHA-256 of the compiled-in manifest, which identifies the catalog.

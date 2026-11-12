@@ -9,6 +9,7 @@ use crate::types::Ty;
 /// it is cased, how it is asked about, and what it becomes.
 pub const TEXT: &[&str] = &[
     "len",
+    "words",
     "is_empty",
     "trim",
     "lower",
@@ -108,8 +109,9 @@ const MAP: &[&str] = &["get", "keys"];
 /// the first day of the week it stands in.
 const DAY: &[&str] = &["weekday", "day", "month", "year", "start_of_week"];
 
-/// What a moment can be asked: the day it falls on and the time of day it is then.
-const MOMENT: &[&str] = &["day", "time_of_day"];
+/// What a moment can be asked: the day it falls on, the time of day it is then, and that time as
+/// the person reads a clock.
+const MOMENT: &[&str] = &["day", "time_of_day", "clock"];
 
 /// What a length of time can be asked: the seconds it is, which is how a record keeps one.
 const LENGTH: &[&str] = &["seconds"];
@@ -154,8 +156,13 @@ fn aggregates(item: &Ty) -> Vec<&'static str> {
 #[must_use]
 pub fn described(ty: &Ty) -> String {
     match ty {
-        Ty::RichText => "is_empty (and the members excerpt, text, references, people)".to_owned(),
+        Ty::RichText => {
+            "is_empty and markdown(links:, from:) (and the members excerpt, text, markdown, \
+             references, people)"
+                .to_owned()
+        }
         Ty::Bytes => "text, len".to_owned(),
+        Ty::File => "text, files (and the members name, media, size, url)".to_owned(),
         Ty::Json => "a document whose shape code asks as it reads, `match` on `.object(fields)`, `.array(items)`, `.string(text)`, `.number(number)`, `.bool(flag)`, `.null`".to_owned(),
         Ty::Response => "text (and the fields ok, status, status_text, headers, body)".to_owned(),
         Ty::Record(_) => "id (and fields)".to_owned(),
@@ -198,6 +205,6 @@ mod tests {
                 .contains(&"sum")
         );
         assert_eq!(names(&Ty::Unit), None);
-        assert!(described(&Ty::Text).starts_with("len, is_empty, trim"));
+        assert!(described(&Ty::Text).starts_with("len, words, is_empty, trim"));
     }
 }

@@ -59,7 +59,9 @@ mod paint;
 mod reactions;
 mod slot_change;
 mod strip;
-use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
+use layout::{
+    LocationForms, LocationLead, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome,
+};
 #[cfg(test)]
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
@@ -104,7 +106,7 @@ const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfo
 
 /// What a row of the open menu (the overflow's, a menu button's, or the
 /// location's picker) runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {
     /// The sidebar's toggle, where the row has no room for it.
     Sidebar,
@@ -115,8 +117,9 @@ enum MenuEntry {
     /// Leading action `n`, where the row has no room for it.
     Leading(usize),
     View(usize),
-    /// Item `.1` of menu button `.0`.
-    Item(usize, usize),
+    /// Item `.1` of the menu button `.0` names: the button by its id, so the row the person
+    /// chooses runs for the button it stands under however the app re-declares its slots.
+    Item(String, usize),
     /// The location's choice `n`, committed.
     Choice(usize),
 }
@@ -138,6 +141,43 @@ fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
     item
 }
 
+/// What a menu holding `action` lists of it: the action itself, or its items where it is a menu
+/// button, as [`menu_rows`] pushes them.
+fn listed_entries(
+    action: &crate::window_toolbar::ToolbarAction,
+    entry: MenuEntry,
+) -> Vec<MenuEntry> {
+    if action.items.is_empty() {
+        return vec![entry];
+    }
+    (0..action.items.len())
+        .map(|j| MenuEntry::Item(action.id.clone(), j))
+        .collect()
+}
+
+/// Push `action` into a menu's rows: an action without items is one row that runs `entry`; a menu
+/// button's row is its name, and then its items, each running for the button it stands under
+/// however the app re-declares its slots.
+fn menu_rows(
+    (items, entries): (&mut Vec<MenuItem>, &mut Vec<Option<MenuEntry>>),
+    action: &crate::window_toolbar::ToolbarAction,
+    entry: MenuEntry,
+) {
+    if action.items.is_empty() {
+        items.push(menu_item(action));
+        entries.push(Some(entry));
+        return;
+    }
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+        entries.push(None);
+    }
+    items.push(MenuItem::caption(action.name.clone()));
+    entries.push(None);
+    items.extend(action.items.iter().map(menu_item));
+    entries.extend(listed_entries(action, entry).into_iter().map(Some));
+}
+
 /// The slots of the tab the window shows, in one row of its bar.
 pub(crate) struct ToolbarRow {
     shown: Option<(u64, WindowToolbar)>,
@@ -152,8 +192,14 @@ pub(crate) struct ToolbarRow {
     slot_changes: slot_change::SlotChanges,
     row: Rect,
     slots: Slots,
+    /// Painting measured the row's labels since the last layout took them in.
+    measured: bool,
     hover: Option<Slot>,
     pressed: Option<Slot>,
+    /// The command the press under way is on, by its id: the app may declare its slots again
+    /// while the button is down and shift which place of the row that command stands in, and the
+    /// release still ends the command the person pressed.
+    pressed_action: Option<String>,
     /// The location field, while the location is edited.
     field: Option<TextInput>,
     /// The field's text the app last heard ([`ToolbarEvent::Edit`]).
@@ -171,6 +217,10 @@ pub(crate) struct ToolbarRow {
     /// The button the open menu hangs from: the overflow button, a menu
     /// button, or the location's picker.
     menu_slot: Option<Slot>,
+    /// The action whose menu is open, by its id, while it is a menu button's: the menu stays with
+    /// that button while the app declares its slots again and the commands before it come, go or
+    /// change, rather than following whatever now stands where it once did.
+    menu_action: Option<String>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
     views_size: Option<Measured>,
@@ -203,6 +253,9 @@ pub(crate) struct ToolbarRow {
     /// Where a press on the location went down, while it waits for its
     /// release on a carriable bar.
     location_press: Option<Point>,
+    /// The words the row painted in its last paint, each at the place its
+    /// ink stands ([`Self::painted_labels`]).
+    labels: Vec<crate::window_toolbar::BarLabel>,
 }
 
 impl Default for ToolbarRow {
@@ -221,8 +274,10 @@ impl ToolbarRow {
             slot_changes: slot_change::SlotChanges::default(),
             row: Rect::ZERO,
             slots: Slots::default(),
+            measured: false,
             hover: None,
             pressed: None,
+            pressed_action: None,
             field: None,
             heard: String::new(),
             crumbs: None,
@@ -230,6 +285,7 @@ impl ToolbarRow {
             menu_entries: Vec::new(),
             choice_trigger: Rect::ZERO,
             menu_slot: None,
+            menu_action: None,
             views_size: None,
             suggestions: SuggestionList::new(),
             suggestion_values: Vec::new(),
@@ -244,7 +300,15 @@ impl ToolbarRow {
             reactions: reactions::RowReactions::default(),
             carriable: false,
             location_press: None,
+            labels: Vec::new(),
         }
+    }
+
+    /// The words the row painted in its last paint, each at the place its
+    /// ink stands: its location's label, its pickers', a notice's. No widget
+    /// lays them out, so nothing else reports them.
+    pub(crate) fn painted_labels(&self) -> &[crate::window_toolbar::BarLabel] {
+        &self.labels
     }
 
     /// Whether the window can be carried by its bar (it stands on a canvas).
@@ -259,6 +323,7 @@ impl ToolbarRow {
     /// when it ends.
     pub(crate) fn cancel_press(&mut self) {
         self.pressed = None;
+        self.pressed_action = None;
         self.location_press = None;
     }
 
@@ -278,7 +343,7 @@ impl ToolbarRow {
     pub(crate) fn close_popups(&mut self) -> bool {
         let mut closed = false;
         if self.menu.is_open() {
-            self.menu.close();
+            self.close_menu();
             closed = true;
         }
         if self.picking() {
@@ -332,9 +397,10 @@ impl ToolbarRow {
             // Another tab: what the person typed belongs to the tab they
             // typed it in, and goes with it.
             self.abandon_edit();
-            self.menu.close();
+            self.close_menu();
             self.hover = None;
             self.pressed = None;
+            self.pressed_action = None;
             self.outgoing = self
                 .shown
                 .take()
@@ -488,38 +554,27 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
-        let leading: Vec<String> = self
-            .toolbar()
-            .map(|toolbar| {
-                toolbar
-                    .leading
-                    .iter()
-                    .map(|action| {
+        let words = |actions: &[crate::window_toolbar::ToolbarAction]| -> Vec<(String, bool)> {
+            actions
+                .iter()
+                .map(|action| {
+                    (
                         if action.labelled {
                             action.name.clone()
                         } else {
                             String::new()
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let actions: Vec<String> = self
+                        },
+                        action.primary,
+                    )
+                })
+                .collect()
+        };
+        let leading = self
             .toolbar()
-            .map(|toolbar| {
-                toolbar
-                    .actions
-                    .iter()
-                    .map(|action| {
-                        if action.labelled {
-                            action.name.clone()
-                        } else {
-                            String::new()
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_or_else(Vec::new, |toolbar| words(&toolbar.leading));
+        let actions = self
+            .toolbar()
+            .map_or_else(Vec::new, |toolbar| words(&toolbar.actions));
         let key = MeasureKey {
             labels,
             leading,
@@ -528,9 +583,7 @@ impl ToolbarRow {
             editable: location.is_some_and(|location| location.editable),
             picker: location
                 .is_some_and(|location| !location.editable && !location.choices.is_empty()),
-            icon: location.is_some_and(|location| {
-                location.icon.as_deref().and_then(Icon::from_name).is_some()
-            }),
+            lead: location.map_or(LocationLead::None, LocationLead::of),
             notice: self
                 .toolbar()
                 .and_then(|toolbar| toolbar.notice.as_ref())
@@ -542,12 +595,13 @@ impl ToolbarRow {
                         .collect()
                 })
                 .unwrap_or_default(),
+            trailing: location.and_then(trailing_word),
             text_scale: theme.text_scale.to_bits(),
         };
         if key.labels.is_empty()
             && key.forms.is_empty()
-            && key.leading.iter().all(String::is_empty)
-            && key.actions.iter().all(String::is_empty)
+            && key.leading.iter().all(|(name, _)| name.is_empty())
+            && key.actions.iter().all(|(name, _)| name.is_empty())
         {
             let had = self.views_size.take().is_some();
             if had {
@@ -569,14 +623,18 @@ impl ToolbarRow {
             let actions = key
                 .notice
                 .iter()
-                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))
                 .collect();
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
-                chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+                chrome: location_chrome((key.editable, key.picker, key.lead), theme),
                 actions,
+                trailing: key
+                    .trailing
+                    .as_deref()
+                    .map(|word| (width(word), f64::from(theme.tokens.spacing.s2))),
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
             let views = (!labels.is_empty()).then_some(ViewsMeasure {
@@ -587,14 +645,14 @@ impl ToolbarRow {
                 menu: picker_width(widest, theme),
                 location: Some(picker_width(0.0, theme)),
             });
-            let mut widths = |names: &[String]| -> Vec<f64> {
+            let mut widths = |names: &[(String, bool)]| -> Vec<f64> {
                 names
                     .iter()
-                    .map(|name| {
+                    .map(|(name, primary)| {
                         if name.is_empty() {
                             0.0
                         } else {
-                            labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
+                            labelled_face(Rect::ZERO, name, *primary).intrinsic_width(text, theme)
                         }
                     })
                     .collect()
@@ -618,6 +676,23 @@ impl ToolbarRow {
 
     pub(crate) fn toolbar(&self) -> Option<&WindowToolbar> {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
+    }
+
+    /// Whether the last layout was short of the room the slots need: a button
+    /// sharing another's place, the app's location with nowhere to stand, or
+    /// that location cut short in the shorter form it names itself in. A bar
+    /// that can give the row more room asks before it keeps it.
+    pub(crate) fn crowded(&self) -> bool {
+        let (app_row, _, _) = self.place_reactions(self.row);
+        let forms = self.views_size.as_ref().map(|measured| &measured.forms);
+        self.slots.crowded(self.toolbar(), app_row, forms)
+    }
+
+    /// Whether painting measured the row's labels anew, and what it needs to know how wide they
+    /// are: a bar asks after a draw (so its row, and the strip ahead of it, take their places
+    /// knowing the widths), and asking settles it.
+    pub(crate) fn take_measured(&mut self) -> bool {
+        std::mem::take(&mut self.measured)
     }
 
     /// Lay the slots out across `row`.
@@ -668,13 +743,13 @@ impl ToolbarRow {
         }
         // The open menu follows what it hangs from, and goes with it.
         let anchor = match self.menu_slot {
-            Some(Slot::Action(i)) => self.slots.actions.get(i).copied().unwrap_or(Rect::ZERO),
+            Some(Slot::Action(_) | Slot::Leading(_)) => self.menu_button_rect(),
             Some(Slot::Location) => self.choice_anchor(),
             Some(Slot::ViewsMenu) => self.slots.views_menu,
             _ => self.slots.overflow,
         };
         if anchor.area() <= 0.0 {
-            self.menu.close();
+            self.close_menu();
         } else if self.menu.is_open() {
             self.menu.reanchor(anchor, self.popup_area);
         }
@@ -704,6 +779,20 @@ impl ToolbarRow {
             .filter_map(MenuItem::label)
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Where the open menu's row `label` stands, for a test to press.
+    #[cfg(test)]
+    pub(crate) fn menu_row(&self, label: &str) -> Option<Rect> {
+        if !self.menu.is_open() {
+            return None;
+        }
+        let index = self
+            .menu
+            .items()
+            .iter()
+            .position(|item| item.label() == Some(label))?;
+        self.menu.item_rect(index)
     }
 
     /// What the location's picker hangs from: the label and chevron it
@@ -852,8 +941,8 @@ impl ToolbarRow {
         self.row
     }
 
-    /// Where what the location shows at rest ends: its label as measured,
-    /// and the notice's buttons after it. `None` with no location, or
+    /// Where what the location shows at rest ends: its label as measured with the word that
+    /// follows it, and the notice's buttons after it. `None` with no location, or
     /// before it is measured.
     pub(crate) fn location_content_end(&self) -> Option<f64> {
         let location = self.slots.location;
@@ -861,7 +950,14 @@ impl ToolbarRow {
             return None;
         }
         let forms = &self.views_size.as_ref()?.forms;
-        let label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        let mut label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        // The word after the label stands where it fits beside it ([`LocationLabel::measure`]),
+        // the label cut short before it.
+        if let Some((word, gap)) = forms.trailing
+            && location.width() - forms.chrome - word - gap >= word
+        {
+            label += gap + word;
+        }
         let notice = self.slots.notice.iter().map(|rect| rect.x1);
         Some(notice.fold(label, f64::max).min(location.x1))
     }
@@ -1059,7 +1155,7 @@ impl ToolbarRow {
         // The navigation the row has no room for leads the menu, in the
         // row's order.
         for entry in self.folded_navigation() {
-            if let Some(item) = self.navigation_item(entry) {
+            if let Some(item) = self.navigation_item(entry.clone()) {
                 items.push(item);
                 entries.push(Some(entry));
             }
@@ -1081,8 +1177,7 @@ impl ToolbarRow {
         }
         for i in folded {
             if let Some(action) = toolbar.leading.get(i) {
-                items.push(menu_item(action));
-                entries.push(Some(MenuEntry::Leading(i)));
+                menu_rows((&mut items, &mut entries), action, MenuEntry::Leading(i));
             }
         }
         let shown = self.slots.actions.len();
@@ -1109,27 +1204,18 @@ impl ToolbarRow {
                     entries.push(None);
                 }
             }
-            if action.items.is_empty() {
-                items.push(menu_item(action));
-                entries.push(Some(MenuEntry::Action(i)));
-                continue;
-            }
-            // A menu button's items follow its name.
-            if !items.is_empty() {
-                items.push(MenuItem::separator());
-                entries.push(None);
-            }
-            items.push(MenuItem::caption(action.name.clone()));
-            entries.push(None);
-            for (j, item) in action.items.iter().enumerate() {
-                items.push(menu_item(item));
-                entries.push(Some(MenuEntry::Item(i, j)));
-            }
+            menu_rows((&mut items, &mut entries), action, MenuEntry::Action(i));
         }
         if items.is_empty() {
             return false;
         }
-        self.open_menu(items, entries, Slot::Overflow, self.slots.overflow);
+        self.open_menu(
+            items,
+            entries,
+            Slot::Overflow,
+            self.slots.overflow,
+            super::PanelAlign::Trailing,
+        );
         true
     }
 
@@ -1210,27 +1296,39 @@ impl ToolbarRow {
         if anchor.area() <= 0.0 {
             return false;
         }
-        self.open_menu(items, entries, Slot::ViewsMenu, anchor);
+        self.open_menu(
+            items,
+            entries,
+            Slot::ViewsMenu,
+            anchor,
+            super::PanelAlign::Trailing,
+        );
         true
     }
 
-    /// Open menu button `index`'s menu under it: its items, by name, each
-    /// with its icon and state.
-    fn open_action_menu(&mut self, index: usize) -> bool {
-        let Some(action) = self
-            .toolbar()
-            .and_then(|toolbar| toolbar.actions.get(index))
-        else {
+    /// Open the menu button `slot` stands for under it: its items, by name, each with its icon and
+    /// state. A menu button before the location opens its menu as one after it does.
+    fn open_action_menu(&mut self, slot: &Slot) -> bool {
+        let Some(action) = self.action_at(slot) else {
             return false;
         };
         let items = action.items.iter().map(menu_item).collect();
+        let id = action.id.clone();
         let entries = (0..action.items.len())
-            .map(|j| Some(MenuEntry::Item(index, j)))
+            .map(|j| Some(MenuEntry::Item(id.clone(), j)))
             .collect();
-        let Some(anchor) = self.slots.actions.get(index).copied() else {
+        let Some(anchor) = self.action_rect(slot) else {
             return false;
         };
-        self.open_menu(items, entries, Slot::Action(index), anchor);
+        // Under a button at the row's leading end the menu lines up with its leading edge, under one
+        // at its end with its trailing edge.
+        let align = if matches!(slot, Slot::Leading(_)) {
+            super::PanelAlign::Leading
+        } else {
+            super::PanelAlign::Trailing
+        };
+        self.open_menu(items, entries, slot.clone(), anchor, align);
+        self.menu_action = Some(id);
         true
     }
 
@@ -1240,19 +1338,82 @@ impl ToolbarRow {
         entries: Vec<Option<MenuEntry>>,
         slot: Slot,
         anchor: Rect,
+        align: super::PanelAlign,
     ) {
         self.menu.set_items(items);
-        self.menu.set_align(super::PanelAlign::Trailing);
+        self.menu.set_align(align);
         self.menu.open_anchored(anchor, self.popup_area);
         self.menu_entries = entries;
         self.menu_slot = Some(slot);
+        self.menu_action = None;
     }
 
-    /// Run item `item` of menu button `index`.
-    fn run_item(&mut self, index: usize, item: usize) -> bool {
+    /// Close the open menu, and forget the button it hung from.
+    fn close_menu(&mut self) {
+        self.menu.close();
+        self.menu_action = None;
+    }
+
+    /// Whether `slot` is a menu button: a leading or trailing action whose press lists its items.
+    fn lists_items(&self, slot: &Slot) -> bool {
+        self.action_at(slot)
+            .is_some_and(|action| !action.items.is_empty())
+    }
+
+    /// The action `slot` stands for: one before the location, or one after it.
+    fn action_at(&self, slot: &Slot) -> Option<&crate::window_toolbar::ToolbarAction> {
+        let toolbar = self.toolbar()?;
+        match slot {
+            Slot::Leading(i) => toolbar.leading.get(*i),
+            Slot::Action(i) => toolbar.actions.get(*i),
+            _ => None,
+        }
+    }
+
+    /// Where the action `slot` stands in the row (`None`: the row has no room for it).
+    fn action_rect(&self, slot: &Slot) -> Option<Rect> {
+        match slot {
+            Slot::Leading(i) => self.slots.leading.get(*i).copied(),
+            Slot::Action(i) => self.slots.actions.get(*i).copied(),
+            _ => None,
+        }
+        .filter(|rect| rect.area() > 0.0)
+    }
+
+    /// The menu button `id` names, wherever the app declares it in the row.
+    fn menu_by_id(&self, id: &str) -> Option<&crate::window_toolbar::ToolbarAction> {
+        let toolbar = self.toolbar()?;
+        toolbar
+            .leading
+            .iter()
+            .chain(&toolbar.actions)
+            .find(|action| action.id == id)
+    }
+
+    /// Where the menu button whose menu is open stands now, by the action it is: `Rect::ZERO`
+    /// where the app declares it no longer, or out of the row's way.
+    fn menu_button_rect(&self) -> Rect {
+        let Some(id) = self.menu_action.as_deref() else {
+            return Rect::ZERO;
+        };
+        let Some(toolbar) = self.toolbar() else {
+            return Rect::ZERO;
+        };
+        if let Some(index) = toolbar.leading.iter().position(|action| action.id == id) {
+            return self.slots.leading.get(index).copied().unwrap_or(Rect::ZERO);
+        }
+        toolbar
+            .actions
+            .iter()
+            .position(|action| action.id == id)
+            .and_then(|index| self.slots.actions.get(index).copied())
+            .unwrap_or(Rect::ZERO)
+    }
+
+    /// Run item `item` of the menu button `id` names.
+    fn run_item(&mut self, id: &str, item: usize) -> bool {
         let Some(chosen) = self
-            .toolbar()
-            .and_then(|toolbar| toolbar.actions.get(index))
+            .menu_by_id(id)
             .and_then(|action| action.items.get(item))
             .filter(|chosen| chosen.enabled)
         else {
@@ -1319,13 +1480,13 @@ impl ToolbarRow {
 
     /// Run what open menu row `row` stands for.
     fn run_menu_entry(&mut self, row: usize) -> bool {
-        match self.menu_entries.get(row).copied().flatten() {
+        match self.menu_entries.get(row).cloned().flatten() {
             Some(MenuEntry::Sidebar) => self.activate(&Slot::Sidebar),
             Some(MenuEntry::Forward) => self.activate(&Slot::Forward),
             Some(MenuEntry::Action(index)) => self.run_action(index),
             Some(MenuEntry::Leading(index)) => self.run_leading(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),
-            Some(MenuEntry::Item(index, item)) => self.run_item(index, item),
+            Some(MenuEntry::Item(id, item)) => self.run_item(&id, item),
             Some(MenuEntry::Choice(index)) => self.commit_choice(index),
             None => false,
         }
@@ -1341,17 +1502,12 @@ impl ToolbarRow {
             Slot::Back => self.push(ToolbarEvent::Back),
             Slot::Forward => self.push(ToolbarEvent::Forward),
             Slot::Location if self.has_choices() => return self.open_choices(),
+            Slot::Leading(_) | Slot::Action(_) if self.lists_items(slot) => {
+                return self.open_action_menu(slot);
+            }
             Slot::Leading(i) => return self.run_leading(*i),
             Slot::Location => return self.begin_edit(),
             Slot::View(i) => return self.choose_view(*i),
-            Slot::Action(i)
-                if self
-                    .toolbar()
-                    .and_then(|toolbar| toolbar.actions.get(*i))
-                    .is_some_and(|action| !action.items.is_empty()) =>
-            {
-                return self.open_action_menu(*i);
-            }
             Slot::Action(i) => return self.run_action(*i),
             Slot::Notice(i) => {
                 let Some(id) = self.notice_action(*i).map(|action| action.id.clone()) else {
@@ -1383,6 +1539,7 @@ impl ToolbarRow {
         let changed = self.hover.is_some() || self.pressed.is_some();
         self.hover = None;
         self.pressed = None;
+        self.pressed_action = None;
         if let Some((_, crumbs)) = self.crumbs.as_mut() {
             crumbs.hover_at(None);
         }
@@ -1482,7 +1639,7 @@ impl ToolbarRow {
             );
             if let Some(row) = self.menu.take_selection() {
                 self.run_menu_entry(row);
-                self.menu.close();
+                self.close_menu();
             }
             // The menu is modal while it is up: the keyboard is its, and so
             // is the press that closes it.
@@ -1594,6 +1751,16 @@ impl ToolbarRow {
         self.hit_slot(p).is_some()
     }
 
+    /// Whether a secondary press at `p` is the app's: on a control it put in the row, or in its
+    /// location while that is being edited. The location at rest names the window, as a tab's
+    /// title does, so a secondary press there opens the window's menu.
+    pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
+        match self.hit_slot(p) {
+            Some(Slot::Location) => self.field.is_some(),
+            slot => slot.is_some(),
+        }
+    }
+
     /// A left press at `p`. Returns whether a slot took it. A press
     /// outside the field while it is edited puts the location back.
     pub(crate) fn press(&mut self, p: Point) -> bool {
@@ -1626,6 +1793,7 @@ impl ToolbarRow {
                 self.begin_edit()
             }
             Some(slot) if slot != Slot::Location => {
+                self.pressed_action = self.action_id(slot.clone());
                 self.pressed = Some(slot);
                 true
             }
@@ -1641,17 +1809,8 @@ impl ToolbarRow {
     /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
-            Some(
-                Slot::Sidebar
-                | Slot::Leading(_)
-                | Slot::View(_)
-                | Slot::Notice(_)
-                | Slot::Reaction(_),
-            ) => true,
-            Some(Slot::Action(i)) => self
-                .toolbar()
-                .and_then(|toolbar| toolbar.actions.get(*i))
-                .is_some_and(|action| action.items.is_empty()),
+            Some(Slot::Sidebar | Slot::View(_) | Slot::Notice(_) | Slot::Reaction(_)) => true,
+            Some(slot @ (Slot::Leading(_) | Slot::Action(_))) => !self.lists_items(slot),
             _ => false,
         }
     }
@@ -1677,10 +1836,33 @@ impl ToolbarRow {
             }
             return true;
         }
-        if self.hit_slot(p).as_ref() == Some(&pressed) {
-            self.activate(&pressed);
+        let over = self.hit_slot(p);
+        // The app may have declared its slots again while the button was down, which can move a
+        // command to another place of the row without moving the button: the release ends the
+        // command it began on, and a control the app put under the pointer since is not it.
+        let same = over.as_ref() == Some(&pressed)
+            || match (&self.pressed_action, over.as_ref()) {
+                (Some(pressed), Some(slot)) => {
+                    self.action_id(slot.clone()).as_ref() == Some(pressed)
+                }
+                _ => false,
+            };
+        self.pressed_action = None;
+        if same {
+            self.activate(over.as_ref().unwrap_or(&pressed));
         }
         true
+    }
+
+    /// The command `slot` stands for, by its id: an action of the app's, or one of the leading
+    /// actions before the location. None for the bar's own controls, which the app cannot move.
+    fn action_id(&self, slot: Slot) -> Option<String> {
+        let toolbar = self.toolbar()?;
+        match slot {
+            Slot::Action(i) => toolbar.actions.get(i).map(|action| action.id.clone()),
+            Slot::Leading(i) => toolbar.leading.get(i).map(|action| action.id.clone()),
+            _ => None,
+        }
     }
 
     /// Hand an event to the location field while it is edited. Enter and
@@ -1788,7 +1970,7 @@ impl ToolbarRow {
     /// does when its row is picked. Returns `ran`.
     fn ran_from_menu(&mut self, ran: bool) -> bool {
         if ran && self.menu.is_open() && !self.menu_open_for(&Slot::Location) {
-            self.menu.close();
+            self.close_menu();
         }
         ran
     }

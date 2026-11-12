@@ -31,7 +31,7 @@ The current Linux references follow two intended reader changes: text is
 set ragged by default (`9d637b1ff10259070b7ba6c0596aceb55045617c`) and the
 progress slider ends in a percentage (`34b668de79b2681ba2ad3ce853129b80c20c1177`). Glyphs, formula
 structure and the page frame are unchanged; they were rendered on the
-builder image in `.config/visual-goldens-image`.
+builder image.
 
 The Linux math reference follows the superscript fix in the shared math
 layout: an exponent's baseline sits a fixed shift above its base's instead of

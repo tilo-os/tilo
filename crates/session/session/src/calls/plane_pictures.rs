@@ -59,7 +59,7 @@ impl Shared {
         };
         // A layer gained a reader, or one left: the encoder answers with a keyframe even while a
         // still picture has no new frame.
-        let revision = plane.pictures_revision();
+        let revision = plane.demand_revision();
         if self.pictures_at.swap(revision, Ordering::Relaxed) != revision {
             self.wake_pictures();
         }

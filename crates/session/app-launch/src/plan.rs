@@ -164,13 +164,10 @@ pub struct PlanContext<'a> {
     /// rather than a window (`docs/architecture/apps.md` §1): the launcher
     /// gives the process the sandbox the app's manifest declares for that
     /// origin — the network a window and the tilolang host never have — and
-    /// the app's runtime runs that origin's connector there.
+    /// the app's runtime runs that origin's connector there. A connector draws
+    /// nothing, so the plan has no display, no render node and nothing open,
+    /// which the launcher refuses beside `--tilolang-connector` anyway.
     pub connector: Option<&'a str>,
-    /// The resource address the session's document host publishes for this
-    /// app, when it serves the app's model: whether the app launches hosting
-    /// follows from that, and no per-app code says otherwise
-    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-    pub hosted: Option<&'a str>,
 }
 
 impl PlanContext<'_> {
@@ -209,15 +206,19 @@ impl Planned {
     /// cannot be written, or the launch is one that starts nothing.
     pub fn of(launch: &Launch, context: &PlanContext<'_>) -> Result<Self, PlanError> {
         match launch {
-            Launch::Package { app, open } => Self::package(app, open.as_ref(), context),
+            Launch::Package { app, open } => Self::package(app, open.as_ref(), false, context),
             // The record is opened by the app the launch names: the launch
             // asks it for that record, and the app opens on it.
-            Launch::Record { app, record } => {
+            Launch::Record {
+                app,
+                record,
+                visitor,
+            } => {
                 let open = crate::routing::record(record).ok_or_else(|| PlanError::NotARecord {
                     app: app.clone(),
                     record: record.clone(),
                 })?;
-                Self::package(app, Some(&open), context)
+                Self::package(app, Some(&open), *visitor, context)
             }
             Launch::Content { app, .. } => Err(PlanError::ContentUnavailable { app: app.clone() }),
             Launch::Host { desktop_id, open } => Self::host(desktop_id, open.as_ref(), context),
@@ -234,6 +235,7 @@ impl Planned {
     pub fn package(
         app: &str,
         open: Option<&Open>,
+        visitor: bool,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
@@ -247,7 +249,7 @@ impl Planned {
             manifest: &installed.manifest_path,
             payload_root: &installed.payload_root,
         };
-        Self::planned_package(package, launcher, open, context)
+        Self::planned_package(package, launcher, open, visitor, context)
     }
 
     /// The launcher's command line and environment for `package`.
@@ -255,6 +257,7 @@ impl Planned {
         package: Package<'_>,
         launcher: PathBuf,
         open: Option<&Open>,
+        visitor: bool,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let capabilities = context
@@ -290,7 +293,11 @@ impl Planned {
         // this id rather than trusting the file to already be filtered.
         args.push("--app-id".to_owned());
         args.push(package.id.to_owned());
-        if let Some(socket) = &context.environment.wayland_socket {
+        // What a window has and a connector has not: a connector is the app's origin half, which
+        // draws nothing, opens nothing and reads no record (`docs/architecture/apps.md` §1), and
+        // the launcher refuses a display or an open beside `--tilolang-connector`.
+        let window = context.connector.is_none();
+        if window && let Some(socket) = &context.environment.wayland_socket {
             args.push("--wayland-socket".to_owned());
             args.push(socket.display().to_string());
         }
@@ -306,20 +313,28 @@ impl Planned {
             args.push("--identity".to_owned());
             args.push(path.display().to_string());
         }
-        if let Some(node) = &context.render_node {
+        if window && let Some(node) = &context.render_node {
             args.push("--render-node".to_owned());
             args.push(node.display().to_string());
         }
-        match open {
-            Some(Open::File(path)) => {
-                args.push("--open".to_owned());
-                args.push(path.display().to_string());
+        if window {
+            match open {
+                Some(Open::File(path)) => {
+                    args.push("--open".to_owned());
+                    args.push(path.display().to_string());
+                }
+                Some(Open::Uri(uri)) => {
+                    args.push("--open-uri".to_owned());
+                    args.push(uri.clone());
+                    if visitor {
+                        // A window opened for whoever works the record rather
+                        // than for the person: it browses as a visitor, with none
+                        // of their sign-ins.
+                        args.push("--open-as-visitor".to_owned());
+                    }
+                }
+                None => {}
             }
-            Some(Open::Uri(uri)) => {
-                args.push("--open-uri".to_owned());
-                args.push(uri.clone());
-            }
-            None => {}
         }
         if let Some(origin) = context.connector {
             // The app's connector for `origin`, not a window: the process runs the origin's
@@ -328,17 +343,18 @@ impl Planned {
             args.push("--tilolang-connector".to_owned());
             args.push(origin.to_owned());
         }
-        let mut env = context.environment.variables();
-        if let Some(instance) = context.continuity_instance {
+        let mut env = if window {
+            context.environment.variables()
+        } else {
+            context.environment.windowless_variables()
+        };
+        // The person's language, as they chose it in Settings now: the app reads its words, and
+        // its window's chrome, in it from its first frame.
+        crate::env::speak(&mut env, ui::i18n::preferred_language().as_deref());
+        if let Some(instance) = context.continuity_instance.filter(|_| window) {
             // The window's instance: the id of the tab it opens in, which
             // its continuation reports are addressed by.
             env.insert("TILO_CONTINUITY_INSTANCE".to_owned(), instance.to_string());
-        }
-        if let Some(hosted) = context.hosted {
-            // The session's document host keeps this app's record: its
-            // process opens none, and reads the reading published here over
-            // the connection the launcher made it (`one-app-model.md` §4).
-            env.insert("TILO_HOSTED_RESOURCE".to_owned(), hosted.to_owned());
         }
         // The launcher resolves a package's services against
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
@@ -515,7 +531,6 @@ mod tests {
             new_window: false,
             continuity_instance: None,
             connector: None,
-            hosted: None,
         }
     }
 
@@ -556,6 +571,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             Some(&Open::File("/home/you/notes.tilo-note".into())),
+            false,
             &context,
         )
         .expect("a plan");
@@ -628,6 +644,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             None,
+            false,
             &handed,
         )
         .expect("a plan");
@@ -661,6 +678,7 @@ mod tests {
                 package,
                 PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                 None,
+                false,
                 &blind,
             )
             .expect("a plan")
@@ -668,6 +686,71 @@ mod tests {
             .iter()
             .any(|arg| arg == "--action-authority")
         );
+    }
+
+    /// A connector is the app's origin half, not a window (`docs/architecture/apps.md` §1): its
+    /// launch carries the origin and nothing a window has. The launcher refuses a display or an
+    /// open beside `--tilolang-connector`, so a plan that names both starts no connector at all
+    /// and the app whose records it keeps shows nothing.
+    #[test]
+    fn a_connector_is_planned_without_a_display_or_anything_open() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let workspace = Workspace::under(directory.path(), "workspace-9");
+        let socket = directory.path().join("wayland-4");
+        let environment = SessionEnvironment {
+            wayland_socket: Some(socket.clone()),
+            x11_display: Some(":11".into()),
+            session_bus: Some("unix:path=/run/user/1000/tilo/bus".into()),
+            forwarded: BTreeMap::from([("TILO_USER_ID".to_owned(), "person-3".to_owned())]),
+        };
+        let connector = PlanContext {
+            connector: Some("imap"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
+            ..context(&environment, &workspace)
+        };
+        let planned = Planned::planned_package(
+            Package {
+                id: "so.tilo.lang.mail",
+                title: "Mail",
+                manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.lang.mail/m.toml"),
+                payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.lang.mail/p"),
+            },
+            PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+            // Nothing a connector names to open is handed on either.
+            Some(&Open::File("/home/you/mail.tilo-mail".into())),
+            false,
+            &connector,
+        )
+        .expect("a plan");
+        assert_eq!(
+            planned.args,
+            [
+                "run",
+                "--manifest",
+                "/home/you/.local/share/tilo/apps/so.tilo.lang.mail/m.toml",
+                "--payload-root",
+                "/home/you/.local/share/tilo/apps/so.tilo.lang.mail/p",
+                "--workspace-id",
+                "workspace-9",
+                "--app-id",
+                "so.tilo.lang.mail",
+                "--tilolang-connector",
+                "imap",
+                "--no-services",
+            ],
+            "the launcher's connector launch, and none of a window's flags"
+        );
+        assert_eq!(
+            planned.env.get("XDG_RUNTIME_DIR").map(String::as_str),
+            socket.parent().and_then(Path::to_str),
+            "the connector runs in this session's runtime directory"
+        );
+        for display in ["WAYLAND_DISPLAY", "DISPLAY"] {
+            assert!(
+                !planned.env.contains_key(display),
+                "a connector reaches no compositor: {display}"
+            );
+        }
     }
 
     #[test]
@@ -761,6 +844,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             open.as_ref(),
+            false,
             &context,
         )
         .expect("a plan");
@@ -771,6 +855,32 @@ mod tests {
                 .any(|pair| pair[0] == "--open-uri" && pair[1] == record.uri()),
             "the app is asked for the record itself: {:?}",
             planned.args
+        );
+        assert!(
+            !planned.args.iter().any(|arg| arg == "--open-as-visitor"),
+            "the person's own window browses with their sign-ins: {:?}",
+            planned.args
+        );
+
+        // A window opened for whoever works the record — an agent's — browses
+        // as a visitor: the launcher hands the app the switch that says so.
+        let visitor = Planned::planned_package(
+            Package {
+                id: "so.tilo.notes",
+                title: "Notes",
+                manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/manifest.toml"),
+                payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/payload"),
+            },
+            PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+            open.as_ref(),
+            true,
+            &context,
+        )
+        .expect("a plan");
+        assert!(
+            visitor.args.iter().any(|arg| arg == "--open-as-visitor"),
+            "a window for an agent browses as a visitor: {:?}",
+            visitor.args
         );
 
         // A record the launch string misspells is refused before any app is

@@ -130,7 +130,6 @@ fn app_in(
         workspace_id.into(),
         native_media::PeerProcess::from_socket(&host).unwrap(),
         crate::services::AuthenticatedApplicationLaunch {
-            creation: None,
             continuation_instance: None,
             launch_ticket: None,
             windowless: false,

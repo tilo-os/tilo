@@ -79,7 +79,7 @@ impl Joined {
     }
 
     fn own_device(&self) -> [u8; 32] {
-        self.custody.device_signing_key.verifying_key().to_bytes()
+        self.custody.device_public_key()
     }
 
     /// Place `workspace`, the profile's workspace called `name`, on this
@@ -107,14 +107,27 @@ impl Joined {
 
     /// Whether `workspace` is hosted by this device's own host.
     pub(in crate::standalone) fn hosted_here(&self, workspace: WorkspaceId) -> bool {
+        self.hosted_by_own(workspace) == Some(true)
+    }
+
+    /// Whether `workspace` is one this device joined through another device's host.
+    pub(in crate::standalone) fn hosted_elsewhere(&self, workspace: WorkspaceId) -> bool {
+        self.hosted_by_own(workspace) == Some(false)
+    }
+
+    /// Whether this device's own host hosts `workspace`; `None` for a workspace
+    /// whose host is not known here.
+    fn hosted_by_own(&self, workspace: WorkspaceId) -> Option<bool> {
         let own = self.own_device();
         self.owner
             .with_current(workspace, |view| {
                 Ok(view
                     .transport_hint()
-                    .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
+                    .ok()
+                    .map(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
             })
-            .unwrap_or(false)
+            .ok()
+            .flatten()
     }
 
     /// How this device reaches a workspace's host: its own host in process,

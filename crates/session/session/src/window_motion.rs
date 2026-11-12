@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tilo_compositor::{Compositor, WindowEffect};
+
 use ui::kurbo::Rect;
 use ui::motion::{Direction, WindowMotion};
 use ui::tokens::{EffectiveMotion, MotionSource};

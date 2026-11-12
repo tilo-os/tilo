@@ -28,17 +28,15 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerHandle};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -46,14 +44,14 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_session::mount::apps::Apps;
+use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-
-tilo_automerge_isolate::test_worker!();
 
 /// The origin the deployment's ingress publishes for the room: what its pages and its links name.
 /// On this machine it is the address the room is reached at, because the room publishes its live
@@ -132,7 +130,6 @@ impl Room {
             .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
             .env("TILO_ROOMS_ROOT_FILE", &root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
-            .env("TILO_ROOMS_WAIT_LIST_MAX", "16")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
             // one machine take the ports they are given, and the room announces the ones it bound.
             .env("TILO_ROOMS_STATE", state.path().join("tilo-rooms"))
@@ -150,6 +147,11 @@ impl Room {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
+        // offers those it turns away: the image refuses to start an open door with one.
+        if admission == "invite" {
+            command.env("TILO_ROOMS_WAIT_LIST_MAX", "16");
+        }
         let mut child = command.spawn_locked().expect("the room service starts");
         let stdin = Some(child.stdin.take().expect("the room's operator input"));
         let stdout = child.stdout.take().expect("the room's operator output");
@@ -213,19 +215,21 @@ impl Room {
     }
 }
 
-/// The Lounge image's own entrypoint in this checkout, found from the test binary's place: the
-/// source tree is the one the run built from, wherever that build ran.
+/// The Lounge image's own entrypoint in this checkout: found from the crate's own sources, which
+/// the run built from, then from the test binary's place. A build whose `target/` sits outside the
+/// checkout (a builder's container) has the sources only where the crate was compiled.
 fn entrypoint() -> std::path::PathBuf {
     let built = std::env::current_exe().expect("the test binary's own path");
-    // The checkout is the nearest ancestor of the binary holding the image's entrypoint: the binary
-    // sits under `target/` , however deep the profile and the builder's artifact directory put it.
-    built
+    let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    sources
         .ancestors()
+        .chain(built.ancestors())
         .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
         .find(|entrypoint| entrypoint.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "no Lounge image entrypoint in any directory above {}",
+                "no Lounge image entrypoint above {} or {}",
+                sources.display(),
                 built.display()
             )
         })
@@ -279,8 +283,8 @@ fn random_key() -> [u8; 32] {
 /// Plain HTTP/1.1 to the room's plain listener: a page's `fetch` .
 struct Plain(String);
 
-impl tilo_browser_peer::HttpClient for Plain {
-    fn post(&self, path: &str, body: Vec<u8>) -> tilo_browser_peer::HttpFuture<'_> {
+impl tilo_relay_client::HttpClient for Plain {
+    fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::HttpFuture<'_> {
         let url = format!("{}{path}", self.0);
         Box::pin(async move {
             let client = client()?;
@@ -317,22 +321,25 @@ fn host_info(
     plain: &str,
 ) -> Result<tilo_relay_protocol::web::HostInfo, String> {
     runtime
-        .block_on(tilo_browser_peer::host_info(&Plain(plain.to_owned())))
+        .block_on(tilo_relay_client::https::host_info(&Plain(
+            plain.to_owned(),
+        )))
         .map_err(|error| error.to_string())
 }
 
 /// A page of `member` 's device on the room's iroh endpoint, in the room's workspace: the same
 /// session a member's browser runs.
-fn page(room: &Room, member: &Member) -> PeerHandle {
+fn page(room: &Room, member: &Member) -> Link {
     let _entered = room.runtime.enter();
-    let page = PeerHandle::start(
+    let page = tilo_session_client::start_session(
         PeerConfig {
             host: room.host.clone(),
             cert: member.cert.clone(),
             host_cert: room.host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
         },
-        Arc::new(member.key.clone()) as Arc<dyn tilo_browser_peer::DeviceSigner>,
+        Arc::new(member.key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),
     );
     page.join_placed(&room.workspace, "Lounge")
@@ -396,6 +403,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
         },
         records: Vec::new(),
         authors,
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 
@@ -641,7 +649,7 @@ fn ask_to_join(session: &mut Session, key: &str) {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    common::until(session, what, |session| done(session));
+    crate::common::until(session, what, |session| done(session));
 }
 
 /// The workspaces this computer holds: the desk's id, the name shown and the workspace's id.
@@ -691,7 +699,7 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
 #[track_caller]
 fn wait_until_their_pointer(
     session: &mut Session,
-    member_page: &PeerHandle,
+    member_page: &Link,
     room: &Room,
     tab: u64,
     at: (f32, f32),
@@ -704,7 +712,7 @@ fn wait_until_their_pointer(
         .expect("the wait's bound fits in an Instant");
     loop {
         member_page
-            .publish_presence(
+            .send(Cmd::Presence(
                 workspace_id,
                 vec![collab_types::presence::Presence::pointing(
                     &room.workspace,
@@ -712,9 +720,9 @@ fn wait_until_their_pointer(
                     at.0,
                     at.1,
                 )],
-            )
+            ))
             .expect("the member says where they are");
-        if common::steps_within(session, Duration::from_millis(200), |session| {
+        if crate::common::steps_within(session, Duration::from_millis(200), |session| {
             pointer_here(session, tab, at).then_some(())
         })
         .is_some()
@@ -747,7 +755,7 @@ fn window_in_front(session: &Session) -> Option<u64> {
 
 /// The member's pointer is drawn on the desk where they put it, and follows when they move it.
 #[track_caller]
-fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &Room) {
+fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
     // Their pointer, over a window they work in: the desk draws it there,
     // without the roster being opened.
     let shown =
@@ -784,25 +792,19 @@ fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &R
 
 /// The invitation the room issues for `person` , as its own API does: a page's `invite` over the
 /// host's session, made by a member of the workspace.
-fn invite(room: &Room, member_page: &PeerHandle, person: [u8; 32]) -> String {
-    let (answer, reply) = std::sync::mpsc::sync_channel(1);
-    member_page
-        .rooms_then(
-            tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
-                workspace: room.workspace.clone(),
-                request_id: random_key(),
-                role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-                inviter_name: Some("The Lounge".to_owned()),
-                wait_list_entry: None,
-                // The invitation names the person it is for: a workspace taking people by
-                // invitation answers its door with it when they ask.
-                recipient: Some(person),
-            },
-            Box::new(move |reply| {
-                let _ = answer.send(reply);
-            }),
-        )
+fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
+    let reply = member_page
+        .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
+            workspace: room.workspace.clone(),
+            request_id: random_key(),
+            role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+            inviter_name: Some("The Lounge".to_owned()),
+            wait_list_entry: None,
+            // The invitation names the person it is for: a workspace taking people by
+            // invitation answers its door with it when they ask.
+            recipient: Some(person),
+        })
         .expect("the member's page asks the host to invite");
     let reply = reply
         .recv_timeout(Duration::from_secs(60))
@@ -848,7 +850,7 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
             ),
         );
         member_page
-            .publish(
+            .write(
                 desktop_route(&room),
                 &DocumentMutation::Snapshot(doc.save()),
             )
@@ -881,10 +883,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         "the site lists the Lounge, and this computer does not hold it yet"
     );
     ask_to_join(&mut session, &room.workspace);
-    let refused =
-        common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |session| {
+    let refused = crate::common::wait_maybe_past(
+        &mut session,
+        tilo_session::sync::JOIN_PATIENCE,
+        |session| {
             (listing_row(session, &room.workspace).action == ListingAction::TryAgain).then_some(())
-        });
+        },
+    );
     assert!(
         refused.is_some(),
         "the door refused the uninvited person: {:?}",
@@ -896,14 +901,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         &mut session,
         "the refusal is said where the person is",
         |session| {
-            session
-                .notifications()
-                .log()
-                .history()
-                .iter()
-                .any(|notice| {
-                    notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
-                })
+            // A refusal is a banner that stays until the person acts on it, and is kept behind it
+            // in the centre once it left: either is where the person reads it.
+            let desk = session.notifications();
+            let log = desk.log();
+            log.active().iter().chain(log.history()).any(|notice| {
+                notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
+            })
         },
     );
     assert!(
@@ -929,10 +933,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
             .iter()
             .any(|(_, _, workspace)| workspace == &room.workspace)
     });
-    let shown =
-        common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |session| {
+    let shown = crate::common::wait_maybe_past(
+        &mut session,
+        tilo_session::sync::JOIN_PATIENCE,
+        |session| {
             (desk_layout(session, &room.workspace) == recorded_layout(&desktop)).then_some(())
-        });
+        },
+    );
     assert!(
         shown.is_some(),
         "the desk shows what the member laid out: {:?}, the room holds {:?}; refusals: {:?}",
@@ -1022,7 +1029,7 @@ fn the_launchers_child() {
     let display = std::env::var_os("WAYLAND_DISPLAY").expect("the display the session handed");
     let socket = std::path::Path::new(&runtime).join(display);
     let title = app.clone();
-    let _window = common::window::Client::on(&socket, &app, &title);
+    let _window = crate::common::window::Client::on(&socket, &app, &title);
 }
 
 /// The launcher a session starts packages through: this test binary, in the launcher's place, which
@@ -1036,7 +1043,7 @@ fn the_launchers_place(
         &format!(
             "export {LAUNCH_WINDOWS}='{records}'\n\
              export TILO_LOUNGE_TEST_ARGS=\"$*\"\n\
-             exec '{exe}' --exact the_launchers_child --nocapture --test-threads=1\n",
+             exec '{exe}' --exact lounge_e2e::the_launchers_child --nocapture --test-threads=1\n",
             records = records.display(),
             exe = std::env::current_exe()
                 .expect("this test's program")
@@ -1121,9 +1128,10 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         open: None,
     })
     .expect("Probe opens in the Lounge");
-    let started = common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |_| {
-        records.exists().then_some(())
-    });
+    let started =
+        crate::common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |_| {
+            records.exists().then_some(())
+        });
     assert!(
         started.is_some(),
         "the launcher the session starts packages through was asked to start {app}"

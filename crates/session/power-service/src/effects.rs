@@ -11,7 +11,6 @@ pub enum BatteryAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Set the charge limit",
         icon = "battery",
         keywords = "charge limit, charge cap, charge threshold, battery health, ladelimit"
     )]
@@ -28,7 +27,6 @@ pub enum SleepAction {
     /// Stop the machine from sleeping on its own, until released.
     #[effect(
         own_device,
-        label = "Keep awake",
         icon = "sun",
         keywords = "keep awake, inhibit suspend, stay awake, wachhalten"
     )]
@@ -40,7 +38,6 @@ pub enum SleepAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Let it sleep",
         icon = "moon",
         keywords = "release, allow suspend, sleep again"
     )]

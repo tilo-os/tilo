@@ -96,8 +96,83 @@ shortcuts-schedule-enabled = Enable a daily local-time schedule
 shortcuts-schedule-hour = Local hour
 shortcuts-schedule-minute = Local minute
 shortcuts-schedule-description = Once you save the shortcut, it runs every day at this time. If this computer is off then, it runs once when it's back.
-shortcuts-schedule-review = { $time } · this device’s local time
+shortcuts-schedule-review = { $time }, this device’s local time
 shortcuts-schedule-missed-once = Missed runs execute once.
 shortcuts-schedule-missed-skip = Missed runs are skipped.
 
 shortcuts-no-matching-actions = No actions match this filter
+
+## Window and accessibility copy
+shortcuts-a11y-window = Shortcuts
+
+## What the window shows
+shortcuts-running = Running…
+shortcuts-finished = Finished
+shortcuts-finished-degraded = Finished: { $detail }
+shortcuts-stopped = Stopped: { $detail }
+shortcuts-repeat-hint = Inside the repeat, each item is the variable { $variable }
+shortcuts-problems = { $count ->
+    [one] { $count } problem to fix before saving
+   *[other] { $count } problems to fix before saving
+}
+shortcuts-param-type-text = Text
+shortcuts-param-type-integer = Whole number
+shortcuts-param-type-number = Number
+shortcuts-param-type-boolean = Yes or no
+shortcuts-param-type-date-time = Date and time
+shortcuts-param-type-secret = Secret
+shortcuts-param-type-resource = Item from an app
+shortcuts-param-type-object = Group of values
+shortcuts-param-type-array = List
+
+## What the last run of a shortcut came to
+shortcuts-not-run-yet = Not run yet
+shortcuts-running-since = Running since { $time }
+shortcuts-finished-at = Finished at { $time }
+shortcuts-finished-at-degraded = Finished at { $time }, with steps that fell short: { $steps }
+shortcuts-stopped-at = Stopped at { $time }: { $reason }
+shortcuts-evidence = You did these { $steps } { $steps ->
+    [one] step
+   *[other] steps
+} { $times } { $times ->
+    [one] time
+   *[other] times
+} in a row.
+
+## Where a problem is, and what became of the last change
+shortcuts-problem-shortcut = Shortcut
+shortcuts-problem-result = Result
+shortcuts-problem-a-step = A step
+shortcuts-problem-step = Step { $number }
+shortcuts-deleted = Deleted “{ $name }”
+shortcuts-not-finished = Could not finish
+
+## Actions
+
+shortcuts-door-refresh = Reload shortcuts
+shortcuts-door-save = Save shortcut
+shortcuts-door-run = Run shortcut
+shortcuts-door-delete = Delete shortcut
+shortcuts-door-describe = Draft with the agent
+shortcuts-door-refine = Refine with the agent
+shortcuts-workbench = Shortcuts
+shortcuts-workbench-draft-proposal = Open proposed shortcut
+shortcuts-workbench-ignore-proposal = Ignore the proposal
+shortcuts-workbench-allow-proposal = Offer the proposal again
+shortcuts-workbench-new-draft = New shortcut
+shortcuts-workbench-duplicate-draft = Duplicate draft
+shortcuts-workbench-draft-shortcut = Import a shortcut
+shortcuts-workbench-open-shortcut = Edit a saved shortcut
+shortcuts-workbench-duplicate-shortcut = Duplicate saved shortcut
+shortcuts-workbench-set-schedule = Set a schedule
+shortcuts-workbench-discard = Discard draft
+shortcuts-workbench-add-step = Add step
+shortcuts-workbench-replace-step = Change what a step does
+shortcuts-workbench-bind-argument = Bind argument
+shortcuts-workbench-remove-step = Remove step
+shortcuts-workbench-move-step = Move step
+shortcuts-workbench-set-step-policy = Set what a failure does
+shortcuts-workbench-set-nested = Move step into another block
+shortcuts-workbench-set-output = Set what the shortcut reports
+shortcuts-workbench-add-input = Add input
+shortcuts-workbench-remove-input = Remove input

@@ -19,8 +19,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use futures_util::FutureExt as _;
@@ -134,7 +132,7 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
     let mut asked = ask_a_turn(&questions);
-    common::wait_for(&mut session, "the ask's sheet", |session| {
+    crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalSeat::dialog)
@@ -151,7 +149,7 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
         "the button stands on the display: {x},{y} {w}x{h}"
     );
     click(&mut session, (x + w / 2.0, y + h / 2.0));
-    let answer = common::wait_for(&mut session, "the ask's answer", |_| {
+    let answer = crate::common::wait_for(&mut session, "the ask's answer", |_| {
         (&mut asked).now_or_never()
     });
     let answer = answer.expect("the step is allowed, not declined");
@@ -165,7 +163,7 @@ fn a_press_with_no_pointer_over_the_sheet_answers_nothing() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
     let mut asked = ask_a_turn(&questions);
-    common::wait_for(&mut session, "the ask's sheet", |session| {
+    crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalSeat::dialog)
@@ -196,7 +194,7 @@ fn a_press_beside_the_card_does_not_decline_the_step() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = session_at(1440, 900);
     let mut asked = ask_a_turn(&questions);
-    common::wait_for(&mut session, "the ask's sheet", |session| {
+    crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalSeat::dialog)
@@ -228,7 +226,7 @@ fn a_click_on_allow_once_answers_at_a_scaled_display() {
     // A 1440x900 display drawn at 2: the same logical desk, twice the pixels.
     let (mut session, questions) = session_scaled(2880, 1800, 2.0);
     let mut asked = ask_a_turn(&questions);
-    common::wait_for(&mut session, "the ask's sheet", |session| {
+    crate::common::wait_for(&mut session, "the ask's sheet", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalSeat::dialog)
@@ -241,7 +239,7 @@ fn a_click_on_allow_once_answers_at_a_scaled_display() {
         "the button stands on the logical display at scale 2: {x},{y} {w}x{h}"
     );
     click(&mut session, (x + w / 2.0, y + h / 2.0));
-    let answer = common::wait_for(&mut session, "the ask's answer", |_| {
+    let answer = crate::common::wait_for(&mut session, "the ask's answer", |_| {
         (&mut asked).now_or_never()
     });
     assert!(

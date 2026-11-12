@@ -3,9 +3,11 @@
 //! of the actions it publishes.
 
 use tilo_actions::ActionContext;
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_history::{FluentArgs, Messages, Reader};
 
 use crate::i18n::I18nManager;
+use crate::widget::history::{AuthorRelation, HistoryAuthor};
 
 /// The catalogues installed on this thread, which include the app's own.
 struct ThreadCatalogue;
@@ -30,6 +32,60 @@ pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
 
 pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
+}
+
+/// An author as one line names them, in this thread's words: "You", "Ada",
+/// "claude for Ada", "Ada via task ‘Prepare Q3 financials’".
+///
+/// The one place a history row, a pill or an app's list says who made a
+/// change: the name it carries is a name, and whom software acted for is
+/// said here once.
+pub fn author_line(author: &HistoryAuthor) -> String {
+    actor_line(
+        &author.name,
+        author
+            .attribution
+            .as_ref()
+            .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
+        author.for_reader,
+        author.relation == AuthorRelation::Reader,
+        author.task.as_deref(),
+    )
+}
+
+/// [`author_line`] for an author as an app reads it over the wire.
+pub fn wire_author_line(author: &wire::Author) -> String {
+    actor_line(
+        &author.name,
+        author.on_behalf_of.as_deref(),
+        author.for_reader,
+        author.relation == wire::Relation::Reader,
+        author.task.as_deref(),
+    )
+}
+
+fn actor_line(
+    name: &str,
+    for_person: Option<&str>,
+    for_reader: bool,
+    is_reader: bool,
+    task: Option<&str>,
+) -> String {
+    // A task names who did it: the person it was taken for, else the actor.
+    let actor = match (task, for_person) {
+        (Some(_), Some(person)) => person,
+        _ => name,
+    };
+    let task = task.map(|label| tilo_history::Task { id: "", label });
+    with_reader(|reader| {
+        reader.actor(&tilo_history::Who {
+            actor,
+            for_person,
+            for_reader,
+            is_reader,
+            task: task.as_ref(),
+        })
+    })
 }
 
 /// History in this thread's words: a step as [`sentence`] says it, and a

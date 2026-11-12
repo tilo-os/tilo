@@ -236,8 +236,10 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         semantic_key,
         action_target,
         name,
+        name_found,
         description,
         value,
+        value_length,
         text_selection,
         state,
         live,
@@ -255,8 +257,10 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *semantic_key == b.semantic_key
         && *action_target == b.action_target
         && *name == b.name
+        && *name_found == b.name_found
         && *description == b.description
         && *value == b.value
+        && *value_length == b.value_length
         && *text_selection == b.text_selection
         && *state == b.state
         && *live == b.live

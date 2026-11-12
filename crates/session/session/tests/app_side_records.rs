@@ -13,10 +13,8 @@
 //!   ([`Binges`]): the broker it loads, the keys it asks for, the store it opens.
 //! - **The SDK runner stops doing it for it.** About sixty apps never name the broker, the join
 //!   or the keys themselves: the runner they share (`ui::main!`, `ui::framework::run`) does it
-//!   on their behalf, before any of the app's code runs. An app the session's document host
-//!   serves declares `ResourceApp::ATTACHES_RUNTIME = false` — the one flag the runner already
-//!   reads — and joins no workspace of its own. So every app the runner starts and that still
-//!   attaches is on the list as `runner`, beside whatever its own sources carry.
+//!   on their behalf, before any of the app's code runs. So every app the runner
+//!   starts is on the list as `runner`, beside whatever its own sources carry.
 //!
 //! The migration is once, across every app, and it lands in slices, so this test lists the apps
 //! that still carry app-side storage, identity or sync and **fails if the list grows**. The list
@@ -179,19 +177,6 @@ fn on_runner(app: &Path) -> bool {
     text.contains("ui::main!") || text.contains("ui::framework::run")
 }
 
-/// Whether `app` declares that it joins no runtime of its own, because the session's document
-/// host keeps its records: `ResourceApp::ATTACHES_RUNTIME = false` (with or without a type
-/// annotation), the one flag the runner already reads (`framework/app.rs`'s `launch_spec`),
-/// which disables its collaboration manager — no join proof, no content keys, no sync.
-fn hosted(app: &Path) -> bool {
-    let text = text_of(app);
-    text.match_indices("ATTACHES_RUNTIME").any(|(at, _)| {
-        text.get(at..)
-            .and_then(|rest| rest.split([';', '\n']).next())
-            .is_some_and(|declaration| declaration.trim_end().ends_with("false"))
-    })
-}
-
 /// What `app` still does for itself, as the slices name it.
 fn carries(app: &Path) -> BTreeSet<Binges> {
     let text = text_of(app);
@@ -201,8 +186,8 @@ fn carries(app: &Path) -> BTreeSet<Binges> {
             found.insert(what);
         }
     }
-    // The runner does it for every app it starts that the host does not serve.
-    if on_runner(app) && !hosted(app) {
+    // The runner does it for every app it starts.
+    if on_runner(app) {
         found.insert(Binges::Runner);
     }
     found
@@ -301,10 +286,8 @@ fn apps_using_app_side_storage_identity_or_sync_do_not_grow() {
         "apps took up app-side storage, identity or sync, which the document host does \
          (docs/architecture/apps.md §8): {growth:#?}\n\
          An app holds no identity, keys or transport: it is handed readings and submits \
-         actions over its one launcher-made connection. The host runs its model and verbs \
-         (tilo-model-host), so an app's process needs none of what this lists — and an app the \
-         host serves declares `ATTACHES_RUNTIME = false`, so the runner joins no workspace for \
-         it."
+         actions over its one launcher-made connection. The session's services keep what this \
+         lists, so an app's process needs none of it."
     );
 
     // A drop is not a failure: it only means the baseline can lose the line.

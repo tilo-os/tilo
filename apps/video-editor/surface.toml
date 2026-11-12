@@ -5,149 +5,149 @@ kind = "video-editor.project"
 label = "Project"
 version = 1
 fields = [
-  { path = "name", type = "String" },
-  { path = "fps", type = "f64" },
-  { path = "width", type = "u32" },
-  { path = "height", type = "u32" },
+  { path = "name", type = "text" },
+  { path = "fps", type = "float" },
+  { path = "width", type = "int" },
+  { path = "height", type = "int" },
   { path = "format_explicit", type = "bool" },
-  { path = "mark_in", type = "Option<f64>" },
-  { path = "mark_out", type = "Option<f64>" },
-  { path = "media", type = "Keyed<MediaItem>", stored = "keyed" },
-  { path = "media.*.id", type = "MediaId", readonly = true },
-  { path = "media.*.name", type = "String", label = true },
-  { path = "media.*.kind", type = "MediaKind" },
-  { path = "media.*.duration", type = "f64" },
-  { path = "media.*.width", type = "u32" },
-  { path = "media.*.height", type = "u32" },
-  { path = "media.*.fps", type = "f64" },
-  { path = "media.*.palette", type = "u8" },
-  { path = "media.*.path", type = "String" },
-  { path = "media.*.text", type = "Option<TextSource>", stored = "record" },
-  { path = "media.*.text.content", type = "String" },
-  { path = "media.*.text.size", type = "f64" },
-  { path = "media.*.text.color", type = "[f64; 4]" },
-  { path = "media.*.text.align", type = "TextAlign" },
-  { path = "media.*.text.font", type = "String" },
+  { path = "mark_in", type = { option = "float" } },
+  { path = "mark_out", type = { option = "float" } },
+  { path = "media", type = { collection = { named = "MediaItem" } }, stored = "keyed" },
+  { path = "media.*.id", type = "text", readonly = true },
+  { path = "media.*.name", type = "text", label = true },
+  { path = "media.*.kind", type = { named = "MediaKind" } },
+  { path = "media.*.duration", type = "float" },
+  { path = "media.*.width", type = "int" },
+  { path = "media.*.height", type = "int" },
+  { path = "media.*.fps", type = "float" },
+  { path = "media.*.palette", type = "int" },
+  { path = "media.*.path", type = "text" },
+  { path = "media.*.text", type = { option = { named = "TextSource" } }, stored = "record" },
+  { path = "media.*.text.content", type = "text" },
+  { path = "media.*.text.size", type = "float" },
+  { path = "media.*.text.color", type = { list = "float" } },
+  { path = "media.*.text.align", type = { named = "TextAlign" } },
+  { path = "media.*.text.font", type = "text" },
   { path = "media.*.text.bold", type = "bool" },
   { path = "media.*.text.italic", type = "bool" },
-  { path = "media.*.text.backdrop", type = "f64" },
+  { path = "media.*.text.backdrop", type = "float" },
   { path = "media.*.has_audio", type = "bool" },
-  { path = "tracks", type = "Keyed<Track>", stored = "keyed" },
-  { path = "tracks.*.id", type = "TrackId", readonly = true },
-  { path = "tracks.*.name", type = "String", label = true },
-  { path = "tracks.*.kind", type = "TrackKind" },
-  { path = "tracks.*.index", type = "u32" },
+  { path = "tracks", type = { collection = { named = "Track" } }, stored = "keyed" },
+  { path = "tracks.*.id", type = "text", readonly = true },
+  { path = "tracks.*.name", type = "text", label = true },
+  { path = "tracks.*.kind", type = { named = "TrackKind" } },
+  { path = "tracks.*.index", type = "int" },
   { path = "tracks.*.muted", type = "bool" },
   { path = "tracks.*.locked", type = "bool" },
   { path = "tracks.*.solo", type = "bool" },
-  { path = "tracks.*.gain_db", type = "f64" },
-  { path = "tracks.*.pan", type = "f64" },
-  { path = "clips", type = "Keyed<Clip>", stored = "keyed" },
-  { path = "clips.*.id", type = "ClipId", readonly = true },
-  { path = "clips.*.track", type = "TrackId" },
-  { path = "clips.*.media", type = "MediaId" },
-  { path = "clips.*.start", type = "f64" },
-  { path = "clips.*.in_point", type = "f64" },
-  { path = "clips.*.out_point", type = "f64" },
-  { path = "clips.*.opacity", type = "f64" },
-  { path = "clips.*.volume", type = "f64" },
-  { path = "clips.*.transition", type = "Transition" },
-  { path = "clips.*.palette", type = "u8" },
-  { path = "clips.*.filters", type = "Filters", stored = "record" },
-  { path = "clips.*.filters.brightness", type = "f64" },
-  { path = "clips.*.filters.contrast", type = "f64" },
-  { path = "clips.*.filters.saturation", type = "f64" },
-  { path = "clips.*.curves", type = "Curve" },
-  { path = "clips.*.fade_in", type = "f64" },
-  { path = "clips.*.fade_out", type = "f64" },
-  { path = "clips.*.transition_duration", type = "f64" },
-  { path = "clips.*.effects", type = "Ordered<ClipEffect>", stored = "collection" },
-  { path = "clips.*.effects.*.id", type = "Uuid", readonly = true },
-  { path = "clips.*.effects.*.kind", type = "EffectKind" },
-  { path = "clips.*.effects.*.amount", type = "f64" },
-  { path = "clips.*.transform", type = "Transform", stored = "record" },
-  { path = "clips.*.transform.scale_x", type = "f64" },
-  { path = "clips.*.transform.scale_y", type = "f64" },
-  { path = "clips.*.transform.pos_x", type = "f64" },
-  { path = "clips.*.transform.pos_y", type = "f64" },
-  { path = "clips.*.transform.rotation", type = "f64" },
-  { path = "clips.*.transform.anchor_x", type = "f64" },
-  { path = "clips.*.transform.anchor_y", type = "f64" },
-  { path = "clips.*.transform.crop_left", type = "f64" },
-  { path = "clips.*.transform.crop_right", type = "f64" },
-  { path = "clips.*.transform.crop_top", type = "f64" },
-  { path = "clips.*.transform.crop_bottom", type = "f64" },
-  { path = "clips.*.speed", type = "Speed", stored = "record" },
-  { path = "clips.*.speed.rate", type = "f64" },
+  { path = "tracks.*.gain_db", type = "float" },
+  { path = "tracks.*.pan", type = "float" },
+  { path = "clips", type = { collection = { named = "Clip" } }, stored = "keyed" },
+  { path = "clips.*.id", type = "text", readonly = true },
+  { path = "clips.*.track", type = "text" },
+  { path = "clips.*.media", type = "text" },
+  { path = "clips.*.start", type = "float" },
+  { path = "clips.*.in_point", type = "float" },
+  { path = "clips.*.out_point", type = "float" },
+  { path = "clips.*.opacity", type = "float" },
+  { path = "clips.*.volume", type = "float" },
+  { path = "clips.*.transition", type = { named = "Transition" } },
+  { path = "clips.*.palette", type = "int" },
+  { path = "clips.*.filters", type = { named = "Filters" }, stored = "record" },
+  { path = "clips.*.filters.brightness", type = "float" },
+  { path = "clips.*.filters.contrast", type = "float" },
+  { path = "clips.*.filters.saturation", type = "float" },
+  { path = "clips.*.curves", type = "any" },
+  { path = "clips.*.fade_in", type = "float" },
+  { path = "clips.*.fade_out", type = "float" },
+  { path = "clips.*.transition_duration", type = "float" },
+  { path = "clips.*.effects", type = { collection = { named = "ClipEffect" } }, stored = "collection" },
+  { path = "clips.*.effects.*.id", type = "text", readonly = true },
+  { path = "clips.*.effects.*.kind", type = { named = "EffectKind" } },
+  { path = "clips.*.effects.*.amount", type = "float" },
+  { path = "clips.*.transform", type = { named = "Transform" }, stored = "record" },
+  { path = "clips.*.transform.scale_x", type = "float" },
+  { path = "clips.*.transform.scale_y", type = "float" },
+  { path = "clips.*.transform.pos_x", type = "float" },
+  { path = "clips.*.transform.pos_y", type = "float" },
+  { path = "clips.*.transform.rotation", type = "float" },
+  { path = "clips.*.transform.anchor_x", type = "float" },
+  { path = "clips.*.transform.anchor_y", type = "float" },
+  { path = "clips.*.transform.crop_left", type = "float" },
+  { path = "clips.*.transform.crop_right", type = "float" },
+  { path = "clips.*.transform.crop_top", type = "float" },
+  { path = "clips.*.transform.crop_bottom", type = "float" },
+  { path = "clips.*.speed", type = { named = "Speed" }, stored = "record" },
+  { path = "clips.*.speed.rate", type = "float" },
   { path = "clips.*.speed.reverse", type = "bool" },
-  { path = "clips.*.key", type = "ChromaKey", stored = "record" },
+  { path = "clips.*.key", type = { named = "ChromaKey" }, stored = "record" },
   { path = "clips.*.key.enabled", type = "bool" },
-  { path = "clips.*.key.color", type = "[f64; 3]" },
-  { path = "clips.*.key.tolerance", type = "f64" },
-  { path = "clips.*.key.softness", type = "f64" },
-  { path = "clips.*.key.spill", type = "f64" },
-  { path = "clips.*.mask", type = "Mask", stored = "record" },
-  { path = "clips.*.mask.shape", type = "MaskShape" },
-  { path = "clips.*.mask.x", type = "f64" },
-  { path = "clips.*.mask.y", type = "f64" },
-  { path = "clips.*.mask.w", type = "f64" },
-  { path = "clips.*.mask.h", type = "f64" },
-  { path = "clips.*.mask.rotation", type = "f64" },
-  { path = "clips.*.mask.feather", type = "f64" },
+  { path = "clips.*.key.color", type = { list = "float" } },
+  { path = "clips.*.key.tolerance", type = "float" },
+  { path = "clips.*.key.softness", type = "float" },
+  { path = "clips.*.key.spill", type = "float" },
+  { path = "clips.*.mask", type = { named = "Mask" }, stored = "record" },
+  { path = "clips.*.mask.shape", type = { named = "MaskShape" } },
+  { path = "clips.*.mask.x", type = "float" },
+  { path = "clips.*.mask.y", type = "float" },
+  { path = "clips.*.mask.w", type = "float" },
+  { path = "clips.*.mask.h", type = "float" },
+  { path = "clips.*.mask.rotation", type = "float" },
+  { path = "clips.*.mask.feather", type = "float" },
   { path = "clips.*.mask.invert", type = "bool" },
-  { path = "clips.*.anim", type = "ClipAnimation" },
-  { path = "clips.*.markers", type = "Keyed<Marker>", stored = "keyed" },
-  { path = "clips.*.markers.*.id", type = "Uuid", readonly = true },
-  { path = "clips.*.markers.*.t", type = "f64" },
-  { path = "clips.*.markers.*.name", type = "String", label = true },
-  { path = "clips.*.markers.*.palette", type = "u8" },
-  { path = "clips.*.markers.*.note", type = "String" },
-  { path = "clips.*.link", type = "Option<Uuid>" },
+  { path = "clips.*.anim", type = "any" },
+  { path = "clips.*.markers", type = { collection = { named = "Marker" } }, stored = "keyed" },
+  { path = "clips.*.markers.*.id", type = "text", readonly = true },
+  { path = "clips.*.markers.*.t", type = "float" },
+  { path = "clips.*.markers.*.name", type = "text", label = true },
+  { path = "clips.*.markers.*.palette", type = "int" },
+  { path = "clips.*.markers.*.note", type = "text" },
+  { path = "clips.*.link", type = { option = "text" } },
   { path = "clips.*.sound_split", type = "bool" },
   { path = "clips.*.link_follows", type = "bool" },
-  { path = "markers", type = "Keyed<Marker>", stored = "keyed" },
-  { path = "markers.*.id", type = "Uuid", readonly = true },
-  { path = "markers.*.t", type = "f64" },
-  { path = "markers.*.name", type = "String", label = true },
-  { path = "markers.*.palette", type = "u8" },
-  { path = "markers.*.note", type = "String" },
+  { path = "markers", type = { collection = { named = "Marker" } }, stored = "keyed" },
+  { path = "markers.*.id", type = "text", readonly = true },
+  { path = "markers.*.t", type = "float" },
+  { path = "markers.*.name", type = "text", label = true },
+  { path = "markers.*.palette", type = "int" },
+  { path = "markers.*.note", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "set-frame-size"
 kind = "undoable"
 params = [
-  { name = "width", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
-  { name = "height", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "width", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "height", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "set-frame-rate"
 kind = "undoable"
 params = [
-  { name = "fps", required = true, schema = { type = "number" } },
+  { name = "fps", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "set-render-range"
 kind = "undoable"
 params = [
-  { name = "start", required = true, schema = { type = "number" } },
-  { name = "end", required = true, schema = { type = "number" } },
+  { name = "start", type = "float", required = true, schema = { type = "number" } },
+  { name = "end", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "mark-in"
 kind = "undoable"
 params = [
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "mark-out"
 kind = "undoable"
 params = [
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -157,88 +157,94 @@ kind = "undoable"
 [[resources.verbs]]
 id = "add-title"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "text", required = true, schema = { type = "string" } },
-  { name = "colour", required = false, schema = { type = ["string", "null"] } },
-  { name = "size", required = false, schema = { type = ["number", "null"] } },
-  { name = "align", required = false, schema = { type = ["string", "null"] } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "colour", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "size", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "align", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "set-title"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "media", required = true, schema = { type = "string" } },
-  { name = "text", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
-  { name = "colour", required = false, schema = { type = ["string", "null"] } },
-  { name = "size", required = false, schema = { type = ["number", "null"] } },
-  { name = "align", required = false, schema = { type = ["string", "null"] } },
+  { name = "media", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
+  { name = "colour", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "size", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "align", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "add-clip"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "media", required = true, schema = { type = "string" } },
-  { name = "track", required = false, schema = { type = ["string", "null"] } },
-  { name = "at", required = false, schema = { type = ["number", "null"] } },
-  { name = "in", required = false, schema = { type = ["number", "null"] } },
-  { name = "out", required = false, schema = { type = ["number", "null"] } },
-  { name = "fade_in", required = false, schema = { type = ["number", "null"] } },
-  { name = "fade_out", required = false, schema = { type = ["number", "null"] } },
+  { name = "media", type = "text", required = true, schema = { type = "string" } },
+  { name = "track", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "at", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "in", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "out", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_in", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_out", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "move-clip"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "number" } },
-  { name = "track", required = false, schema = { type = ["string", "null"] } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
+  { name = "track", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "set-clip"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "fade_in", required = false, schema = { type = ["number", "null"] } },
-  { name = "fade_out", required = false, schema = { type = ["number", "null"] } },
-  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
-  { name = "volume", required = false, schema = { type = ["number", "null"] } },
-  { name = "transition", required = false, schema = { type = ["string", "null"] } },
-  { name = "transition_duration", required = false, schema = { type = ["number", "null"] } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "fade_in", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_out", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "opacity", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "volume", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+  { name = "transition", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "transition_duration", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "remove-clip"
 destructive = true
 kind = "undoable"
+returns = { schema = { type = "object" } }
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "ripple", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "ripple", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "add-marker"
 kind = "undoable"
 params = [
-  { name = "at", required = true, schema = { type = "number" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "place-two-angles"
 kind = "undoable"
 params = [
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "unplace-two-angles"
 kind = "undoable"
 params = [
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -246,30 +252,30 @@ id = "remove-marker"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "marker", required = true, schema = { type = "string" } },
+  { name = "marker", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-track"
 kind = "undoable"
 params = [
-  { name = "kind", required = true, schema = { type = "string", enum = ["Video", "Audio"] } },
+  { name = "kind", type = { named = "TrackKind" }, required = true, schema = { type = "string", enum = ["Video", "Audio"] } },
 ]
 
 [[resources.verbs]]
 id = "reset-mix"
 kind = "undoable"
 params = [
-  { name = "track", required = true, schema = { type = "string" } },
+  { name = "track", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "trim-lanes"
 kind = "undoable"
 params = [
-  { name = "tracks", required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "db", required = true, schema = { type = "number" } },
-  { name = "headroom", required = true, schema = { type = "number" } },
+  { name = "tracks", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "db", type = "float", required = true, schema = { type = "number" } },
+  { name = "headroom", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -277,16 +283,16 @@ id = "delete-track"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "track", required = true, schema = { type = "string" } },
+  { name = "track", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "place-clip"
 kind = "undoable"
 params = [
-  { name = "media", required = true, schema = { type = "string" } },
-  { name = "track", required = true, schema = { type = "string" } },
-  { name = "start", required = true, schema = { type = "number" } },
+  { name = "media", type = "text", required = true, schema = { type = "string" } },
+  { name = "track", type = "text", required = true, schema = { type = "string" } },
+  { name = "start", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -294,14 +300,14 @@ id = "delete-media"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "media", required = true, schema = { type = "string" } },
+  { name = "media", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "use-as-project-format"
 kind = "undoable"
 params = [
-  { name = "media", required = true, schema = { type = "string" } },
+  { name = "media", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -309,7 +315,7 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -317,71 +323,71 @@ id = "ripple-delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "split-clip"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "trim-in-clip"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "trim-out-clip"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "number" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "set-speed"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "rate", required = true, schema = { type = "number" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "rate", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "toggle-reverse"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reset-speed"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-param"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
   { name = "param", required = true, schema = { type = "string" } },
-  { name = "at", required = true, schema = { type = "number" } },
-  { name = "value", required = true, schema = { type = "number" } },
+  { name = "at", type = "float", required = true, schema = { type = "number" } },
+  { name = "value", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
 id = "add-effect"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "effect", required = true, schema = { type = "string", enum = ["Grayscale", "Sepia", "Invert", "Warm", "Cool", "Vignette"] } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "effect", type = { named = "EffectKind" }, required = true, schema = { type = "string", enum = ["Grayscale", "Sepia", "Invert", "Warm", "Cool", "Vignette"] } },
 ]
 
 [[resources.verbs]]
@@ -389,26 +395,26 @@ id = "remove-effect"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "effect", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "effect", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-effect"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "effect", required = true, schema = { type = "string" } },
-  { name = "up", required = true, schema = { type = "boolean" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "effect", type = "text", required = true, schema = { type = "string" } },
+  { name = "up", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-effect-amount"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "effect", required = true, schema = { type = "string" } },
-  { name = "amount", required = true, schema = { type = "number" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "effect", type = "text", required = true, schema = { type = "string" } },
+  { name = "amount", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -416,28 +422,274 @@ id = "clear-effects"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "unlink"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "link-audio"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "link-with"
 kind = "undoable"
 params = [
-  { name = "clip", required = true, schema = { type = "string" } },
-  { name = "other", required = true, schema = { type = "string" } },
+  { name = "clip", type = "text", required = true, schema = { type = "string" } },
+  { name = "other", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "export-timeline-content"
+kind = "read"
+
+[[resources.verbs]]
+id = "render-timeline"
+kind = "read"
+params = [
+  { name = "start", type = { option = "float" }, required = false },
+  { name = "end", type = { option = "float" }, required = false },
+  { name = "format", type = { option = "text" }, required = false },
+  { name = "size", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "export-video-content"
+kind = "read"
+params = [
+  { name = "format", type = { option = "text" }, required = false },
+  { name = "width", type = { option = "int" }, required = false },
+  { name = "height", type = { option = "int" }, required = false },
+  { name = "fps", type = { option = "int" }, required = false },
+  { name = "wait", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "export-video-status"
+kind = "read"
+params = [
+  { name = "job", type = "text", required = true },
+  { name = "wait", type = { option = "int" }, required = false },
+]
+
+[[resources.verbs]]
+id = "cancel-video-export"
+kind = "read"
+params = [
+  { name = "job", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "view-frame-content"
+kind = "read"
+params = [
+  { name = "at", type = "float", required = true },
+  { name = "width", type = { option = "int" }, required = false },
+]
+
+[[resources.types]]
+name = "ChromaKey"
+fields = [
+  { name = "enabled", type = "bool" },
+  { name = "color", type = { list = "float" } },
+  { name = "tolerance", type = "float" },
+  { name = "softness", type = "float" },
+  { name = "spill", type = "float" },
+]
+
+[[resources.types]]
+name = "Clip"
+fields = [
+  { name = "id", type = "text" },
+  { name = "track", type = "text" },
+  { name = "media", type = "text" },
+  { name = "start", type = "float" },
+  { name = "in_point", type = "float" },
+  { name = "out_point", type = "float" },
+  { name = "opacity", type = "float" },
+  { name = "volume", type = "float" },
+  { name = "transition", type = { named = "Transition" } },
+  { name = "palette", type = "int" },
+  { name = "filters", type = { named = "Filters" } },
+  { name = "curves", type = "any" },
+  { name = "fade_in", type = "float" },
+  { name = "fade_out", type = "float" },
+  { name = "transition_duration", type = "float" },
+  { name = "effects", type = { collection = { named = "ClipEffect" } } },
+  { name = "transform", type = { named = "Transform" } },
+  { name = "speed", type = { named = "Speed" } },
+  { name = "key", type = { named = "ChromaKey" } },
+  { name = "mask", type = { named = "Mask" } },
+  { name = "anim", type = "any" },
+  { name = "markers", type = { collection = { named = "Marker" } } },
+  { name = "link", type = { option = "text" } },
+  { name = "sound_split", type = "bool" },
+  { name = "link_follows", type = "bool" },
+]
+
+[[resources.types]]
+name = "ClipEffect"
+fields = [
+  { name = "id", type = "text" },
+  { name = "kind", type = { named = "EffectKind" } },
+  { name = "amount", type = "float" },
+]
+
+[[resources.types]]
+name = "EffectKind"
+cases = [
+  { name = "grayscale" },
+  { name = "sepia" },
+  { name = "invert" },
+  { name = "warm" },
+  { name = "cool" },
+  { name = "vignette" },
+]
+
+[[resources.types]]
+name = "Filters"
+fields = [
+  { name = "brightness", type = "float" },
+  { name = "contrast", type = "float" },
+  { name = "saturation", type = "float" },
+]
+
+[[resources.types]]
+name = "Marker"
+fields = [
+  { name = "id", type = "text" },
+  { name = "t", type = "float" },
+  { name = "name", type = "text" },
+  { name = "palette", type = "int" },
+  { name = "note", type = "text" },
+]
+
+[[resources.types]]
+name = "Mask"
+fields = [
+  { name = "shape", type = { named = "MaskShape" } },
+  { name = "x", type = "float" },
+  { name = "y", type = "float" },
+  { name = "w", type = "float" },
+  { name = "h", type = "float" },
+  { name = "rotation", type = "float" },
+  { name = "feather", type = "float" },
+  { name = "invert", type = "bool" },
+]
+
+[[resources.types]]
+name = "MaskShape"
+cases = [
+  { name = "none" },
+  { name = "rect" },
+  { name = "ellipse" },
+]
+
+[[resources.types]]
+name = "MediaItem"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "kind", type = { named = "MediaKind" } },
+  { name = "duration", type = "float" },
+  { name = "width", type = "int" },
+  { name = "height", type = "int" },
+  { name = "fps", type = "float" },
+  { name = "palette", type = "int" },
+  { name = "path", type = "text" },
+  { name = "text", type = { option = { named = "TextSource" } } },
+  { name = "has_audio", type = "bool" },
+]
+
+[[resources.types]]
+name = "MediaKind"
+cases = [
+  { name = "video" },
+  { name = "audio" },
+  { name = "image" },
+  { name = "text" },
+]
+
+[[resources.types]]
+name = "Speed"
+fields = [
+  { name = "rate", type = "float" },
+  { name = "reverse", type = "bool" },
+]
+
+[[resources.types]]
+name = "TextAlign"
+cases = [
+  { name = "left" },
+  { name = "center" },
+  { name = "right" },
+]
+
+[[resources.types]]
+name = "TextSource"
+fields = [
+  { name = "content", type = "text" },
+  { name = "size", type = "float" },
+  { name = "color", type = { list = "float" } },
+  { name = "align", type = { named = "TextAlign" } },
+  { name = "font", type = "text" },
+  { name = "bold", type = "bool" },
+  { name = "italic", type = "bool" },
+  { name = "backdrop", type = "float" },
+]
+
+[[resources.types]]
+name = "Track"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+  { name = "kind", type = { named = "TrackKind" } },
+  { name = "index", type = "int" },
+  { name = "muted", type = "bool" },
+  { name = "locked", type = "bool" },
+  { name = "solo", type = "bool" },
+  { name = "gain_db", type = "float" },
+  { name = "pan", type = "float" },
+]
+
+[[resources.types]]
+name = "TrackKind"
+cases = [
+  { name = "video" },
+  { name = "audio" },
+]
+
+[[resources.types]]
+name = "Transform"
+fields = [
+  { name = "scale_x", type = "float" },
+  { name = "scale_y", type = "float" },
+  { name = "pos_x", type = "float" },
+  { name = "pos_y", type = "float" },
+  { name = "rotation", type = "float" },
+  { name = "anchor_x", type = "float" },
+  { name = "anchor_y", type = "float" },
+  { name = "crop_left", type = "float" },
+  { name = "crop_right", type = "float" },
+  { name = "crop_top", type = "float" },
+  { name = "crop_bottom", type = "float" },
+]
+
+[[resources.types]]
+name = "Transition"
+cases = [
+  { name = "none" },
+  { name = "cross_dissolve" },
+  { name = "fade_in" },
+  { name = "dip_to_black" },
+  { name = "wipe" },
 ]
 

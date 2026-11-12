@@ -203,7 +203,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 fs-native = { path = "../../crates/system/fs-native" }
 tilo-secrets.workspace = true
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
 # Installer transport must reach the canonical storage consumer, not only the vault.
 # Its FUSE backend is a Linux service, not part of hosted Windows tests.

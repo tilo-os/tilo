@@ -5,11 +5,11 @@
  * hosts of their workspaces keep it signed by their root, beside their name, so
  * each of their devices and everyone in those workspaces shows the same one.
  * Chosen here from an image file, cropped to its centre square and scaled
- * to `PHOTO_SIDE` pixels, it travels as a small `data:` URL. The host's
- * answer to `/here` says when each person last changed their profile
- * (`profile_ms`); a page fetches it again then, decodes the picture and
- * hands its pixels to the desktop, whose avatars wear it from the next
- * frame (`desktop_set_person_photo`).
+ * to `PHOTO_SIDE` pixels, it travels as a small `data:` URL. A page fetches
+ * the profile of each person it meets here, and again whenever their live
+ * presence says they changed it (`profileMs`, said by the device that kept
+ * it); it decodes the picture and hands its pixels to the desktop, whose
+ * avatars wear it from the next frame (`desktop_set_person_photo`).
  */
 
 /** The side, in pixels, of the square a picture is kept at. */
@@ -113,21 +113,24 @@ export async function photoPixels(url) {
   }
 }
 
-/** The profile of `user` (root key, hex) the host at `origin` keeps, or `null`. */
+/** The profile of `user` (root key, hex) the host at `origin` keeps, with
+ * when it was kept (`issued_at_ms`), or `null`. */
 export async function fetchPersonProfile(origin, user, fetcher = (...args) => globalThis.fetch(...args)) {
   const response = await fetcher(new URL('/peer/v1/profile/fetch', origin).href, {
     method: 'POST', headers: {'content-type': 'text/plain'}, body: user, credentials: 'omit',
   });
   if (!response.ok) return null;
-  const profile = (await response.json())?.profile ?? null;
-  return profile?.user_public_key === user ? profile : null;
+  const kept = await response.json();
+  const profile = kept?.profile ?? null;
+  return profile?.user_public_key === user ? {...profile, issued_at_ms: Number(kept.issued_at_ms) || 0} : null;
 }
 
 /**
- * Follow the pictures of the people in `/here`'s lines: `seen(lines)` with
- * each answer fetches the profile of anyone whose `profile_ms` moved
- * (`profileOf(user)`) and shows their picture (`show(user, url | null)`)
- * and the accounts elsewhere it names (`linked(user, [{service, handle}])`).
+ * Follow the pictures of the people here: `seen(people)` (`[{user,
+ * profile_ms}]`) fetches the profile of anyone met for the first time or
+ * whose `profile_ms` moved (`profileOf(user)`), and shows their picture
+ * (`show(user, url | null)`) and the accounts elsewhere it names
+ * (`linked(user, [{service, handle}])`).
  */
 export function followPhotos({profileOf, show, linked = () => {}, own = () => null, onOwn = () => {}, onError = () => {}}) {
   const stamps = new Map(); // user -> profile_ms fetched
@@ -152,13 +155,15 @@ export function followPhotos({profileOf, show, linked = () => {}, own = () => nu
     }
   }
   return {
-    seen(lines) {
-      for (const line of Array.isArray(lines) ? lines : []) {
-        const user = typeof line?.user === 'string' ? line.user : '';
-        const stamp = Number(line?.profile_ms) || 0;
+    seen(people) {
+      for (const person of Array.isArray(people) ? people : []) {
+        const user = typeof person?.user === 'string' ? person.user : '';
+        const stamp = Number(person?.profile_ms) || 0;
         if (!/^[0-9a-f]{64}$/.test(user) || stamps.get(user) === stamp) continue;
+        // A stamp older than the one fetched is a device that has not heard yet.
+        if (stamps.has(user) && stamp < stamps.get(user)) continue;
         stamps.set(user, stamp);
-        if (stamp || shown.has(user)) void refresh(user, stamp);
+        void refresh(user, stamp);
       }
     },
     /** `user` changed their picture here: show it at once, as kept at `stamp`. */

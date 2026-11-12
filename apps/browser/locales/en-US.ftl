@@ -60,6 +60,7 @@ browser-service-forget-fence-failed = The selected account could not be fenced f
 
 browser-service-forget-retry = Retry forgetting this account
 browser-service-forget-retry-failed = Account deletion could not be completed. Saved credentials have not been revoked; retry forgetting this account.
+browser-service-open = Open { $name }
 browser-engine-failed = Close Browser and open it again. If it still won’t start, update or reinstall Browser in Store.
 
 ## Toolbar
@@ -206,6 +207,19 @@ browser-page-dialog-unsaved = Changes you made may not be saved.
 browser-page-dialog-leave = Leave
 browser-page-dialog-reload = Reload
 
+## The saved addresses the browser fills forms from
+browser-autofill-offline = Address autofill is unavailable here: this window browses without your sign-ins.
+browser-autofill-enable = Turn on address autofill
+browser-autofill-disable = Turn off address autofill
+browser-autofill-selected-address = the selected address
+browser-autofill-delete-question = Delete { $label }?
+browser-autofill-delete = Delete address
+browser-autofill-keep = Keep address
+browser-autofill-save = Save address
+browser-autofill-discard = Discard edits
+browser-autofill-add = Add address
+browser-autofill-saved = Address saved on this device.
+
 ## An address or page that did not open
 browser-address-failed = Couldn’t open this address
 browser-address-empty = Enter a web address or search words
@@ -328,3 +342,205 @@ browser-filters-updated = Filter lists updated
 browser-filters-cached = Using cached filter lists
 browser-filters-failed = Update failed: { $detail }. Previous rules retained.
 browser-filters-failed-worker = Update failed: worker unavailable. Previous rules retained.
+browser-address-suggestions = Address suggestions
+browser-window-name = Browser
+browser-page-menu-name = Page context menu
+
+## Window and accessibility copy
+browser-quit-downloads-running = Downloads are still running
+browser-quit-cancelling-downloads = Cancelling downloads before quitting…
+browser-section-passwords = Passwords
+browser-section-no-secure-page = No secure page
+browser-section-address-autofill = Address autofill
+browser-a11y-search-engine = Search engine
+browser-a11y-clear-on-quit = Clear data when the browser closes
+browser-a11y-block-ads = Block ads & trackers
+browser-settings-title = Settings
+
+## Facts, property labels and section titles
+browser-save-login = Save login for { $site }?
+browser-section-saved-accounts = Saved accounts
+browser-section-forms = Forms on this page
+browser-action-keep-page = Keep the page as it is
+browser-action-close-picture-in-picture = Close picture-in-picture
+browser-action-close-reader-view = Close reader view
+browser-action-resume-history = Resume history in this window
+browser-action-let-leave = Let it leave: { $request }
+
+## Passwords and address autofill
+browser-credentials-done = Done
+browser-credentials-refresh = Refresh forms and accounts
+browser-credentials-refresh-addresses = Refresh forms
+browser-credentials-fill = Fill login
+browser-credentials-fill-address = Fill selected address
+browser-credentials-save-from-form = Save login from form
+browser-credentials-delete = Delete login
+browser-credentials-save-account = Save new account
+browser-credentials-update-account = Update selected account
+browser-credentials-delete-account = Delete account
+browser-credentials-keep-account = Keep account
+browser-credentials-confirm-delete = Delete this saved login?
+browser-credentials-kept-here = The password is kept in this device’s password store.
+browser-credentials-no-login-form = No supported login form found.
+browser-credentials-no-address-form = No supported address form found on this page.
+browser-credentials-no-accounts = No saved accounts for this site.
+browser-credentials-unnamed-account = Unnamed account
+browser-credentials-form = Form
+browser-credentials-address-form = Address form
+browser-credentials-create-form = Create account form
+browser-credentials-sign-in-form = Sign-in form
+browser-credentials-form-numbered = { $form } { $number }
+browser-credentials-unavailable-private = Passwords and address autofill are unavailable here: this window browses without your sign-ins.
+browser-credentials-unavailable-engine = Form filling is unavailable with this browser engine.
+browser-credentials-unavailable-insecure = Open a secure HTTPS page to fill a form.
+browser-credentials-checking = Checking this page…
+browser-credentials-select-address = Select an enabled, saved address before filling.
+browser-credentials-capture-expired = Capture expired. Read the login again.
+browser-credentials-request-expired = Request expired. Refresh before trying again; an operation already started may still finish.
+
+## What the action directory and the window name
+browser-page-untitled = Web page
+browser-page-content-name = Web content
+browser-history-back = Back history
+browser-history-forward = Forward history
+browser-history-paused = History paused
+browser-history-recording = History recording
+browser-history-already-empty = Browsing history is already empty
+browser-resource-history = History
+browser-resource-bookmarks = Bookmarks
+browser-resource-downloads = Downloads
+browser-resource-extensions = Extensions
+browser-resource-library = Library
+browser-resource-settings = Settings
+browser-resource-accounts = Accounts
+browser-resource-account = Account
+browser-resource-continuity = Bring your browsing
+browser-resource-personal-bookmarks = Personal bookmarks
+browser-resource-bookmark-navigation = Bookmark navigation
+browser-library-already-clear = The library filter is already clear
+browser-action-needs-page = Open a web page first
+browser-action-no-previous-page = No previous page
+browser-action-no-next-page = No next page
+browser-action-page-idle = Page is idle
+
+## The browser's own settings pane
+browser-settings-done = Done
+browser-settings-manage = Manage
+browser-settings-new-private-window = New private window
+browser-settings-clear-history = Clear history
+browser-settings-clear-site-data = Clear site data
+browser-settings-general = General
+browser-settings-homepage-label = Homepage
+browser-settings-adblock = Block ads & trackers
+browser-settings-adblock-detail = Blocks ads, trackers, and YouTube video ads.
+browser-settings-clear-on-exit-label = Clear data when the browser closes
+browser-settings-clear-on-exit-detail = Wipe history and cookies on exit.
+browser-settings-browsing-data = Browsing data
+browser-settings-browsing-data-detail = History, and the cookies and files sites keep on this device.
+browser-settings-passwords = Passwords
+browser-settings-passwords-detail = Sign-ins saved for sites on this device.
+browser-settings-autofill = Address autofill
+browser-settings-autofill-detail = Fill address forms from your saved addresses.
+browser-settings-privacy = Privacy & Security
+browser-settings-windows = Windows
+browser-settings-private = Private browsing
+browser-settings-private-detail = Nothing from a private window is kept after it closes.
+browser-settings-search-engine-label = Search engine
+browser-settings-search-engine-detail = Searches from the address field go here.
+
+## What the window shows
+browser-quit-keep-downloading = Keep downloading
+browser-quit-cancel-downloads = Cancel downloads and quit
+browser-open = Open { $address }
+browser-search-for = Search for { $query }
+browser-history-clear-failed = Couldn’t clear history because Browser could not save the change. Previous history was kept.
+browser-download-active-hint = Finish or cancel it in Downloads in the library, then close the tab.
+browser-history-paused-hint = Pages in this window are not saved to browsing history.
+browser-service-sign-in-hint = Sign in to finish connecting this account.
+
+## A window without the person's accounts
+browser-no-account-custody = This window browses without your sign-ins. Open the page in a Browser window of your own to use your accounts there
+
+## Actions
+
+browser-address-book = Address book
+browser-effect-read-continuity = Read import progress
+browser-effect-open-service-session = Open account
+browser-effect-retry-forget-service-session = Retry forgetting account
+browser-effect-list-service-sessions = List accounts
+browser-effect-read-service-session = Read account
+browser-effect-retry-continuity = Retry import
+browser-effect-back = Go back
+browser-effect-forward = Go forward
+browser-effect-navigate = Open address
+browser-effect-open-tab = Open in new tab
+browser-effect-open = Open page
+browser-effect-show-page = Show current page
+browser-effect-show-history = Show history
+browser-effect-show-bookmarks = Show bookmarks
+browser-effect-show-downloads = Show downloads
+browser-effect-show-extensions = Show extensions
+browser-effect-pin-extension = Pin to toolbar
+browser-effect-unpin-extension = Unpin from toolbar
+browser-effect-use-extension = Use extension
+browser-effect-send-to-extension = Send text to extension
+browser-effect-open-extension-settings = Extension settings
+browser-effect-open-extension-side-panel = Open side panel
+browser-effect-revoke-extension-access = Revoke extension access
+browser-effect-remove-extension = Remove extension
+browser-effect-show-settings = Browser settings
+browser-effect-set-library-filter = Filter library
+browser-effect-edit-address = Edit saved address
+browser-effect-delete-address = Delete saved address
+browser-effect-forget-visit = Forget page
+browser-effect-start-download = Download address
+browser-effect-show-download = Show download
+browser-effect-cancel-download = Cancel download
+browser-effect-retry-download = Retry download
+browser-effect-open-download = Open file
+browser-effect-read-download = Read file
+browser-effect-save-download = Keep download
+browser-effect-discard-download = Discard download
+browser-effect-send-held-request = Send held request
+browser-effect-read-page = Read page
+browser-effect-capture-page = Capture page
+browser-effect-read-page-changes = Page changes
+browser-effect-read-page-element-at = Element at a point
+browser-effect-wait-page-settled = Wait for page to load
+browser-effect-read-page-console = Console messages
+browser-effect-read-page-network = Network requests
+browser-effect-find-page-element = Find page element
+browser-effect-click-page = Click element
+browser-effect-hover-page = Hover element
+browser-effect-drag-page = Drag element
+browser-effect-pointer-path = Draw pointer path
+browser-effect-fill-page = Fill field
+browser-effect-fill-page-secret = Fill password field
+browser-effect-select-page = Choose options
+browser-effect-fill-page-files = Choose files to upload
+browser-effect-press-page = Press key
+browser-effect-submit-page = Submit form
+browser-effect-accept-page-dialog = Accept dialog
+browser-effect-dismiss-page-dialog = Dismiss dialog
+browser-effect-answer-permission = Answer permission request
+browser-effect-pointer-page = Move pointer
+browser-effect-scroll-page = Scroll page
+browser-effect-import-personal-bookmarks = Import bookmarks
+browser-effect-remove-personal-bookmark = Remove bookmark
+browser-effect-remove-personal-imported-node = Remove imported bookmark
+browser-effect-show-personal-bookmark-folder = Open bookmark folder
+browser-browsing-history = Browsing history
+browser-browsing-history-visit = Record a visit
+browser-browsing-history-import-history-bundle = Import history
+browser-browsing-history-name-visit = Name a page
+browser-browsing-history-forget = Forget page
+browser-browsing-history-clear-history = Forget every page
+browser-personal-bookmarks = Personal bookmarks
+browser-personal-bookmarks-add-bookmark = Bookmark a page
+browser-personal-bookmarks-remove-bookmark = Remove a bookmark
+browser-personal-bookmarks-import-bookmarks = Import bookmarks
+browser-personal-bookmarks-remove-imported-node = Remove imported folder
+browser-application = Browser
+browser-application-add-bookmark = Bookmark a page
+browser-application-remove-bookmark = Remove a bookmark
+browser-application-set-site-protection = Tracker protection

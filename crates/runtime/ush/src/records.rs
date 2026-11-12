@@ -231,6 +231,71 @@ impl Records {
         Ok(env)
     }
 
+    /// Make the environment `key` of these records one of `into`'s, as a branch of this room's
+    /// workspace is made: the record's whole history, forked under a writer of its own, with one
+    /// more change naming `into`'s workspace as its own and its home and grants of this workspace's
+    /// files as the same places in `into`'s. `rehome` names the path a path of this workspace's
+    /// files takes in `into`'s, `None` for one outside them. File actions not carried out yet stay
+    /// with the record they were asked of. Answers whether there was a record to branch.
+    ///
+    /// # Errors
+    /// A bad key, a record `into` already holds, a grant `into` may not hold, or a store that
+    /// refuses the write.
+    pub fn branch_into(
+        &self,
+        key: &str,
+        into: &Self,
+        rehome: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<bool, RecordError> {
+        let mut source = self.open(key)?;
+        let Some(mut held) = Self::load_current(&mut source)? else {
+            return Ok(false);
+        };
+        drop(source);
+        let mut target = into.open(key)?;
+        if target
+            .load()
+            .map_err(|e| RecordError::Store(e.to_string()))?
+            .is_some()
+        {
+            return Err(RecordError::Refused(format!(
+                "workspace {} has an environment {key:?} already",
+                into.room
+            )));
+        }
+        let mut doc = held.fork();
+        let mut environment =
+            Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
+        self.check_room(key, &environment)?;
+        environment.workspace.clone_from(&into.room);
+        if let Some(home) = rehome(&environment.home_dir) {
+            environment.home_dir = home;
+        }
+        for grant in &mut environment.grants {
+            let collab_types::caps::Scope::FsPath(path) = &grant.scope else {
+                continue;
+            };
+            let Some(moved) = rehome(path) else {
+                continue;
+            };
+            let write = grant.access == collab_types::caps::Access::Write;
+            let made = tilo_environment::dir_grant(Path::new(&moved), write)
+                .map_err(RecordError::Refused)?;
+            grant.scope = made.scope;
+            grant.id = made.id;
+        }
+        environment.files = tilo_environment::Environment::default().files;
+        into.confined(&[], &environment.grants)?;
+        environment
+            .write_record(&mut doc)
+            .map_err(|e| RecordError::Model(e.to_string()))?;
+        doc.commit();
+        target
+            .append(&mut doc)
+            .map_err(|e| RecordError::Store(e.to_string()))?;
+        Ok(true)
+    }
+
     /// Every environment record there is, by key.
     pub fn keys(&self) -> Result<Vec<String>, RecordError> {
         let dir = self.record_dir(DEFAULT_RECORD)?;

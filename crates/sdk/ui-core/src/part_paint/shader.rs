@@ -36,11 +36,53 @@ thread_local! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalError(pub String);
 
+/// The code behind surface shaders: the grammar check a theme's shader
+/// passes when the theme is read, and the interpreter that draws it. A
+/// program built with `lazy-surface-shader` (the browser desktop) fetches it
+/// the first time a theme states a shader; until then the theme applies
+/// with every such part drawn as its fallback, and is read again once the
+/// code is in (its generation is part of what a theme is built from).
+#[derive(Clone, Copy)]
+pub struct SurfaceShaderCode {
+    /// Whether a theme may draw this program: [`shader::check`], then one
+    /// texel through the interpreter.
+    pub admit: fn(&str) -> Result<(), String>,
+    /// The shader's image for a part ([`evaluate`]).
+    pub evaluate:
+        fn(&crate::part_paint::ShaderSource, Rect, &PartTokens, Color) -> vello::peniko::ImageData,
+}
+
+/// The surface shader's code where it is linked.
+#[must_use]
+pub fn builtin_surface_shader() -> SurfaceShaderCode {
+    SurfaceShaderCode { admit, evaluate }
+}
+
+crate::lazy_code! {
+    /// The surface shader's code ([`SurfaceShaderCode`]).
+    pub static SURFACE_SHADER: SurfaceShaderCode = builtin_surface_shader, feature = "lazy-surface-shader";
+}
+
+/// `fallback` over the part: what a shader draws while its code is on the
+/// way, and what one that cannot be evaluated draws.
+#[must_use]
+pub fn fallback_image(fallback: Color) -> vello::peniko::ImageData {
+    crate::raster::rgba8(fallback_pixels(fallback, 1, 1), 1, 1)
+}
+
+fn admit(wgsl: &str) -> Result<(), String> {
+    shader::check(wgsl)?;
+    // Checked against the grammar is not yet drawable: what the interpreter
+    // cannot run is refused here, at load, rather than drawn as a fallback on
+    // every part.
+    probe(wgsl).map_err(|reason| format!("surface shader cannot be drawn: {reason}"))
+}
+
 /// The shader's image for the part `rect` (logical pixels) in `theme`,
 /// drawn with `tokens`; `fallback` is what a shader that cannot be
 /// evaluated is drawn as.
 #[must_use]
-pub fn evaluate(
+fn evaluate(
     source: &crate::part_paint::ShaderSource,
     rect: Rect,
     tokens: &PartTokens,
@@ -69,7 +111,7 @@ pub fn evaluate(
 ///
 /// # Errors
 /// What the interpreter cannot run, as the theme's author reads it.
-pub(crate) fn probe(wgsl: &str) -> Result<(), String> {
+fn probe(wgsl: &str) -> Result<(), String> {
     let inputs = Inputs::of(&PartTokens::default(), Rect::new(0.0, 0.0, 1.0, 1.0), 0);
     run(wgsl, &inputs, 1, 1)
         .map(|_| ())

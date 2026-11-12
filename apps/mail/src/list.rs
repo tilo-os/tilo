@@ -205,7 +205,7 @@ impl<'a> RowText<'a> {
         );
         let subject = message.thread_subject();
         let subject = if subject.trim().is_empty() {
-            "No subject".to_owned()
+            crate::i18n::no_subject()
         } else {
             subject
         };
@@ -957,14 +957,17 @@ impl Widget for MessageList {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer?;
         let slot = self.slot_at(point)?;
-        Self::action_at(slot, point).map(|action| match action {
-            CtxAction::ToggleStar if slot.starred => "Remove star (S)",
-            CtxAction::ToggleStar => "Star (S)",
-            CtxAction::Archive => "Archive (E)",
-            _ => "Delete (Delete)",
+        Self::action_at(slot, point).map(|action| {
+            match action {
+                CtxAction::ToggleStar if slot.starred => "Remove star (S)",
+                CtxAction::ToggleStar => "Star (S)",
+                CtxAction::Archive => "Archive (E)",
+                _ => "Delete (Delete)",
+            }
+            .into()
         })
     }
 
@@ -1035,6 +1038,7 @@ impl Widget for MessageList {
 mod tests {
     use super::*;
     use crate::state::MailState;
+    use ui::widget::DrawChild;
 
     fn shared() -> Shared {
         MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
@@ -1042,7 +1046,7 @@ mod tests {
 
     fn draw(list: &mut MessageList) {
         let mut scene = Scene::new();
-        list.draw(
+        list.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),

@@ -9,6 +9,11 @@
 //! a task, a Shortcut, an app) is bounded by both: [`Authority::decide`] takes
 //! the minimum.
 //!
+//! [`Invoker`] is who an invocation is decided for apart from the policy, and
+//! [`admit_invocation`] the one admission of an invocation every route that
+//! runs actions takes: the desktop's broker and a host running a hosted
+//! workspace's records alike.
+//!
 //! Roles are presets of grants on a workspace ([`roles`]); membership, roles
 //! and grants change only through the workspace's governance actions
 //! ([`WorkspacePolicy`]).
@@ -28,6 +33,7 @@ pub mod describe;
 pub mod earlier;
 pub mod edits;
 mod grant;
+mod invoker;
 mod kind;
 mod member_record;
 mod path;
@@ -42,6 +48,7 @@ pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use earlier::EarlierIds;
 pub use grant::{Answer, Context, Grant, GrantId, Lifetime, Role, Subject};
+pub use invoker::{Invocation, Invoker, admit_invocation, answer_at, asker_of};
 pub use kind::{ActionKind, KindSet};
 pub use member_record::{member_record, member_record_id};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};

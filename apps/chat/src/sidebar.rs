@@ -138,12 +138,44 @@ impl ChatApp {
             .into_iter()
             .map(|conversation| {
                 let unread = conversation.unread;
-                NavItem::new(channel_place(&conversation.id), conversation.name)
-                    .icon(Icon::User)
+                let with = self.conversation_peer(&conversation.participants);
+                let mut item = NavItem::new(channel_place(&conversation.id), &conversation.name)
+                    .icon(Icon::Users)
                     .unread(unread > 0)
-                    .live_count(unread)
+                    .live_count(unread);
+                // A conversation with one other wears their face: an agent's own, a person's
+                // avatar, each in the colour they wear everywhere in the workspace.
+                if let Some(with) = with {
+                    let key = with.key();
+                    let author = if with.is_agent() {
+                        key
+                    } else {
+                        with.id().to_owned()
+                    };
+                    item = item
+                        .person(&author, Some(self.identity_colour(&author)), false)
+                        .person_face(&conversation.name, None);
+                    if with.is_agent() {
+                        item = item.agent_face();
+                    }
+                }
+                item
             })
             .collect()
+    }
+
+    /// The one other participant of a conversation with `participants` (their keys), when it has
+    /// exactly one.
+    pub(crate) fn conversation_peer(
+        &self,
+        participants: &[String],
+    ) -> Option<crate::record::Participant> {
+        let mut others = participants
+            .iter()
+            .filter_map(|key| crate::record::Participant::parse(key))
+            .filter(|participant| participant.is_agent() || !self.is_me(participant.id()));
+        let peer = others.next()?;
+        others.next().is_none().then_some(peer)
     }
 
     /// The channels of one category (`""` for those outside any), each

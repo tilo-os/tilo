@@ -16,6 +16,10 @@ use super::size::VmSize;
 
 pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
 
+/// The environment a workspace's VM is: one per workspace, which runs both
+/// its Linux programs and its Browser.
+pub const ENVIRONMENT: &str = "default";
+
 /// Which VM, whose, and how large.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmRequest {
@@ -30,6 +34,47 @@ pub struct VmRequest {
 pub struct ShareRequest {
     pub path: PathBuf,
     pub read_only: bool,
+}
+
+/// A workspace's browser session, to start or attach to: a headless session
+/// with Browser in the workspace's VM, which joins the workspace with
+/// `material`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenBrowser {
+    pub workspace: String,
+    /// Whose the workspace's VM is, as the relay knows the account. Opening
+    /// Browser needs no card: its page actions are counted instead.
+    pub account: String,
+    /// The size the workspace's VM runs at, as its shells ask for it.
+    pub size: VmSize,
+    /// Where the session keeps its profile (cookies, storage) between runs: a
+    /// folder of the workspace's own files on this host, which sync,
+    /// encrypted, as the workspace's files do. The VM sees it at the same
+    /// path; the session restores the profile from it when it starts and
+    /// writes it back when it ends.
+    pub store: Option<PathBuf>,
+    /// What its session joins the workspace with — the workspace, the record
+    /// to open and the device certificate — opaque here, and passed to the
+    /// guest as one line of its session's input.
+    pub material: String,
+}
+
+/// A Linux app to start in a workspace's VM: in its apps session, started
+/// with `material` when none runs yet, as the workspace's tenant. A Linux app
+/// is a Linux action: it needs the account's plan, and a card on a host that
+/// sells its VMs.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OpenApp {
+    pub workspace: String,
+    /// Whose the workspace's VM is, as the relay knows the account.
+    pub account: String,
+    /// The size the workspace's VM runs at, as its shells ask for it.
+    pub size: VmSize,
+    /// What its session joins the workspace with, opaque here: the first
+    /// line of the session's input.
+    pub material: String,
+    /// The app to start: one later line of the session's input.
+    pub launch: tilo_actions::remote::linux_apps::AppLaunch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -63,6 +108,25 @@ pub enum Request {
     Place {
         vm: VmRequest,
     },
+    /// Start the browser session in `workspace`'s VM, waking the VM if it
+    /// sleeps, or attach to the session already running.
+    OpenBrowser {
+        browser: OpenBrowser,
+    },
+    /// End the browser session in `workspace`'s VM now; the VM sleeps like
+    /// any idle VM.
+    StopBrowser {
+        workspace: String,
+    },
+    /// Start a Linux app in `workspace`'s VM, waking the VM if it sleeps and
+    /// starting its apps session first when none runs.
+    OpenApp {
+        app: OpenApp,
+    },
+    /// End the apps session in `workspace`'s VM now, and every app in it.
+    StopApps {
+        workspace: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,15 +138,22 @@ pub struct VmStatus {
     pub last_wake_ms: Option<u64>,
     pub last_wake_restored: Option<bool>,
     pub snapshot_bytes: Option<u64>,
+    /// What its process holds of the host's memory, as the kernel measured
+    /// it; `None` when it is not running.
+    pub resident_mib: Option<u64>,
+    /// What its balloon holds back from its guest, which the host has.
+    pub balloon_mib: u64,
 }
 
-/// What a host's VMs take of its memory budget, by their sizes.
+/// What a host's awake VMs take of its memory, as its kernel measures them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HostLoad {
-    /// The most its awake VMs may take together; `None` when only its slots
-    /// bound them.
+    /// The most its VMs may take together: the node's memory less what the
+    /// host keeps for itself; `None` when only its jail's slots bound them.
     pub budget_mib: Option<u64>,
-    /// What its awake VMs take.
+    /// What its awake VMs and the templates it is making are counted at: what
+    /// the kernel measured, and what a VM not yet measured is expected to
+    /// take.
     pub awake_mib: u64,
     /// What wakes waiting for room on it ask for.
     pub waiting_mib: u64,
@@ -124,6 +195,15 @@ pub enum Reply {
     /// The host the VM runs on (a placer's answer).
     Placed {
         host: String,
+    },
+    /// A workspace's browser session is up, joined to the workspace.
+    /// `opened_ms`: what opening took, when this request opened it; `None`
+    /// when it attached to the session someone else opened. `provider`:
+    /// the token the window it holds publishes under, which the relay routes
+    /// page actions on that window by.
+    Opened {
+        opened_ms: Option<u64>,
+        provider: String,
     },
 }
 

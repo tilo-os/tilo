@@ -3,8 +3,9 @@
 use super::{
     Banner, ButtonFace, ChangesHit, ControlSize, EmptyState, EmptyStateContent, GitClientState,
     Hit, OpenControls, PaintCtx, Point, PresenceCtx, Rect, Screen, ScrollRegion, Scroller, Staged,
-    Target, TextRole, Widget, changes, diffview, history, panels, t,
+    Target, TextRole, changes, diffview, history, panels, t,
 };
+use ui::widget::DrawChild;
 
 impl GitClientState {
     /// Paint the whole window for this frame, record its targets, and show
@@ -174,7 +175,7 @@ impl GitClientState {
         }
         self.commit_input.apply_layout_external(out.commit_input);
         self.commit_input
-            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+            .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
     }
 
     /// The commit list in `list`, of which `clip` is showing.
@@ -343,7 +344,7 @@ impl GitClientState {
         self.branch_input.apply_layout_external(out.branch_field);
         if out.branch_field.width() > 0.0 {
             self.branch_input
-                .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
         }
         for (input, rect) in [
             &mut self.worktree_branch_input,
@@ -355,7 +356,7 @@ impl GitClientState {
         {
             input.apply_layout_external(rect);
             if rect.width() > 0.0 {
-                input.draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+                input.draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
             }
         }
         let max_y = out.content_height - body.height();
@@ -438,7 +439,7 @@ impl GitClientState {
         let (field, choose, button) = (controls.field, controls.choose, controls.open);
         self.open_input.apply_layout_external(field);
         self.open_input
-            .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
+            .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
         self.semantic.push(Target {
             rect: field,
             hit: Hit::OpenPath,

@@ -193,6 +193,19 @@ a resource of its own that code uses as that container (`notes.insert(n)`, `for 
 root names one such resource per room: `root notes: Notes` is `notes` in the package and
 `alias.notes` in a package that uses it.
 
+**A package's own name wins.** The language provides types of its own — `Int`, `Float`, `Bool`,
+`Text`, `RichText`, `Bytes`, `Principal`, `Date`, `Time`, `Duration`, `File`, `Response`,
+`Action` and `View` — and a package that declares a type, enum or alias with one of those names
+takes the name for its own: in that package, everywhere and every time it is written, the bare
+name is the package's declaration, and what the language provides of that name is written
+`std.`'s (`std.File`, `std.Text`, `std.Date`). A `type File { title: Text }` beside a
+`picture: Option<File>` is a `File` of the package's own, and `file.choose`'s answer is a
+`std.File`; the declaration shadows the language's type throughout the package, so a language
+type a later version adds can never break a package that already declares that name. What a
+package cannot take is a name that writes a type rather than naming one — `List`, `Set`, `Map`,
+`Collection`, `Option`, `Result`, `Filter`, `Sort` — because `List<T>` would still mean what the
+language's means; declaring one is refused where it is written (`type List` is an error).
+
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; with no `else` it is the Option of
 that value, `.none` where the condition does not hold, which is what `else { .none }` gives it.
@@ -296,8 +309,10 @@ instead). A principal says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
-offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
-members in a view of no resource), without the view declaring anything. A component primitive's
+offers `members(r)` of the resource its view shows (the workspace's members in a view of no
+resource) without the view declaring anything; the conversation's own people it offers first
+are the view's to give, `speakers(items)` naming who spoke in it, newest first, read from the
+last of the items and nothing of what they are about. A component primitive's
 block is its component's, events included: `rich_input(bind: draft) { on submit: send(c, draft) }`
 sends on Enter (Shift+Enter breaks the line).
 
@@ -371,7 +386,7 @@ for a period or time that passed while every device was off, and never by pollin
 **Effects.** An action whose body reads what a replay cannot compute again says so:
 `uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
 Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no
-zone, `t.day()`, `t.time_of_day()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
+zone, `t.day()`, `t.time_of_day()`, `t.clock()`, `Time.parse(...)`, `r.next_at(...)` — is an error until
 it does (E121), and so is a `fn` or an action it calls that reads them. An
 invocation records what it read in its journal: the moment and the zone once per invocation,
 and each draw and fetch with its answer as the language grows into them. The journal is kept beside the change an action makes, so history
@@ -408,6 +423,87 @@ run resumed tomorrow, answer from the record and do not ask again. What can go w
 never a trap: a host the package did not declare, a host the workspace revoked, a timeout (30
 seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
 says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
+
+**Files.** A `File` is a file whose bytes are in the device's content store: what a person
+picked, or what a program was handed. It is a value, not a resource — its type is a field's
+and an action's parameter — and what it holds of the content is the address, never the bytes,
+so a record, an argument and a history entry carry the file by reference:
+
+```
+type Note {
+    body: RichText
+    picture: Option<File>
+}
+
+/// Puts a picture in a note.
+action insert_image(n: Note, image: File) (did: "added an image") {
+    n.body = RichText(n.body, "\n![]({image.url})")
+}
+
+view note_editor(n: Note) {
+    ...
+    button("Insert image", on: file.choose(insert_image(n), accept: ["image/png"]))
+}
+```
+
+`f.name`, `f.media`, `f.size` and `f.url` read on it, `url` being where its bytes are
+(`tilo-blob://<hash>`), which is what a picture takes (`ui.Image(f.url, alt: f.name)`).
+`f.text()` reads a text file's content as a `Result<Text, Text>` — `.ok` the text, `.err` why it
+is not read (not text, more than 256 KiB, or the content is not on this device) — which is how
+an importer reads a document. Reading it is a read and not an effect: the bytes are what the
+address names and never change, so a replay reads the same ones, and a device that does not hold
+them says so.
+
+A person chooses a file in their own chooser, on the platform's terms: a control applies
+`file.choose(a, accept: [...])`, which asks them for a file of those media types and runs the
+action `a` with it as the parameter it still needs. `file.save(a, name: "Notes.md")` runs `a`
+and puts what it made — text, or a file — in a file the person names. Both stand on a control,
+as `open` does, and neither is offered to an `fn`, an action or an agent: a file is the person's
+own. A program that holds bytes invokes the same action with a file it has, so an app's import
+path is one action whichever way the file arrived.
+
+`f.files()` reads an archive (a `.zip`) as the files it holds, each kept in the device's content
+store under the name it has inside it, as a `Result<List<File>, Text>` — `.err` why it does not
+read (not an archive, or one that holds more than 256 files, more than 1 MiB in one file or more
+than 16 MiB together) — which is how an importer reads a package: an export of notes, a page and
+its pictures. The files are the person's, read within those bounds, and each file's `name` is its
+path inside the archive, so an import keeps the nesting the archive had.
+
+A chosen file may be at most 1 MiB; a larger one is refused with its size, before anything is
+written. An action never carries the bytes: its invocation carries the address, so undo, a
+replay and a sync move the reference and the store moves the content.
+
+**Rich text.** A `RichText` is a document: its paragraphs with their formatting, a heading, a
+list or checklist item, a quote, a table, a fenced code block (a formula is one, in its own
+language), a divider, a picture. `r.excerpt` is its first line with text, `r.text` all of it,
+`r.references` the resources it refers to and `r.people` the people it mentions, and
+`r.is_empty()` says it holds nothing. `r.markdown` writes it as Markdown and
+`RichText.from_markdown(text)` reads a Markdown text as one — the same document, block for
+block: a heading, a list item with its depth, a mark over a run of text:
+
+```
+fn note_as_file(n: Note) -> Text {
+    "# {n.title}\n\n{n.body.markdown}"
+}
+
+action import_markdown(nb: Notebook, file: File) -> Note {
+    match file.text() {
+        .ok(text) => nb.notes.insert(Note(title: "", body: RichText.from_markdown(text))),
+        .err(why) => nb.notes.insert(Note(title: "", body: RichText(why))),
+    }
+}
+```
+
+`RichText.embed(r)` is the document whose one paragraph projects the resource `r`: where the text
+is drawn, that paragraph is a card of `r` — its title and the start of what it says, opening it,
+live as `r` changes. A paragraph that is one projection is a block of its own, so
+`RichText(n.body, RichText.embed(other))` puts `other` under what `n` says.
+
+A picture is the Markdown it is written as, a paragraph of its own holding `![alt](source)`:
+`r.markdown` writes the address of its bytes (`![](tilo-blob://…)`), which every device of the
+workspace holds, and `RichText.from_markdown` keeps the source a picture was written with, so
+the document a person exported is the document read back. A table is kept as its Markdown
+source, which is what an editor shows it as a grid of.
 
 **JSON.** Text a service sent reads into the type the code names, and a value writes back as
 text, with no effect to declare: the work is in the text and the value, nothing outside them.
@@ -585,7 +681,7 @@ type Message {
     from: std.Identifier
     received: Time
     unread: Bool = true
-    attachments: Collection<File>
+    attachments: List<File>
 
     search {
         filter unread "Unread"                          // a field; its label
@@ -709,7 +805,9 @@ What a day and a moment are made of reads on them. On a `Date`: `d.weekday()` is
 week, matched as `.monday` … `.sunday`; `d.day()`, `d.month()` and `d.year()` are its parts;
 `d.start_of_week()` is the first day of the week it stands in, the day the person's region
 starts one on. On a `Time`: `t.day()` is the `Date` it falls on for the person, in their zone
-as `today` reads it, and `t.time_of_day()` the `Duration` since their midnight.
+as `today` reads it, `t.time_of_day()` the `Duration` since their midnight, and `t.clock()` the
+time of day as the person reads a clock — `14:05`, or `2:05 PM` in the style they chose in
+Settings, as every date and time a window shows reads.
 
 An action reads the moment it is invoked at, `now`, and the day that falls on for the person,
 `today`; nothing else does, because a moment is a fact of the invocation, recorded with the

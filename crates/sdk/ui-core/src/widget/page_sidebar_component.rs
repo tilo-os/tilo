@@ -28,7 +28,8 @@ pub struct PageSidebarProps {
     /// Which page is open, counted from 0.
     #[component(required)]
     pub current: i64,
-    /// The rail's title above the thumbnails: "Pages".
+    /// The rail's title above the thumbnails; "Pages" in the window's language when
+    /// unset.
     pub header: Option<String>,
     /// The label of the button that adds a page at the foot ("Import…"). Without it there is
     /// no add button.
@@ -218,6 +219,14 @@ impl crate::widget::Widget for DeclaredRail {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.rail.tooltip_target_at(point)
+    }
+
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        self.rail.tooltip_side()
     }
 
     fn name(&self) -> &'static str {

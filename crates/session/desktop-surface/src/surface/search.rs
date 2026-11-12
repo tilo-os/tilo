@@ -37,6 +37,9 @@ pub(super) enum SearchRequest {
         query: Option<String>,
     },
     Toggle,
+    /// Close search wherever it stands: a host dismissing the one that holds the keyboard, which
+    /// asks nothing of what is under it and does nothing when none is open.
+    Close,
 }
 
 /// The search the windows of strip `strip` asked for: a new-tab control asks which application to
@@ -267,7 +270,9 @@ pub enum HostActionSource {
 }
 
 impl HostActionSource {
-    fn label(self) -> String {
+    /// The name the person sees an offer from it under ("Devices").
+    #[must_use]
+    pub fn label(self) -> String {
         crate::i18n::t(match self {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
@@ -278,31 +283,10 @@ impl HostActionSource {
 }
 
 impl HostAction {
-    /// A banner that offers this action: choosing it performs the action.
+    /// The name the person sees this offer from.
     #[must_use]
-    ///
-    /// An offer is an ask: it stays until the person answers it or puts it off ("Not now", which
-    /// keeps it in the notification centre), so nothing is decided by waiting.
-    pub fn notice(
-        &self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> crate::notifications::Notification {
-        let mut notice = crate::notifications::Notification::new(title, body);
-        // The action first: it is what choosing the ask itself does, from the banner or later from
-        // the centre.
-        notice.actions = vec![
-            (self.key(), self.title.clone()),
-            (
-                crate::notifications::NOT_NOW_ACTION.to_owned(),
-                crate::i18n::t("notification-not-now"),
-            ),
-        ];
-        notice.app_name = self.source.map(HostActionSource::label);
-        notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
-        // What a host asks is on the person's behalf: who they are and which devices are theirs.
-        notice.icon_kind = crate::notifications::NotificationIconKind::Permission;
-        notice
+    pub fn source_label(&self) -> String {
+        self.source.map(HostActionSource::label).unwrap_or_default()
     }
 
     /// The banner action key this action is offered under: a banner button with this key hands `id`
@@ -377,14 +361,25 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().host_choices)
     }
 
-    /// Open search, or close it when it is open. The host schedules a frame.
+    /// Open search, or close it when it is open. The host is asked for the pass that opens it.
     pub fn toggle_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
+        self.wake();
     }
 
-    /// Open search at `scope` , with `query` typed. The host schedules a frame.
+    /// Close search, wherever it stands; nothing to close is nothing to do. The host is asked for
+    /// the pass that closes it. A host that sees a press the desk's own hit test never reaches (a page's chrome
+    /// beside the canvas) dismisses the search holding the keyboard this way, as a press beside
+    /// the card does on the desk itself, however often it asks.
+    pub fn close_search(&self) {
+        self.shared.borrow_mut().search_request = Some(SearchRequest::Close);
+        self.wake();
+    }
+
+    /// Open search at `scope` , with `query` typed. The host is asked for the pass that opens it.
     pub fn open_search(&self, scope: Scope, query: Option<String>) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
+        self.wake();
     }
 
     /// The row the host carried out did not happen, for `why` : search opens again where it stood,
@@ -403,6 +398,8 @@ impl DesktopHandle {
             scope,
             query: Some(query),
         });
+        drop(shared);
+        self.wake();
         true
     }
 
@@ -431,6 +428,23 @@ impl DesktopHandle {
     /// Whether the search palette is open, as of the last update pass.
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
+    }
+
+    /// Who holds the keyboard: `"system-search"` while the search palette is up (it takes the
+    /// keyboard, the pointer and Escape), else the application of the active workspace's focused
+    /// window. `None` while no window does — an empty desk, or one whose windows are all gone.
+    ///
+    /// A host that stands outside the desk's own hit test (a page's chrome over the canvas) reads
+    /// this to know whose input a press elsewhere belongs to.
+    pub fn input_owner(&self) -> Option<String> {
+        let shared = self.shared.borrow();
+        if shared.search_open {
+            return Some("system-search".to_owned());
+        }
+        let route = crate::navigation::active_route(&shared.tree)?;
+        let window = crate::navigation::locate(&shared.tree, route)?;
+        let tab = window.tabs.iter().find(|tab| tab.id == route.tab)?;
+        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
     }
 
     /// The palette the desk searches with, shared with the host that draws it over the windows: the
@@ -463,16 +477,18 @@ impl DesktopHandle {
     }
 
     /// Whether the desk itself takes the keys the person types: its notification centre is open,
-    /// and what they type goes into it rather than to the window behind. Its search does not: the
-    /// palette stands over the windows, drawn by the host above them, which takes the keys while it
-    /// is up.
+    /// or a field in a window's bar (a tab being named), and what they type goes into it rather
+    /// than to the window behind. Its search does not: the palette stands over the windows, drawn
+    /// by the host above them, which takes the keys while it is up.
     pub fn wants_keyboard(&self) -> bool {
-        self.shared
-            .borrow()
-            .presentation
-            .notifications
-            .as_ref()
-            .is_some_and(|notifications| notifications.center_open)
+        self.bar_takes_typing()
+            || self
+                .shared
+                .borrow()
+                .presentation
+                .notifications
+                .as_ref()
+                .is_some_and(|notifications| notifications.center_open)
     }
 
     /// Search from now on also over what `host` adds, and hand it what is chosen that it carries
@@ -684,6 +700,15 @@ fn windows(
     out
 }
 
+/// The workspace that holds `strip`, as search names it: where a window's search reads what its
+/// app published.
+fn workspace_holding(tree: &DesktopTree, strip: StripId) -> Option<String> {
+    tree.workspaces
+        .iter()
+        .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
+        .map(|workspace| workspace.id().to_string())
+}
+
 /// The people in the active workspace, as search finds them, and its workspace.
 fn people(
     tree: &DesktopTree,
@@ -780,6 +805,32 @@ fn commands(
 }
 
 impl DesktopSurface {
+    /// Whether `event` is search's while the desk stands under it: a key or composed text, which no
+    /// window's app may see while the palette holds the keyboard ([`DesktopHandle::input_owner`]),
+    /// and the chord that opens search, which is the desk's wherever it is pressed and never the
+    /// window's under it.
+    ///
+    /// The chrome above the windows hands the palette what the person types there. A key that
+    /// reaches the desk instead is one the card's own hit test does not cover — the frame the
+    /// palette opened in, a host routing the press itself, a chord the page's own listener let
+    /// through — and letting it fall to the window fires that app's shortcut: a bare letter opens a
+    /// dialog over the search the person was typing into, and the letters after it land in the
+    /// dialog's field. So the desk takes it here, where it decides which window a key belongs to.
+    pub(super) fn search_holds_the_key(
+        &self,
+        event: &ui::winit::event::WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> bool {
+        let key = matches!(
+            event,
+            ui::winit::event::WindowEvent::KeyboardInput { .. }
+                | ui::winit::event::WindowEvent::Ime(_)
+        );
+        key && (self.search.borrow().is_open()
+            || self.shared.borrow().search_open
+            || is_search_chord(event, modifiers, self.platform))
+    }
+
     /// Open search at `scope` , with `query` typed: over what the desktop has open in the workspace
     /// in front ([`Scope::Workspace`]), over every workspace ([`Scope::Everywhere`]), over what an
     /// app's window holds ([`Scope::InApp`]), or over the applications a window group's new tab may
@@ -930,15 +981,32 @@ impl DesktopSurface {
             Scope::InApp(app) => app.part.clone(),
             _ => None,
         };
-        let searched = part
-            .as_ref()
-            .map(|part| part.label.clone())
-            .or_else(|| window_app(&self.shared.borrow().tree, group))
-            .filter(|name| !name.is_empty());
+        let (searched, feed) = {
+            let shared = self.shared.borrow();
+            let searched = part
+                .as_ref()
+                .map(|part| part.label.clone())
+                .or_else(|| window_app(&shared.tree, group))
+                .filter(|name| !name.is_empty());
+            // What the app's window holds beyond the desk's own reading of it: an app that runs
+            // in a process of its own publishes its entries into this session's index, and the
+            // actions it offers, which is what its search finds.
+            let feed = shared
+                .search_host
+                .clone()
+                .map(|host| {
+                    let workspace = workspace_holding(&shared.tree, strip).unwrap_or_default();
+                    host.feed(&workspace, scope)
+                })
+                .unwrap_or_default();
+            (searched, feed)
+        };
         let published = host.window_search(doc);
         Some(SearchData {
             resources: published.resources,
             providers: published.providers,
+            published: feed.published,
+            sources: feed.sources,
             scope: scope.clone(),
             placeholder: searched.map(|name| {
                 crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
@@ -1050,11 +1118,11 @@ impl DesktopSurface {
         }
         let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
-        match request {
-            Some(SearchRequest::Toggle) if opened => self.close_search(),
-            Some(SearchRequest::Toggle) => self.open_search(doc, Scope::Workspace, None),
-            Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
-            None => {}
+        match (request, opened) {
+            (Some(SearchRequest::Open { scope, query }), _) => self.open_search(doc, scope, query),
+            (Some(SearchRequest::Toggle), false) => self.open_search(doc, Scope::Workspace, None),
+            (Some(SearchRequest::Toggle | SearchRequest::Close), true) => self.close_search(),
+            (Some(SearchRequest::Close) | None, _) => {}
         }
         let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
         for (index, argument) in choices {
@@ -1156,6 +1224,8 @@ impl DesktopSurface {
         if search.is_open() {
             let closed = search.observe();
             let refreshed = search.refresh();
+            // An Enter that waited for its query's rows chooses in a refresh, which ends search.
+            let closed = closed || !search.is_open();
             // The rows the palette found, and the card they stand in, are drawn by the host above
             // the windows (`DesktopHandle::search_palette`), never in this desk's own tree: the
             // card is not a child of the surface. A row that came or went is that card's paint,
@@ -1468,25 +1538,6 @@ mod tests {
 
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)
-    }
-
-    #[test]
-    fn a_host_actions_notice_names_what_it_is_about() {
-        let pair: HostAction = serde_json::from_str(
-            r#"{"id":"pair-device","title":"Pair a new device","source":"devices"}"#,
-        )
-        .unwrap();
-        let notice = pair.notice("Pair “Phone”?", "");
-        assert_eq!(
-            notice.sender_name(),
-            crate::i18n::t("host-action-source-devices")
-        );
-        let plain: HostAction = serde_json::from_str(r#"{"id":"x","title":"X"}"#).unwrap();
-        assert_eq!(
-            plain.notice("X", "").sender_name(),
-            crate::i18n::t("notification-group-system"),
-            "a notice from no named part of the desktop still says who it is from"
-        );
     }
 
     #[test]

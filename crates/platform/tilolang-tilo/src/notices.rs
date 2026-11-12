@@ -1,20 +1,18 @@
 //! Showing a person their notices, on one device.
 //!
 //! A notice is a record of the host's `Notice` type, written by `notify` in the change that told
-//! the person ([`tilolang_runtime::notify`]): it says who it is for, what it says, what choosing
-//! it opens, and whether they have seen it. Every device of the workspace reads it like any
-//! record; this shows it to that notice's person, and to no one else's, through the notifications
-//! the device's session serves — the same ones every app's notification goes through.
+//! the person ([`tilolang_runtime::notify`]). Every device of the workspace reads it like any
+//! record; this shows it to that notice's person, and to no one else's, as one
+//! [`tilo_session_core::notice::Notice`].
 //!
-//! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what
-//! the record held when the device first looked is taken as old news ([`Notices::step`]): a
-//! record that reached it in a replay, or one it joined late, tells nothing of what is already
-//! there. What the person did with a notice on any device — dismissed it, or opened what it
-//! names — is the record's `seen` field ([`Notices::seen`]), so the devices they were not at
-//! take the notification back.
+//! What one device told is kept ([`Notices::kept`]) so a restart tells nothing twice, and what the
+//! record held when it first looked is old news ([`Notices::step`]): a record that reached it in a
+//! replay tells nothing of what is already there. What the person did with a notice on any device
+//! is the record's `seen` field ([`Notices::seen`]), so the devices they were not at take it back.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tilo_session_core::notice::{Notice, Place};
 use tilolang::{
     HOST_APP, NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE,
 };
@@ -27,58 +25,9 @@ use crate::host::Host;
 /// control's edit of a field is.
 pub const SEEN_ACTION: &str = crate::action::EDIT_FLAG_ACTION;
 
-/// What a notice's notification tag starts with, so the device showing them knows which closings
-/// are theirs ([`Tell::closed`]).
+/// What a notice's notification tag starts with, so a host knows which of its closings are the
+/// record's.
 pub const NOTICE_TAGS: &str = "notice:";
-
-/// Where a device's notices reach: the person's notifications.
-pub trait Tell {
-    /// Show `notice`, unless it is showing already.
-    fn show(&self, notice: &Notice);
-    /// Take the notification `tag` back: what it told is seen or gone.
-    fn withdraw(&self, tag: &str);
-    /// The notifications this device's platform closed since the last ask, each with why
-    /// ([`Closed`]): what the person did with a notice there, as the platform told it.
-    fn closed(&self) -> Vec<(String, Closed)> {
-        Vec::new()
-    }
-}
-
-/// Why a device's platform closed the notification showing a notice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Closed {
-    /// It ran out of time.
-    Expired,
-    /// The person dismissed it.
-    Dismissed,
-    /// This device took it back: the notice is seen or gone.
-    Withdrawn,
-}
-
-/// A notice to show, and where choosing it lands.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    /// The name it shows under: one per notice and person, so showing it twice is telling it
-    /// once, and taking it back names it.
-    pub tag: String,
-    pub title: String,
-    pub body: String,
-    /// What choosing it opens.
-    pub opens: Opens,
-}
-
-/// What choosing a notice opens: the app keeping it, the record of the workspace it is in, and
-/// the resource itself, as a mention's place names them (`ui::mentions::Place`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Opens {
-    /// The app keeping what it opens.
-    pub app: String,
-    /// The record of the workspace, as its route names it: the person's own record for an app
-    /// that keeps one, empty for the app's own record of the workspace.
-    pub record: String,
-    /// The resource, as the session names it (`crate::publish::resource_id`).
-    pub resource: String,
-}
 
 /// The notices of one person on one device.
 #[derive(Clone, Debug)]
@@ -118,12 +67,6 @@ impl Notices {
     #[must_use]
     pub fn kept(&self) -> Vec<String> {
         self.told.iter().cloned().collect()
-    }
-
-    /// The person at this device.
-    #[must_use]
-    pub fn person(&self) -> &str {
-        &self.person
     }
 
     /// Look at the notices the workspace holds for this person: what to show, and the tags of
@@ -210,25 +153,28 @@ struct Held {
 }
 
 impl Held {
-    /// The notification this notice shows as, and where choosing it lands: the app that keeps
-    /// what it opens, the record of the workspace that person's app keeps (their own, for an app
-    /// that keeps one), and the resource itself, published as the session names it.
+    /// The notice this notice shows as, and where choosing it lands: the app that keeps what it
+    /// opens, the record of the workspace that person's app keeps (their own, for an app that
+    /// keeps one), and the resource itself, published as the session names it.
     fn shown(&self, host: &Host, person: &str) -> Option<Notice> {
         let schema = crate::schema::lookup(&self.opens.ty)?;
-        let record = host
-            .package(&schema.app)
+        let package = host.package(&schema.app);
+        let record = package
+            .as_ref()
             .and_then(|package| crate::own_record(&package.meta, person))
             .unwrap_or_default();
-        Some(Notice {
-            tag: format!("{NOTICE_TAGS}{}/{person}", self.id),
-            title: self.title.clone(),
-            body: self.body.clone(),
-            opens: Opens {
-                app: schema.app.clone(),
-                record,
-                resource: crate::publish::resource_id(&schema.app, &self.opens.id_string()),
-            },
-        })
+        let app = package
+            .as_ref()
+            .map_or_else(|| schema.app.clone(), |package| package.meta.title.clone());
+        let place = Place {
+            app: schema.app.clone(),
+            record,
+            resource: crate::publish::resource_id(&schema.app, &self.opens.id_string()),
+        };
+        Some(
+            Notice::opens(app, self.title.clone(), self.body.clone(), place)
+                .tagged(format!("{NOTICE_TAGS}{}/{person}", self.id)),
+        )
     }
 }
 

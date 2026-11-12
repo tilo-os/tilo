@@ -54,7 +54,7 @@ impl DesktopChrome {
             ShortcutAction::ResizeWider => self.resize_focused_group(50),
             ShortcutAction::OpenFiles => self.open_app("so.tilo.file-explorer"),
             ShortcutAction::OpenTerminal => self.open_app("so.tilo.terminal"),
-            ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
+            ShortcutAction::ReportProblem => self.ask(DesktopAsk::ReportProblem),
             ShortcutAction::FocusGroup1 => self.focus_group(0),
             ShortcutAction::FocusGroup2 => self.focus_group(1),
             ShortcutAction::FocusGroup3 => self.focus_group(2),
@@ -92,7 +92,7 @@ impl DesktopChrome {
             | ShortcutAction::DictationToggle
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => {
-                self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
+                self.ask(DesktopAsk::Shortcut(action));
                 return false;
             }
         }
@@ -156,21 +156,19 @@ impl DesktopChrome {
             | FixedAction::SaveRecentReplay
             | FixedAction::ShortcutGuide
             | FixedAction::StopRemoteInput => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::FixedShortcut(action));
+                self.ask(DesktopAsk::FixedShortcut(action));
                 return false;
             }
         }
         true
     }
 
-    /// Open the app picker, as an empty desk does: a new window of the app the person chooses,
-    /// placed by the desk's rule.
+    /// Open the app picker, as an empty desk's own button does: search over the apps, for a new
+    /// window of the one the person chooses, placed by the desk's rule. The desk carries this out
+    /// itself; the surface's verb door refuses it.
     fn open_the_app_picker(&self) {
-        self.dispatch(DeskEffect::Launchpad {
-            card: "apps".to_owned(),
-        });
+        self.handle
+            .open_search(ui::search::Scope::WindowGroup(None), None);
     }
 
     /// Where the window in front stands, and the app it runs, when it runs one.

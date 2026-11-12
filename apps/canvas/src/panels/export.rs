@@ -132,14 +132,12 @@ pub fn part(
             let shown = view
                 .map(|view| view.intersect(art.bounds()))
                 .filter(|shown| shown.width() >= 1.0 && shown.height() >= 1.0)
-                .ok_or_else(|| ui::i18n::I18nManager::lookup_plain("canvas-export-no-view"))?;
+                .ok_or_else(|| crate::locales::CATALOG.t("canvas-export-no-view"))?;
             Ok((art.clone(), shown))
         }
         Area::Selection => {
             if selection.is_empty() {
-                return Err(ui::i18n::I18nManager::lookup_plain(
-                    "canvas-export-no-selection",
-                ));
+                return Err(crate::locales::CATALOG.t("canvas-export-no-selection"));
             }
             let part = crate::view_ops::part(art, selection)?;
             let bounds = part.bounds();
@@ -209,7 +207,7 @@ pub fn draw(
         ))));
     }
     if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::locales::CATALOG.t_args(
             "canvas-export-too-large",
             &[("pixels", MAX_PIXELS.to_string().into())],
         ));
@@ -411,7 +409,7 @@ pub fn draw_svg(
 /// that comes to.
 pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
     let choices = tools.export.clone();
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let format = ui::widget::ToggleGroup::from_state(
         Format::ALL
             .iter()
@@ -600,7 +598,7 @@ impl Said {
         let mut said = self.size.clone();
         if let Some(bytes) = self.bytes {
             said.push('\n');
-            said.push_str(&ui::i18n::I18nManager::format(
+            said.push_str(&crate::locales::CATALOG.t_args(
                 "canvas-export-bytes",
                 &[("size", ui::format::size(bytes).into())],
             ));
@@ -634,13 +632,13 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
     };
     let size = if settings.format.raster() {
         if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-            return Said::not(ui::i18n::I18nManager::format(
+            return Said::not(crate::locales::CATALOG.t_args(
                 "canvas-export-too-large",
                 &[("pixels", MAX_PIXELS.to_string().into())],
             ));
         }
         let (width, height) = pixels(region, settings.scale);
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-summary",
             &[
                 ("width", width.into()),
@@ -650,7 +648,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         )
     } else {
         let (width, height) = pixels(region, 1.0);
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-svg-summary",
             &[("width", width.into()), ("height", height.into())],
         )
@@ -671,7 +669,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         None
     };
     let note = (settings.transparent && !settings.format.transparent())
-        .then(|| ui::i18n::I18nManager::lookup_plain("canvas-export-jpeg-opaque"));
+        .then(|| crate::locales::CATALOG.t("canvas-export-jpeg-opaque"));
     let mut said = Said {
         size,
         counting,

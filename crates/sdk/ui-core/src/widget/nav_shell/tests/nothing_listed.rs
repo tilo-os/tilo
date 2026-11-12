@@ -1,9 +1,67 @@
 //! The window's empty state ([`NavShell::nothing_listed`]).
 
 use super::*;
+use crate::component::Described as _;
 
 const W: u32 = 1280;
 const H: u32 = 800;
+
+/// The props a host describes a window with nothing at all to list with: the view's state where
+/// its columns would stand, and the bar's own actions over it.
+fn nothing_listed_props(nothing_listed: bool) -> NavShellProps {
+    NavShellProps {
+        nothing_listed,
+        sidebar_title: Some("Channels".to_owned()),
+        content: Some(Probe::boxed("empty").0),
+        actions: vec![Box::new(Button::new("new", "New channel"))],
+        ..NavShellProps::default()
+    }
+}
+
+/// A view that describes its window as listing nothing shows its state alone, where the columns
+/// stand, under the bar that holds the way to make the first: the palette's columns draw no
+/// second state beside it, and a narrow window fronts that one state.
+#[test]
+fn a_described_window_with_nothing_listed_shows_the_views_state_alone_under_its_bar() {
+    let shell = NavShell::from_props("window", nothing_listed_props(true));
+    assert!(
+        shell.nothing_listed_shown(),
+        "the state stands in for the columns"
+    );
+    let mut h = harness(shell, W, H, Theme::dark());
+    settle(&mut h, W, H);
+    let g = geometry(&h);
+    assert_eq!(
+        g.sidebar,
+        SidebarPlacement::None,
+        "no column beside the state"
+    );
+    assert_eq!(g.overview, OverviewPlacement::None, "no list column");
+    assert!(
+        g.header_height > 0.0,
+        "the bar that makes the first stands over it"
+    );
+    let empty = child_rect(&h, "empty").expect("the state stands where the columns would");
+    assert!(
+        empty.width() >= f64::from(W) - 1.0,
+        "it spans the window: {empty:?}"
+    );
+}
+
+/// A view that comes to list something again has its columns back: the shell is built anew
+/// rather than the state changed in place, and one that still lists nothing keeps its shell.
+#[test]
+fn a_view_that_comes_to_list_something_builds_its_columns_again() {
+    let mut shell = NavShell::from_props("window", nothing_listed_props(true));
+    assert!(
+        shell.set_props(nothing_listed_props(true)),
+        "a view that still lists nothing keeps the shell it built"
+    );
+    assert!(
+        !shell.set_props(nothing_listed_props(false)),
+        "the columns come back: built anew"
+    );
+}
 
 /// While there is nothing to list, the empty state stands where the
 /// overview and the content stand, the sidebar beside it; once cleared the
@@ -89,7 +147,6 @@ fn a_narrow_window_shows_the_empty_state_alone() {
 fn a_narrow_window_draws_no_back_over_the_empty_state() {
     const NARROW: u32 = 420;
     let mut shell = NavShell::new()
-        .with_header_in_window_bar()
         .sidebar(Probe::boxed("sidebar").0)
         .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0)

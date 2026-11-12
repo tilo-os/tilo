@@ -130,6 +130,30 @@ pub fn keys(catalogue: &str) -> Vec<String> {
     out
 }
 
+/// The one-line word `catalogue` gives `key`, when it has one (`d-so-tilo-lang-today = Heute`): a
+/// name a package gives itself, which a manifest carries so every surface reads it.
+#[must_use]
+pub fn word(catalogue: &str, key: &str) -> Option<String> {
+    for line in catalogue.lines() {
+        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(" = ") else {
+            continue;
+        };
+        if name != key {
+            continue;
+        }
+        let value = value.trim();
+        // A message spanning lines or placeables is no name.
+        if value.is_empty() || value.starts_with('{') || value.ends_with('{') {
+            return None;
+        }
+        return Some(value.to_owned());
+    }
+    None
+}
+
 /// The keys `translation` has that `source` does not: words whose source changed or went, so
 /// their translation is never shown.
 #[must_use]
@@ -232,6 +256,22 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         }
         // What it tells a person, as a notification shows it (`notify`'s title and body).
         for word in meta.words.iter().filter(|word| word.view == action.id) {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
+    }
+    // The words a `fn` says (`say("...")`) are its attributes; a fn that says none is no word
+    // a person reads.
+    for function in &meta.fns {
+        let mut said = meta
+            .words
+            .iter()
+            .filter(|word| word.view == function.id)
+            .peekable();
+        if said.peek().is_none() {
+            continue;
+        }
+        message(&mut out, &function.id, &label(&function.name), "");
+        for word in said {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
     }

@@ -10,12 +10,14 @@
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::DesktopSurface;
+use tilo_desktop_surface::notifications::Notification;
+use tilo_desktop_surface::{DesktopNotifications, DesktopSurface};
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
 
@@ -60,9 +62,18 @@ fn desk_tree() -> DesktopTree {
 
 /// The chrome over a desk, with the stack the session shares with it.
 fn chrome() -> (FrameHarness, Overlays) {
+    chrome_over(None)
+}
+
+/// The chrome over a desk the host installed `notifications` on, with the stack the session shares
+/// with it.
+fn chrome_over(notifications: Option<DesktopNotifications>) -> (FrameHarness, Overlays) {
     let tree = desk_tree();
     // The desk's own tree stays unmounted: the chrome is what the press is judged against.
-    let (_, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    let (mut desk, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    if let Some(notifications) = notifications {
+        desk.set_notifications(notifications);
+    }
     let overlays = Overlays::new();
     overlays.set_displays(&[DISPLAY], Some(DISPLAY));
     let mut chrome = DesktopChrome::new(
@@ -82,6 +93,63 @@ fn chrome() -> (FrameHarness, Overlays) {
     );
     frame.relayout();
     (frame, overlays)
+}
+
+/// The workspace's name typed in the bar, from its menu's Rename, holds the keyboard while it is
+/// open, so what is typed reaches the field and never the window in front; Enter and Escape each
+/// end it and give the keyboard back to the window.
+#[test]
+fn the_workspace_name_typed_in_the_bar_holds_the_keyboard() {
+    use tilo_desktop::overlays::Target;
+    let (mut frame, overlays) = chrome();
+    let typed = |frame: &FrameHarness, text: &str| {
+        frame
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some(text))
+    };
+    assert_eq!(overlays.target(), Target::Window);
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
+    });
+    frame.relayout();
+    with_chrome(&mut frame, |chrome| {
+        chrome.bar_mut().begin_workspace_rename();
+    });
+    frame.relayout();
+    assert_eq!(
+        overlays.target(),
+        Target::Surface(Slot::WorkspaceName),
+        "the field holds the keyboard"
+    );
+    assert!(
+        !overlays.is_open(Slot::WorkspaceMenu),
+        "the menu gave way to it"
+    );
+    frame.type_text("Projekt");
+    frame.relayout();
+    assert!(typed(&frame, "Projekt"), "what is typed is the field's");
+    frame.key("Enter");
+    frame.relayout();
+    assert_eq!(
+        overlays.target(),
+        Target::Window,
+        "Enter gives the keyboard back"
+    );
+
+    with_chrome(&mut frame, |chrome| {
+        chrome.bar_mut().begin_workspace_rename();
+    });
+    frame.relayout();
+    frame.type_text("Nope");
+    frame.key("Escape");
+    frame.relayout();
+    assert!(!typed(&frame, "Nope"));
+    assert_eq!(
+        overlays.target(),
+        Target::Window,
+        "Escape gives the keyboard back"
+    );
 }
 
 fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
@@ -202,8 +270,97 @@ fn a_press_on_the_menu_itself_is_the_menus() {
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
 }
 
+/// The bar's bell opens the notification centre and closes it again.
+#[test]
+fn the_bell_opens_and_closes_the_centre() {
+    use tilo_desktop::chrome::ChromeIntent;
+    let notifications = DesktopNotifications::default();
+    notifications.post(Notification::new("Tea is ready", "The timer finished"));
+    let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleNotifications);
+    });
+    frame.relayout();
+    assert!(overlays.is_open(Slot::Centre), "the bell opens the centre");
+    assert!(notifications.centre_open(), "and the chrome shows it");
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleNotifications);
+    });
+    frame.relayout();
+    assert!(
+        !overlays.is_open(Slot::Centre),
+        "a second press on the bell closes it"
+    );
+    assert!(!notifications.centre_open(), "the chrome follows it down");
+}
+
+/// Banners, the notification centre and quick settings hang from one corner margin: the three
+/// share one trailing edge rather than nearly lining up.
+#[test]
+fn banners_line_up_with_the_centre_and_quick_settings() {
+    let banner =
+        tilo_desktop_surface::notifications::transient_slot(DISPLAY, 48.0, (360.0, 72.0), &[]);
+    assert!(
+        (banner.x1 - (DISPLAY.x1 - POPOVER_MARGIN)).abs() < f64::EPSILON,
+        "a banner keeps the corner margin"
+    );
+    let notifications = DesktopNotifications::default();
+    let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
+    notifications.ask_centre(true);
+    frame.relayout();
+    let centre = overlays.place(Slot::Centre).expect("the centre is placed");
+    assert!(
+        (banner.x1 - centre.room.x1).abs() < f64::EPSILON,
+        "the banner's edge is the centre's edge"
+    );
+}
+
 #[test]
 fn nothing_up_means_the_desk_press_is_the_desks() {
     let (_frame, overlays) = chrome();
     assert_eq!(overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1), None);
+}
+
+/// The notification centre is a surface over the windows like every other one on the stack: the
+/// chrome above them draws it, where quick settings hangs under the bar's trailing end, it holds
+/// the keyboard while it is up, and a press that misses it takes it down.
+#[test]
+fn the_centre_stands_on_the_stack_where_quick_settings_hangs() {
+    let notifications = DesktopNotifications::default();
+    notifications.post(Notification::new("Tea is ready", "The timer finished"));
+    let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
+    notifications.ask_centre(true);
+    frame.relayout();
+    assert!(overlays.is_open(Slot::Centre), "the centre is on the stack");
+    assert!(notifications.centre_open(), "and the chrome shows it");
+    assert_eq!(overlays.target(), Target::Surface(Slot::Centre));
+    let place = overlays
+        .place(Slot::Centre)
+        .expect("the stack places it")
+        .room;
+    let x1 = DISPLAY.x1 - POPOVER_MARGIN;
+    let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).ceil();
+    assert_eq!(
+        (place.x0, place.y0, place.x1),
+        (x1 - POPOVER_WIDTH, top, x1),
+        "under the bar, against the trailing edge, as wide as quick settings"
+    );
+    let inside = (place.center().x, place.y0 + 20.0);
+    assert_eq!(
+        overlays.press_outside(inside.0, inside.1),
+        None,
+        "a press on the panel is the panel's"
+    );
+    assert_eq!(
+        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
+        Some(Slot::Centre),
+        "a press on the windows misses it"
+    );
+    overlays.dismiss(Slot::Centre);
+    frame.relayout();
+    assert!(
+        !notifications.centre_open(),
+        "the centre follows the stack down"
+    );
+    assert!(!overlays.is_open(Slot::Centre), "and stays down");
 }

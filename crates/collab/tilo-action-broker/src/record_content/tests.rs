@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use super::*;
 
@@ -27,65 +27,113 @@ impl ContentShelf for Shelf {
     }
 }
 
-/// Two hosts' routes, wired to each other: what one asks, the other
-/// answers, as the network would carry it, while the two are connected.
+/// One other end on the route, as this end's wire reaches it.
+struct Link {
+    /// The host at the other end.
+    other: Arc<RouteContent>,
+    /// That host's handle on the route.
+    peer: ContentPeer,
+    /// Whether the two are connected now, shared by both ends.
+    connected: Arc<AtomicBool>,
+    /// Whether the other end lets this one read its content.
+    lets_me: Arc<AtomicBool>,
+    /// Whether this end lets the other read its content.
+    lets_them: Arc<AtomicBool>,
+}
+
+/// One host's routes on the record, wired to the other ends: what it asks,
+/// they answer, as the network would carry it, while they are connected.
 pub(crate) struct Wire {
     /// This host's handle on the route.
     me: ContentPeer,
-    /// The host at the other end, its handle, and whether it lets this one
-    /// read.
-    other: OnceLock<(Arc<RouteContent>, ContentPeer, bool)>,
-    /// Whether the two are connected, shared by both ends.
-    connected: Arc<AtomicBool>,
+    links: Mutex<Vec<Link>>,
     /// What this host sent, for the assertions.
     pub(crate) sent: Mutex<Vec<String>>,
 }
 
 impl Wire {
-    pub(crate) fn new(me: ContentPeer, connected: Arc<AtomicBool>) -> Arc<Self> {
+    pub(crate) fn new(me: ContentPeer) -> Arc<Self> {
         Arc::new(Self {
             me,
-            other: OnceLock::new(),
-            connected,
+            links: Mutex::default(),
             sent: Mutex::default(),
         })
     }
 
-    /// The other end, while connected.
-    fn reach(&self) -> Option<&(Arc<RouteContent>, ContentPeer, bool)> {
-        self.other
-            .get()
-            .filter(|_| self.connected.load(Ordering::Acquire))
+    /// Carry this end's messages to `other`, handle `peer` on the route,
+    /// while `connected`; `lets_me` and `lets_them` say which of the two
+    /// lets the other read its content.
+    fn link(
+        &self,
+        other: Arc<RouteContent>,
+        peer: ContentPeer,
+        connected: Arc<AtomicBool>,
+        lets_me: Arc<AtomicBool>,
+        lets_them: Arc<AtomicBool>,
+    ) {
+        self.links.lock().unwrap().push(Link {
+            other,
+            peer,
+            connected,
+            lets_me,
+            lets_them,
+        });
+    }
+
+    /// The ends this host reaches now, each with its handle there and
+    /// whether it lets this one read its content.
+    fn reach(&self) -> Vec<(Arc<RouteContent>, ContentPeer, Arc<AtomicBool>)> {
+        self.links
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|link| link.connected.load(Ordering::Acquire))
+            .map(|link| {
+                (
+                    Arc::clone(&link.other),
+                    link.peer,
+                    Arc::clone(&link.lets_me),
+                )
+            })
+            .collect()
     }
 }
 
 impl ContentPeers for Wire {
     fn want(&self, route: &CrdtRoute, hash: &str) {
         self.sent.lock().unwrap().push(format!("want {hash}"));
-        if let Some((other, _, may_read)) = self.reach() {
-            other.peer_wants(route, self.me, *may_read, hash);
+        for (other, _, lets_me) in self.reach() {
+            other.peer_wants(route, self.me, lets_me.load(Ordering::Acquire), hash);
         }
     }
-    fn answer(&self, route: &CrdtRoute, _peer: ContentPeer, piece: ContentPiece) {
+    fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
         self.sent
             .lock()
             .unwrap()
-            .push(format!("piece {}", piece.offset));
-        if let Some((other, _, _)) = self.reach() {
+            .push(format!("piece {} to {peer}", piece.offset));
+        if let Some((other, _, _)) = self.reach().into_iter().find(|(_, at, _)| *at == peer) {
             other.peer_piece(route, &piece);
         }
     }
-    fn lacks(&self, route: &CrdtRoute, _peer: ContentPeer, hash: &str) {
+    fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
         self.sent.lock().unwrap().push(format!("lacks {hash}"));
-        if let Some((other, _, _)) = self.reach() {
+        if let Some((other, _, _)) = self.reach().into_iter().find(|(_, at, _)| *at == peer) {
             other.peer_lacks(route, self.me, hash);
         }
     }
     fn sources(&self, _route: &CrdtRoute) -> ContentSources {
         ContentSources {
-            peers: self.reach().map(|(_, peer, _)| *peer).into_iter().collect(),
+            peers: self.reach().into_iter().map(|(_, peer, _)| peer).collect(),
             hosts: BTreeSet::new(),
         }
+    }
+    fn may_read(&self, _route: &CrdtRoute, peer: ContentPeer) -> bool {
+        self.links
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|link| link.peer == peer)
+            .is_some_and(|link| link.lets_them.load(Ordering::Acquire))
     }
 }
 
@@ -110,20 +158,90 @@ impl Pair {
 /// Two hosts on one route, `connected` or not; `b_may_read` says whether A
 /// serves B.
 pub(crate) fn hosts(connected: bool, b_may_read: bool) -> Pair {
-    let link = Arc::new(AtomicBool::new(connected));
-    let (wire_a, wire_b) = (
-        Wire::new(1, Arc::clone(&link)),
-        Wire::new(2, Arc::clone(&link)),
-    );
+    let up = Arc::new(AtomicBool::new(connected));
+    // Which of the two lets the other read its content.
+    let a_serves_b = Arc::new(AtomicBool::new(b_may_read));
+    let b_serves_a = Arc::new(AtomicBool::new(true));
+    let (wire_a, wire_b) = (Wire::new(1), Wire::new(2));
     let a = RouteContent::new(Arc::new(Shelf::default()), wire_a.clone());
     let b = RouteContent::new(Arc::new(Shelf::default()), wire_b.clone());
-    assert!(wire_a.other.set((Arc::clone(&b), 2, true)).is_ok());
-    assert!(wire_b.other.set((Arc::clone(&a), 1, b_may_read)).is_ok());
+    wire_a.link(
+        Arc::clone(&b),
+        2,
+        Arc::clone(&up),
+        Arc::clone(&b_serves_a),
+        Arc::clone(&a_serves_b),
+    );
+    wire_b.link(
+        Arc::clone(&a),
+        1,
+        Arc::clone(&up),
+        Arc::clone(&a_serves_b),
+        Arc::clone(&b_serves_a),
+    );
     Pair {
         a,
         b,
         wire_b,
-        connected: link,
+        connected: up,
+    }
+}
+
+/// Three connected hosts on one route: A keeps the content, and B and C ask
+/// it for what they lack.
+pub(crate) struct Fan {
+    pub(crate) a: Arc<RouteContent>,
+    pub(crate) b: Arc<RouteContent>,
+    pub(crate) c: Arc<RouteContent>,
+    /// What A sent, for the assertions.
+    pub(crate) wire_a: Arc<Wire>,
+    /// Whether A serves B, for a test to take away while B waits.
+    pub(crate) a_serves_b: Arc<AtomicBool>,
+}
+
+pub(crate) fn fan() -> Fan {
+    let up = Arc::new(AtomicBool::new(true));
+    let serves = Arc::new(AtomicBool::new(true));
+    let a_serves_b = Arc::new(AtomicBool::new(true));
+    let a_serves_c = Arc::new(AtomicBool::new(true));
+    let (wire_a, wire_b, wire_c) = (Wire::new(1), Wire::new(2), Wire::new(3));
+    let a = RouteContent::new(Arc::new(Shelf::default()), wire_a.clone());
+    let b = RouteContent::new(Arc::new(Shelf::default()), wire_b.clone());
+    let c = RouteContent::new(Arc::new(Shelf::default()), wire_c.clone());
+    wire_a.link(
+        Arc::clone(&b),
+        2,
+        Arc::clone(&up),
+        Arc::clone(&serves),
+        Arc::clone(&a_serves_b),
+    );
+    wire_a.link(
+        Arc::clone(&c),
+        3,
+        Arc::clone(&up),
+        Arc::clone(&serves),
+        Arc::clone(&a_serves_c),
+    );
+    wire_b.link(
+        Arc::clone(&a),
+        1,
+        Arc::clone(&up),
+        Arc::clone(&a_serves_b),
+        Arc::clone(&serves),
+    );
+    wire_c.link(
+        Arc::clone(&a),
+        1,
+        Arc::clone(&up),
+        Arc::clone(&a_serves_c),
+        Arc::clone(&serves),
+    );
+    Fan {
+        a,
+        b,
+        c,
+        wire_a,
+        a_serves_b,
     }
 }
 
@@ -342,5 +460,95 @@ fn a_want_nobody_connected_keeps_is_unavailable_until_one_that_might_connects() 
     assert_eq!(
         states(&mut news),
         [ContentState::Pending, ContentState::Resolved]
+    );
+}
+
+/// A record names content before the device that wrote it keeps the bytes
+/// where peers are served from. A peer that asked in between hears that the
+/// device lacks it, and asks no more while no device connects: the device
+/// hands the content over once it keeps it.
+#[test]
+fn content_a_device_lacked_when_asked_follows_once_it_keeps_it() {
+    let (a, b, _) = pair(true);
+    let bytes = picture(PIECE_BYTES + 5);
+    let hash = hash_bytes(&bytes);
+    let mut arrivals = b.subscribe(&route());
+    b.want(&route(), &hash);
+    assert_eq!(
+        states(&mut arrivals),
+        [ContentState::Pending, ContentState::Unavailable]
+    );
+
+    a.offer(&route(), &hash, &bytes).unwrap();
+    let arrived = arrival(&mut arrivals).expect("the content followed");
+    assert_eq!(arrived.bytes, bytes);
+    assert_eq!(
+        b.shelf.read(&ContentScope::of(&route()), &hash),
+        Some(bytes)
+    );
+}
+
+/// What a device lacked is owed only to peers that may read the record.
+#[test]
+fn content_is_not_owed_to_a_device_that_may_not_read() {
+    let (a, b, _) = pair(false);
+    let bytes = picture(100);
+    let hash = hash_bytes(&bytes);
+    let mut arrivals = b.subscribe(&route());
+    b.want(&route(), &hash);
+    a.offer(&route(), &hash, &bytes).unwrap();
+    assert!(arrival(&mut arrivals).is_none());
+}
+
+/// A peer that asked while the device kept none of the content, and lost
+/// the record in the meantime, is not handed the bytes: the peer that may
+/// still read it is.
+#[test]
+fn content_a_peer_may_no_longer_read_is_not_handed_over() {
+    let fan = fan();
+    let bytes = picture(PIECE_BYTES + 5);
+    let hash = hash_bytes(&bytes);
+    let mut to_b = fan.b.subscribe(&route());
+    let mut to_c = fan.c.subscribe(&route());
+    fan.b.want(&route(), &hash);
+    fan.c.want(&route(), &hash);
+    assert_eq!(
+        states(&mut to_b),
+        [ContentState::Pending, ContentState::Unavailable],
+        "the device that keeps none of it said so"
+    );
+    assert_eq!(
+        states(&mut to_c),
+        [ContentState::Pending, ContentState::Unavailable]
+    );
+    fan.wire_a.sent.lock().unwrap().clear();
+
+    // B loses the record while it waits; C keeps it.
+    fan.a_serves_b.store(false, Ordering::Release);
+    fan.a.offer(&route(), &hash, &bytes).unwrap();
+
+    assert!(
+        arrival(&mut to_b).is_none(),
+        "the device that may no longer read the record gets nothing"
+    );
+    assert_eq!(
+        fan.b.shelf.read(&ContentScope::of(&route()), &hash),
+        None,
+        "and keeps none of it"
+    );
+    assert_eq!(
+        arrival(&mut to_c)
+            .expect("the device that may still read it gets it")
+            .bytes,
+        bytes
+    );
+    assert!(
+        fan.wire_a
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|sent| sent.ends_with("to 3")),
+        "the bytes went to the device that may still read them"
     );
 }

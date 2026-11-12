@@ -2,8 +2,10 @@
 """Measure a native SDK test payload through the production sandbox launcher.
 
 No app installation, identity enrollment, file grants or app networking. The
+payload carries the build's pinned font catalog beside its executable, as an
+installed app does; without one an app has no face to set its text in. The
 headless developer fixture is separate from an ordinary first-login OS session.
-Foreign-frame observation is not physical display or device-to-photon latency.
+Window-frame observation is not physical display or device-to-photon latency.
 """
 from __future__ import annotations
 
@@ -13,17 +15,69 @@ import hashlib
 import json
 import os
 import pathlib
-import re
 import shutil
 import signal
 import subprocess
-import tempfile
+import sys
 import time
 
 from _control import call
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
+# The one place that picks a session's private runtime directory.
+SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 APP = "io.tilo.startup-frame-probe"
 POLL_SECONDS = 0.02
+
+
+def display_name(runtime: pathlib.Path) -> str:
+    """The Wayland socket name the session on `runtime` published for the login, as every
+    program it starts reads it (`$XDG_RUNTIME_DIR/tilo-session/wayland-display`)."""
+    published = runtime / "tilo-session" / "wayland-display"
+    try:
+        name = published.read_text().strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"the session published no Wayland display at {published}") from None
+    if not name:
+        raise RuntimeError(f"the session's published display {published} names no socket")
+    return name
+
+
+def opens_probe(row: dict) -> bool:
+    """Whether `row` is the desk's one launch of the probe: the applications provider's, under
+    this machine's own app id (`host:<desktop id>`) or the desktop file's."""
+    if row.get("provider") != "applications":
+        return False
+    desktop_id = str(row.get("id", ""))
+    return desktop_id.removeprefix("host:") in (APP, APP + ".desktop")
+
+
+def is_probe_window(row: dict) -> bool:
+    """Whether `row` is a mapped window of the probe that its client has drawn in: the desk names
+    a program of this machine `host:<desktop id>`."""
+    if row.get("frames", 0) <= 0 or row.get("rect") is None:
+        return False
+    app_id = str(row.get("app_id", ""))
+    return app_id.removeprefix("host:") in (APP, APP + ".desktop")
+
+
+def runtime_directory(state: pathlib.Path) -> pathlib.Path:
+    """The private runtime directory a session on `state` uses.
+
+    The launcher picks it (a login's XDG_RUNTIME_DIR, the user's /run/user
+    seat, or a short directory of its own) and prints it, so no second copy of
+    that rule lives here. A socket path must fit the kernel's limit, which is
+    why it is never left to whatever depth this run's artifacts land at."""
+    printed = subprocess.run(
+        [str(SESSION_LAUNCHER), "--print-runtime", "--state", str(state)],
+        capture_output=True, text=True, check=True,
+    )
+    runtime = printed.stdout.strip()
+    if not runtime:
+        raise SystemExit("the session launcher named no runtime directory")
+    runtime = pathlib.Path(runtime)
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return runtime
 
 
 class ProductionSeed:
@@ -130,13 +184,31 @@ def stop(child: subprocess.Popen | None) -> None:
         child.wait(timeout=5)
 
 
-def frames(sock: pathlib.Path) -> list[dict]:
-    response = call(str(sock), {"op": "foreign_frames"}, timeout=5)
+def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> pathlib.Path:
+    """Lay the faces text is set in beside the payload's executable, as an installed app carries
+    them: this build's pinned catalog, prepared by the tree's own tooling from the artifact cache.
+    A run without one draws nothing — text layout has no font to measure — so the session is told
+    where it is too (`TILO_FONT_CATALOG`). Answers the catalog's root."""
+    root = payload / "bin/fonts"
+    cache = os.environ.get("TILO_FONT_ASSET_CACHE") or str(profile / "cache/font-artifacts")
+    subprocess.run(
+        [sys.executable, "-I", str(REPO / "tools/font-catalog.py"), "prepare",
+         str(REPO / "crates/sdk/ui-core/assets/fonts"), str(root),
+         "--scope", "fixtures", "--cache", cache],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+    return root
+
+
+def windows(sock: pathlib.Path) -> list[dict]:
+    """The desk's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
+    null while no window of the tab is mapped) and `frames`, the frames its client committed."""
+    response = call(str(sock), {"op": "windows"}, timeout=5)
     if "err" in response:
-        raise RuntimeError(f"foreign-frame observation refused: {response['err']}")
-    rows = response.get("foreign_frames", {}).get("frames")
+        raise RuntimeError(f"window observation refused: {response['err']}")
+    rows = response.get("answer", {}).get("windows")
     if not isinstance(rows, list):
-        raise RuntimeError(f"foreign-frame response cannot observe its subject: {response}")
+        raise RuntimeError(f"window response cannot observe its subject: {response}")
     return rows
 
 
@@ -202,7 +274,7 @@ def main() -> None:
     if args.alternate_mesa_seed and (not args.mesa_seed or args.mesa_seed_source != "package" or args.samples % 2):
         parser.error("alternating seed mode requires a package seed and an even sample count")
     binaries = args.binaries.resolve()
-    paths = {"shell": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
+    paths = {"session": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
              "probe": binaries / "examples/startup-frame-probe"}
     for path in paths.values():
         if not path.is_file():
@@ -210,12 +282,15 @@ def main() -> None:
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     print(f"ARTIFACTS {out}", flush=True)
-    # Keep AF_UNIX endpoints short and private; large binaries/evidence stay on disk.
-    runtime = pathlib.Path(tempfile.mkdtemp(prefix="tilo-startup-"))
-    runtime.chmod(0o700)
     profile = out / "profile"
     for name in ("home", "config", "data", "state", "cache", "identity", "system"):
         (profile / name).mkdir(parents=True, mode=0o700)
+    if not SESSION_LAUNCHER.is_file():
+        raise RuntimeError(f"no session launcher at {SESSION_LAUNCHER}")
+    # The private runtime directory the launcher names for this fixture's
+    # state: short and private wherever the artifacts land, and the same place
+    # a session on that state puts its sockets.
+    runtime = runtime_directory(profile / "state")
     env = dict(os.environ)
     env.update(HOME=str(profile / "home"), XDG_CONFIG_HOME=str(profile / "config"),
                XDG_DATA_HOME=str(profile / "data"), XDG_STATE_HOME=str(profile / "state"),
@@ -224,7 +299,7 @@ def main() -> None:
                TILO_AUTHORITY_SOCKET_DIR=str(runtime / "authority"),
                TILO_FS_AUTHORITY_CACHE_DIR=str(profile / "system/fs-cache"),
                TILO_FS_CONTENT_PEER_CACHE_DIR=str(profile / "system/peer-cache"),
-               TILO_TEST_CONTROL=str(runtime / "control.sock"), TILO_HEADLESS_SIZE="1280x720",
+               TILO_TEST_CONTROL=str(runtime / "control.sock"),
                TILO_FRAME_TRACE=str(out / "compositor-frames.csv"),
                TILO_STARTUP_METRICS_PATH=str(out / "compositor-startup.json"))
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "TILO_TEST_CONTROL_FIRST_USE"):
@@ -232,6 +307,7 @@ def main() -> None:
     payload = out / "payload"
     (payload / "bin").mkdir(parents=True)
     shutil.copy2(paths["probe"], payload / "bin/probe")
+    env["TILO_FONT_CATALOG"] = str(prepare_fonts(payload, profile))
     seed_dir = (payload / "startup-mesa-seed" if args.mesa_seed_source == "package"
                 else runtime / "tilo/pipeline-seed")
     try:
@@ -285,11 +361,17 @@ def main() -> None:
         except (FileNotFoundError, ProcessLookupError):
             pass
         pidfile.unlink(missing_ok=True)
+    provision = subprocess.run([str(paths["session"]), "--provision-identity"], env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               timeout=args.timeout)
+    if provision.returncode != 0:
+        raise RuntimeError(f"the fixture's identity was not provisioned: {provision.stdout[-2000:]}")
     try:
         with (out / "compositor.log").open("w") as log:
             started = time.monotonic_ns()
-            shell = subprocess.Popen([str(paths["shell"]), "--backend", "headless"], env=env,
-                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            shell = subprocess.Popen(
+                [str(paths["session"]), "--backend", "headless", "--size", "1280x720"], env=env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             sock = runtime / "control.sock"
             deadline = time.monotonic() + args.timeout
             while True:
@@ -302,23 +384,23 @@ def main() -> None:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("compositor did not answer semantic state before deadline")
                     time.sleep(POLL_SECONDS)
-            if state["chrome"]["input_capture"]["onboarding"]:
+            # A fixture in first use shows its own setup controls, which this probe must not drive
+            # past: it measures an ordinary desktop's first frame, not the enrollment flow.
+            targets = call(str(sock), {"op": "list_targets"}, timeout=5).get("targets", [])
+            if any(str(entry.get("name", "")).startswith("onboarding.") for entry in targets):
                 raise RuntimeError("synthetic fixture is in first use; do not bypass ordinary OS enrollment")
             result["compositor_semantic_ready_ms"] = (time.monotonic_ns() - started) / 1e6
             watch = call(str(sock), {"op": "watch", "watching": True})
             if "err" in watch:
                 raise RuntimeError(f"headless watch refused: {watch['err']}")
-            banner = re.search(r'tilo compositor listening on "([^"\n]+)"', (out / "compositor.log").read_text())
-            if not banner:
-                raise RuntimeError("production Wayland endpoint banner missing")
-            wayland = runtime / banner.group(1)
+            wayland = runtime / display_name(runtime)
             if not wayland.is_socket():
-                raise RuntimeError("announced production Wayland endpoint is not a socket")
+                raise RuntimeError("the published production Wayland endpoint is not a socket")
             deadline = time.monotonic() + args.timeout
             while True:
                 catalog = call(str(sock), {"op": "actions_enumerate", "query": "Startup frame probe"})
                 actions = catalog.get("answer", {}).get("actions", [])
-                launch = [a for a in actions if a.get("provider") == "applications" and a.get("id") in (APP, APP + ".desktop")]
+                launch = [a for a in actions if opens_probe(a)]
                 if len(launch) == 1:
                     break
                 if time.monotonic() >= deadline:
@@ -340,7 +422,7 @@ def main() -> None:
                 # Remove only the prior probe's metric; keep normal launcher routing.
                 for previous in (profile / "data").rglob("startup-frame-probe.json"):
                     previous.unlink()
-                ignore = {row["surface_id"] for row in frames(sock)}
+                ignore = {row["window"] for row in windows(sock)}
                 host_load = os.getloadavg()
                 before = time.monotonic_ns()
                 response = call(str(sock), {"op": "actions_invoke", "provider": launch[0]["provider"], "id": launch[0]["id"]})
@@ -351,16 +433,15 @@ def main() -> None:
                 deadline = time.monotonic() + args.timeout
                 while True:
                     query_before = time.monotonic_ns()
-                    observed = frames(sock)
+                    observed = windows(sock)
                     query_after = time.monotonic_ns()
-                    positive = [row for row in observed if row["surface_id"] not in ignore
-                                and row.get("app_id") == APP and row.get("frame_seq", 0) > 0
-                                and row.get("presented") and not row.get("opening") and not row.get("last_error")]
+                    positive = [row for row in observed if row["window"] not in ignore
+                                and is_probe_window(row)]
                     if positive:
                         frame = positive[0]
                         break
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(f"no new {APP} presented surface before deadline; see payload/probe.log and compositor.log")
+                        raise RuntimeError(f"no new {APP} window with a drawn frame before deadline; see payload/probe.log and compositor.log")
                     lower = query_before
                     time.sleep(POLL_SECONDS)
                 while True:
@@ -398,9 +479,9 @@ def main() -> None:
                 if (payload / "probe.log").exists():
                     shutil.copy2(payload / "probe.log", out / f"app-{index}.log")
                 deadline = time.monotonic() + 8
-                while any(row["surface_id"] == frame["surface_id"] for row in frames(sock)):
+                while any(row["window"] == frame["window"] for row in windows(sock)):
                     if time.monotonic() > deadline:
-                        raise RuntimeError("probe surface did not close after owned process cleanup")
+                        raise RuntimeError("the probe's window did not close after owned process cleanup")
                     time.sleep(POLL_SECONDS)
             with (out / "compositor-frames.csv").open() as trace:
                 recorded = list(csv.DictReader(trace))

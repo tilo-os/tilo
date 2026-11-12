@@ -402,3 +402,57 @@ compute = false
         assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
     }
 }
+
+#[test]
+fn certification_openers_keep_their_tags() {
+    use tilo_relay_protocol::auth::Hello;
+    use tilo_relay_protocol::certify::{ApproverRequest, CertifyOpen, MemberApproval};
+    use tilo_user_identity::{
+        CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, DeviceCert,
+    };
+
+    // The certification protocol tells its connections apart by the first
+    // frame's variant: a device asking to be certified (0), a certified
+    // approver (1), a member's root asking one command (2). Openers are only
+    // ever added after these, so a host reads each one's tag as it always
+    // has, and a host that predates an opener refuses it.
+    let request = CertificationRequest {
+        version: CERTIFICATION_SCHEMA_VERSION,
+        user_public_key: [1; 32],
+        device_public_key: [2; 32],
+        device_label: "Phone".into(),
+        requested: DeviceCapabilities::member(),
+        nonce: [3; 16],
+        invite: [0; 16],
+        issued_at_ns: 4,
+        expires_at_ns: 5,
+        signature: [6; 64],
+    };
+    assert!(postcard_hex(&CertifyOpen::Request(request)).starts_with("00"));
+    let cert = DeviceCert {
+        user_public_key: [1; 32],
+        device_public_key: [2; 32],
+        device_label: "Laptop".into(),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    assert!(postcard_hex(&CertifyOpen::Approver(Hello::new(cert, [7; 32]))).starts_with("01"));
+
+    // A member's approval, whole: the tag, the root, the time, the command
+    // and the root's signature as 64 bytes.
+    let member = MemberApproval {
+        user_public_key: [1; 32],
+        issued_at_ns: 2,
+        request: ApproverRequest::ListPending,
+        signature: [3; 64],
+    };
+    let encoded = format!("02{}0200{}{}", "01".repeat(32), "40", "03".repeat(64));
+    assert_eq!(postcard_hex(&CertifyOpen::Member(member.clone())), encoded);
+    let CertifyOpen::Member(decoded) = from_postcard_hex::<CertifyOpen>(&encoded) else {
+        panic!("a member's opener decodes as one");
+    };
+    assert_eq!(decoded, member);
+}

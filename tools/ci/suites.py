@@ -4,9 +4,10 @@
 tools/ci/suites.toml declares each suite with the repository paths it reads.
 CI runs each group's suites when the group's inputs change. The same manifest declares
 the Cargo packages whose code reads repository files outside the package, so
-a change to those files selects the package's checks and tests. `check` is the
-repository policy that keeps every test-shaped file and every cross-package
-read accounted for.
+a change to those files selects the package's checks and tests, and a path no
+package owns (the tilolang apps under apps/tl) is attributed to the packages
+that read it. `check` is the repository policy that keeps every test-shaped
+file and every cross-package read accounted for.
 """
 
 from __future__ import annotations
@@ -74,6 +75,9 @@ class Manifest:
     groups: tuple[Group, ...]
     covered: dict[str, str]
     unrequired: dict[str, str]
+    # Suites a required t check runs in its own image, which the hermetic groups' image
+    # cannot: suite -> the check's name in t.toml.
+    checks: dict[str, str] = field(default_factory=dict)
     cargo: tuple[CargoReader, ...] = ()
     cargo_exempt: dict[str, str] = field(default_factory=dict)
 
@@ -125,12 +129,19 @@ def parse(text: str) -> Manifest:
             claim(suite, f"group {name}")
         groups.append(Group(name, inputs, suites))
     covered: dict[str, str] = {}
+    checks: dict[str, str] = {}
     for entry in data.get("covered", []):
-        if not isinstance(entry, dict) or set(entry) != {"suite", "by"}:
-            raise ValueError("covered entries must have exactly suite and by")
+        if not isinstance(entry, dict) or set(entry) not in ({"suite", "by"}, {"suite", "check"}):
+            raise ValueError("covered entries must be exactly suite and by, or suite and check")
         suite = _path(entry["suite"], "covered suite")
         claim(suite, "covered")
-        covered[suite] = _path(entry["by"], f"{suite} covering suite")
+        if "by" in entry:
+            covered[suite] = _path(entry["by"], f"{suite} covering suite")
+        else:
+            check = entry["check"]
+            if not isinstance(check, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", check):
+                raise ValueError(f"{suite}: covering check must name a t.toml check")
+            checks[suite] = check
     unrequired: dict[str, str] = {}
     for entry in data.get("unrequired", []):
         if not isinstance(entry, dict) or not {"suite", "reason"} <= set(entry) <= {"suite", "reason", "workflow"}:
@@ -184,7 +195,7 @@ def parse(text: str) -> Manifest:
             raise ValueError(f"{path}: cargo-exempt entries need a reason")
         claim(path, "cargo-exempt")
         cargo_exempt[path] = reason
-    return Manifest(tuple(groups), covered, unrequired, tuple(cargo), cargo_exempt)
+    return Manifest(tuple(groups), covered, unrequired, checks, tuple(cargo), cargo_exempt)
 
 
 def load(root: Path = ROOT) -> Manifest:
@@ -245,6 +256,19 @@ def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, R
         else:
             selected[entry.package] = None
     return dict(sorted(selected.items()))
+
+
+def read_paths(manifest: Manifest, changes: list[str]) -> set[str]:
+    """The changed paths a declared package reads from outside its own directory.
+
+    A reader declaration says a package compiles or tests the path, which is
+    what a plan needs to run instead of the complete workspace when no Cargo
+    package owns the path. A suite's own inputs do not: they say only which
+    script runs, so a broad input (`apps/`) cannot stand in for the checks that
+    compiling the file would run.
+    """
+    patterns = [pattern for entry in manifest.cargo for pattern in entry.inputs]
+    return {path for path in changes if any(matches(path, pattern) for pattern in patterns)}
 
 
 def command(suite: str) -> list[str]:
@@ -340,8 +364,25 @@ def always_run(root: Path) -> set[str]:
     return gated
 
 
-def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> list[str]:
-    """Return policy violations for the manifest against the tracked tree."""
+def change_checks(root: Path) -> set[str]:
+    """The checks t.toml runs for a change: its default ones and those it names `default = true`.
+
+    A check that only names an `on` runs there and when asked, so it gates no change.
+    """
+    declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
+    return {
+        check["name"] for check in declared
+        if isinstance(check.get("name"), str) and check.get("default", "on" not in check) is not False
+    }
+
+
+def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
+          staged: set[str] | None = None) -> list[str]:
+    """Return policy violations for the manifest against the tracked tree.
+
+    With `staged`, only those Rust files and the ones the manifest names are read for
+    cross-package reads: a commit can only add an undeclared reader among the files it stages.
+    """
     manifest = manifest or load(root)
     problems: list[str] = []
     tracked_set = set(tracked)
@@ -351,26 +392,35 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
         and fnmatch.fnmatchcase(path.rpartition("/")[2], "test_*.py")
     }
     required = set(manifest.suites())
-    for suite in sorted(required | set(manifest.covered) | set(manifest.unrequired)):
+    for suite in sorted(required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)):
         if suite not in tracked_set:
             problems.append(f"{suite}: listed in {MANIFEST} but not a tracked file")
         elif suite in gated:
             problems.append(f"{suite}: already runs on every change; remove it from {MANIFEST}")
+    if manifest.checks:
+        check_gates = change_checks(root)
+        for suite, check in sorted(manifest.checks.items()):
+            if check not in check_gates:
+                problems.append(
+                    f"{suite}: covering check {check} is not a check t.toml runs for a change")
     for suite in sorted(required & tracked_set):
         if suite.endswith(".py"):
             text = (root / suite).read_text(encoding="utf-8")
             if re.search(r"\bTestCase\b", text) and "unittest.main(" not in text:
                 problems.append(f"{suite}: defines unittest cases but never calls unittest.main()")
-    # Cargo's automatically discovered integration targets are gates too.
-    # Require a tracked package manifest, an actual test, and an explicit
-    # reader declaration so covered drivers also participate in selection.
+    # Cargo's integration tests are gates too: what discovery builds, or the
+    # files one `tests/it.rs` binary compiles as modules. Require a tracked
+    # package manifest, an actual test, and an explicit reader declaration so
+    # covered drivers also participate in selection.
     packages = {name: directory for directory, name in cargo_packages(root, tracked).items()}
     for entry in manifest.cargo:
         directory = packages.get(entry.package)
         if directory is None:
             continue
         cargo = tomllib.loads((root / directory / "Cargo.toml").read_text(encoding="utf-8"))
-        if cargo.get("package", {}).get("autotests", True) is False:
+        discovered = cargo.get("package", {}).get("autotests", True) is not False
+        single_binary = (root / directory / "tests" / "it.rs").is_file()
+        if not (discovered or single_binary):
             continue
         for reader in entry.readers:
             if (reader in tracked_set
@@ -385,13 +435,13 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
         elif not re.search(
                 rf"\b{re.escape(Path(suite).stem)}\b", (root / by).read_text(encoding="utf-8")):
             problems.append(f"{suite}: {by} does not reference it")
-    classified = gated | required | set(manifest.covered) | set(manifest.unrequired)
+    classified = gated | required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)
     for path in sorted(tracked):
         if in_scope(path) and path not in classified:
             problems.append(
                 f"{path}: test-shaped file is neither gated nor listed in {MANIFEST} "
                 "(add it to a group, or to [[covered]]/[[unrequired]] with a reason)")
-    problems.extend(audit_cargo(root, tracked, manifest))
+    problems.extend(audit_cargo(root, tracked, manifest, staged))
     return problems
 
 
@@ -584,12 +634,14 @@ def package_dir(path: str, packages: dict[str, str]) -> str | None:
     return None
 
 
-def cross_package_reads(root: Path, tracked: list[str],
-                        packages: dict[str, str]) -> dict[str, list[CrossRead]]:
-    """Rust files that read repository files outside their own package."""
+def cross_package_reads(root: Path, tracked: list[str], packages: dict[str, str],
+                        only: set[str] | None = None) -> dict[str, list[CrossRead]]:
+    """Rust files that read repository files outside their own package (of `only`, if given)."""
     found: dict[str, list[CrossRead]] = {}
     for path in tracked:
         if not path.endswith(".rs") or path.startswith("vendor/"):
+            continue
+        if only is not None and path not in only:
             continue
         directory = package_dir(path, packages)
         if directory is None:
@@ -624,7 +676,8 @@ def cross_package_reads(root: Path, tracked: list[str],
     return found
 
 
-def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]:
+def audit_cargo(root: Path, tracked: list[str], manifest: Manifest,
+                staged: set[str] | None = None) -> list[str]:
     """Every Rust file that reads outside its package must be declared.
 
     A declared package lists the files that read (so a new reader cannot go
@@ -637,7 +690,11 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
     tracked_set = set(tracked)
     packages = cargo_packages(root, tracked)
     names = set(packages.values())
-    reads = cross_package_reads(root, tracked, packages)
+    only = None
+    if staged is not None:
+        only = staged | set(manifest.cargo_exempt)
+        only.update(reader for entry in manifest.cargo for reader in entry.readers)
+    reads = cross_package_reads(root, tracked, packages, only)
     files = Tree(tracked)
     entries = {entry.package: entry for entry in manifest.cargo}
     for entry in manifest.cargo:
@@ -743,6 +800,14 @@ def uncovered(read: CrossRead, inputs: tuple[str, ...], tree: Tree) -> list[str]
     return problems
 
 
+def staged_files(root: Path) -> set[str] | None:
+    """The paths the index stages, or None (the whole tree) when it stages what decides the audit."""
+    output = subprocess.run(["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+                            cwd=root, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+    staged = {path for path in output.split("\0") if path}
+    return None if staged & CONTROL_INPUTS else staged
+
+
 def tracked_files(root: Path) -> list[str]:
     """The files the tree being checked holds: tracked, less those it deletes,
     plus those it adds.
@@ -771,13 +836,17 @@ def main(argv: list[str] | None = None) -> int:
                             help="run every suite of this group (repeatable)")
     run_parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     commands.add_parser("list", help="print every declared suite")
-    commands.add_parser("check", help="verify every test-shaped file is accounted for")
+    check_parser = commands.add_parser("check", help="verify every test-shaped file is accounted for")
+    check_parser.add_argument(
+        "--staged", action="store_true",
+        help="read only the Rust files the index stages (and those the manifest names) for "
+             "cross-package reads: the commit hook's fast answer; CI checks the whole tree")
     args = parser.parse_args(argv)
     if args.command == "list":
         print("\n".join(load(ROOT).suites()))
         return 0
     if args.command == "check":
-        problems = audit(ROOT, tracked_files(ROOT))
+        problems = audit(ROOT, tracked_files(ROOT), staged=staged_files(ROOT) if args.staged else None)
         # Findings on stdout, everything else on stderr.
         for problem in problems:
             print(problem)

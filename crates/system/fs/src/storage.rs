@@ -35,8 +35,6 @@ pub struct StorageAuthority {
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
-    #[cfg(target_os = "linux")]
-    external_history: Option<Arc<crate::external_history::ExternalHistoryFactory>>,
     /// The person's prefetch switch and cache budget; `None` answers the
     /// policy requests with an error.
     cache_policy: Option<Arc<crate::cache_policy::CachePolicies>>,
@@ -58,53 +56,6 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                 .await
             {
                 let response = match request {
-                    StorageRequest::BindExternalSource | StorageRequest::BindExternalReadSource => {
-                        #[cfg(target_os = "linux")]
-                        let read = matches!(request, StorageRequest::BindExternalReadSource);
-                        #[cfg(target_os = "linux")]
-                        if let Some(factory) = authority.external_history.as_ref().filter(|_| {
-                            // Routing admission prevents unprivileged clients from
-                            // occupying enrollment workers. Actual root/helper
-                            // authority still requires mutual kernel QPE below.
-                            stream.peer_cred().is_ok_and(|peer| peer.uid() == 0)
-                        }) {
-                            let factory = Arc::clone(factory);
-                            if STORAGE_FRAMING
-                                .write_value_async(
-                                    &mut stream,
-                                    &if read {
-                                        StorageResponse::ExternalReadSourceBinding { schema: 1 }
-                                    } else {
-                                        StorageResponse::ExternalSourceBinding
-                                    },
-                                )
-                                .await
-                                .is_err()
-                            {
-                                return;
-                            }
-                            let Ok(stream) = stream.into_std() else {
-                                return;
-                            };
-                            if stream.set_nonblocking(false).is_err() {
-                                return;
-                            }
-                            // Native proof/descriptor exchange is a bounded owned
-                            // blocking worker, never the async service reactor.
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if read {
-                                    factory.serve_read_enrollment(stream)
-                                } else {
-                                    factory.serve_enrollment(stream)
-                                }
-                            })
-                            .await;
-                            return;
-                        }
-                        StorageResponse::Error(
-                            "Certified personal external-source enrollment unavailable".into(),
-                        )
-                    }
                     StorageRequest::Snapshot => {
                         StorageResponse::Snapshot(authority.snapshot().await)
                     }
@@ -130,6 +81,10 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                             Ok(()) => StorageResponse::Kept { keep },
                             Err(error) => StorageResponse::Error(error.to_string()),
                         }
+                    }
+                    StorageRequest::RetiredBindExternalSource
+                    | StorageRequest::RetiredBindExternalReadSource => {
+                        StorageResponse::Error("no external source lane is served".into())
                     }
                 };
                 if STORAGE_FRAMING
@@ -161,17 +116,6 @@ struct LogicalFile {
 }
 
 impl StorageAuthority {
-    /// Install only the concrete certified personal daemon factory. An absent
-    /// context stays an explicit unavailable response on the existing socket.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn with_external_history(
-        mut self,
-        factory: Option<Arc<crate::external_history::ExternalHistoryFactory>>,
-    ) -> Self {
-        self.external_history = factory;
-        self
-    }
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
@@ -188,8 +132,6 @@ impl StorageAuthority {
             eviction_queue,
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
-            #[cfg(target_os = "linux")]
-            external_history: None,
             cache_policy: None,
         }
     }
@@ -662,32 +604,17 @@ fn app_from_path(path: &str) -> Option<String> {
     }
 }
 
-fn has_fresh_signed_ack(record: &RecordAvailability) -> bool {
-    has_fresh_signed_ack_at(record, unix_now_ms())
+/// Whether another device proved it holds this content.
+///
+/// Nothing acknowledges replicas since the tree became the record, so no
+/// file's bytes are known to be held elsewhere by another device: Settings
+/// offers only the destructive release, and says so.
+fn has_fresh_signed_ack(_record: &RecordAvailability) -> bool {
+    false
 }
 
-fn has_fresh_signed_ack_at(record: &RecordAvailability, now: u64) -> bool {
-    let requirements = crate::availability::EvictionRequirements::default();
-    let Some(version) = record.current_version else {
-        return false;
-    };
-    record.replicas.acknowledged_version == Some(version)
-        && record.freshness.replicas_observed_at_ms.is_some_and(|at| {
-            at <= now && now.saturating_sub(at) <= requirements.maximum_replica_age_ms
-        })
-        && u32::try_from(
-            record
-                .replica_observations
-                .iter()
-                .filter(|receipt| {
-                    receipt.version_id == version
-                        && receipt.issued_at_ms <= now
-                        && receipt.expires_at_ms >= now
-                })
-                .count(),
-        )
-        .unwrap_or(u32::MAX)
-            >= requirements.minimum_durable
+fn has_fresh_signed_ack_at(_record: &RecordAvailability, _now: u64) -> bool {
+    false
 }
 
 /// What one file's bytes here are, by what losing this device would cost.
@@ -1111,8 +1038,7 @@ mod tests {
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
         // Three large files, stored the way an authored write stores them;
-        // one is then cache, as if it had been fetched, and a host signs a
-        // receipt for another.
+        // one is then cache, as if it had been fetched.
         let size = crate::content::FILE_BACKED_MIN + 1;
         let mut hashes = Vec::new();
         let mut inodes = Vec::new();
@@ -1140,15 +1066,8 @@ mod tests {
             .set_retention(hashes[1].as_bytes(), Retention::Cached)
             .unwrap();
         let backed_up = namespace.lock().unwrap().record_id_for(inodes[2]).unwrap();
-        let version = fs_protocol::FileVersionId::new();
         let mut record = RecordAvailability::new(backed_up, RecordKind::File);
-        record.current_version = Some(version);
-        crate::availability::test_receipts::acknowledge(
-            &mut record,
-            version,
-            fs_protocol::ContentHash(*hashes[2].as_bytes()),
-            unix_now_ms(),
-        );
+        record.current_version = Some(fs_protocol::FileVersionId::new());
         registry.lock().unwrap().put(record).unwrap();
         let authority = StorageAuthority::new(
             namespace,
@@ -1165,12 +1084,15 @@ mod tests {
         };
         assert_eq!(workspace.workspace, "notes");
         assert!(!workspace.kept_here);
-        assert_eq!(workspace.split.only_here_files, 1);
-        assert!(workspace.split.only_here_bytes >= size);
+        assert_eq!(
+            workspace.split.only_here_files, 2,
+            "authored and backed-up content with no proof elsewhere: {workspace:?}"
+        );
+        assert!(workspace.split.only_here_bytes >= 2 * size);
         assert!(workspace.split.cache_bytes >= size);
-        assert!(
-            (size..2 * size).contains(&workspace.split.replicated_bytes),
-            "a receipt for the current version is another device holding it: {workspace:?}"
+        assert_eq!(
+            workspace.split.replicated_bytes, 0,
+            "nothing proves another device holds a copy: {workspace:?}"
         );
         assert_eq!(workspace.split.pinned_bytes, 0);
 
@@ -1180,13 +1102,13 @@ mod tests {
         let workspace = &summary.workspaces[0];
         assert!(workspace.kept_here);
         assert!(
-            workspace.split.pinned_bytes >= 2 * size
+            workspace.split.pinned_bytes >= size
                 && workspace.split.cache_bytes == 0
                 && workspace.split.replicated_bytes == 0,
-            "kept content another device holds is pinned: {workspace:?}"
+            "kept content that came from elsewhere is pinned: {workspace:?}"
         );
         assert_eq!(
-            workspace.split.only_here_files, 1,
+            workspace.split.only_here_files, 2,
             "keeping it here does not make authored content safe"
         );
         authority.keep_here("notes", false).unwrap();

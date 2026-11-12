@@ -11,7 +11,11 @@
 //!   ([`ChannelPeer::learn_request`]) with the Welcome and the bundle of
 //!   every past content key. A member asking with a key package whose
 //!   signature key is not the one it joined with lost its state, and is
-//!   removed and added again in the same commit.
+//!   removed and added again in the same commit. Members take turns at it
+//!   ([`ChannelPeer::turn`]) so that one commits the change and the others
+//!   follow it: members that all commit the same change at once fork the
+//!   group, and each one whose commit lost commits again to hand over its
+//!   branch's keys, forking it again.
 //! - **Every commit is checked.** [`ChannelPeer::receive`] refuses a commit
 //!   that adds a device `allowed` does not name, removes one it does (unless
 //!   it adds it again), is not signed by an allowed member, or whose MLS
@@ -24,9 +28,19 @@
 //!   committed the winner publishes it again when it sees the loser, so a
 //!   host that keeps only a channel's newest frame keeps the winner. Two
 //!   commits for one epoch that followed different frames compete the same
-//!   way, by the digest each branch reached: the device holding the higher
-//!   one cannot follow the other from where it stands, so it starts over and
-//!   asks again (below).
+//!   way, at the point where they diverged: of the two children of the last
+//!   frame both branches share, the lower digest wins. Each device keeps the
+//!   newest frames of its own branch (at most [`MAX_BRANCH`] of them, and
+//!   [`MAX_BRANCH_BYTES`] of commits), so it finds that point however many
+//!   commits either side went on by. A device whose branch lost there cannot
+//!   follow the winner from where it stands, so it starts over and asks again
+//!   (below). A device on the winning branch remembers the commits that lost
+//!   against it, and the ones that went on from them, and publishes its
+//!   branch again from the point of divergence whenever one reaches it: the
+//!   device that went on hears the winner's commit at that point and starts
+//!   over. A commit whose branch split off below the frames a device holds
+//!   decides nothing there; the device publishes its own branch again for
+//!   the other side to decide on.
 //! - **Any participant creates the group, once.** A participant that holds
 //!   no state for a channel waits and asks; one that sees no genesis
 //!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
@@ -56,11 +70,16 @@
 //!
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`ChannelPeer::outbox`] only once the state holding it is
-//! durable (on disk for a peer opened from a directory, or in the export a
-//! browser writes before it sends).
+//! durable (in the host's store for a peer opened from one, or in the export a
+//! browser writes before it sends). A Welcome or another member's commit
+//! taken in produces nothing that leaves the device, so its state is written
+//! later ([`ChannelPeer::save_deferred`]), off the path to the page's first
+//! frame: losing it only makes the device ask again.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use collab_types::{
     ChannelId, Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAction,
@@ -71,6 +90,7 @@ use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label};
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::formats::Step;
 use crate::gate::ChannelGate;
 use crate::persistence::MemberRecord;
 use crate::signer::{DeviceSigner, complete_now};
@@ -97,10 +117,27 @@ pub fn backs(frame: &MlsGovernanceFrame, allowed: &BTreeSet<Ed25519PublicKey>) -
 
 /// Requests one channel keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
+/// Frames below the head a peer keeps of its own branch, to find where an
+/// incoming commit's branch diverged from it. A branch that went on by more
+/// commits than this before the other side's reached it can no longer be
+/// placed: such a commit is ignored here, and the device that holds the
+/// point of divergence decides.
+pub const MAX_BRANCH: usize = 32;
+/// The MLS bytes the kept branch frames may hold together; the oldest go
+/// first beyond it.
+pub const MAX_BRANCH_BYTES: usize = 8 * 1024 * 1024;
+/// Commits a peer remembers as having lost against its branch.
+const MAX_LOST: usize = 64;
 /// Sealed peer state larger than this is refused when read.
 const MAX_PEER_STATE: usize = 320 * 1024 * 1024;
 const PEER_RECORD: &[u8] = b"channel-crypto/channel-peer";
-const PEER_VERSION: u8 = 2;
+const PEER_VERSION: u8 = 3;
+/// How peer state an earlier build saved becomes the current format
+/// ([`crate::formats`]).
+const PEER_UPGRADES: &[Step] = &[Step {
+    from: 2,
+    upgrade: peer_2_to_3,
+}];
 
 /// What the device can do with the channel's content right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +170,28 @@ pub enum PeerEvent {
     /// commit, or its branch lost). The device is waiting again with a
     /// fresh member key and must send a new access request.
     Desynchronised,
+    /// A commit admitted this waiting device with a member key it no longer
+    /// holds. It still waits, and asks again with the key it holds now.
+    AdmittedWithAnotherKey,
+    /// A Welcome for this waiting device was refused for the reason named.
+    ///
+    /// [`crate::WelcomeRefusal::SignedByAnotherDevice`] is a member of the
+    /// channel sending it into a group that is not the one the frame commits.
+    /// Like [`Self::Desynchronised`], the device waits with a fresh member key
+    /// and must send a new access request: the members that took the frame's
+    /// commit hold this device admitted with the key it asked with, and admit
+    /// it again only when it asks with another.
+    ///
+    /// [`crate::WelcomeRefusal::DeviceNotAllowed`] is judged against this
+    /// device's view of the membership, which may be behind or ahead of the
+    /// committer's: an honest Welcome names a device admitted a moment ago
+    /// that this device has not heard of yet, or one it heard was removed
+    /// that the committer has not. So the device keeps the key the Welcome
+    /// is for, and the caller offers the same frame again once its view of
+    /// the membership changed. It gives up with [`ChannelPeer::refuse_welcome`]
+    /// when the channel moved past the frame or its view does not come to
+    /// back the Welcome in time.
+    WelcomeRefused(crate::WelcomeRefusal),
 }
 
 /// What [`ChannelPeer::reconcile`] changed.
@@ -164,6 +223,14 @@ pub struct ChannelPeer {
     /// The last frame applied here, as held (with its join material when
     /// this device had it). For a waiting device, `None`.
     head: Option<MlsGovernanceFrame>,
+    /// The frames `head` follows on this device's branch, oldest first and
+    /// with their join material withheld, bounded by [`MAX_BRANCH`] and
+    /// [`MAX_BRANCH_BYTES`].
+    branch: Vec<MlsGovernanceFrame>,
+    /// Commits that lost against this branch, and those that went on from
+    /// them, each with the epoch this branch diverged from it at (the epoch
+    /// of the winning child), newest last.
+    lost: Vec<([u8; 32], u64)>,
     /// This device's place before `head`, sealed: the group before `head`'s
     /// commit, or the member key `head`'s Welcome admitted. A lower sibling
     /// of `head` then replaces it.
@@ -186,15 +253,41 @@ pub struct ChannelPeer {
     /// members with its next commit.
     orphaned: ContentKeyring,
     /// `None` for a peer kept in memory.
-    path: Option<PathBuf>,
+    states: Option<Arc<dyn PeerStates>>,
     /// The `issued_at` of the last request minted here, so one minted again
     /// in the same second is still newer.
     issued: u64,
+    /// The format the state this peer was loaded from was written in, when
+    /// an earlier build wrote it ([`crate::formats`]).
+    upgraded_from: Option<u8>,
+    /// A change not yet written to `states`: one whose loss only makes this
+    /// device ask for the channel again ([`Self::save_deferred`]).
+    unsaved: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PeerFile {
+    version: u8,
+    channel: ChannelId,
+    record: Vec<u8>,
+    parent: Option<Vec<u8>>,
+    head: Option<MlsGovernanceFrame>,
+    branch: Vec<MlsGovernanceFrame>,
+    lost: Vec<([u8; 32], u64)>,
+    genesis: Option<[u8; 32]>,
+    seen_epoch: Option<u64>,
+    requests: Vec<MlsAccessRequestV1>,
+    outbox: Vec<MlsGovernanceFrame>,
+    issued: u64,
+    orphaned: Vec<(u64, [u8; 32])>,
+    genesis_frame: Option<MlsGovernanceFrame>,
+}
+
+/// Peer state as format 2 kept it: format 3 added the device's recent frames
+/// below its head (`branch`) and the commits that lost against it (`lost`).
+#[derive(Deserialize)]
+struct PeerFileV2 {
     version: u8,
     channel: ChannelId,
     record: Vec<u8>,
@@ -209,6 +302,32 @@ struct PeerFile {
     genesis_frame: Option<MlsGovernanceFrame>,
 }
 
+/// Format 2 written as format 3. A device upgraded holds no frames below its
+/// head yet and knows of no commit that lost against it: it keeps both from
+/// the next frame it takes in, as it does after joining.
+fn peer_2_to_3(state: &[u8]) -> Result<Vec<u8>> {
+    let old: PeerFileV2 =
+        postcard::from_bytes(state).map_err(|error| Error::Serialization(error.to_string()))?;
+    debug_assert_eq!(old.version, 2);
+    postcard::to_allocvec(&PeerFile {
+        version: 3,
+        channel: old.channel,
+        record: old.record,
+        parent: old.parent,
+        head: old.head,
+        branch: Vec::new(),
+        lost: Vec::new(),
+        genesis: old.genesis,
+        seen_epoch: old.seen_epoch,
+        requests: old.requests,
+        outbox: old.outbox,
+        issued: old.issued,
+        orphaned: old.orphaned,
+        genesis_frame: old.genesis_frame,
+    })
+    .map_err(|error| Error::Serialization(error.to_string()))
+}
+
 fn digest(frame: &MlsGovernanceFrame) -> Result<[u8; 32]> {
     frame
         .digest()
@@ -219,56 +338,124 @@ fn governance(message: impl Into<String>) -> Error {
     Error::Governance(message.into())
 }
 
-impl ChannelPeer {
-    /// The file a peer for `channel` keeps under `dir`.
-    pub fn path_in(dir: &Path, channel: ChannelId) -> PathBuf {
-        dir.join(format!("{}.peer", channel.0))
+/// Where a peer's sealed state is kept between passes of the device: the
+/// files under a desktop's channels directory ([`Files`]), or a page's own
+/// store. `None` on a peer keeps its state in memory only.
+pub trait PeerStates: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+    /// The state kept for `channel`, or `None` when there is none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read, or holds state too
+    /// large to be a peer's.
+    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>>;
+
+    /// Replace the state kept for `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store refuses the write.
+    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()>;
+
+    /// Drop the state kept for `channel`; a channel with none is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store refuses the removal.
+    fn forget(&self, channel: ChannelId) -> Result<()>;
+}
+
+/// A desktop's channels directory: one file per peer, named for the channel it
+/// belongs to, as every earlier build wrote it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct Files(PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Files {
+    /// The peers kept in `dir`.
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self(dir.into())
     }
 
-    /// Open the state kept for `channel` under `dir`, or `None` when there
-    /// is none.
+    fn path(&self, channel: ChannelId) -> PathBuf {
+        self.0.join(format!("{}.peer", channel.0))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PeerStates for Files {
+    fn read(&self, channel: ChannelId) -> Result<Option<Vec<u8>>> {
+        let too_large = Error::InvalidState("sealed peer state is too large".into());
+        tilo_files::native::bounded::read_or(&self.path(channel), MAX_PEER_STATE as u64, too_large)
+    }
+
+    fn write(&self, channel: ChannelId, sealed: &[u8]) -> Result<()> {
+        tilo_files::native::atomic::write_private(&self.path(channel), sealed).map_err(Error::Io)
+    }
+
+    fn forget(&self, channel: ChannelId) -> Result<()> {
+        match std::fs::remove_file(self.path(channel)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl ChannelPeer {
+    /// Open the state `states` keeps for `channel`, or `None` when there is
+    /// none.
     ///
     /// # Errors
     ///
     /// Returns an error for corrupt or undecryptable state, or state of
     /// another channel or device.
     pub fn open(
-        dir: &Path,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Option<Self>> {
-        let path = Self::path_in(dir, channel);
-        let too_large = Error::InvalidState("sealed peer state is too large".into());
-        let Some(bytes) =
-            tilo_files::native::bounded::read_or(&path, MAX_PEER_STATE as u64, too_large)?
+        let Some(bytes) = states
+            .as_ref()
+            .map(|states| states.read(channel))
+            .transpose()?
+            .flatten()
         else {
             return Ok(None);
         };
         let mut peer = Self::restore(channel, signer, &bytes, vault)?;
-        peer.path = Some(path);
+        peer.states = states;
+        // State an earlier build saved is kept in the current format from
+        // now on, so the upgrade runs once.
+        if peer.upgraded_from.is_some() {
+            peer.save(vault)?;
+        }
         Ok(Some(peer))
     }
 
-    /// A new peer for `channel` that waits for access, kept under `dir`
-    /// (or in memory when `dir` is `None`).
+    /// A new peer for `channel` that waits for access, keeping its state in
+    /// `states` (or in memory when there is none).
     ///
     /// # Errors
     ///
     /// Returns an error when the member key cannot be minted or written.
     pub fn waiting(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let peer = Self {
+        let mut peer = Self {
             channel,
             device,
             signer,
             record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
             head: None,
+            branch: Vec::new(),
+            lost: Vec::new(),
             parent: None,
             genesis: None,
             genesis_frame: None,
@@ -276,8 +463,10 @@ impl ChannelPeer {
             requests: BTreeMap::new(),
             outbox: Vec::new(),
             orphaned: ContentKeyring::new(),
-            path: dir.map(|dir| Self::path_in(dir, channel)),
+            states,
             issued: 0,
+            upgraded_from: None,
+            unsaved: false,
         };
         peer.save(vault)?;
         Ok(peer)
@@ -292,12 +481,12 @@ impl ChannelPeer {
     ///
     /// Returns an error when the group cannot be created, signed or written.
     pub async fn create(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        let mut peer = Self::waiting(dir, channel, signer, vault)?;
+        let mut peer = Self::waiting(states, channel, signer, vault)?;
         peer.found(vault).await?;
         Ok(peer)
     }
@@ -308,12 +497,12 @@ impl ChannelPeer {
     ///
     /// As [`Self::create`], or when the signer would have to be awaited.
     pub fn create_now(
-        dir: Option<&Path>,
+        states: Option<Arc<dyn PeerStates>>,
         channel: ChannelId,
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        complete_now(Self::create(dir, channel, signer, vault))
+        complete_now(Self::create(states, channel, signer, vault))
     }
 
     /// Create the channel's group with this waiting device alone in it, and
@@ -331,7 +520,6 @@ impl ChannelPeer {
         if self.knows_group() {
             return Ok(false);
         }
-        let group = ChannelGroup::create(self.channel, MemberKey::for_device(&self.device)?)?;
         let genesis = self
             .sign(MlsGovernanceFrame::unsigned(
                 self.channel,
@@ -341,11 +529,31 @@ impl ChannelPeer {
                 self.device,
             ))
             .await?;
+        // The group is founded with the member key this device asked with
+        // while it waited: participants that hold its request then see it in
+        // the group with the key it asked with. With any other key they take
+        // the request for a device that lost its state and admit it again,
+        // a commit that sets every participant committing at once.
+        let member = match std::mem::replace(&mut self.record, MemberRecord::Removed) {
+            MemberRecord::Waiting(member) => *member,
+            other => {
+                self.record = other;
+                MemberKey::for_device(&self.device)?
+            }
+        };
+        let founded_by = digest(&genesis)?;
+        let group = match ChannelGroup::found(self.channel, member, founded_by) {
+            Ok(group) => group,
+            Err(error) => {
+                self.record = MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?));
+                return Err(error);
+            }
+        };
         self.record = MemberRecord::Joined(Box::new(group));
         self.parent = None;
-        self.genesis = Some(digest(&genesis)?);
+        self.genesis = Some(founded_by);
         self.genesis_frame = Some(genesis.clone());
-        self.head = Some(genesis.clone());
+        self.restart_branch(genesis.clone());
         self.outbox.push(genesis);
         self.settle_orphaned();
         self.save(vault)?;
@@ -374,6 +582,8 @@ impl ChannelPeer {
             record: self.record.seal(vault)?,
             parent: self.parent.clone(),
             head: self.head.clone(),
+            branch: self.branch.clone(),
+            lost: self.lost.clone(),
             genesis: self.genesis,
             seen_epoch: self.seen_epoch,
             requests: self.requests.values().cloned().collect(),
@@ -419,11 +629,11 @@ impl ChannelPeer {
             bytes,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
-        if plaintext.first() != Some(&PEER_VERSION) {
-            return Err(Error::InvalidState(
-                "peer state is of another version".into(),
-            ));
-        }
+        let (plaintext, upgraded_from) = crate::formats::upgrade(
+            PEER_VERSION,
+            PEER_UPGRADES,
+            Zeroizing::new(plaintext.to_vec()),
+        )?;
         let file: PeerFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
         if file.channel != channel {
@@ -454,6 +664,8 @@ impl ChannelPeer {
             signer,
             record,
             head: file.head,
+            branch: file.branch,
+            lost: file.lost,
             parent: file.parent,
             genesis: file.genesis,
             genesis_frame: file.genesis_frame,
@@ -465,9 +677,18 @@ impl ChannelPeer {
                 .collect(),
             outbox: file.outbox,
             orphaned: ContentKeyring::from_wire(file.orphaned)?,
-            path: None,
+            states: None,
             issued: file.issued,
+            upgraded_from,
+            unsaved: false,
         })
+    }
+
+    /// The format of the state this peer was loaded from, when an earlier
+    /// build saved it and loading upgraded it.
+    #[must_use]
+    pub const fn upgraded_from(&self) -> Option<u8> {
+        self.upgraded_from
     }
 
     pub fn channel_id(&self) -> ChannelId {
@@ -514,6 +735,16 @@ impl ChannelPeer {
         self.genesis.is_some()
     }
 
+    /// Whether `frame` is a genesis other than the one known here: a group
+    /// competing with this device's, which only a device that can name the
+    /// channel's readers can judge ([`Self::receive`]).
+    pub fn competes(&self, frame: &MlsGovernanceFrame) -> bool {
+        matches!(frame.action, MlsGovernanceAction::Genesis)
+            && self
+                .genesis
+                .is_some_and(|known| frame.digest().is_ok_and(|incoming| incoming != known))
+    }
+
     /// Whether this device knows the channel has a group: it saw a genesis
     /// or a commit of it, or is in it. Such a device never creates one.
     pub fn knows_group(&self) -> bool {
@@ -546,15 +777,12 @@ impl ChannelPeer {
 
     /// The transport took every frame of [`Self::outbox`].
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the emptied outbox cannot be written.
-    pub fn published(&mut self, vault: &VaultKey) -> Result<()> {
-        if self.outbox.is_empty() {
-            return Ok(());
-        }
+    /// The emptied outbox is written with the next change, not on its own: a
+    /// commit is then written once, not once more as it leaves. A device that
+    /// restarts before then publishes those frames again, which every
+    /// receiver and the host take as the duplicates they are.
+    pub fn published(&mut self) {
         self.outbox.clear();
-        self.save(vault)
     }
 
     /// Queue this device's head frame again: a transport that keeps a
@@ -567,6 +795,95 @@ impl ChannelPeer {
             self.outbox
                 .extend(head.clone().into_deliveries().unwrap_or_default());
         }
+    }
+
+    /// Queue this device's branch again from `epoch` up to the head, when
+    /// this device signed any of those frames: a device on a branch that
+    /// diverged there then hears this branch's frame at that point and can
+    /// tell which one won. Ending with the head keeps a host that keeps a
+    /// channel's newest frame on it. Only a device that committed on the
+    /// branch since then publishes it, so not every member repeats it.
+    fn republish_from(&mut self, epoch: u64) {
+        let signed = self
+            .held()
+            .any(|frame| frame.epoch >= epoch && frame.signed_by == self.device);
+        if !signed {
+            return;
+        }
+        for frame in &self.branch {
+            if frame.epoch >= epoch && !self.outbox.contains(frame) {
+                self.outbox.push(frame.clone());
+            }
+        }
+        self.republish_head();
+    }
+
+    /// The frames of this device's branch it holds, oldest first, the head
+    /// last.
+    fn held(&self) -> impl Iterator<Item = &MlsGovernanceFrame> {
+        self.branch.iter().chain(&self.head)
+    }
+
+    /// The frame this device's branch holds at `epoch`.
+    fn held_at(&self, epoch: u64) -> Option<&MlsGovernanceFrame> {
+        self.held().find(|frame| frame.epoch == epoch)
+    }
+
+    /// Make `frame` the head, on top of the one held now.
+    fn advance(&mut self, frame: MlsGovernanceFrame) {
+        let Some(previous) = self.head.replace(frame) else {
+            return;
+        };
+        let previous = previous.withheld().ok().flatten().unwrap_or(previous);
+        self.branch.push(previous);
+        let size = |frame: &MlsGovernanceFrame| match &frame.action {
+            MlsGovernanceAction::Commit {
+                commit, history, ..
+            } => commit
+                .len()
+                .saturating_add(history.as_ref().map_or(0, Vec::len)),
+            MlsGovernanceAction::Genesis => 0,
+        };
+        // Keep the newest frames that fit both bounds.
+        let mut bytes = 0_usize;
+        let kept = self
+            .branch
+            .iter()
+            .rev()
+            .take(MAX_BRANCH)
+            .take_while(|frame| {
+                bytes = bytes.saturating_add(size(frame));
+                bytes <= MAX_BRANCH_BYTES
+            })
+            .count();
+        let drop = self.branch.len().saturating_sub(kept);
+        self.branch.drain(..drop);
+    }
+
+    /// Start this device's branch over at `frame`: a genesis, or the commit
+    /// whose Welcome admitted it.
+    fn restart_branch(&mut self, frame: MlsGovernanceFrame) {
+        self.forget_branch();
+        self.head = Some(frame);
+    }
+
+    /// Hold no branch: this device left the group.
+    fn forget_branch(&mut self) {
+        self.head = None;
+        self.branch.clear();
+        self.lost.clear();
+    }
+
+    /// Remember that the commit `digest` lost against this branch, which
+    /// diverged from it at `epoch`.
+    fn lost_against(&mut self, digest: [u8; 32], epoch: u64) {
+        if self.lost.iter().any(|(known, _)| *known == digest) {
+            return;
+        }
+        if self.lost.len() >= MAX_LOST {
+            self.lost.remove(0);
+        }
+        self.lost.push((digest, epoch));
     }
 
     /// An access request carrying a fresh key package, still to be signed by
@@ -653,11 +970,16 @@ impl ChannelPeer {
     /// [`Self::reconcile`]. The caller has checked the request came from the
     /// device it names. Returns whether it was new.
     ///
+    /// The request is kept in memory and written with the commit that admits
+    /// its device, not on its own: writing the whole state for each request
+    /// cost a crowd arriving together one write of the group, which grows with
+    /// it, per person. A request lost with a restart before then is asked
+    /// again, as the device asks until it is in.
+    ///
     /// # Errors
     ///
-    /// Returns an error for a request of another channel, a bad signature,
-    /// or a failed write.
-    pub fn learn_request(&mut self, request: MlsAccessRequestV1, vault: &VaultKey) -> Result<bool> {
+    /// Returns an error for a request of another channel or a bad signature.
+    pub fn learn_request(&mut self, request: MlsAccessRequestV1) -> Result<bool> {
         if request.channel != self.channel {
             return Err(governance("access request names another channel"));
         }
@@ -671,7 +993,6 @@ impl ChannelPeer {
             return Err(governance("the channel holds too many access requests"));
         }
         self.requests.insert(request.device, request);
-        self.save(vault)?;
         Ok(true)
     }
 
@@ -681,10 +1002,11 @@ impl ChannelPeer {
         let MemberRecord::Joined(group) = &self.record else {
             return Vec::new();
         };
+        let joined = group.signature_keys();
         self.requests
             .iter()
             .filter(|(device, request)| {
-                allowed.contains(*device) && !admitted_with(group, device, request)
+                allowed.contains(*device) && !admitted_with(&joined, device, request)
             })
             .map(|(device, _)| *device)
             .collect()
@@ -702,6 +1024,36 @@ impl ChannelPeer {
             .any(|member| *member != self.device && !allowed.contains(member))
             || !self.asking(allowed).is_empty()
             || !self.unshared().is_empty()
+    }
+
+    /// This device's turn to commit the change that moves the group to
+    /// `allowed`: `0` when it commits at once, `n` when `n` other members
+    /// come before it. The members `allowed` keeps take turns, the one that
+    /// signed the group's head first (it was there a moment ago), then the
+    /// rest by device key; every member at the same head agrees on the
+    /// order. A device that holds content keys its group lacks hands them
+    /// over itself, so it commits at once. `None` while this device commits
+    /// nothing: it is not in the group, `allowed` does not name it, or the
+    /// group is as `allowed` says.
+    pub fn turn(&self, allowed: &BTreeSet<Ed25519PublicKey>) -> Option<usize> {
+        if !self.differs(allowed) {
+            return None;
+        }
+        if self.holds_unshared_keys() {
+            return Some(0);
+        }
+        let mut committers: Vec<Ed25519PublicKey> = self
+            .members()
+            .into_iter()
+            .filter(|member| allowed.contains(member))
+            .collect();
+        if let Some(signer) = self.head.as_ref().map(|head| head.signed_by)
+            && let Some(at) = committers.iter().position(|member| *member == signer)
+        {
+            let signer = committers.remove(at);
+            committers.insert(0, signer);
+        }
+        committers.iter().position(|member| *member == self.device)
     }
 
     /// Whether this device holds content keys of a state it left behind that
@@ -786,6 +1138,7 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Reconciled> {
         self.drop_unfinished();
+        self.forget_answered_requests();
         let mut outcome = Reconciled::default();
         if !self.differs(allowed) {
             return Ok(outcome);
@@ -886,6 +1239,10 @@ impl ChannelPeer {
             return Ok(());
         };
         group.merge_pending_transaction()?;
+        // Their requests are answered: kept, they would be checked against
+        // the whole group on every later pass.
+        let added = frame.added();
+        self.requests.retain(|device, _| !added.contains(device));
         if let Some(history) = history {
             // Handed over whether or not a full keyring keeps them here.
             group.keyring.merge(history).ok();
@@ -893,7 +1250,7 @@ impl ChannelPeer {
         }
         self.settle_orphaned();
         self.parent = Some(parent);
-        self.head = Some(frame.clone());
+        self.advance(frame.clone());
         self.outbox.extend(
             frame
                 .into_deliveries()
@@ -936,6 +1293,22 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Reconciled> {
         complete_now(self.reconcile(allowed, vault))
+    }
+
+    /// Forget the requests of devices already in the group with the key they
+    /// asked with: a device asks again until its Welcome arrives, and each
+    /// answered request kept would be checked against the group on every
+    /// pass.
+    fn forget_answered_requests(&mut self) {
+        let MemberRecord::Joined(group) = &self.record else {
+            return;
+        };
+        if self.requests.is_empty() {
+            return;
+        }
+        let joined = group.signature_keys();
+        self.requests
+            .retain(|device, request| !admitted_with(&joined, device, request));
     }
 
     /// Drop a commit a reconcile staged and never finished: its future was
@@ -1018,7 +1391,9 @@ impl ChannelPeer {
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),
-                    MemberRecord::Waiting(_) => self.receive_welcome(frame, incoming, vault),
+                    MemberRecord::Waiting(_) => {
+                        self.receive_welcome(frame, incoming, allowed, vault)
+                    }
                     MemberRecord::Removed => Ok(PeerEvent::Ignored),
                 }
             }
@@ -1032,7 +1407,15 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         match self.genesis {
-            Some(known) if known == incoming => Ok(PeerEvent::Duplicate),
+            Some(known) if known == incoming => {
+                // A member admitted by Welcome knew its genesis by digest
+                // only: keep the frame to publish again.
+                if self.genesis_frame.is_none() {
+                    self.genesis_frame = Some(frame.clone());
+                    self.save(vault)?;
+                }
+                Ok(PeerEvent::Duplicate)
+            }
             Some(known) if known < incoming => {
                 if let Some(winner) = &self.genesis_frame
                     && !self.outbox.contains(winner)
@@ -1069,82 +1452,122 @@ impl ChannelPeer {
             return self.desynchronise(vault);
         };
         let head_digest = digest(head)?;
-        if incoming == head_digest {
-            return Ok(PeerEvent::Duplicate);
-        }
         let head_epoch = head.epoch;
-        if frame.epoch == head_epoch && frame.previous_frame_digest == head.previous_frame_digest {
-            if incoming > head_digest {
-                // The sibling lost. Whoever wrote the head publishes it again,
-                // so a host keeping the newest frame keeps the winner.
-                if head.signed_by == self.device {
-                    self.republish_head();
-                    self.save(vault)?;
-                }
-                return Ok(PeerEvent::Ignored);
+        for held in self.held() {
+            if digest(held)? == incoming {
+                return Ok(PeerEvent::Duplicate);
             }
-            let Some(parent) = &self.parent else {
-                return self.desynchronise(vault);
-            };
-            let parent = MemberRecord::open_sealed(parent, vault)?;
-            let joins_from_welcome = matches!(parent, MemberRecord::Waiting(_));
-            if joins_from_welcome && frame.join_material().is_none() {
-                // The copy carrying the Welcome for this device follows.
-                return Ok(PeerEvent::Ignored);
-            }
-            let replaced = std::mem::replace(&mut self.record, parent);
-            let applied = if joins_from_welcome {
-                self.receive_welcome(frame, incoming, vault)
-            } else {
-                self.apply_commit(frame, allowed, vault)
-            };
-            return match applied {
-                Ok(PeerEvent::Ignored | PeerEvent::Desynchronised) | Err(_) => {
-                    self.record = replaced;
-                    self.desynchronise(vault)
-                }
-                Ok(event) => {
-                    // What this device sealed under the branch that lost is
-                    // handed to the members with its next commit.
-                    self.orphan(&replaced);
-                    self.settle_orphaned();
-                    self.save(vault)?;
-                    Ok(event)
-                }
-            };
         }
-        if frame.epoch == head_epoch {
-            // Participants committed this epoch each on their own head, so the
-            // two commits never met again. They compete like siblings, by the
-            // lower digest of the branch they reached; this device holds the
-            // lower one and publishes it again for a host that kept the other,
-            // or the higher one and cannot reach the frame from where it
-            // stands, so it starts over and asks again.
-            if incoming > head_digest {
-                if head.signed_by == self.device {
-                    self.republish_head();
-                    self.save(vault)?;
-                }
+        if let Some(&(_, from)) = self
+            .lost
+            .iter()
+            .find(|(lost, _)| *lost == frame.previous_frame_digest)
+        {
+            // It went on from a commit that lost against this branch, so it
+            // lost too. Its author hears this branch's frame at the point of
+            // divergence again and starts over.
+            self.lost_against(incoming, from);
+            self.republish_from(from);
+            self.save(vault)?;
+            return Ok(PeerEvent::Ignored);
+        }
+        let sibling = match self.held_at(frame.epoch) {
+            Some(ours) if ours.previous_frame_digest == frame.previous_frame_digest => {
+                Some(digest(ours)?)
+            }
+            _ => None,
+        };
+        if let Some(ours) = sibling {
+            // The two branches diverged right below this frame: the lower
+            // of the two children of their last shared frame wins.
+            if incoming > ours {
+                // Whoever committed on this branch since publishes it again,
+                // so a host keeping the newest frame keeps the winner and
+                // the device that went on from the loser hears it.
+                self.lost_against(incoming, frame.epoch);
+                self.republish_from(frame.epoch);
+                self.save(vault)?;
                 return Ok(PeerEvent::Ignored);
             }
+            if frame.epoch == head_epoch {
+                return self.replace_head(frame, incoming, allowed, vault);
+            }
+            // This device went on from a commit that lost. It cannot follow
+            // the winner from where it stands, so it starts over and asks
+            // again, handing over what it sealed on its branch once it is
+            // back. Ignoring the winner as old would leave it on a branch no
+            // other participant follows, sealing under keys none of them
+            // hold.
             return self.desynchronise(vault);
         }
-        if frame.epoch < head_epoch {
+        if frame.epoch == head_epoch.saturating_add(1) && frame.previous_frame_digest == head_digest
+        {
+            return self.apply_commit(frame, allowed, vault);
+        }
+        if frame.epoch > head_epoch.saturating_add(1) {
+            // The commits between are gone: a host keeps only the newest.
+            return self.desynchronise(vault);
+        }
+        // The frame's branch split from this one below the frames held here
+        // that it can be compared with: the frame it follows is not one this
+        // device holds, though it holds that epoch's. Which branch won is
+        // decided at the point of divergence, by a device that holds both
+        // children there; publishing this branch again lets the other side
+        // decide. A frame older than anything held here is of no concern.
+        let oldest = self.held().next().map_or(head_epoch, |frame| frame.epoch);
+        if frame.epoch > oldest {
+            self.republish_from(oldest);
+            self.save(vault)?;
+        }
+        Ok(PeerEvent::Ignored)
+    }
+
+    /// A commit for the head's epoch, following the frame the head follows,
+    /// with a lower digest: it replaces the head.
+    fn replace_head(
+        &mut self,
+        frame: MlsGovernanceFrame,
+        incoming: [u8; 32],
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
+        vault: &VaultKey,
+    ) -> Result<PeerEvent> {
+        let Some(parent) = &self.parent else {
+            return self.desynchronise(vault);
+        };
+        let parent = MemberRecord::open_sealed(parent, vault)?;
+        let joins_from_welcome = matches!(parent, MemberRecord::Waiting(_));
+        if joins_from_welcome && frame.join_material().is_none() {
+            // The copy carrying the Welcome for this device follows.
             return Ok(PeerEvent::Ignored);
         }
-        if frame.epoch == head_epoch.saturating_add(1) {
-            if frame.previous_frame_digest == head_digest {
-                return self.apply_commit(frame, allowed, vault);
+        let replaced = std::mem::replace(&mut self.record, parent);
+        let lost = self.head.take();
+        let applied = if joins_from_welcome {
+            self.receive_welcome(frame, incoming, allowed, vault)
+        } else {
+            self.apply_commit(frame, allowed, vault)
+        };
+        match applied {
+            Ok(
+                PeerEvent::Ignored
+                | PeerEvent::Desynchronised
+                | PeerEvent::AdmittedWithAnotherKey
+                | PeerEvent::WelcomeRefused(_),
+            )
+            | Err(_) => {
+                self.record = replaced;
+                self.head = lost;
+                self.desynchronise(vault)
             }
-            // It follows a sibling of the head: this branch lost when that
-            // sibling's digest is lower, and the frame's when it is higher.
-            if frame.previous_frame_digest < head_digest {
-                return self.desynchronise(vault);
+            Ok(event) => {
+                // What this device sealed under the branch that lost is
+                // handed to the members with its next commit.
+                self.orphan(&replaced);
+                self.settle_orphaned();
+                self.save(vault)?;
+                Ok(event)
             }
-            return Ok(PeerEvent::Ignored);
         }
-        // The commits between are gone: a host keeps only the newest.
-        self.desynchronise(vault)
     }
 
     /// Apply `frame`'s commit to the group held now, after checking its MLS
@@ -1217,7 +1640,7 @@ impl ChannelPeer {
         })?;
         if removes_me {
             self.record = MemberRecord::Removed;
-            self.head = None;
+            self.forget_branch();
             self.parent = None;
             self.seen_epoch = Some(frame.epoch);
             self.save(vault)?;
@@ -1229,60 +1652,138 @@ impl ChannelPeer {
             group.import_key_history(history).ok();
         }
         let epoch = group.epoch();
-        // A request from a device the commit added with another key is older
-        // than the one it was admitted with.
-        let group: &ChannelGroup = group;
-        self.requests.retain(|device, request| {
-            !added.contains(device) || admitted_with(group, device, request)
-        });
+        // The commit answered the requests of the devices it added: the one
+        // it admitted them with, and any older one.
+        self.requests.retain(|device, _| !added.contains(device));
         self.parent = Some(parent);
-        self.head = Some(frame);
+        self.advance(frame);
         self.settle_orphaned();
-        self.save(vault)?;
+        // Kept after the page shows ([`Self::save_deferred`]): a commit lost
+        // with it is found again, or the device asks again.
+        self.unsaved = true;
         Ok(PeerEvent::Advanced { epoch })
     }
 
     /// A commit for a waiting device: its admission when the frame carries
     /// a Welcome for this device's member key.
+    ///
+    /// The Welcome is refused unless the device that signed its `GroupInfo`
+    /// is the one that signed the frame, and (when this device can tell who
+    /// may read the channel) every leaf of its tree names a device `allowed`
+    /// lets read it. Without that any member could send this device into a
+    /// group of its own making, which would show only later, as a channel
+    /// whose commits never apply. Both are a look at each leaf's credential,
+    /// no signature work. A tree refused for a device `allowed` does not name
+    /// leaves this device waiting with the same key, so the frame can be
+    /// judged again under a later view ([`PeerEvent::WelcomeRefused`]).
     fn receive_welcome(
         &mut self,
         frame: MlsGovernanceFrame,
         incoming: [u8; 32],
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         let MemberRecord::Waiting(pending) = &self.record else {
             return Ok(PeerEvent::Ignored);
         };
         self.seen_epoch = Some(self.seen_epoch.unwrap_or(0).max(frame.epoch));
-        let welcome = frame
+        let Some(material) = frame
             .join_material()
             .filter(|_| frame.added().contains(&self.device))
-            .filter(|material| ChannelGroup::welcome_names(&material.welcome, pending));
-        let Some(material) = welcome else {
+        else {
             return Ok(PeerEvent::Ignored);
         };
+        if !ChannelGroup::welcome_names(&material.welcome, pending) {
+            return Ok(PeerEvent::AdmittedWithAnotherKey);
+        }
         let attempt = pending.duplicate()?;
         let parent = MemberRecord::seal_waiting(pending, vault)?;
-        match ChannelGroup::process_welcome_with_history(
+        let signer = frame.signed_by;
+        let judge = |parties: &crate::group::WelcomeParties| {
+            if parties.sender != signer.as_bytes() {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::SignedByAnotherDevice,
+                ));
+            }
+            if let Some(allowed) = allowed
+                && !parties.members.iter().all(|member| {
+                    <[u8; 32]>::try_from(member.as_slice())
+                        .is_ok_and(|device| allowed.contains(&Ed25519PublicKey::from_bytes(device)))
+                })
+            {
+                return Err(Error::WelcomeRefused(
+                    crate::WelcomeRefusal::DeviceNotAllowed,
+                ));
+            }
+            Ok(())
+        };
+        match ChannelGroup::join_with_history_checked(
             self.channel,
             &material.welcome,
             &material.key_history,
             attempt,
+            judge,
         ) {
             Ok(group) => {
                 let epoch = group.epoch();
                 debug_assert_eq!(epoch, frame.epoch, "{incoming:?}");
+                let founded_by = group.genesis();
                 self.record = MemberRecord::Joined(Box::new(group));
-                self.head = Some(frame);
+                self.restart_branch(frame);
                 self.parent = Some(parent);
                 self.settle_orphaned();
-                self.save(vault)?;
+                // The group names the genesis it grew from, so this device
+                // judges a competing genesis as its founder does. A group
+                // named at random (founded by an earlier build) names none.
+                if let Some(founded_by) = founded_by {
+                    match self.genesis {
+                        Some(known) if known < founded_by => {
+                            // Admitted to a group whose genesis lost: start
+                            // over for the winner's, and tell the members
+                            // that admitted it of the winner.
+                            if let Some(winner) = &self.genesis_frame
+                                && !self.outbox.contains(winner)
+                            {
+                                self.outbox.push(winner.clone());
+                            }
+                            return self.desynchronise(vault);
+                        }
+                        Some(known) if known == founded_by => {}
+                        _ => {
+                            self.genesis = Some(founded_by);
+                            self.genesis_frame = None;
+                        }
+                    }
+                }
+                // Kept after the page shows ([`Self::save_deferred`]): a
+                // join lost with it is asked for again.
+                self.unsaved = true;
                 Ok(PeerEvent::Joined { epoch })
+            }
+            Err(Error::WelcomeRefused(refusal)) => {
+                if refusal == crate::WelcomeRefusal::SignedByAnotherDevice {
+                    self.desynchronise(vault)?;
+                }
+                Ok(PeerEvent::WelcomeRefused(refusal))
             }
             // A Welcome for a key package this device no longer holds: stay
             // waiting; the next request is admitted anew.
             Err(_) => Ok(PeerEvent::Desynchronised),
         }
+    }
+
+    /// Give up on a Welcome this waiting device held for its view of the
+    /// membership ([`PeerEvent::WelcomeRefused`]): wait with a fresh member
+    /// key, which the members admit anew. Nothing for a device not waiting.
+    ///
+    /// # Errors
+    ///
+    /// A failed write of the state.
+    pub fn refuse_welcome(&mut self, vault: &VaultKey) -> Result<PeerEvent> {
+        if !matches!(self.record, MemberRecord::Waiting(_)) {
+            return Ok(PeerEvent::Ignored);
+        }
+        self.desynchronise(vault)
     }
 
     /// Start over: wait with a fresh member key, keeping the gate.
@@ -1295,7 +1796,7 @@ impl ChannelPeer {
             MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
         );
         self.orphan(&left);
-        self.head = None;
+        self.forget_branch();
         self.parent = None;
         self.save(vault)?;
         Ok(PeerEvent::Desynchronised)
@@ -1317,22 +1818,54 @@ impl ChannelPeer {
         Ok(frame)
     }
 
-    fn save(&self, vault: &VaultKey) -> Result<()> {
-        let Some(path) = &self.path else {
+    fn save(&mut self, vault: &VaultKey) -> Result<()> {
+        let Some(states) = &self.states else {
             return Ok(());
         };
         let sealed = self.export_sealed(vault)?;
-        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
+        states.write(self.channel, &sealed)?;
+        self.unsaved = false;
+        Ok(())
+    }
+
+    /// Whether this peer holds a change [`Self::save_deferred`] has yet to
+    /// write.
+    #[must_use]
+    pub const fn has_unsaved(&self) -> bool {
+        self.unsaved && self.states.is_some()
+    }
+
+    /// Write the change taking in a Welcome or a commit left unwritten.
+    ///
+    /// Sealing a large group's state takes as long as joining it, and nothing
+    /// waits on it: the frame taken in produced nothing that leaves this
+    /// device, and every change that does is written before it leaves (the
+    /// module docs), this one with it. So the caller writes it once the
+    /// person sees the channel's content, not before. A device that stops
+    /// first keeps the state it had before the frame: a waiting device waits
+    /// again and asks anew, and a member finds the frame it missed, or starts
+    /// over and asks again. Either way it is admitted with the channel's
+    /// history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be sealed or written.
+    pub fn save_deferred(&mut self, vault: &VaultKey) -> Result<()> {
+        if self.has_unsaved() {
+            self.save(vault)?;
+        }
+        Ok(())
     }
 }
 
-/// Whether `device` is in `group` with the member key `request` asked with.
+/// Whether `device` is in the group with the member key `request` asked
+/// with, given every member's key ([`ChannelGroup::signature_keys`]).
 fn admitted_with(
-    group: &ChannelGroup,
+    joined: &std::collections::HashMap<Vec<u8>, Vec<u8>>,
     device: &Ed25519PublicKey,
     request: &MlsAccessRequestV1,
 ) -> bool {
-    let Some(joined_with) = group.signature_key_of(device.as_bytes()) else {
+    let Some(joined_with) = joined.get(device.as_bytes().as_slice()) else {
         return false;
     };
     device_key_package(request).is_ok_and(|package| {
@@ -1360,5 +1893,37 @@ impl std::fmt::Debug for ChannelPeer {
             .field("requests", &self.requests.len())
             .field("outbox", &self.outbox.len())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+#[path = "peer_welcome_tests.rs"]
+mod welcome_tests;
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    /// State in a format no upgrade reaches is told apart from state that is
+    /// corrupt or another device's.
+    #[test]
+    fn state_in_a_format_no_upgrade_reaches_is_told_apart() {
+        let vault = VaultKey::new([7; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let channel = ChannelId::new();
+        let peer = ChannelPeer::waiting(None, channel, Box::new(key.clone()), &vault).unwrap();
+        let exported = peer.export_sealed(&vault).unwrap();
+        let context = || Context::new(Label::ChannelMlsState, PEER_RECORD);
+        let mut plaintext = tilo_seal::envelope::open(&vault.0, context(), &exported).unwrap();
+        plaintext[0] = 1;
+        let unreachable = tilo_seal::envelope::seal(&vault.0, context(), &plaintext).unwrap();
+        assert!(matches!(
+            ChannelPeer::restore(channel, Box::new(key.clone()), &unreachable, &vault),
+            Err(Error::OtherFormat)
+        ));
+        assert!(
+            ChannelPeer::restore(channel, Box::new(key), &exported, &vault).is_ok(),
+            "state of this build reads as before"
+        );
     }
 }

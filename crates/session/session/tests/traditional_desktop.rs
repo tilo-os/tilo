@@ -20,14 +20,12 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
-use common::{CANVAS_ENTRY, on_screen, until};
+use crate::common::{CANVAS_ENTRY, on_screen, until};
 
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
@@ -41,7 +39,7 @@ const NOTHING_TO_CATCH_UP_ON: &str = "Nothing to catch up on";
 /// canvas is in front of it. Two of the notes the seed keeps stand on its desk, each a window of
 /// its own: they are the two frames a test places.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
-    let session = common::seeded_session(root);
+    let session = crate::common::seeded_session(root);
     let notes = note_ids(&session);
     assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
     (session, notes.into_iter().take(2).collect())
@@ -73,7 +71,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
             .run_shell_setting("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the desk shows {preset}: {why}"));
     } else {
-        let mut repl = common::Repl::connect(&root.join("agent.sock"));
+        let mut repl = crate::common::Repl::connect(&root.join("agent.sock"));
         repl.opened(session);
         let (answer, failed) = repl.run(
             session,
@@ -101,7 +99,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
 /// Whether the desk shows the traditional desktop: its bar drops the preset switch (its own bar
 /// carries the focused window's commands instead), and the dock rides its foot.
 fn preset_menu_gone(session: &Session) -> bool {
-    common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
+    crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
 }
 
 /// Place `resource` on the canvas through the arrangement's published `place`, as the canvas's
@@ -140,7 +138,7 @@ fn place(session: &mut Session, resource: &str, x: i64, y: i64, width: i64, heig
 /// The canvas rectangle each placed frame stands at, as the arrangement keeps it: `(x, y, w, h)`,
 /// in the arrangement's order.
 fn frames(session: &Session) -> Vec<(i64, i64, i64, i64)> {
-    common::arrangement(session)
+    crate::common::arrangement(session)
         .strips
         .into_iter()
         .filter(|strip| strip.placed)
@@ -169,7 +167,7 @@ fn overlap(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 #[test]
 fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
@@ -179,7 +177,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     show(&mut session, root.path(), "Desktop");
 
     for note in &notes {
-        let name = common::window_name_of(&session, note);
+        let name = crate::common::window_name_of(&session, note);
         until(
             &mut session,
             &format!("the bar naming {name:?}"),
@@ -200,7 +198,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
 #[test]
 fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
@@ -223,12 +221,12 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     );
 
     // The press brings mail's window, which the dock stands for by its app, to the front there.
-    common::press(&mut session, "Mail");
-    common::wait_for(&mut session, "the dock's press", |session| {
+    crate::common::press(&mut session, "Mail");
+    crate::common::wait_for(&mut session, "the dock's press", |session| {
         (focused_app(session).as_deref() == Some("so.tilo.lang.mail")).then_some(())
     });
     assert_eq!(
-        common::places(&session).len(),
+        crate::common::places(&session).len(),
         2,
         "the press opens no second window of an app already there"
     );
@@ -269,14 +267,14 @@ const BTN_MIDDLE: u32 = 0x112;
 #[test]
 fn every_pan_gesture_pans_every_time() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
     });
     show(&mut session, root.path(), "Frames");
     place(&mut session, &notes[0], 40, 40, 480, 360);
-    let titled = common::window_name_of(&session, &notes[0]);
+    let titled = crate::common::window_name_of(&session, &notes[0]);
     until(&mut session, "the frame", |session| {
         on_screen(session, &titled).is_some()
     });
@@ -296,7 +294,7 @@ fn every_pan_gesture_pans_every_time() {
     // that far on the screen, and the fifth no less than the first. The pointer starts over empty
     // canvas beside the place, so the press is the map's own and never a place's.
     for round in 1..=5 {
-        let (from_x, from_y) = (f64::from(common::WIDTH) - 60.0, 700.0);
+        let (from_x, from_y) = (f64::from(crate::common::WIDTH) - 60.0, 700.0);
         session
             .compositor()
             .input(InputEvent::PointerMotion {
@@ -332,7 +330,7 @@ fn every_pan_gesture_pans_every_time() {
             })
             .expect("the button");
         session.step(Duration::from_millis(1)).expect("a frame");
-        common::wait_for(&mut session, "the pan", |session| {
+        crate::common::wait_for(&mut session, "the pan", |session| {
             (frame_on_screen(session) != Some(seen)).then_some(())
         });
         let now = frame_on_screen(&session).expect("the frame still stands");
@@ -348,7 +346,7 @@ fn every_pan_gesture_pans_every_time() {
     for round in 1..=3 {
         let before = frame_on_screen(&session).expect("the frame still stands");
         press_key(&mut session, KEY_ARROW_RIGHT);
-        common::wait_for(&mut session, "the arrow key's pan", |session| {
+        crate::common::wait_for(&mut session, "the arrow key's pan", |session| {
             (frame_on_screen(session) != Some(before)).then_some(())
         });
         let now = frame_on_screen(&session).expect("the frame still stands");
@@ -393,7 +391,7 @@ fn every_pan_gesture_pans_every_time() {
         })
         .expect("Ctrl is let go");
     session.step(Duration::from_millis(1)).expect("a frame");
-    common::wait_for(&mut session, "the zoom", |session| {
+    crate::common::wait_for(&mut session, "the zoom", |session| {
         (frame_on_screen(session).is_some_and(|now| now.2 > before.2 + 1.0)).then_some(())
     });
 }
@@ -430,8 +428,8 @@ const BAR_FOOT: f64 = 40.0;
 #[test]
 fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
+    let root = crate::common::private_home();
+    let mut session = crate::common::seeded_session(root.path());
     let notes = note_ids(&session);
     assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
     // The conversation far down the canvas, past the viewport's foot: the place an agent opens
@@ -439,7 +437,7 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
     // take the conversation out of view doing it.
     let conversation = place(&mut session, &notes[0], 0, 3000, 720, 520);
     let inbox = root_of(&session, ".Mail");
-    let titled = common::window_name_of(&session, &notes[0]);
+    let titled = crate::common::window_name_of(&session, &notes[0]);
 
     // Only the frame on the canvas counts: the desk's own bar also names the window in front at
     // the top, and that one never pans.
@@ -455,9 +453,9 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
         w > 0.0
             && h > 0.0
             && y >= 0.0
-            && y + h <= f64::from(common::HEIGHT)
+            && y + h <= f64::from(crate::common::HEIGHT)
             && x >= 0.0
-            && x + w <= f64::from(common::WIDTH)
+            && x + w <= f64::from(crate::common::WIDTH)
     };
     let conversation_in_view =
         |session: &mut Session| on_canvas(session, &titled).into_iter().any(in_view);
@@ -480,11 +478,11 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
         )
         .expect("the open runs");
     until(&mut session, "mail beside the conversation", |session| {
-        common::placed(session, &inbox) == 1
+        crate::common::placed(session, &inbox) == 1
     });
     // What arrived stands in view, and so does the conversation it came from.
     let mail_in_view = |session: &mut Session| {
-        let mail = common::window_name_of(session, &inbox);
+        let mail = crate::common::window_name_of(session, &inbox);
         on_canvas(session, &mail).into_iter().any(in_view)
     };
     until(&mut session, "mail's frame in view", mail_in_view);
@@ -494,7 +492,7 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
          against the display",
         on_canvas(&mut session, &titled),
         {
-            let mail = common::window_name_of(&session, &inbox);
+            let mail = crate::common::window_name_of(&session, &inbox);
             on_canvas(&mut session, &mail)
         }
     );
@@ -507,7 +505,7 @@ fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
 #[test]
 fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
@@ -515,15 +513,16 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     place(&mut session, &notes[0], 100, 120, 480, 360);
     show(&mut session, root.path(), "Desktop");
 
-    let place = common::places(&session)
+    let place = crate::common::places(&session)
         .into_iter()
         .next()
         .expect("the note is placed");
-    let key = common::number(&place.key);
-    let name = common::window_name_of(&session, &notes[0]);
+    let key = crate::common::number(&place.key);
+    let name = crate::common::window_name_of(&session, &notes[0]);
 
     // The bar names the window in front on its own row, and pressing it lists the resource's
-    // actions: the note's unpin, retitle and tag, which no control of the desk's shows.
+    // actions: the note's unpin and rename, and the group its tags are changed under, which no
+    // control of the desk's shows.
     // The window in front is named twice: once by its frame on the desk, which stands where it
     // was placed, and once by the menu the top bar carries it as. The bar's stands on the bar's
     // row, above every frame.
@@ -537,18 +536,18 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
                 session.shell_controls(&name)
             )
         });
-    common::press(&mut session, &name);
+    crate::common::press(&mut session, &name);
     until(
         &mut session,
         "the note's actions in the bar's menu",
-        |session| session.shell_says("Retitle") && session.shell_says("Tag"),
+        |session| session.shell_says("Rename…") && session.shell_says("Tags"),
     );
     // The action the menu offers runs on the resource in front: "Unpin" pins the place.
-    common::press(&mut session, "Unpin");
+    crate::common::press(&mut session, "Unpin");
     until(
         &mut session,
         "the place unpinned from the bar's menu",
-        |session| common::place(session, key).is_some_and(|place| !place.pinned),
+        |session| crate::common::place(session, key).is_some_and(|place| !place.pinned),
     );
 }
 
@@ -557,7 +556,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
 #[test]
 fn two_frames_placed_at_one_point_do_not_overlap() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
@@ -587,7 +586,7 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
 #[test]
 fn the_bells_press_opens_the_notification_centre_in_every_preset() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
@@ -600,23 +599,23 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
             &format!("the bar's bell in the {preset} preset"),
             |session| on_screen(session, BELL).is_some(),
         );
-        common::press(&mut session, BELL);
+        crate::common::press(&mut session, BELL);
         until(
             &mut session,
             &format!("the notification centre in the {preset} preset"),
             |session| on_screen(session, NOTHING_TO_CATCH_UP_ON).is_some(),
         );
         assert_eq!(
-            common::desk_here(&session),
+            crate::common::desk_here(&session),
             "centre",
             "the bell opens the notifications, not another surface, in the {preset} preset"
         );
         // The one surface at a time rule: the next press closes it.
-        common::press(&mut session, BELL);
+        crate::common::press(&mut session, BELL);
         until(
             &mut session,
             &format!("the desk at rest again in the {preset} preset"),
-            |session| common::desk_here(session) == "none",
+            |session| crate::common::desk_here(session) == "none",
         );
     }
 }

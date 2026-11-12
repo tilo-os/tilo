@@ -101,6 +101,13 @@ impl ChannelSettings {
         self.state.lock_recover()
     }
 
+    /// How many times this process's view of the shell's records changed: a
+    /// reader that copies something out of them compares this to know whether
+    /// to read again, instead of reading on every frame it paints.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
     /// Show `view` unless writes are still on their way. Returns whether
     /// what this process reads changed.
     fn show(&self, state: &mut State, view: Map<String, Value>) -> bool {

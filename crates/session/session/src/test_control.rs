@@ -31,19 +31,22 @@ use tilo_actions::remote::{
     settle_with,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_compositor::{Compositor, GestureEvent, InputEvent, gestures};
+use tilo_compositor::{Compositor, InputEvent};
+
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
-use tilo_surface_host::Doors;
+use tilo_session_core::door::Doors;
 
 use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
 
+mod gesture_input;
 mod state;
 
-use state::{shown, state_dump, window_rows, within};
+use gesture_input::asked_of_gestures;
+use state::{presence_stamp, shown, state_dump, window_rows, within};
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
@@ -198,30 +201,15 @@ pub(crate) struct Desk<'a> {
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
     pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
+    /// Who is here, as the collaboration plane says it: this session's membership of each
+    /// workspace, when it takes part in one.
+    pub(crate) sync: Option<&'a crate::sync::Client>,
     pub(crate) locked: bool,
     pub(crate) lock_screen_drawn: bool,
     /// The lock's own state: what unlocking it is, the same one an accepted password sets, so a
     /// tool that unlocks asks the session to come down the one way it does — the screen dissolves
     /// and the compositor lifts the lock once it has.
     pub(crate) lock: &'a crate::lock_service::Lock,
-}
-
-/// Answer what `control` , when there is one, was asked since the last pass, and publish the state
-/// its watchers read.
-pub(crate) fn serve(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
-    control.serve(compositor, &desk);
-}
-
-/// What a tool handed the desk's input since the last pass, taken where a device's input reaches
-/// the desk, and publish the desk this pass laid out before it is drawn.
-pub(crate) fn serve_input(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
-    control.serve_input(compositor, &desk);
-}
-
-/// Tell the watchers the desk this pass laid out, before it is drawn: the state a reader gets is
-/// the one the frame carries.
-pub(crate) fn publish(control: &Control, desk: Desk<'_>) {
-    control.publish(&desk);
 }
 
 /// One request a connection sent the loop, and where its answer goes.
@@ -236,13 +224,17 @@ struct Asked {
 
 /// The sockets the session serves, and what they answer from.
 pub(crate) struct Control {
-    sockets: Vec<Socket>,
+    /// Accepting connections for as long as the session serves them: dropped, they stop.
+    _sockets: Vec<Socket>,
     /// What every connection asks the actions and the change signal through.
     door: Arc<Door>,
     asked: Receiver<Asked>,
     /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to press
     /// and release to reach the mask it names.
     held: RefCell<BTreeSet<u32>>,
+    /// The fingers a `swipe` with `release: false` left on the touchpad, so the next `swipe`
+    /// carries the same gesture on and its release lifts them.
+    fingers_down: std::cell::Cell<Option<u32>>,
     /// The desk state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
@@ -253,12 +245,9 @@ pub(crate) struct Control {
 
 /// One socket: where it listens, whose it is, and what its connections answer from.
 struct Socket {
-    listener: UnixListener,
-    /// What ends the loop's wait while a client connects.
-    watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
-    gate: Gate,
-    door: Arc<Door>,
+    /// Tells the thread accepting its connections to stop at the next one.
+    stopped: Arc<AtomicBool>,
 }
 
 /// Who a socket serves.
@@ -321,6 +310,7 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
+    RecordRead,
     Scroll,
     SearchRows,
     Snapshot,
@@ -334,7 +324,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 29] = [
+    const ALL: [Self; 30] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -355,6 +345,7 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
+        Self::RecordRead,
         Self::Scroll,
         Self::SearchRows,
         Self::Snapshot,
@@ -389,6 +380,7 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
+            "record_read" => Self::RecordRead,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
@@ -425,6 +417,7 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
+            Self::RecordRead => "record_read",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
@@ -452,6 +445,7 @@ impl Op {
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
+                | Self::RecordRead
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -556,7 +550,7 @@ impl Control {
         let actions = Arc::new(Actions {
             host,
             caller: Caller::local_person(options.person.clone()).in_new_execution(),
-            workspace: Mutex::new(String::new()),
+            front: Front::default(),
             ledger: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
             locked: AtomicBool::new(false),
@@ -586,10 +580,11 @@ impl Control {
             }
         }
         Self {
-            sockets,
+            _sockets: sockets,
             door,
             asked,
             held: RefCell::new(BTreeSet::new()),
+            fingers_down: std::cell::Cell::new(None),
             published: std::cell::Cell::new(None),
             changes,
             waiting: RefCell::new(Vec::new()),
@@ -601,23 +596,11 @@ impl Control {
         Arc::clone(&self.door)
     }
 
-    /// End the loop's wait when a client connects on any of its sockets, so what it asks is
-    /// answered on the pass that follows.
-    ///
-    /// # Errors
-    /// The loop took no more sources.
-    pub(crate) fn wake_on(&mut self, compositor: &mut Compositor) -> std::io::Result<()> {
-        for socket in &mut self.sockets {
-            socket.watch = Some(crate::sockets::watch(compositor, &socket.listener)?);
-        }
-        Ok(())
-    }
-
     /// What a tool handed the desk's input since the last pass, answered where a device's input
     /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass draws,
     /// as the same input from a device does. Everything else asked waits for the frame
     /// ([`Self::serve`]), where it reads the desk the frame shows.
-    fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+    pub(crate) fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
@@ -635,7 +618,13 @@ impl Control {
         {
             if op.hands_input() || op.starts_an_action(&request) {
                 let _ = answer.send(loop_answer(
-                    op, &request, &ctx, compositor, desk, &self.held,
+                    op,
+                    &request,
+                    &ctx,
+                    compositor,
+                    desk,
+                    &self.held,
+                    &self.fingers_down,
                 ));
             } else {
                 later.push(Asked {
@@ -651,15 +640,12 @@ impl Control {
 
     /// Take the connections waiting, publish the desk its watchers read, and answer what was asked
     /// of the loop since the last pass.
-    fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+    pub(crate) fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }));
         self.door.actions.set_locked(desk.locked);
-        for socket in &self.sockets {
-            socket.accept();
-        }
         self.take();
         let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
         for Asked {
@@ -670,7 +656,13 @@ impl Control {
         } in ready
         {
             let _ = answer.send(loop_answer(
-                op, &request, &ctx, compositor, desk, &self.held,
+                op,
+                &request,
+                &ctx,
+                compositor,
+                desk,
+                &self.held,
+                &self.fingers_down,
             ));
         }
     }
@@ -686,7 +678,7 @@ impl Control {
 
     /// Tell the watchers where the desk stands, when it moved since the last pass: the state dump
     /// is only built when someone reads it.
-    fn publish(&self, desk: &Desk<'_>) {
+    pub(crate) fn publish(&self, desk: &Desk<'_>) {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::hash::DefaultHasher::new();
         desk.handle.navigation_revision().hash(&mut hasher);
@@ -695,6 +687,7 @@ impl Control {
             desk.overlays.is_open(slot).hash(&mut hasher);
         }
         desk.overview.get().hash(&mut hasher);
+        presence_stamp(desk, &mut hasher);
         let stamp = hasher.finish();
         let moved = self.published.get() != Some(stamp);
         if moved {
@@ -706,52 +699,74 @@ impl Control {
 }
 
 impl Socket {
-    /// Listen at `path` for this account alone; `gate` is who is served there.
+    /// Listen at `path` for this account alone; `gate` is who is served there. Connections are
+    /// accepted on a thread of the socket's own as they arrive, each read on a thread of its own:
+    /// what a program asks of the actions is answered there, never after a pass of the loop, and
+    /// what it asks of the loop wakes the loop itself.
     fn open(path: &Path, gate: Gate, door: Arc<Door>) -> io::Result<Self> {
         let listener = agent_door::bind_private(path)?;
-        listener.set_nonblocking(true)?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let at = path.to_path_buf();
+        std::thread::Builder::new()
+            .name("tilo-control-accept".into())
+            .spawn(move || accept(&listener, &at, gate, &door, &stop))?;
         Ok(Self {
-            listener,
-            watch: None,
             path: path.to_path_buf(),
-            gate,
-            door,
+            stopped,
         })
     }
+}
 
-    /// Accept every waiting connection, each read on a thread of its own.
-    fn accept(&self) {
-        loop {
-            let stream = match self.listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
-                Err(error) => {
-                    tracing::warn!(%error, "control: accepting a connection failed");
-                    return;
-                }
-            };
-            if self.gate == Gate::Owner
-                && let Err(refusal) = agent_door::identify(&stream)
-                    .and_then(|(_, peer)| agent_door::peer_decision(&peer))
-            {
-                tracing::info!(?refusal, path = %self.path.display(), "control: a connection is refused");
-                refuse_owner(stream, &refusal);
+/// Accept the connections of `listener` until `stopped`, each read on a thread of its own.
+fn accept(
+    listener: &UnixListener,
+    path: &Path,
+    gate: Gate,
+    door: &Arc<Door>,
+    stopped: &AtomicBool,
+) {
+    for stream in listener.incoming() {
+        if stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!(%error, "control: accepting a connection failed");
                 continue;
             }
-            let door = Arc::clone(&self.door);
-            let ctx = Context::at(self.gate);
-            let spawned = std::thread::Builder::new()
-                .name("tilo-control".into())
-                .spawn(move || serve_connection(stream, &ctx, &door, None));
-            if let Err(error) = spawned {
-                tracing::warn!(%error, "control: a connection could not be served");
-            }
+        };
+        if gate == Gate::Owner
+            && let Err(refusal) =
+                agent_door::identify(&stream).and_then(|(_, peer)| agent_door::peer_decision(&peer))
+        {
+            tracing::info!(?refusal, path = %path.display(), "control: a connection is refused");
+            refuse_owner(stream, &refusal);
+            continue;
+        }
+        let door = Arc::clone(door);
+        let ctx = Context::at(gate);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-control".into())
+            .spawn(move || serve_connection(stream, &ctx, &door, None));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "control: a connection could not be served");
         }
     }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
+        // The accepting thread ends at the next connection, which this one is.
+        self.stopped.store(true, Ordering::Release);
+        if let Err(error) = tilo_files::native::socket::connect(&self.path) {
+            tracing::warn!(
+                %error,
+                path = %self.path.display(),
+                "control: the thread accepting connections was not woken to stop"
+            );
+        }
         // Nothing answers there once the session is gone.
         let _ = std::fs::remove_file(&self.path);
     }
@@ -952,8 +967,63 @@ fn asked_here(
         Op::ActionsStatus => actions_status(request, &door.actions, ctx),
         Op::ActionsCancel => actions_cancel(request, &door.actions, ctx),
         Op::Watch => watch(request, writer, watching, ctx, door),
+        Op::RecordRead => record_read(request, &door.actions, ctx),
         _ => return None,
     })
+}
+
+/// The answer to `record_read`: the records `records` of `app` in `workspace` (the one in front
+/// when unnamed), read through the record door as this person reads them, once they differ from
+/// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: as every reader of a
+/// record is answered ([`tilo_actions::remote::RecordReadings::readable`]). Each record is watched
+/// before it is read, so a reader holding a copy is woken by the next write to any of them.
+fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
+    use tilo_actions::remote::{RecordAddress, RecordAsk};
+    let Some(app) = request.get("app").and_then(Json::as_str) else {
+        return refusal("parse_error", "`record_read` takes `app` and `records`");
+    };
+    let asks: Vec<RecordAsk> = request
+        .get("records")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .map(|record| RecordAsk {
+            address: RecordAddress {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined: false,
+        })
+        .collect();
+    let workspace = request.get("workspace").and_then(Json::as_str).map_or_else(
+        || {
+            ctx.scope.as_ref().map_or_else(
+                || actions.front.known(HOST_WAIT).unwrap_or_default(),
+                |scope| scope.workspace.clone(),
+            )
+        },
+        str::to_owned,
+    );
+    let after = request.get("after").and_then(Json::as_str);
+    let deadline = wait_deadline(request.get("wait_ms").and_then(Json::as_u64));
+    let Some(reads) = actions.host.record_reads() else {
+        return refusal(
+            "unavailable",
+            tilo_actions::remote::RECORD_READS_UNAVAILABLE,
+        );
+    };
+    let caller = actions.caller(ctx).in_workspace(workspace);
+    match tilo_actions::remote::read_records(reads.as_ref(), &caller, &asks, after, deadline)
+        .map_err(|error| action_refusal(&error))
+        .and_then(|readings| {
+            readings
+                .readable()
+                .map_err(|error| refusal("unreadable", &error))
+        }) {
+        Ok(answer) => json!({ "answer": answer }),
+        Err(refused) => refused,
+    }
 }
 
 /// Start or stop streaming the desk's state to a connection (`watch`).
@@ -989,6 +1059,7 @@ fn loop_answer(
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
+    fingers_down: &std::cell::Cell<Option<u32>>,
 ) -> Json {
     if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
         return answer;
@@ -996,7 +1067,7 @@ fn loop_answer(
     if let Some(answer) = asked_of_pointer(op, request, compositor) {
         return answer;
     }
-    if let Some(answer) = asked_of_gestures(op, request, compositor) {
+    if let Some(answer) = asked_of_gestures(op, request, compositor, fingers_down) {
         return answer;
     }
     if let Some(answer) = asked_of_keys(op, request, compositor, held) {
@@ -1102,13 +1173,17 @@ fn asked_of_desk(
                 Vec::new()
             } else {
                 // Where each window is drawn, read off the frame's own layout: a row says what a
-                // tool aiming at that window aims at.
+                // tool aiming at that window aims at. How many frames it drew is read off the
+                // compositor, where the client's commits arrive.
                 let rect_of = |id: u64| compositor.window_rect(id);
+                let frames_of = |id: u64| compositor.window_frames(id);
                 match &ctx.scope {
-                    None => desk.handle.read(|tree| window_rows(tree, rect_of)),
+                    None => desk
+                        .handle
+                        .read(|tree| window_rows(tree, rect_of, frames_of)),
                     Some(scope) => desk
                         .handle
-                        .read(|tree| window_rows(&within(tree, scope), rect_of)),
+                        .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of)),
                 }
             };
             json!({"answer": {"windows": rows}})
@@ -1231,116 +1306,6 @@ fn asked_of_pointer(op: Op, request: &Json, compositor: &mut Compositor) -> Opti
     })
 }
 
-/// The answer to what `op` asks of the seat's gesture tracker, when it asks of it.
-fn asked_of_gestures(op: Op, request: &Json, compositor: &mut Compositor) -> Option<Json> {
-    let events = match op {
-        Op::Swipe => swipe_events(request),
-        Op::Pinch => pinch_events(request),
-        _ => return None,
-    };
-    Some(match events {
-        Err(answer) => answer,
-        Ok(events) => inject(compositor, &events),
-    })
-}
-
-/// How many updates a gesture is split into unless the request says: the tools' own default.
-const DEFAULT_GESTURE_STEPS: u32 = 10;
-
-/// The most updates one gesture is split into: what a touchpad reports over a long swipe.
-const MAX_GESTURE_STEPS: u32 = 288;
-
-/// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the control
-/// door refuses rather than delivering where a person's hand could not reach.
-fn client_gesture(fingers: u32) -> Json {
-    refusal(
-        "client_gesture",
-        &format!(
-            "a {fingers}-finger gesture belongs to the focused client; the shell takes {} or \
-             more",
-            gestures::SHELL_FINGER_THRESHOLD
-        ),
-    )
-}
-
-/// A swipe of `fingers` fingers travelling `(dx, dy)` over `steps` updates: a begin, the updates,
-/// and the release at the end unless the request keeps the fingers down.
-fn swipe_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
-    let fingers = fingers_of(request)?;
-    if !gestures::claims(fingers) {
-        return Err(client_gesture(fingers));
-    }
-    let (dx, dy) = (
-        number(request, "dx").unwrap_or(0.0),
-        number(request, "dy").unwrap_or(0.0),
-    );
-    let steps = gesture_steps(request);
-    let release = request
-        .get("release")
-        .and_then(Json::as_bool)
-        .unwrap_or(true);
-    let n = f64::from(steps);
-    let mut events = vec![GestureEvent::SwipeBegin { fingers }];
-    events.extend((0..steps).map(|_| GestureEvent::SwipeUpdate {
-        dx: dx / n,
-        dy: dy / n,
-    }));
-    if release {
-        events.push(GestureEvent::SwipeEnd { cancelled: false });
-    }
-    Ok(events)
-}
-
-/// A pinch of `fingers` fingers to the absolute `scale` over `steps` updates.
-fn pinch_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
-    let fingers = fingers_of(request)?;
-    if !gestures::claims(fingers) {
-        return Err(client_gesture(fingers));
-    }
-    let scale = number(request, "scale").unwrap_or(1.0);
-    let steps = gesture_steps(request);
-    let n = f64::from(steps);
-    let mut events = vec![GestureEvent::PinchBegin { fingers }];
-    events.extend((1..=steps).map(|step| GestureEvent::PinchUpdate {
-        dx: 0.0,
-        dy: 0.0,
-        scale: 1.0 + (scale - 1.0) * f64::from(step) / n,
-        rotation: 0.0,
-    }));
-    events.push(GestureEvent::PinchEnd { cancelled: false });
-    Ok(events)
-}
-
-/// A request's `fingers` , which a gesture must name.
-fn fingers_of(request: &Json) -> Result<u32, Json> {
-    request
-        .get("fingers")
-        .and_then(Json::as_u64)
-        .and_then(|fingers| u32::try_from(fingers).ok())
-        .ok_or_else(|| refusal("parse_error", "a gesture takes `fingers`"))
-}
-
-/// A request's `steps` , by the tools' default and within what a touchpad reports.
-fn gesture_steps(request: &Json) -> u32 {
-    request
-        .get("steps")
-        .and_then(Json::as_u64)
-        .map_or(DEFAULT_GESTURE_STEPS, |steps| {
-            u32::try_from(steps).unwrap_or(u32::MAX)
-        })
-        .clamp(1, MAX_GESTURE_STEPS)
-}
-
-/// Feed `events` to the seat, in order.
-fn inject(compositor: &mut Compositor, events: &[GestureEvent]) -> Json {
-    for event in events {
-        if let Err(error) = compositor.input(InputEvent::Gesture(*event)) {
-            return refusal("input_failed", &error.to_string());
-        }
-    }
-    json!({"ok": {}})
-}
-
 /// The answer to what `op` asks of the keyboard, when it asks of it.
 fn asked_of_keys(
     op: Op,
@@ -1349,23 +1314,34 @@ fn asked_of_keys(
     held: &RefCell<BTreeSet<u32>>,
 ) -> Option<Json> {
     Some(match op {
-        Op::Key => match key_code(request, compositor) {
-            Some(code) => {
-                for pressed in [true, false] {
-                    if let Err(error) = compositor.input(InputEvent::Key {
-                        keycode: code,
-                        pressed,
-                    }) {
-                        return Some(refusal("input_failed", &error.to_string()));
-                    }
-                }
-                json!({"ok": {}})
+        Op::Key => {
+            let pressed = match typed_char(request) {
+                // A character is pressed as the keyboard types it, with the Shift or AltGr its layout
+                // needs held: `/` on a German keyboard is Shift+7.
+                Some(ch) => compositor.type_char(ch).map_err(|error| error.to_string()),
+                None => match key_code(request, compositor) {
+                    Some(code) => [true, false]
+                        .into_iter()
+                        .try_for_each(|pressed| {
+                            compositor.input(InputEvent::Key {
+                                keycode: code,
+                                pressed,
+                            })
+                        })
+                        .map(|()| true)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(false),
+                },
+            };
+            match pressed {
+                Ok(true) => json!({"ok": {}}),
+                Ok(false) => refusal(
+                    "parse_error",
+                    "`key` takes a named key or one character the keyboard types",
+                ),
+                Err(error) => refusal("input_failed", &error),
             }
-            None => refusal(
-                "parse_error",
-                "`key` takes a named key or one character the keyboard types",
-            ),
-        },
+        }
         Op::KeyDown => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
@@ -1439,8 +1415,8 @@ struct Actions {
     /// The person's own caller, made once and cloned: the broker remembers an invocation under the
     /// caller that admitted it, so a status or a cancel reads it back as the same caller.
     caller: Caller,
-    /// The workspace in front, as the loop last read it: what an invocation opens into.
-    workspace: Mutex<String>,
+    /// The workspace in front, as the loop last served it: what an invocation opens into.
+    front: Front,
     /// The number a tool was answered with, and the invocation it names.
     ledger: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
@@ -1458,6 +1434,56 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 /// How long a settled wait stands by the host's own answer once it gave one.
 const SETTLE_WAIT: Duration = Duration::from_secs(35);
 
+/// The workspace in front, as the loop last served the desk, and the wait for a request that
+/// arrives before the desk holds one.
+///
+/// A session adopts the person's workspaces in its first passes, so a desk holds none for the
+/// moment between its first frame and them: what a request asks in that moment is where the person
+/// is, which is not yet known, and waiting for it is the answer — the person's own authority over
+/// their own desk is not in question, so a refusal would be a lie.
+#[derive(Default)]
+struct Front {
+    workspace: Mutex<String>,
+    /// The loop served a workspace: a request waiting for one looks again.
+    arrived: Condvar,
+}
+
+impl Front {
+    /// The loop served the desk: `workspace` is the one in front now.
+    fn served(&self, workspace: String) {
+        let mut held = self.workspace.lock_recover();
+        if *held != workspace {
+            *held = workspace;
+            drop(held);
+            self.arrived.notify_all();
+        }
+    }
+
+    /// The workspace in front, once the desk holds one, waiting up to `wait` for a desk that
+    /// started before it had any: `None` when there is none to name yet.
+    fn known(&self, wait: Duration) -> Option<String> {
+        let until = Instant::now().checked_add(wait)?;
+        let mut held = self.workspace.lock_recover();
+        loop {
+            if !held.is_empty() {
+                return Some(held.clone());
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            let (next, timeout) = self
+                .arrived
+                .wait_timeout(held, left)
+                .unwrap_or_else(PoisonError::into_inner);
+            if timeout.timed_out() && next.is_empty() {
+                return None;
+            }
+            held = next;
+        }
+    }
+}
+
 impl Actions {
     /// Who a request here is made as: the person at this desktop, in the workspace in front,
     /// or the app a program inside it runs as, in the workspace the session started it into.
@@ -1465,23 +1491,17 @@ impl Actions {
         if let Some(scope) = &ctx.scope {
             return Caller::local_app(scope.app.clone()).in_workspace(scope.workspace.clone());
         }
-        let workspace = self.workspace.lock_recover().clone();
         let caller = self.caller.clone();
-        if workspace.is_empty() {
-            caller
-        } else {
-            caller.in_workspace(workspace)
+        match self.front.known(HOST_WAIT) {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
         }
     }
 
-    /// Whose workspace is in front, as the loop read it: without one, a request names none.
+    /// Whose workspace is in front, as the loop read it: a desk that holds none names none.
     fn set_workspace(&self, workspace: Option<String>) {
-        let Some(workspace) = workspace else {
-            return;
-        };
-        let mut held = self.workspace.lock_recover();
-        if *held != workspace {
-            *held = workspace;
+        if let Some(workspace) = workspace {
+            self.front.served(workspace);
         }
     }
 
@@ -1843,7 +1863,21 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
              this door",
         );
     }
-    let workspace = actions.workspace.lock_recover().clone();
+    // Which workspace the action is asked in is the desk's answer, not a copy of it: a request
+    // that lands while the session is still adopting the person's workspaces waits for the desk
+    // rather than naming none and being refused as if the person's own desk were not theirs.
+    let workspace = match &ctx.scope {
+        Some(scope) => scope.workspace.clone(),
+        None => match actions.front.known(HOST_WAIT) {
+            Some(workspace) => workspace,
+            None => {
+                return refusal(
+                    "unavailable",
+                    "this desk holds no workspace yet; there is nothing in front to act in",
+                );
+            }
+        },
+    };
     let target = match legacy_target(provider, id, &workspace) {
         Ok(target) => target,
         Err(answer) => return answer,
@@ -2005,6 +2039,20 @@ fn wait_deadline(wait_ms: Option<u64>) -> Instant {
 
 /// The target a tool's `(provider, id)` names, in the action model's own addressing.
 fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActionTarget, Json> {
+    // The workspace verbs by the names tools spell them (`workspace.create`, `workspace.branch`):
+    // the desk's own actions, as the workspace menu invokes them.
+    if provider == "actions"
+        && let Some(action) = match id {
+            "workspace.create" => Some("new-workspace"),
+            "workspace.branch" => Some("branch-workspace"),
+            _ => None,
+        }
+    {
+        return Ok(RemoteActionTarget {
+            provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(tilo_desktop::desk_verbs::CHROME_RESOURCE, action),
+        });
+    }
     if provider == "applications" {
         if id.is_empty() {
             return Err(refusal("unknown_action", "`id` is the app's id"));
@@ -2042,7 +2090,7 @@ fn action_refusal(error: &ActionHostError) -> Json {
         // it at all; an action the person may not run is another answer.
         ActionHostError::NotPermitted => "not_allowed",
         ActionHostError::StaleRevision => "stale_cursor",
-        ActionHostError::ConfirmationRequired => "needs_confirmation",
+        ActionHostError::ConfirmationRequired { .. } => "needs_confirmation",
         other => other.code(),
     };
     refusal(code, &error.to_string())
@@ -2138,6 +2186,17 @@ fn drag(
     Ok(())
 }
 
+/// The one character a request's `key` names, when it names no named key.
+fn typed_char(request: &Json) -> Option<char> {
+    let key = request.get("key").and_then(Json::as_str)?;
+    if named_key(key).is_some() {
+        return None;
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first)
+}
+
 /// The evdev code a request's `key` means: a named key's, or, for one character, the key this
 /// seat's layout puts it on.
 fn key_code(request: &Json, compositor: &mut Compositor) -> Option<u32> {
@@ -2171,7 +2230,17 @@ fn named_key(name: &str) -> Option<u32> {
         "PageUp" => 104,
         "PageDown" => 109,
         "F1" => 59,
+        "F2" => 60,
+        "F3" => 61,
         "F4" => 62,
+        "F5" => 63,
+        "F6" => 64,
+        "F7" => 65,
+        "F8" => 66,
+        "F9" => 67,
+        "F10" => 68,
+        "F11" => 87,
+        "F12" => 88,
         "PrintScreen" => 99,
         "Space" => 57,
         "Shift" => 42,
@@ -2402,6 +2471,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_request_before_the_desk_holds_a_workspace_waits_for_the_one_in_front() {
+        let front = Arc::new(Front::default());
+        let waiting = {
+            let front = Arc::clone(&front);
+            std::thread::spawn(move || front.known(Duration::from_secs(5)))
+        };
+        // The loop's pass serves the desk while the request waits: it is answered for the
+        // workspace in front, not for none.
+        front.served("workspace-1".to_owned());
+        assert_eq!(
+            waiting.join().expect("the waiting request answers"),
+            Some("workspace-1".to_owned())
+        );
+        assert_eq!(
+            front.known(Duration::from_millis(1)),
+            Some("workspace-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_desk_that_never_holds_a_workspace_names_none() {
+        let front = Front::default();
+        assert_eq!(front.known(Duration::from_millis(10)), None);
+    }
+
+    #[test]
     fn only_a_development_build_opens_the_socket_it_is_named() {
         assert_eq!(
             path_in(true, Some("/run/user/1000/control.sock"), None, None),
@@ -2488,6 +2583,7 @@ mod tests {
             Op::ProfileStart,
             Op::ProfileStatus,
             Op::ProfileStop,
+            Op::RecordRead,
             Op::StateDump,
             Op::Watch,
             Op::Windows,
@@ -2509,7 +2605,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 29, "the protocol's ops");
+        assert_eq!(names.len(), 30, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");
@@ -2568,16 +2664,19 @@ mod tests {
         tree.set_active_group(StripId(1), 10);
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
-        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)));
+        let frames = |id: u64| if id == 7 { 41 } else { 0 };
+        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)), frames);
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
         assert_eq!(rows[0]["rect"], json!([14, 96, 946, 984]));
         assert_eq!(rows[0]["active"], json!(true));
+        assert_eq!(rows[0]["frames"], json!(41));
         assert_eq!(rows[1]["window"], Json::Null);
         assert_eq!(rows[1]["rect"], Json::Null);
+        assert_eq!(rows[1]["frames"], json!(0));
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, |_| None);
+        let closed = window_rows(&tree, |_| None, frames);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
     }
@@ -2669,6 +2768,18 @@ mod tests {
         assert_eq!(session.address.resource, "desktop:tab:5");
         assert_eq!(session.address.action, "close-tab");
 
+        // The workspace verbs by the names tools spell them are the desk's own.
+        for (spelled, action) in [
+            ("workspace.create", "new-workspace"),
+            ("workspace.branch", "branch-workspace"),
+        ] {
+            let verb = legacy_target("actions", spelled, "room-1").expect("the desk's verb");
+            assert_eq!(verb.provider, "so.tilo.session");
+            assert_eq!(verb.address.resource, "desktop:chrome");
+            assert_eq!(verb.address.action, action);
+        }
+        assert!(legacy_target("actions", "workspace.nothing", "room-1").is_err());
+
         assert!(legacy_target("app-actions", "half-an-id", "room-1").is_err());
         assert!(legacy_target("applications", "", "room-1").is_err());
         assert!(legacy_target("so.tilo.session", "no-action", "room-1").is_err());
@@ -2684,53 +2795,6 @@ mod tests {
         );
         assert_eq!(decode_cursor("nonsense"), None);
         assert_eq!(decode_cursor("12.34~zz"), None);
-    }
-
-    #[test]
-    fn a_client_keeps_its_own_gestures_and_the_shell_takes_three() {
-        let refused = swipe_events(&json!({"fingers": 2, "dx": 100.0, "dy": 0.0}))
-            .expect_err("two fingers are the client's");
-        assert_eq!(refused["err"]["code"], "client_gesture");
-        assert!(
-            refused["err"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("3 or more"))
-        );
-
-        let events = swipe_events(&json!({"fingers": 3, "dx": 300.0, "dy": 0.0, "steps": 3}))
-            .expect("three fingers are the shell's");
-        assert_eq!(events.len(), 5);
-        assert!(matches!(
-            events.first(),
-            Some(GestureEvent::SwipeBegin { fingers: 3 })
-        ));
-        assert!(matches!(events.last(), Some(GestureEvent::SwipeEnd { .. })));
-
-        let held = swipe_events(&json!({"fingers": 3, "dx": 10.0, "release": false}))
-            .expect("a swipe whose fingers stay down");
-        assert_eq!(
-            held.len(),
-            1 + usize::try_from(DEFAULT_GESTURE_STEPS).unwrap()
-        );
-
-        let events = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 2}))
-            .expect("a three-finger pinch");
-        assert_eq!(events.len(), 4);
-        assert!(matches!(
-            events.get(1),
-            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 1.5).abs() < f64::EPSILON
-        ));
-        assert!(matches!(
-            events.get(2),
-            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 2.0).abs() < f64::EPSILON
-        ));
-
-        let clamped = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 10_000}))
-            .expect("a pinch takes the most steps a touchpad reports");
-        assert_eq!(
-            clamped.len(),
-            2 + usize::try_from(MAX_GESTURE_STEPS).unwrap()
-        );
     }
 
     #[test]

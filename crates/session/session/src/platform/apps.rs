@@ -23,20 +23,18 @@ pub trait Apps: Send + Sync {
     fn applications(&self) -> Vec<AppEntry>;
     /// How many apps the host knows at all: what a source switch offers.
     fn host_apps(&self) -> Vec<HostAppEntry>;
+    /// Whether the app `id` stands here, as the person has it installed.
+    fn installed(&self, id: &str) -> bool;
 }
 
 /// One reading of a host's app lists.
 pub trait Reading: Send + Sync {
     /// What tells this reading from another one: when it changes, the host read its lists again.
     fn generation(&self) -> usize;
-    /// The machine's own apps as a source, less the sources the person switched off.
-    fn host_apps(&self, preferences: &SearchPreferences) -> Held;
-    /// The apps a person can get, in `workspace`.
-    fn catalogue(&self, workspace: &str) -> Held;
-}
-
-/// The settings this host offers search, as the pages the person's own settings are on.
-pub trait Settings: Send + Sync {
-    /// The pages of `workspace`, with the settings among `published` changed where they are.
-    fn source(&self, workspace: &str, published: &[tilo_actions::ActionDescriptor]) -> Held;
+    /// The machine's own apps as a source, less the sources the person switched off; `None` where
+    /// this host has none of its own.
+    fn host_apps(&self, preferences: &SearchPreferences) -> Option<Held>;
+    /// The apps a person can get, in `workspace`; `None` where this host has no store to get one
+    /// from.
+    fn catalogue(&self, workspace: &str) -> Option<Held>;
 }

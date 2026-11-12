@@ -20,6 +20,7 @@ use crate::i18n::t;
 pub enum QsEffect {
     /// Turn Wi-Fi on or off.
     #[effect(
+        label = "qs-action-set-wifi",
         own_device,
         idempotent,
         icon = "wifi",
@@ -32,7 +33,7 @@ pub enum QsEffect {
     /// Turn Wi-Fi off when it is on, and on when it is off.
     #[effect(
         own_device,
-        label = "Wi-Fi",
+        label = "qs-wifi",
         icon = "wifi",
         keywords = "wifi, wi-fi, wlan, wireless, internet, network, wireless network, drahtlos, netzwerk, funknetz"
     )]
@@ -45,6 +46,7 @@ pub enum QsEffect {
     },
     /// Turn Bluetooth on or off.
     #[effect(
+        label = "qs-action-set-bluetooth",
         own_device,
         idempotent,
         icon = "bluetooth",
@@ -57,13 +59,14 @@ pub enum QsEffect {
     /// Turn Bluetooth off when it is on, and on when it is off.
     #[effect(
         own_device,
-        label = "Bluetooth",
+        label = "qs-bluetooth",
         icon = "bluetooth",
         keywords = "bluetooth, headphones, pair, kopfhörer, koppeln"
     )]
     ToggleBluetooth,
     /// Turn airplane mode on or off.
     #[effect(
+        label = "qs-action-set-airplane-mode",
         own_device,
         idempotent,
         icon = "plane",
@@ -77,31 +80,51 @@ pub enum QsEffect {
     /// wireless radio goes off with it.
     #[effect(
         own_device,
-        label = "Airplane mode",
+        label = "qs-airplane-mode",
         icon = "plane",
         keywords = "airplane mode, flight mode, aeroplane, radios off, offline, flugmodus, flugzeugmodus, funk aus"
     )]
     ToggleAirplaneMode,
     /// Turn mobile data on or off.
-    #[effect(own_device, idempotent, keywords = "cellular, broadband")]
+    #[effect(
+        label = "qs-mobile-data",
+        own_device,
+        idempotent,
+        keywords = "cellular, broadband"
+    )]
     SetMobileData {
         #[param("Whether mobile data is on")]
         on: bool,
     },
     /// Turn night light on or off.
-    #[effect(own_device, idempotent, keywords = "warm colours, blue light")]
+    #[effect(
+        label = "qs-night-light",
+        own_device,
+        idempotent,
+        keywords = "warm colours, blue light"
+    )]
     SetNightLight {
         #[param("Whether night light is on")]
         on: bool,
     },
     /// Turn Do Not Disturb on or off.
-    #[effect(own_device, idempotent, keywords = "quiet, focus")]
+    #[effect(
+        label = "qs-do-not-disturb",
+        own_device,
+        idempotent,
+        keywords = "quiet, focus"
+    )]
     SetDoNotDisturb {
         #[param("Whether notifications are held")]
         on: bool,
     },
     /// Lock or unlock the screen's rotation.
-    #[effect(own_device, idempotent, keywords = "orientation")]
+    #[effect(
+        label = "qs-rotation-lock",
+        own_device,
+        idempotent,
+        keywords = "orientation"
+    )]
     SetRotationLock {
         #[param("Whether the screen stays put when the device turns")]
         locked: bool,
@@ -110,7 +133,7 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Power mode",
+        label = "qs-power-mode",
         icon = "gauge",
         keywords = "power saver, balanced, performance, power profile, battery saver, performance mode, power saving, energy, energieprofil, energiesparmodus, akkusparmodus, leistungsmodus, energiesparen"
     )]
@@ -120,6 +143,7 @@ pub enum QsEffect {
     },
     /// Turn a VPN on or off.
     #[effect(
+        label = "qs-action-set-vpn",
         own_device,
         idempotent,
         icon = "shield",
@@ -135,7 +159,7 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Brightness",
+        label = "qs-brightness",
         icon = "sun",
         keywords = "display, backlight, dim, screen brightness, display brightness, helligkeit, bildschirmhelligkeit, hintergrundbeleuchtung"
     )]
@@ -147,7 +171,7 @@ pub enum QsEffect {
     /// when there are several.
     #[effect(
         own_device,
-        label = "Brighter",
+        label = "qs-action-brighter",
         icon = "sun",
         keywords = "brighter, brightness up, heller"
     )]
@@ -156,7 +180,7 @@ pub enum QsEffect {
     /// when there are several.
     #[effect(
         own_device,
-        label = "Dimmer",
+        label = "qs-action-dimmer",
         icon = "sun",
         keywords = "dimmer, darker, brightness down, dunkler"
     )]
@@ -173,7 +197,7 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Volume",
+        label = "qs-volume",
         icon = "volume-2",
         keywords = "sound, loudness, audio level, speaker, lautstärke, lautstaerke, ton, audio"
     )]
@@ -184,7 +208,7 @@ pub enum QsEffect {
     /// Turn the volume up by a step.
     #[effect(
         own_device,
-        label = "Louder",
+        label = "qs-action-louder",
         icon = "volume-2",
         keywords = "louder, volume up, turn up, lauter, lauter machen"
     )]
@@ -192,7 +216,7 @@ pub enum QsEffect {
     /// Turn the volume down by a step.
     #[effect(
         own_device,
-        label = "Quieter",
+        label = "qs-action-quieter",
         icon = "volume-2",
         keywords = "quieter, softer, volume down, turn down, leiser, leiser machen"
     )]
@@ -206,7 +230,7 @@ pub enum QsEffect {
     /// Unmute the sound when it is muted, and mute it when it is not.
     #[effect(
         own_device,
-        label = "Mute or unmute",
+        label = "qs-action-mute-toggle",
         icon = "volume-x",
         keywords = "mute, unmute, silence, stumm, stummschalten, ton aus"
     )]
@@ -221,7 +245,7 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Microphone level",
+        label = "qs-microphone-level",
         icon = "mic",
         keywords = "microphone level, mic gain, eingangspegel"
     )]
@@ -243,7 +267,6 @@ pub enum QsEffect {
     /// Unmute the microphone when it is muted, and mute it when it is not.
     #[effect(
         own_device,
-        label = "Mute or unmute the microphone",
         icon = "mic-off",
         keywords = "microphone, mic mute, mikrofon"
     )]
@@ -253,7 +276,6 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Route an application",
         icon = "speaker",
         keywords = "per-app volume, application routing, app stream"
     )]
@@ -267,7 +289,6 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Application volume",
         icon = "volume-2",
         keywords = "per-app volume, application level, app stream"
     )]
@@ -281,7 +302,6 @@ pub enum QsEffect {
     #[effect(
         own_device,
         idempotent,
-        label = "Mute an application",
         icon = "volume-x",
         keywords = "per-app mute, application mute, app stream"
     )]
@@ -331,7 +351,13 @@ pub enum QsEffect {
     },
     /// Join a saved network by itself whenever it is in reach, or wait to be
     /// asked.
-    #[effect(own_device, idempotent, icon = "wifi", keywords = "saved network")]
+    #[effect(
+        label = "qs-wifi-autoconnect",
+        own_device,
+        idempotent,
+        icon = "wifi",
+        keywords = "saved network"
+    )]
     SetNetworkAutoconnect {
         #[param("The saved network")]
         profile: String,
@@ -342,6 +368,7 @@ pub enum QsEffect {
     /// its password must be typed again: the profile and the password it
     /// keeps go.
     #[effect(
+        label = "qs-wifi-forget",
         own_device,
         destructive,
         icon = "trash-2",
@@ -365,6 +392,7 @@ pub enum QsEffect {
     },
     /// Look for Bluetooth devices in reach, or stop looking.
     #[effect(
+        label = "qs-bluetooth-look",
         own_device,
         idempotent,
         icon = "search",
@@ -377,14 +405,25 @@ pub enum QsEffect {
     /// Pair the Bluetooth device at this address: `BlueZ` bonds with it,
     /// trusting it and connecting it. What it asks to compare is a question
     /// its pairing agent asks the person.
-    #[effect(own_device, icon = "bluetooth", keywords = "pair, bond, new accessory")]
+    #[effect(
+        label = "qs-bluetooth-pair",
+        own_device,
+        icon = "bluetooth",
+        keywords = "pair, bond, new accessory"
+    )]
     PairBluetooth {
         #[param("The device's address")]
         address: String,
     },
     /// Forget a Bluetooth device, so that it must be paired again from
     /// scratch: its bond, its keys and its trust go.
-    #[effect(own_device, destructive, icon = "trash-2", keywords = "unpair, remove")]
+    #[effect(
+        label = "qs-bluetooth-forget",
+        own_device,
+        destructive,
+        icon = "trash-2",
+        keywords = "unpair, remove"
+    )]
     ForgetBluetooth {
         #[param("The device's address")]
         address: String,
@@ -422,17 +461,18 @@ pub enum QsEffect {
     /// Remove a copy from the clipboard history. It goes at a press, as a
     /// notification is dismissed: the history is a convenience, not a
     /// record anyone keeps.
-    #[effect(own_device)]
+    #[effect(label = "qs-clipboard-remove", own_device)]
     RemoveCopy {
         #[param("The copy")]
         copy: String,
     },
     /// Clear the clipboard history, keeping pinned copies.
-    #[effect(own_device)]
+    #[effect(label = "qs-clipboard-clear-history", own_device)]
     ClearClipboard,
     /// Show the notification centre over the desk: the panel's notifications
     /// row opens the one list, where they are read and answered.
     #[effect(
+        label = "qs-notifications",
         own_device,
         idempotent,
         keywords = "alerts, notices, benachrichtigungen"
@@ -457,18 +497,18 @@ pub enum QsEffect {
     MoveControl {
         #[param("The control, as Show control names it")]
         control: String,
-        #[param("Its new place among the controls shown, from 0")]
-        to: u32,
+        #[param("The control it stands in front of; none for the last place")]
+        before: Option<String>,
     },
     /// Put the panel's controls back as they were at first.
-    #[effect(own_device)]
+    #[effect(label = "qs-edit-reset", own_device)]
     ResetControls,
     /// Put away why the last press did not reach the device or the session
     /// refused it.
-    #[effect(own_device)]
+    #[effect(label = "qs-refused-dismiss", own_device)]
     DismissRefusal,
     /// Open Settings, at a page when one is named.
-    #[effect(own_device, keywords = "preferences")]
+    #[effect(label = "qs-tile-settings", own_device, keywords = "preferences")]
     OpenSettings {
         #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
         link: String,
@@ -483,19 +523,27 @@ pub enum QsEffect {
     #[effect(own_device, keywords = "music, media, resume, pause music")]
     PlayPause,
     /// Go back to the previous track.
-    #[effect(own_device, keywords = "music, media, back, rewind")]
+    #[effect(
+        label = "qs-now-playing-previous",
+        own_device,
+        keywords = "music, media, back, rewind"
+    )]
     PreviousTrack,
     /// Skip to the next track.
-    #[effect(own_device, keywords = "music, media, skip")]
+    #[effect(
+        label = "qs-now-playing-next",
+        own_device,
+        keywords = "music, media, skip"
+    )]
     NextTrack,
     /// Go to a point in what plays.
-    #[effect(own_device, idempotent)]
+    #[effect(label = "qs-now-playing-seek", own_device, idempotent)]
     Seek {
         #[param("How far into the song, from 0 to 1")]
         fraction: f64,
     },
     /// Steer another of the running players.
-    #[effect(own_device, idempotent)]
+    #[effect(label = "qs-now-playing-player", own_device, idempotent)]
     ChoosePlayer {
         #[param("The player, as the now-playing card lists it")]
         player: String,

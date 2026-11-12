@@ -46,6 +46,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
             live: live.clone(),
             replay: None,
             lag: None,
+            channel_reader: false,
         },
     );
     let workspace = Arc::new(AsyncMutex::new(runtime));
@@ -87,13 +88,16 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         revocations: &revocations,
         carried_calls: None,
         admin: None,
-        here: None,
         fetch: None,
         agents: Box::leak(Box::default()),
+        environments: Box::leak(Box::default()),
         positions: None,
         compactor: None,
         member_limits: None,
         resumes: Box::leak(Box::default()),
+        agent: Box::leak(Box::default()),
+        channel_reader: Box::leak(Box::default()),
+        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
         lag: Box::leak(Box::default()),
     };
     let delivery = |fanned: Option<FanoutStamp>| StateDelivery {

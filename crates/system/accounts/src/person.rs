@@ -106,7 +106,28 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
     Ok(())
 }
 
-#[resource(kind = "tilo.accounts", label = "Accounts", version = 2, migrate = upgrade)]
+impl PersonAccounts {
+    /// What the record holds: the accounts the person configured, without their secrets, and
+    /// the one each type uses.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "tilo.accounts",
+    version = 2,
+    migrate = upgrade,
+    read_content = PersonAccounts::read_document
+)]
 impl PersonAccounts {
     /// Project public browser choices from the existing typed account document.
     pub fn browser_accounts_from_doc(

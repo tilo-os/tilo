@@ -176,16 +176,16 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.receipt()["digest"], self.digest)
 
     def test_a_release_needs_its_signature(self):
-        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="stable")
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="tag:v1.2.3")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("signed only", result.stderr)
         self.assertFalse((self.out / "receipt.json").exists())
 
-    def test_stable_pushes_the_signed_release_tags(self):
+    def test_a_release_tag_pushes_the_signed_release_tags(self):
         self.signed()
-        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", "release:latest-stable", ref="stable")
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", "release:latest-release", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.receipt()["tags"], [f"sha-{COMMIT}", "latest-stable"])
+        self.assertEqual(self.receipt()["tags"], [f"sha-{COMMIT}", "latest-release"])
         self.assertTrue(self.receipt()["signed"])
         self.assertIn("cosign verify-blob", self.log.read_text())
 
@@ -201,35 +201,35 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="main")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["digest"], self.digest)
-        # Stable publishes the derived image with its own signature, not the build's, and records
-        # what the step added.
+        # A release tag publishes the derived image with its own signature, not the build's, and
+        # records what the step added.
         self.signed()
-        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="stable")
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="tag:v1.2.3")
         self.assertIn("signed only", result.stderr)
         (release / "payload.json").write_text((self.out / "payload.json").read_text().replace(self.digest, derived))
         (release / "signature").write_text("sig")
-        result = self.publish("release:sha-{commit}", ref="stable")
+        result = self.publish("release:sha-{commit}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = self.receipt()
         self.assertEqual((receipt["digest"], receipt["image"]), (derived, f"r.example/img@{derived}"))
         self.assertEqual((receipt["replaces"], receipt["carriedVersion"]), ("r.example/img@sha256:1", "abc"))
         self.assertFalse((release / "receipt.json").exists())
         (release / "receipt-extra.json").write_text('{"a": 1}\n{"b": 2}\n')
-        result = self.publish("release:sha-{commit}", ref="stable")
+        result = self.publish("release:sha-{commit}", ref="tag:v1.2.3")
         self.assertIn("one JSON object on one line", result.stderr)
         (release / "image.oci.tar").unlink()
-        result = self.publish("release:sha-{commit}", ref="stable")
+        result = self.publish("release:sha-{commit}", ref="tag:v1.2.3")
         self.assertIn("did not run", result.stderr)
 
     def test_a_signature_over_another_image_is_refused(self):
         (self.out / "payload.json").write_text('{"critical":{"identity":{"docker-reference":"r.example/other"}}}')
         (self.out / "signature").write_text("sig")
-        result = self.publish("release:sha-{commit}", ref="stable")
+        result = self.publish("release:sha-{commit}", ref="tag:v1.2.3")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not over this repository", result.stderr)
 
     def test_channels_must_match_the_run(self):
-        result = self.publish("sha-{commit}", ref="stable", channel="dev")
+        result = self.publish("sha-{commit}", ref="tag:v1.2.3", channel="dev")
         self.assertIn("publishes to dev", result.stderr)
         result = self.publish("dev:sha-{commit}", ref="main", channel="dev")
         self.assertIn("name no channel", result.stderr)
@@ -261,7 +261,7 @@ class ScriptTests(unittest.TestCase):
     def test_rust_tags_name_the_pinned_toolchain(self):
         self.signed()
         channel = re.search(r'^channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(), re.M)[1]
-        result = self.publish("release:{commit}", "release:{rust}", ref="stable")
+        result = self.publish("release:{commit}", "release:{rust}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], [COMMIT, channel])
 
@@ -274,14 +274,14 @@ class ScriptTests(unittest.TestCase):
     def test_provenance_is_attested_for_the_build_and_attached(self):
         self.provenance()
         for script in ("oci-sign.sh", "oci-attest.sh"):
-            result = self.run_script(script, "r.example/img", str(self.out), ref="stable")
+            result = self.run_script(script, "r.example/img", str(self.out), ref="tag:v1.2.3")
             self.assertEqual(result.returncode, 0, result.stderr)
         envelope = json.loads((self.out / "attestation.json").read_text())
         statement = json.loads(base64.b64decode(envelope["payload"]))
         self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
         self.assertIn(f"tilo@{COMMIT}", json.dumps(statement["predicate"]))
         self.assertNotIn("awskms", self.log.read_text())
-        result = self.publish("release:sha-{commit}", ref="stable")
+        result = self.publish("release:sha-{commit}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cosign verify-blob-attestation", self.log.read_text())
 
@@ -290,14 +290,14 @@ class ScriptTests(unittest.TestCase):
         (self.out / "freshness.json").write_text(json.dumps({"digest": self.digest, "generation": 3}))
         for args in (("oci-sign.sh",), ("oci-attest.sh",),
                      ("oci-attest.sh", "freshness.json", "https://tilo.sh/security/release-freshness/v1")):
-            result = self.run_script(args[0], "r.example/img", str(self.out), *args[1:], ref="stable")
+            result = self.run_script(args[0], "r.example/img", str(self.out), *args[1:], ref="tag:v1.2.3")
             self.assertEqual(result.returncode, 0, result.stderr)
         envelope = json.loads((self.out / "freshness.attestation.json").read_text())
         statement = json.loads(base64.b64decode(envelope["payload"]))
         self.assertEqual(statement["predicateType"], "https://tilo.sh/security/release-freshness/v1")
         self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
         (self.out / "generation").write_text("3\n")
-        result = self.publish("release:once:gen{generation}", ref="stable")
+        result = self.publish("release:once:gen{generation}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["gen3"])
         self.assertIn("--type https://tilo.sh/security/release-freshness/v1", self.log.read_text())
@@ -315,13 +315,13 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cosign verify-blob-attestation", self.log.read_text())
         result = subprocess.run(["bash", str(PUBLISH / "oci-attest.sh"), "r.example/img", str(self.out)],
-                                env={**self.env, **env, "T_REF": "stable"}, capture_output=True, text=True)
+                                env={**self.env, **env, "T_REF": "tag:v1.2.3"}, capture_output=True, text=True)
         self.assertIn("attests main's candidates only", result.stderr)
 
     def test_provenance_of_another_image_is_refused(self):
         self.provenance("sha256:" + "1" * 64)
-        self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
-        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="stable")
+        self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="tag:v1.2.3")
+        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="tag:v1.2.3")
         self.assertIn("not for " + self.digest, result.stderr)
         result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="main")
         self.assertIn("only releases are attested", result.stderr)
@@ -329,10 +329,10 @@ class ScriptTests(unittest.TestCase):
     def test_once_tags_never_move(self):
         self.signed()
         (self.out / "fingerprint").write_text("ab" * 32 + "\n")
-        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        result = self.publish("release:once:set-{fingerprint}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["set-" + "ab" * 32])
-        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        result = self.publish("release:once:set-{fingerprint}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("is published already", result.stdout)
         self.assertTrue(self.receipt()["existing"])
@@ -356,22 +356,22 @@ class ScriptTests(unittest.TestCase):
     def test_a_kernel_rebuilt_on_the_same_commit_keeps_the_published_digest_pinned(self):
         kernel = self.tmp / "kernel"
         published = {}
-        # The first stable run's x86_64 build stays where the stand-in registry reads it.
+        # The first release tag run's x86_64 build stays where the stand-in registry reads it.
         for arch, out in (("x86_64", self.tmp / "first/x86_64"), ("aarch64", kernel / "aarch64")):
             self.build_into(out, arch)
             published[arch] = self.sign_for(out)
             result = self.run_script("oci-publish.sh", "release", "r.example/img", str(out),
-                                     f"once:sha-{{commit}}-{arch}", ref="stable")
+                                     f"once:sha-{{commit}}-{arch}", ref="tag:v1.2.3")
             self.assertEqual(result.returncode, 0, result.stderr)
-        # A second stable run on the commit rebuilt x86_64 into another image.
+        # A second release tag run on the commit rebuilt x86_64 into another image.
         self.build_into(kernel / "x86_64", "amd64")
         rebuilt = self.sign_for(kernel / "x86_64")
         self.assertNotEqual(rebuilt, published["x86_64"])
         result = self.run_script("oci-publish.sh", "release", "r.example/img", str(kernel / "x86_64"),
-                                 "once:sha-{commit}-x86_64", ref="stable")
+                                 "once:sha-{commit}-x86_64", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("is published already", result.stdout)
-        result = self.run_script("kernel.sh", "pins", str(kernel), ref="stable")
+        result = self.run_script("kernel.sh", "pins", str(kernel), ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         pins = (kernel / "pins.env").read_text()
         self.assertIn(f"KERNEL_RPMS_X86_64_REF=registry.tilo.so/tilo/tilo-kernel@{published['x86_64']}\n", pins)
@@ -379,7 +379,7 @@ class ScriptTests(unittest.TestCase):
         self.assertNotIn(rebuilt, pins)
 
     def env_tools(self, mode: str, *args: str) -> subprocess.CompletedProcess:
-        return self.run_script("env-tools-release.sh", mode, *args, ref="stable")
+        return self.run_script("env-tools-release.sh", mode, *args, ref="tag:v1.2.3")
 
     def test_the_env_tools_catalog_publishes_once_under_the_plan_s_tag(self):
         plan = self.tmp / "plan"
@@ -424,7 +424,7 @@ class ScriptTests(unittest.TestCase):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")
         result = self.publish("dev:x", ref="main")
         self.assertIn("not the build", result.stderr)
-        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="tag:v1.2.3")
         self.assertIn("the build recorded", result.stderr)
 
     def test_signing_is_for_releases_only(self):
@@ -434,7 +434,7 @@ class ScriptTests(unittest.TestCase):
 
     def test_development_signing_is_for_main_and_branches_only(self):
         self.env["TILO_DEV_SIGNING"] = "1"
-        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="tag:v1.2.3")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("signs development candidates only", result.stderr)
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="feature")
@@ -449,7 +449,7 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(self.receipt()["signed"])
 
     def test_the_dry_run_signs_with_a_throwaway_key(self):
-        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         log = self.log.read_text()
         self.assertIn("cosign generate-key-pair", log)
@@ -462,7 +462,7 @@ class ScriptTests(unittest.TestCase):
         # leaves an empty dry-run.pub (no dry-run key) beside what it signed.
         checks = {c["name"]: c for c in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
         del self.env["TILO_PUBLISH_DRY_RUN"]
-        for name, ref in (("sign-ci-builder", "stable"), ("sign-dev-ci-builder", "main")):
+        for name, ref in (("sign-ci-builder", "tag:v1.2.3"), ("sign-dev-ci-builder", "main")):
             with self.subTest(name):
                 check = checks[name]
                 prefix = "/target/publish/ci-builder/x86_64/"
@@ -557,7 +557,7 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("the run is for", result.stderr)
         (self.out / "board").write_text("lenovo-83ed\n")
         (self.out / "revision").write_text(COMMIT + "\n")
-        result = self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="stable")
+        result = self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="tag:v1.2.3")
         self.assertIn("from main only", result.stderr)
         self.assertFalse((self.out / "receipt.json").exists())
 

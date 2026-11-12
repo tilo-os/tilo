@@ -157,6 +157,7 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     let face = wire::Author {
         name: client.to_owned(),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     };
     // What it is doing now leads, in the words its run's row uses; an
@@ -198,17 +199,10 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
                     doors.door(door::REVOKE, &door::GrantRef { grant: id.clone() });
                 })
         };
-        let reach = match &grant.reach {
-            door::Reach::Account => tr("console-reach-account"),
-            door::Reach::Workspace { name, .. } => trf(
-                "console-reach-workspace",
-                &[("workspace", name.clone().into())],
-            ),
-        };
         parts.push(Box::new(Section::titled(
             tr("console-agent-access"),
             vec![Box::new(
-                ListRow::new("console-agent-access-row", reach)
+                ListRow::new("console-agent-access-row", crate::connect::access(grant))
                     .icon(Icon::Link)
                     .secondary_lines(2)
                     .trailing(Box::new(revoke)),

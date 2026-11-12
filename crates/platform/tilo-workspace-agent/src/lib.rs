@@ -293,7 +293,27 @@ impl WorkspaceAgents {
     }
 }
 
-#[resource(kind = "chat.agent", label = "Agents", search = WorkspaceAgents::search)]
+impl WorkspaceAgents {
+    /// What the record holds: the workspace's agents: each one's name, the member who keeps it,
+    /// its model and its colour.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "chat.agent",
+    search = WorkspaceAgents::search,
+    read_content = WorkspaceAgents::read_document
+)]
 impl WorkspaceAgents {
     /// Make an agent.
     ///
@@ -630,6 +650,16 @@ impl WorkspaceAgents {
             .map(|n| format!("{stem}-{n}"))
             .find(|id| !taken(id))
             .unwrap_or_else(|| format!("{stem}-{}", MAX_AGENTS + 2))
+    }
+
+    /// What each agent working here is called, by its bare id (its actor is `agent:<id>`): the
+    /// one answer every app names an agent by.
+    #[must_use]
+    pub fn active_names(&self) -> std::collections::HashMap<String, String> {
+        self.active()
+            .filter(|agent| !agent.name.trim().is_empty())
+            .map(|agent| (agent.id.0.clone(), agent.name.trim().to_owned()))
+            .collect()
     }
 
     /// Every agent's name, as search names them.

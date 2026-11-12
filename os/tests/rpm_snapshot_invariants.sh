@@ -30,6 +30,8 @@ mapfile -t frozen_consumers < <(
     "$repo/os/Containerfile.dev" \
     "$repo/os/Containerfile.host" \
     "$repo/os/containers/tilo-relay/Containerfile" \
+    "$repo/os/containers/tilo-front-door/Containerfile" \
+    "$repo/os/containers/tilo-vm-host/Containerfile" \
     "$repo/os/dev/composefs/Containerfile"
 )
 
@@ -92,9 +94,9 @@ has "$repo/tools/ci/publish/oci-sign.sh" 'public_key=$repo_root/keys/cosign.pub'
   'release signatures are verified against the pinned public key'
 has "$rpms_provenance" 'fingerprint=$(python3 os/dev/rpm-snapshot-fingerprint.py)' \
   'snapshot provenance computes the package-set fingerprint'
-has "$repo/tools/ci/publish/rpm-snapshot-ref.sh" 'ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")' \
-  'snapshot consumers resolve the fingerprint tag to a verified digest'
-# Signing holds the identity token only on stable, never on main or a working tree.
+has "$repo/tools/ci/publish/rpm-snapshot-ref.sh" 'ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh" --arch "$arch")' \
+  'snapshot consumers resolve their architecture fingerprint tag to a verified digest'
+# A release tag publishes by fingerprint with no pin pull request, and no pin file.
 if ! grep -Eq 'open-snapshot-pr\.py|reconcile-snapshot-pins\.py|rpms-snapshot\.env' \
      "$rpms_build" "$rpms_provenance"; then
   ok 'snapshot publishes by fingerprint tag with no pin pull request'
@@ -181,10 +183,14 @@ if COSIGN_KEY_REF='awskms:///not-an-arn' \
 else
   ok 'malformed AWS KMS key references fail closed'
 fi
-has "$rpms_provenance" '"buildType": "https://tilo.sh/buildtypes/frozen-rpm-index/v1"' \
+has "$rpms_provenance" '"buildType": "https://tilo.sh/buildtypes/frozen-rpm-snapshot/v1"' \
   'snapshot provenance binds the package-set build type'
 has "$rpms_provenance" '"internalParameters": {"expectedReleaseDigest": digest}' \
-  'snapshot provenance binds the index digest'
+  'snapshot provenance binds the architecture image digest'
+has "$rpms_provenance" '"architecture": platform_arch' \
+  'snapshot provenance binds the architecture it was built for'
+has "$rpms_provenance" '"packageSetSha256": package_set_sha256' \
+  'snapshot provenance binds that architecture package set'
 has "$repo/tools/ci/publish/oci-attest.sh" 'type=${4:-slsaprovenance1}' \
   'snapshot provenance is attested as SLSA provenance'
 has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type "$type" --predicate "$predicate"' \
@@ -194,24 +200,39 @@ has "$repo/tools/ci/publish/oci-attest.sh" 'die "the provenance predicate is not
 resolve_script="$repo/os/dev/resolve-rpm-snapshot.sh"
 has "$resolve_script" 'if type == "array" then .[] else . end' \
   'snapshot verification accepts current object and legacy array Cosign output'
-has "$resolve_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+has "$resolve_script" 'frozen RPM provenance does not bind its architecture, package set, digest and base' \
   'fingerprint resolve verifies exact RPM snapshot provenance'
-has "$resolve_script" 'derive-rpm-package-set.py" --arch x86_64' \
-  'fingerprint resolve derives the explicit x86-64 RPM package set'
-has "$resolve_script" 'derive-rpm-package-set.py" --arch aarch64' \
-  'fingerprint resolve derives the explicit ARM64 RPM package set'
-has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
-  'fingerprint resolve verifies architecture-specific RPM package-set provenance'
+has "$resolve_script" 'derive-rpm-package-set.py" --arch "$arch"' \
+  'fingerprint resolve derives the package set of the architecture it resolves'
+has "$resolve_script" '.buildDefinition.externalParameters.architecture == $arch' \
+  'fingerprint resolve verifies the architecture its provenance names'
+has "$resolve_script" 'tag="set-$fingerprint-$arch"' \
+  'fingerprint resolve looks up one architecture per tag'
+has "$resolve_script" 'image_platform" = "linux/$platform_arch"' \
+  'fingerprint resolve verifies the image is of the architecture it resolves'
+has "$repo/os/dev/registry-manifest.py" 'add_unredirected_header("Authorization", f"Bearer {token}")' \
+  'the snapshot reader keeps its registry token off the blob store a blob GET redirects to'
+has "$rpms_build" 'export TILO_OCI_LAYERS=1' \
+  'the snapshot keeps its repository metadata in a layer of its own to be read alone'
+has "$repo/tools/ci/publish/oci-build.sh" 'build --layers="$layers"' \
+  'the image builder keeps a layer per instruction only where a check asks for it'
+has "$repo/os/dev/verify-rpm-snapshot-buildkit.py" 'def layer_manifest(host, repository, layer):' \
+  'the snapshot verifier reads a single-layer snapshot as it arrives'
+has "$snapshot" 'COPY --from=layers /slots/meta/ /' \
+  'the snapshot recipe copies its repository metadata last'
 # The relay image installs only from the snapshot rpm-snapshot resolved and verified.
 # It takes the published snapshot only as a digest-pinned reference; a build of a package set
-# stable has not published (the run's own image-rpms) records so and is never signed.
+# a release tag has not published (the run's own image-rpms) records so and is never
+# signed.
 has "$repo/tools/ci/publish/relay-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
   'the relay image installs from the snapshot rpm-snapshot named'
 has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
   'the relay image accepts only a digest-pinned published RPM snapshot'
 has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-source"' \
   'an image built from an unpublished RPM snapshot is never signed'
-has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+has "$build_script" '.buildDefinition.externalParameters.architecture == $native_arch' \
+  'local OS builds take only RPM provenance of their own architecture'
+has "$build_script" "frozen RPM provenance does not bind this machine's architecture, package set, digest and base" \
   'local OS builds verify exact RPM snapshot provenance'
 has "$rpms_build" 'assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)' \
   'snapshot takes the checksum-verified external input from os-assets'

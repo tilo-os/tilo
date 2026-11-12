@@ -6,7 +6,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{BlendMode, ColorStop, Fill, Gradient};
+use vello::peniko::{ColorStop, Fill, Gradient};
 
 use crate::theme::Theme;
 
@@ -25,24 +25,12 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
 
 /// The ground of a whole-view surface that pictures the windows it covers
 /// (the workspace overview): the desktop, blurred and tinted as the
-/// floating material is, over everything drawn before it, then the modal
-/// dim. Unlike [`modal`] it hides what it covers once `openness` reaches 1,
-/// because the surface shows those windows itself and they must not be
-/// seen twice; on the way there they fade out under it. Opaque base where
-/// the theme does not blur (reduced transparency, forced colours) or no
-/// desktop is published. Call after everything it covers is drawn.
-pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
-    let openness = openness.clamp(0.0, 1.0);
-    if openness <= 0.0 {
-        return;
-    }
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        openness,
-        transform,
-        &rect,
-    );
+/// floating material is, then the modal dim. Unlike [`modal`] it hides what
+/// it covers, because the surface shows those windows itself and they must
+/// not be seen twice; it fades in as a whole ([`crate::lift`]). Opaque base
+/// where the theme does not blur (reduced transparency, forced colours) or
+/// no desktop is published.
+pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     crate::backdrop::desktop::fill(
         scene,
         (transform, Affine::IDENTITY),
@@ -51,8 +39,7 @@ pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, openness: f3
         theme,
         theme.tokens.colors.surfaces.base,
     );
-    scene.pop_layer();
-    modal(scene, transform, rect, openness, theme);
+    modal(scene, transform, rect, 1.0, theme);
 }
 
 /// Dim the whole window behind a modal Panel, the part under the panel

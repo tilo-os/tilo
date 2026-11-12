@@ -8,7 +8,7 @@
 //! and clocks are the toolkit's, in the session, not the compositor's.
 //! A hosted surface that shows other clients' windows (the overview's
 //! thumbnails, a switcher card) names them and the rects they rest at
-//! ([`WindowPicture`], from [`crate::SurfaceHost::window_pictures`]); the
+//! ([`WindowPicture`], from [`SurfaceHost::window_pictures`](tilo_session_core::surface::SurfaceHost::window_pictures)); the
 //! compositor draws each window's live buffer there, scaled to fit, in
 //! front of that surface's layers — and a window a capture may not show
 //! ([`crate::capture::protect`]) as the same placeholder a capture draws of
@@ -40,6 +40,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::render::OutputRenderElement;
 use crate::window_frame::{self, FrameImages, WindowFrame};
+use tilo_session_core::surface::WindowPicture;
 
 /// How one window is drawn this frame instead of as it stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,20 +61,6 @@ impl Default for WindowEffect {
             opacity: 1.0,
         }
     }
-}
-
-/// A window a hosted surface pictures: its live buffer, scaled to fit `rect` (centred, its aspect
-/// kept), clipped to `clip` .
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WindowPicture {
-    /// The window, by [`crate::WindowInfo::id`].
-    pub window: u64,
-    /// Where the picture rests, logical `(x, y, width, height)` .
-    pub rect: (f64, f64, f64, f64),
-    /// Its opacity, 0 to 1.
-    pub opacity: f32,
-    /// What it may cover, logical `(x, y, width, height)` ; all of the output when `None` .
-    pub clip: Option<(f64, f64, f64, f64)>,
 }
 
 /// How the desktop frames windows, and the shadows and edges drawn so far.
@@ -155,6 +142,8 @@ pub struct RoundedElement<E> {
     /// The element's own geometry where it stands, physical: the rect its corners belong to,
     /// however much of it the clip leaves.
     whole: Rectangle<i32, Physical>,
+    /// The part of the buffer `whole` shows, where it stands.
+    whole_src: Rectangle<f64, Buffer>,
     /// The part of the buffer `whole` ∩ `clip` draws.
     src: Rectangle<f64, Buffer>,
 }
@@ -164,14 +153,47 @@ impl<E: Element> RoundedElement<E> {
     /// covering no more than `clip`, on an output at `scale`.
     pub fn new(element: E, radius: f64, clip: Rectangle<i32, Physical>, scale: Scale<f64>) -> Self {
         let whole = element.geometry(scale);
-        let src = cropped_source(element.src(), whole, whole.intersection(clip));
+        let whole_src = element.src();
+        let src = cropped_source(whole_src, whole, whole.intersection(clip));
         Self {
             element,
             radius,
             clip,
             whole,
+            whole_src,
             src,
         }
+    }
+
+    /// The rect `whole` stands in as this draw shows it, and the radius its corners are cut by
+    /// there.
+    ///
+    /// `src` is the part of the buffer drawn into `dst`, so where the rest of the buffer would land
+    /// follows from the two: a window drawn magnified, moved or scaled by the desktop keeps its
+    /// corners on its own rect, and its rounding grows with it, instead of the corners being cut
+    /// where the element happened to be built.
+    fn whole_as_drawn(
+        &self,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+    ) -> (Rectangle<i32, Physical>, f64) {
+        let ratio = |drawn: f64, of: f64| if of > 0.0 { drawn / of } else { 1.0 };
+        // How much of the output a buffer pixel covers in this draw, and when built.
+        let (across, down) = (
+            ratio(f64::from(dst.size.w), src.size.w),
+            ratio(f64::from(dst.size.h), src.size.h),
+        );
+        let built_across = ratio(f64::from(self.whole.size.w), self.whole_src.size.w);
+        let whole = Rectangle::<f64, Physical>::new(
+            Point::from((
+                f64::from(dst.loc.x) + (self.whole_src.loc.x - src.loc.x) * across,
+                f64::from(dst.loc.y) + (self.whole_src.loc.y - src.loc.y) * down,
+            )),
+            Size::from((self.whole_src.size.w * across, self.whole_src.size.h * down)),
+        )
+        .to_i32_round();
+        // The rounding is as many pixels of the output as it was built as.
+        (whole, self.radius * across / built_across)
     }
 
     /// The element inside.
@@ -272,8 +294,10 @@ where
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), R::Error> {
         // The rows cut the corners of the rect the element stands in, whatever the clip leaves of
-        // it: a window a card takes a bite out of keeps the corners it has.
-        let bands = window_frame::bands(self.whole, self.radius);
+        // it: a window a card takes a bite out of keeps the corners it has, and one drawn larger
+        // keeps them at the size it is drawn.
+        let (whole, radius) = self.whole_as_drawn(src, dst);
+        let bands = window_frame::bands(whole, radius);
         if bands.len() <= 1 {
             return self.element.draw(frame, src, dst, damage, opaque_regions);
         }

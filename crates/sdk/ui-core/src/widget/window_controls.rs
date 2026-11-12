@@ -83,11 +83,51 @@ pub struct WindowControls {
 pub struct ControlsState {
     pub hovered: Option<WindowControl>,
     pub pressed: Option<WindowControl>,
-    pub maximized: bool,
+    pub resize: Resize,
     /// How far each control's hover ring has come in, by control
     /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
     /// fades in and out rather than appearing and vanishing.
     pub lifts: [f32; 3],
+}
+
+/// What the maximize control does for where the window stands now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Resize {
+    /// The window takes the whole strip.
+    #[default]
+    Maximize,
+    /// The maximized window takes its width back.
+    Restore,
+    /// The window floating over the desk goes back into its strip, where it stood.
+    Snap,
+    /// The card folded to its header opens again: its collapse control points up while it is shut.
+    Expand,
+}
+
+impl Resize {
+    /// What the control does for a window that is `maximized`, `floating` or folded to its header
+    /// as a card (`collapsed`): a floating window is never maximized.
+    #[must_use]
+    pub fn of_window(maximized: bool, floating: bool, collapsed: bool) -> Self {
+        match (floating, collapsed) {
+            (true, true) => Resize::Expand,
+            (true, false) => Resize::Snap,
+            (false, _) => {
+                if maximized {
+                    Resize::Restore
+                } else {
+                    Resize::Maximize
+                }
+            }
+        }
+    }
+
+    /// What the control does for a window that is `maximized` or `floating`: a floating window is
+    /// never maximized, it snaps back.
+    #[must_use]
+    pub fn of(maximized: bool, floating: bool) -> Self {
+        Self::of_window(maximized, floating, false)
+    }
 }
 
 impl WindowControl {
@@ -104,12 +144,31 @@ impl WindowControl {
     /// The control's name in the window's locale: what a screen reader says
     /// and an agent presses it by.
     #[must_use]
-    pub fn name_key(self, maximized: bool) -> &'static str {
-        match self {
-            WindowControl::Minimize => "host-window-minimize",
-            WindowControl::Maximize if maximized => "host-window-restore",
-            WindowControl::Maximize => "host-window-maximize",
-            WindowControl::Close => "host-window-close",
+    pub fn name_key(self, resize: Resize) -> &'static str {
+        match (self, resize) {
+            // A window floating as a card folds to its header, as every card over the desk does.
+            (WindowControl::Minimize, Resize::Snap) => "host-window-collapse",
+            // Folded to its header, the same control opens it again.
+            (WindowControl::Minimize, Resize::Expand) => "host-window-expand",
+            (WindowControl::Minimize, _) => "host-window-minimize",
+            (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
+            (WindowControl::Maximize, Resize::Restore) => "host-window-restore",
+            (WindowControl::Maximize, Resize::Snap | Resize::Expand) => "host-window-snap",
+            (WindowControl::Close, _) => "host-window-close",
+        }
+    }
+
+    /// The control's glyph.
+    #[must_use]
+    pub fn icon(self, resize: Resize) -> icons::Icon {
+        match (self, resize) {
+            (WindowControl::Minimize, Resize::Snap) => icons::Icon::ChevronDown,
+            (WindowControl::Minimize, Resize::Expand) => icons::Icon::ChevronUp,
+            (WindowControl::Minimize, _) => icons::Icon::Minus,
+            (WindowControl::Maximize, Resize::Maximize) => icons::Icon::Maximize2,
+            (WindowControl::Maximize, Resize::Restore) => icons::Icon::Minimize2,
+            (WindowControl::Maximize, Resize::Snap | Resize::Expand) => icons::Icon::Columns2,
+            (WindowControl::Close, _) => icons::Icon::X,
         }
     }
 
@@ -146,6 +205,16 @@ impl WindowControls {
     #[must_use]
     pub fn lay_out_own_window(row: Rect) -> Self {
         Self::place(row, true)
+    }
+
+    /// The controls of a window floating as a card: collapse, snap back and close, standing flat
+    /// on the card's own ground as a card's header controls do, with no pill of their own.
+    #[must_use]
+    pub fn lay_out_card(row: Rect) -> Self {
+        Self {
+            pill: Rect::ZERO,
+            ..Self::place(row, true)
+        }
     }
 
     fn place(row: Rect, minimize: bool) -> Self {
@@ -278,7 +347,7 @@ impl WindowControls {
 
     /// Paint the pill and its controls.
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme, state: ControlsState) {
-        if self.pill.area() <= 0.0 {
+        if self.iter().next().is_none() {
             return;
         }
         paint_pill(scene, transform, self.pill, theme);
@@ -300,12 +369,7 @@ impl WindowControls {
             // Lit at once under a press; otherwise as far in as the spring
             // has brought it — coming in, or going out from where it was.
             let ring = if pressed { 1.0 } else { lift };
-            let glyph = match control {
-                WindowControl::Minimize => icons::Icon::Minus,
-                WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
-                WindowControl::Maximize => icons::Icon::Maximize2,
-                WindowControl::Close => icons::Icon::X,
-            };
+            let glyph = control.icon(state.resize);
             let glyph_box = match control {
                 WindowControl::Close => square_at(rect.center(), CLOSE_GLYPH_PX),
                 WindowControl::Minimize | WindowControl::Maximize => {
@@ -389,6 +453,9 @@ pub struct ButtonFace {
     pub enabled: bool,
     /// It ends, removes or discards something: the destructive role's face.
     pub destructive: bool,
+    /// It is the app's one main action: the primary role's face, the glyph on the accent, so
+    /// the bar still says what the window is for where its words do not fit.
+    pub primary: bool,
 }
 
 /// Paint one icon button of a window's bar with the shared button face
@@ -407,6 +474,8 @@ pub fn paint_icon_button(
 ) {
     let role = if face.destructive {
         crate::widget::ButtonRole::Destructive
+    } else if face.primary {
+        crate::widget::ButtonRole::Primary
     } else {
         crate::widget::ButtonRole::Plain
     };
@@ -426,6 +495,30 @@ mod tests {
 
     fn row() -> Rect {
         Rect::new(0.0, 0.0, 800.0, 40.0)
+    }
+
+    /// A card folded to its header: its collapse control points up and says it opens the card,
+    /// where an open one points down.
+    #[test]
+    fn a_folded_cards_collapse_control_points_up() {
+        assert_eq!(Resize::of_window(false, true, false), Resize::Snap);
+        assert_eq!(Resize::of_window(false, true, true), Resize::Expand);
+        assert_eq!(
+            WindowControl::Minimize.icon(Resize::Snap),
+            icons::Icon::ChevronDown
+        );
+        assert_eq!(
+            WindowControl::Minimize.icon(Resize::Expand),
+            icons::Icon::ChevronUp
+        );
+        assert_eq!(
+            WindowControl::Minimize.name_key(Resize::Expand),
+            "host-window-expand"
+        );
+        assert_eq!(
+            WindowControl::Minimize.name_key(Resize::Snap),
+            "host-window-collapse"
+        );
     }
 
     #[test]

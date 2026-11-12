@@ -32,6 +32,7 @@ use crate::chrome::{NavCount, nav_row_height};
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
+use crate::widget::DrawChild;
 use crate::widget::{
     AppModel, FilterCount, Filterable, ListModel, ModelPath, RowStatus, Theme, Tone, VirtualList,
 };
@@ -336,6 +337,8 @@ pub struct NavPerson {
     pub name: Option<String>,
     /// Their picture; their initials stand in while there is none.
     pub image: Option<vello::peniko::ImageData>,
+    /// An agent, not a person: it wears the agent's own face in its colour.
+    pub agent: bool,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -559,6 +562,7 @@ impl NavItem {
             speaking,
             name: None,
             image: None,
+            agent: false,
         });
         self
     }
@@ -574,6 +578,16 @@ impl NavItem {
         if let Some(person) = &mut self.person {
             person.name = Some(name.into());
             person.image = image;
+        }
+        self
+    }
+
+    /// The one the row stands for ([`Self::person`]) is an agent: it wears the agent's own face,
+    /// as every row, card and byline shows it.
+    #[must_use]
+    pub fn agent_face(mut self) -> Self {
+        if let Some(person) = &mut self.person {
+            person.agent = true;
         }
         self
     }
@@ -2429,7 +2443,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             // A rail tile's caption wraps in the rail's width.
             self.list.update_model(|_| ());
         }
-        crate::widget::Widget::draw(&mut *self.list, scene, transform, text, theme, presence);
+        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme, presence);
         if let Some(feed) = &self.feed {
             let model = self.list.model();
             let rows = (0..model.len())

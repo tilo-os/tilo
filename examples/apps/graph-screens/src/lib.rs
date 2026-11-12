@@ -67,7 +67,7 @@ fn screens() -> Element {
         crate::components::ui_graph_context(),
     ) {
         Ok(router) => Box::new(router),
-        Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
+        Err(error) => Box::new(Banner::error(crate::locales::CATALOG.t_args(
             "graph-load-error",
             &[("error", error.to_string().as_str().into())],
         ))),

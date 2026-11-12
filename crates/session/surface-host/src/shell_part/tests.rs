@@ -68,7 +68,7 @@ fn click(part: &mut ShellPart, name: &str) {
 fn type_into(part: &mut ShellPart, text: &str) {
     for letter in text.chars() {
         for pressed in [true, false] {
-            let key = tilo_compositor::HostKey {
+            let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
                 pressed,
                 repeat: false,
@@ -76,9 +76,9 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 unmodified_keysym: u32::from(letter),
                 latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
-                modifiers: tilo_compositor::KeyModifiers::default(),
+                modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_compositor::SurfaceHost::key(part, &key);
+            tilo_session_core::surface::SurfaceHost::key(part, &key);
             part.prepare_frame();
         }
     }
@@ -250,7 +250,7 @@ fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
             Ask {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "dismiss-notice".to_owned(),
-                arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+                arguments: BTreeMap::from([("notice".to_owned(), "1".into())]),
                 from: None,
             },
             Ask {
@@ -286,7 +286,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     );
     assert_eq!(
         opening.map(|ask| ask.arguments.get("surface").cloned()),
-        Some(Some("centre".to_owned())),
+        Some(Some("centre".into())),
         "the bell opens the notification centre"
     );
 }
@@ -495,7 +495,7 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
         asked.map(|ask| (ask.action, ask.arguments)),
         Some((
             "switch-workspace".to_owned(),
-            BTreeMap::from([("workspace".to_owned(), "2".to_owned())])
+            BTreeMap::from([("workspace".to_owned(), "2".into())])
         )),
         "{:?} {:?}",
         part.work(),
@@ -570,7 +570,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
         vec![Ask {
             resource: "desktop:chrome".to_owned(),
             action: "open-app".to_owned(),
-            arguments: BTreeMap::from([("app".to_owned(), "so.tilo.sheets".to_owned())]),
+            arguments: BTreeMap::from([("app".to_owned(), "so.tilo.sheets".into())]),
             from: None,
         }],
         "{:?}",
@@ -672,7 +672,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         "the door reaches the bars still standing, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
-    part.outputs_changed(&[tilo_compositor::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (1280, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -733,6 +733,30 @@ fn one_window_arrangement() -> ArrangementReading {
     }
 }
 
+/// Where the menu of the window the part shows as `name` stands, when it shows one. The strips
+/// say a window's name twice: its frame is named for it, and so is the window's own menu in its
+/// bar, which lists the commands of the place the window shows. The frame is the largest control
+/// of that name, and the menu the smallest of the others whose centre the frame holds: an icon
+/// in the window's bar. A window named by its frame alone has none.
+fn window_menu(part: &mut ShellPart, name: &str) -> Option<(f64, f64, f64, f64)> {
+    let named = part.control_bounds_all(name);
+    let frame = named
+        .iter()
+        .copied()
+        .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))?;
+    named
+        .into_iter()
+        .filter(|&(x, y, w, h)| {
+            let (across, down) = (x + w / 2.0, y + h / 2.0);
+            w * h < frame.2 * frame.3
+                && across >= frame.0
+                && across <= frame.0 + frame.2
+                && down >= frame.1
+                && down <= frame.1 + frame.3
+        })
+        .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+}
+
 /// A part over the arrangement of one foreign window, its wells reporting to the handle it
 /// returns.
 fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
@@ -777,22 +801,27 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         "the well stands on the output, under the bar: {well:?}"
     );
 
-    // Each window's own controls stand in its one bar — its menu and its close, beside its
-    // maximize; the framed canvas shows none of them, and its entry (what typed text finds is
+    // Each window's own controls stand in its one bar — its menu, named for the window it is the
+    // menu of (the place shows a terminal and has no title of its own, so it is called by what
+    // it shows), and its close, beside its maximize; the framed canvas names the window by its
+    // frame alone, with no menu of the window's, and shows its entry (what typed text finds is
     // placed on the canvas) instead.
     assert!(
-        labels.iter().any(|label| label == "This window")
+        window_menu(&mut part, "Terminal").is_some()
             && labels.iter().any(|label| label == "Close")
             && labels.iter().any(|label| label == "Maximize"),
-        "the windows show their controls: {labels:?}"
+        "the windows show their controls: {labels:?}; Terminal names {:?}",
+        part.control_bounds_all("Terminal")
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
     let labels = crate::Published::accessible_labels(&mut part);
+    let named = part.control_bounds_all("Terminal");
     assert!(
-        !labels.iter().any(|label| label == "This window")
+        !named.is_empty()
+            && window_menu(&mut part, "Terminal").is_none()
             && labels.iter().any(|label| label == CANVAS_ENTRY),
-        "the canvas shows: {labels:?}; refused {:?}",
+        "the canvas shows: {labels:?}; Terminal names {named:?}; refused {:?}",
         part.refusals()
     );
     assert!(
@@ -935,11 +964,18 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
         (asked.resource.as_str(), asked.action.as_str()),
         ("desktop:chrome", "move-tab")
     );
-    assert_eq!(asked.arguments.get("tab").map(String::as_str), Some(tab));
-    let to: tilo_desktop_surface::navigation::Destination = serde_json::from_str(
-        asked.arguments.get("to").expect("the destination"),
-    )
-    .unwrap_or_else(|why| panic!("the destination reads as the chrome's: {why}: {asked:?}"));
+    assert_eq!(
+        asked
+            .arguments
+            .get("tab")
+            .and_then(serde_json::Value::as_str),
+        Some(tab)
+    );
+    let to: tilo_desktop_surface::navigation::Destination =
+        serde_json::from_value(asked.arguments.get("to").cloned().expect("the destination"))
+            .unwrap_or_else(|why| {
+                panic!("the destination reads as the chrome's: {why}: {asked:?}")
+            });
     assert_eq!(
         to,
         tilo_desktop_surface::navigation::Destination {
@@ -978,7 +1014,7 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
             .map(|ask| (ask.action.clone(), ask.arguments.clone())),
         Some((
             "new-workspace".to_owned(),
-            BTreeMap::from([("name".to_owned(), "studio".to_owned())]),
+            BTreeMap::from([("name".to_owned(), "studio".into())]),
         )),
     );
 }
@@ -999,7 +1035,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     click(&mut part, LAUNCHER_SEARCH);
     for letter in "quarterly".chars() {
         for pressed in [true, false] {
-            let key = tilo_compositor::HostKey {
+            let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
                 pressed,
                 repeat: false,
@@ -1007,9 +1043,9 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 unmodified_keysym: u32::from(letter),
                 latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
-                modifiers: tilo_compositor::KeyModifiers::default(),
+                modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_compositor::SurfaceHost::key(&mut part, &key);
+            tilo_session_core::surface::SurfaceHost::key(&mut part, &key);
             part.prepare_frame();
         }
     }
@@ -1023,7 +1059,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         Some(Ask {
             resource: "desktop:desk".to_owned(),
             action: "search".to_owned(),
-            arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
+            arguments: BTreeMap::from([("query".to_owned(), "quarterly".into())]),
             from: None,
         }),
     );
@@ -1057,7 +1093,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         part.prepare_frame();
     }
     assert!(!part.due(), "the part settled");
-    part.outputs_changed(&[tilo_compositor::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1157,7 +1193,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
         part.prepare_frame();
         part.draw();
     }
-    let pictures = tilo_compositor::SurfaceHost::window_pictures(&part);
+    let pictures = tilo_session_core::surface::SurfaceHost::window_pictures(&part);
     let picture = pictures
         .first()
         .unwrap_or_else(|| panic!("the switcher pictures the window it may: {pictures:?}"));
@@ -1339,7 +1375,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 #[test]
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let (mut plain, _link) = part_on(reading(), (1280, 800));
-    plain.outputs_changed(&[tilo_compositor::HostedOutput {
+    plain.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1348,7 +1384,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let one = plain.widgets_mut().placement();
 
     let (mut twice, _link) = part_on(reading(), (1280, 800));
-    twice.outputs_changed(&[tilo_compositor::HostedOutput {
+    twice.outputs_changed(&[tilo_session_core::surface::HostedOutput {
         rect: (0, 0, 1280, 800),
         scale: 2.0,
     }]);
@@ -1466,4 +1502,112 @@ fn the_style_switch_lists_the_styles_a_later_reading_carries() {
             "the switch lists the {name} style once the reading carries it: {labels:?}"
         );
     }
+}
+
+/// The shell's views run in the session, which holds the person's formats: a day's
+/// `start_of_week()` goes back to the day their region starts a week on, as their desk's calendar
+/// and their app windows read it, not to the Monday a view with no formats falls back on.
+#[test]
+fn a_shells_week_starts_on_the_persons_first_day() {
+    let platform = ShellPlatform {
+        packages: Rc::new(Vec::new()),
+        waker: std::sync::Arc::new(|| {}),
+        link: Rc::new(SessionLink::default()),
+    };
+    let before = ui::format::region::current();
+    let monday = ui::format::region::RegionFormats {
+        first_day: ui::format::region::FirstDayOfWeek::Monday,
+        ..before
+    };
+    ui::format::region::install(monday);
+    assert_eq!(platform.week_start(), 0, "a week that starts on Monday");
+    ui::format::region::install(ui::format::region::RegionFormats {
+        first_day: ui::format::region::FirstDayOfWeek::Sunday,
+        ..monday
+    });
+    assert_eq!(
+        platform.week_start(),
+        6,
+        "the person starts their week on Sunday"
+    );
+    ui::format::region::install(before);
+}
+
+/// The framed canvas pans under a middle drag, and the window's well goes with it in the frame
+/// the drag is drawn in: the window policy reads the well, so a window stands in its frame
+/// wherever the person carries the canvas.
+#[test]
+fn a_canvas_pan_carries_the_windows_well_with_it() {
+    let (mut part, wells) = showing_one_window();
+    click(&mut part, "Showing Strips");
+    click(&mut part, "Frames");
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let before = wells.well("p1").expect("the place is a well on the canvas");
+    // A point on the canvas' ground, clear of the place: below and right of its well.
+    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
+    part.pointer_motion(x, y);
+    part.prepare_frame();
+    part.pointer_button(0x112, true);
+    part.prepare_frame();
+    let mut seen = Vec::new();
+    for step in 1..=5 {
+        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
+        part.prepare_frame();
+        seen.push(wells.well("p1"));
+    }
+    part.pointer_button(0x112, false);
+    part.prepare_frame();
+    let after = wells.well("p1").expect("the place is still a well");
+    assert!(
+        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
+        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
+    );
+}
+
+/// A window that arrives past the canvas' edge is shown: the canvas pans to it, and on every
+/// frame of the way each window's well has moved with the canvas, the one that stood there and
+/// the one arriving alike, so no window trails its frame.
+#[test]
+fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
+    let wells = ui::widget::Wells::new();
+    let (mut part, link) = super::tests_support::part_as(reading(), Some(wells.clone()));
+    link.publish_arrangement(one_window_arrangement());
+    click(&mut part, "Showing Strips");
+    click(&mut part, "Frames");
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let mut arrangement = one_window_arrangement();
+    let mut far = arrangement.strips[0].clone();
+    far.key = "s2".to_owned();
+    far.canvas_x = 1100;
+    arrangement.strips.push(far);
+    let mut arriving = arrangement.places[0].clone();
+    arriving.key = "p2".to_owned();
+    arriving.strip = "s2".to_owned();
+    arrangement.places.push(arriving);
+    link.publish_arrangement(arrangement);
+    let started = std::time::Instant::now();
+    let mut frames = Vec::new();
+    while started.elapsed() < std::time::Duration::from_secs(2) {
+        part.prepare_frame();
+        if let (Some(one), Some(two)) = (wells.well("p1"), wells.well("p2")) {
+            frames.push((one, two));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    let (_, last) = *frames.last().expect("the arriving place is a well");
+    assert!(
+        last.x0 >= 0.0 && last.x1 <= 1280.0,
+        "the window that arrived stands whole on the screen: {last:?}"
+    );
+    let apart = frames[0].1.x0 - frames[0].0.x0;
+    assert!(
+        frames
+            .iter()
+            .all(|(one, two)| ((two.x0 - one.x0) - apart).abs() < 1.0),
+        "every well moved with the canvas on every frame: {frames:?}"
+    );
 }

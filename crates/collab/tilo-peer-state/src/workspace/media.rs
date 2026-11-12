@@ -115,6 +115,15 @@ pub fn security_basis(
     basis::legacy(doc, extra_revocations)
 }
 
+/// [`security_basis`] of a governance state, reading the identity rows it
+/// decoded once rather than decoding each again.
+pub(crate) fn security_basis_of(
+    doc: &crate::cached_document::CachedDocument,
+    extra_revocations: &[tilo_user_identity::RevocationEntry],
+) -> Result<[u8; 32], MediaPolicyError> {
+    basis::decoded(doc, extra_revocations)
+}
+
 /// Strict governed-document validation. Missing policy remains disabled. This
 /// checks consistency only; callers must independently authenticate the writer.
 pub fn validate_transition(
@@ -163,22 +172,30 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
     }
     let identities = strict_map(doc, &ROOT, "peer_identities_v1")?;
     let mut floors = BTreeMap::new();
-    for key in doc.keys(&identities) {
-        let row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(doc, &identities, &key)?)
+    super::read::WorkspaceRead::visit_entries(
+        &super::read::LegacyRead(doc),
+        &identities,
+        super::read::Selection::All,
+        &mut |_, values| {
+            let bytes =
+                super::read::strict_bytes_of(values).map_err(super::read::legacy_policy_error)?;
+            let row = crate::state::GovernedIdentity::decode(&bytes)
                 .map_err(|_| MediaPolicyError::Malformed)?;
-        for entry in row.revocations {
-            if entry.user_public_key != row.device_cert.user_public_key {
-                return Err(MediaPolicyError::Binding);
+            for entry in row.revocations {
+                if entry.user_public_key != row.device_cert.user_public_key {
+                    return Err(MediaPolicyError::Binding);
+                }
+                tilo_user_identity::verify_revocation_entry(&entry)
+                    .map_err(|_| MediaPolicyError::Binding)?;
+                let floor = floors
+                    .entry((entry.user_public_key, entry.revoked_device_public_key))
+                    .or_insert(entry.revoked_at_ns);
+                *floor = (*floor).min(entry.revoked_at_ns);
             }
-            tilo_user_identity::verify_revocation_entry(&entry)
-                .map_err(|_| MediaPolicyError::Binding)?;
-            let floor = floors
-                .entry((entry.user_public_key, entry.revoked_device_public_key))
-                .or_insert(entry.revoked_at_ns);
-            *floor = (*floor).min(entry.revoked_at_ns);
-        }
-    }
+            Ok(())
+        },
+    )
+    .map_err(super::read::legacy_policy_error)?;
     Ok(floors)
 }
 
@@ -255,6 +272,7 @@ fn strict_string(
     super::read::strict_string(&super::read::LegacyRead(doc), parent, key)
         .map_err(super::read::legacy_policy_error)
 }
+#[cfg(test)]
 fn strict_bytes(
     doc: &impl ReadDoc,
     parent: &automerge::ObjId,
@@ -845,8 +863,10 @@ mod workspace_media_tests {
     fn legacy_identity_revocation_floor_survives_media_bootstrap() {
         let (mut before, root, device) = governed_legacy_workspace();
         let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        let mut row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(&before, &identities, &device).unwrap()).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(
+            &strict_bytes(&before, &identities, &device).unwrap(),
+        )
+        .unwrap();
         let mut revoked = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [99; 32],
@@ -860,7 +880,7 @@ mod workspace_media_tests {
             .put(
                 &identities,
                 &device,
-                ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                ScalarValue::Bytes(row.encode().unwrap()),
             )
             .unwrap();
         before.commit();
@@ -882,7 +902,7 @@ mod workspace_media_tests {
                 .put(
                     &identities,
                     &device,
-                    ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                    ScalarValue::Bytes(row.encode().unwrap()),
                 )
                 .unwrap();
             let value = enable_media(&mut after);

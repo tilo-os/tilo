@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -62,6 +63,7 @@ use ui::widget::{
 
 use crate::account::AccountStore;
 use crate::actions::{DraftData, Outgoing, ServerUpdate};
+use crate::i18n::CATALOG;
 #[path = "contact_recipients.rs"]
 mod contact_recipients;
 #[path = "peer_copies.rs"]
@@ -784,7 +786,7 @@ impl MailApp {
             bar: ui::framework::BarCommands::new(),
             first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
-                .with_message("Email accounts are added in Settings, under External Accounts.")
+                .with_message(CATALOG.t("mail-first-run-message"))
                 .with_action("Open External Accounts")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
@@ -1168,7 +1170,7 @@ impl MailApp {
         if all_inboxes {
             "these folders".to_owned()
         } else {
-            folder.title().to_owned()
+            crate::i18n::t(folder.message())
         }
     }
 
@@ -1236,7 +1238,7 @@ impl MailApp {
                 account: outgoing.account.clone(),
                 to: recipient_line(&outgoing.draft),
                 subject: if outgoing.draft.subject.trim().is_empty() {
-                    "No subject".to_owned()
+                    crate::i18n::no_subject()
                 } else {
                     outgoing.draft.subject.clone()
                 },
@@ -1346,7 +1348,7 @@ impl MailApp {
         let folder = self.shared.borrow().folder;
         SearchRequest::within(ScopeDecl::new(
             format!("mail.folder:{}", folder.as_key()),
-            folder.title(),
+            crate::i18n::t(folder.message()),
         ))
     }
 
@@ -1396,7 +1398,7 @@ impl MailApp {
                     .send_contents(),
             );
         }
-        self.shared.borrow_mut().status = Some("Choose a file to attach".into());
+        self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-choose-file"));
         self.dirty = true;
     }
 
@@ -1414,9 +1416,8 @@ impl MailApp {
             Ok(OpenFileOutcome::Opened(source)) => {
                 self.compose_attachment_rx = None;
                 if !self.compose.open {
-                    self.shared.borrow_mut().status = Some(
-                        "Attachment selection cancelled because the composer was closed".into(),
-                    );
+                    self.shared.borrow_mut().status =
+                        Some(CATALOG.t("mail-status-selection-composer-closed"));
                     return;
                 }
                 let name = source.display_name().to_string();
@@ -1424,24 +1425,35 @@ impl MailApp {
                     crate::attachment_store::stage_file(&self.content, source.into_file(), &name)
                         .and_then(|attachment| self.compose.add_attachment(attachment));
                 self.shared.borrow_mut().status = Some(match result {
-                    Ok(()) => format!("Attached {name}"),
-                    Err(error) => format!("Couldn’t attach {name}: {error}"),
+                    Ok(()) => {
+                        CATALOG.t_args("mail-status-attached", &[("name", ArgValue::Text(name))])
+                    }
+                    Err(error) => CATALOG.t_args(
+                        "mail-status-attach-failed",
+                        &[
+                            ("name", ArgValue::Text(name)),
+                            ("error", ArgValue::Text(error)),
+                        ],
+                    ),
                 });
             }
             Ok(OpenFileOutcome::Cancelled) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status = Some("Attachment selection cancelled".into());
+                self.shared.borrow_mut().status =
+                    Some(CATALOG.t("mail-status-selection-cancelled"));
             }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status =
-                    Some(format!("Couldn’t open attachment picker: {error}"));
+                self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                    "mail-status-picker-failed",
+                    &[("error", ArgValue::Text(error))],
+                ));
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 self.compose_attachment_rx = None;
                 self.shared.borrow_mut().status =
-                    Some("Attachment picker disconnected before selecting a file".into());
+                    Some(CATALOG.t("mail-status-picker-disconnected"));
             }
         }
         self.dirty = true;
@@ -1459,27 +1471,31 @@ impl MailApp {
         let status = match outcome {
             Err(TryRecvError::Empty) => return,
             Ok(ContentsOutcome::Picked(files)) => match files.into_iter().next() {
-                Some(_) if !self.compose.open => {
-                    "Attachment selection cancelled because the composer was closed".into()
-                }
+                Some(_) if !self.compose.open => CATALOG.t("mail-status-selection-composer-closed"),
                 Some(file) => {
                     let name = file.name;
                     match crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
                         .and_then(|attachment| self.compose.add_attachment(attachment))
                     {
-                        Ok(()) => format!("Attached {name}"),
-                        Err(error) => format!("Couldn’t attach {name}: {error}"),
+                        Ok(()) => CATALOG
+                            .t_args("mail-status-attached", &[("name", ArgValue::Text(name))]),
+                        Err(error) => CATALOG.t_args(
+                            "mail-status-attach-failed",
+                            &[
+                                ("name", ArgValue::Text(name)),
+                                ("error", ArgValue::Text(error)),
+                            ],
+                        ),
                     }
                 }
-                None => "Attachment selection cancelled".into(),
+                None => CATALOG.t("mail-status-selection-cancelled"),
             },
-            Ok(ContentsOutcome::Cancelled) => "Attachment selection cancelled".into(),
-            Ok(ContentsOutcome::Failed(error)) => {
-                format!("Couldn’t open attachment picker: {error}")
-            }
-            Err(TryRecvError::Disconnected) => {
-                "Attachment picker disconnected before selecting a file".into()
-            }
+            Ok(ContentsOutcome::Cancelled) => CATALOG.t("mail-status-selection-cancelled"),
+            Ok(ContentsOutcome::Failed(error)) => CATALOG.t_args(
+                "mail-status-picker-failed",
+                &[("error", ArgValue::Text(error))],
+            ),
+            Err(TryRecvError::Disconnected) => CATALOG.t("mail-status-picker-disconnected"),
         };
         self.compose_attachment_contents = None;
         self.shared.borrow_mut().status = Some(status);
@@ -1592,16 +1608,22 @@ impl MailApp {
                 Command::Bulk(action) => {
                     let affected = self.shared.borrow_mut().apply_bulk_action(doc, action);
                     if affected > 0 {
-                        let noun = if affected == 1 { "message" } else { "messages" };
-                        self.shared.borrow_mut().status = Some(match action {
-                            BulkAction::Archive => format!("Archived {affected} {noun}"),
-                            BulkAction::Delete => format!("Moved {affected} {noun} to Trash"),
-                            BulkAction::MarkRead => format!("Marked {affected} {noun} read"),
-                            BulkAction::MarkUnread => {
-                                format!("Marked {affected} {noun} unread")
-                            }
-                            BulkAction::Purge => format!("Deleted {affected} {noun}"),
-                        });
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            reason = "a count only selects a plural form; exactness past 2^52 is \
+irrelevant"
+                        )]
+                        let count = affected as f64;
+                        self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                            match action {
+                                BulkAction::Archive => "mail-status-archived",
+                                BulkAction::Delete => "mail-status-trashed",
+                                BulkAction::MarkRead => "mail-status-marked-read",
+                                BulkAction::MarkUnread => "mail-status-marked-unread",
+                                BulkAction::Purge => "mail-status-deleted",
+                            },
+                            &[("count", ArgValue::Number(count))],
+                        ));
                     }
                 }
                 Command::Message(action) => {
@@ -1800,11 +1822,14 @@ impl MailApp {
 
     fn open_purge_confirmation(&mut self, count: usize) {
         let answer = Rc::new(Cell::new(None));
-        let noun = if count == 1 { "message" } else { "messages" };
-        let body = Text::new(&format!(
-            "{count} {noun} in Trash will be deleted from this mailbox and the server. This can’t be undone."
-        ))
-        .with_role(TextRole::Body);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+        )]
+        let number = count as f64;
+        let body =
+            Text::new(&CATALOG.t_args("mail-purge-body", &[("count", ArgValue::Number(number))]))
+                .with_role(TextRole::Body);
         let confirm = Rc::clone(&answer);
         let cancel = Rc::clone(&answer);
         let dismiss = Rc::clone(&answer);
@@ -2167,7 +2192,8 @@ impl MailApp {
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
         if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
-            self.shared.borrow_mut().status = Some(format!("Send failed: {e}"));
+            self.shared.borrow_mut().status =
+                Some(CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]));
             self.dirty = true;
             return;
         }
@@ -2373,7 +2399,7 @@ impl MailApp {
             to: crate::transport::parse_addr_list(&draft.to),
             cc: crate::transport::parse_addr_list(&draft.cc),
             subject: if draft.subject.trim().is_empty() {
-                "(no subject)".into()
+                crate::i18n::no_subject()
             } else {
                 draft.subject.clone()
             },
@@ -3257,8 +3283,9 @@ impl MailApp {
         let saved = self.persist_accounts(&accounts);
         self.persisted_active_account = active;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status = Some(format!(
-                "Selected account, but could not save that preference: {error}"
+            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                "mail-status-account-not-saved",
+                &[("error", ArgValue::Text(error.to_string()))],
             ));
         }
     }
@@ -3408,8 +3435,10 @@ impl MailApp {
         let saved = preferences.set(shown.clone());
         self.followed_preferences = shown;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status =
-                Some(format!("Could not save your Mail preferences: {error}"));
+            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                "mail-status-preferences-not-saved",
+                &[("error", ArgValue::Text(error.to_string()))],
+            ));
         }
     }
 
@@ -3507,7 +3536,7 @@ impl MailApp {
         let theme = self.layout_theme.clone();
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
-        self.draw(
+        self.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -3610,7 +3639,7 @@ fn draft_from_message(m: &Message) -> Draft {
         to: join(&m.to),
         cc: join(&m.cc),
         bcc: String::new(),
-        subject: if m.subject == "(no subject)" {
+        subject: if m.subject.trim().is_empty() || m.subject == crate::i18n::no_subject() {
             String::new()
         } else {
             m.subject.clone()
@@ -3703,19 +3732,10 @@ impl MailApp {
     }
 
     fn confirm_bulk_purge(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let affected = self
-            .shared
-            .borrow_mut()
-            .apply_bulk_action(state, BulkAction::Purge);
         self.bulk_purge_confirmation = None;
-        self.shared.borrow_mut().status = Some(if affected == 0 {
-            "Nothing was deleted; the selected messages changed before confirmation".into()
-        } else {
-            format!(
-                "Permanently deleted {affected} trashed message{}",
-                if affected == 1 { "" } else { "s" }
-            )
-        });
+        if self.apply_bulk(state, BulkAction::Purge) == 0 {
+            self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-purge-nothing"));
+        }
         self.process_intents();
         self.dirty = true;
     }
@@ -3848,6 +3868,17 @@ impl MailApp {
         false
     }
 
+    /// How many messages a conversation holds, for a screen reader.
+    fn thread_messages(count: usize) -> String {
+        crate::i18n::t_args(
+            "mail-a11y-thread-messages",
+            &[(
+                "count",
+                ui::i18n::ArgValue::Number(f64::from(u32::try_from(count).unwrap_or(u32::MAX))),
+            )],
+        )
+    }
+
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -3861,11 +3892,7 @@ impl MailApp {
             .enumerate()
             .filter_map(|(index, (id, thread_len))| {
                 let message = state.mailbox.get(*id)?;
-                let title = if message.folder == Folder::Drafts {
-                    format!("Draft: {}", message.subject)
-                } else {
-                    format!("{}: {}", message.from.display(), message.subject)
-                };
+                let title = Self::row_title(message);
                 let snippet = message.snippet();
                 let mut node = AccessNode::new(Role::ListItem)
                     .with_name(title)
@@ -3880,19 +3907,24 @@ impl MailApp {
                         },
                     ));
                 if *thread_len > 1 {
-                    node = node
-                        .with_description(format!("{thread_len} messages in this conversation"));
+                    node = node.with_description(Self::thread_messages(*thread_len));
                 }
                 Some(node)
             })
             .collect::<Vec<_>>();
-        let name = format!("{} messages", state.folder.title());
+        let name = CATALOG.t_args(
+            "mail-list-name",
+            &[(
+                "folder",
+                ArgValue::Text(crate::i18n::t(state.folder.message())),
+            )],
+        );
         let mut children = vec![
             AccessNode::new(Role::Button)
                 .with_name(if state.bulk_selecting {
-                    "Done selecting messages"
+                    crate::i18n::t("mail-a11y-bulk-done")
                 } else {
-                    "Select messages for bulk actions"
+                    crate::i18n::t("mail-a11y-bulk-select")
                 })
                 .with_action_target("mail.bulk:toggle")
                 .with_state(AccessState::new().focusable(true)),
@@ -3907,22 +3939,14 @@ impl MailApp {
                         .get(*id)
                         .is_some_and(|message| message.folder == Folder::Trash)
                 });
-            let mut controls = vec![
-                ("Select all visible messages", "select-all"),
-                ("Archive selected messages", "archive"),
-                ("Mark selected messages read", "read"),
-                ("Mark selected messages unread", "unread"),
-            ];
-            controls.push(if all_trash {
-                ("Delete selected trashed messages permanently", "purge")
-            } else {
-                ("Move selected messages to Trash", "delete")
-            });
             children.push(
                 AccessNode::new(Role::Toolbar)
-                    .with_name(format!("{selected} selected"))
+                    .with_name(CATALOG.t_args(
+                        "mail-selected-count",
+                        &[("count", ArgValue::Text(selected.to_string()))],
+                    ))
                     .with_children(
-                        controls
+                        Self::bulk_controls(all_trash)
                             .into_iter()
                             .map(|(name, action)| {
                                 AccessNode::new(Role::Button)
@@ -3943,9 +3967,53 @@ impl MailApp {
             .with_name(name)
             .with_children(children);
         if total == 0 {
-            list = list.with_description(format!("No messages in {}", state.folder.title()));
+            list = list.with_description(CATALOG.t_args(
+                "mail-a11y-no-messages",
+                &[(
+                    "folder",
+                    ArgValue::Text(crate::i18n::t(state.folder.message())),
+                )],
+            ));
         }
         list
+    }
+
+    /// The name a message's row reads out: a draft says so, a sent or
+    /// received one names who it is from and what it is about.
+    fn row_title(message: &crate::model::Message) -> String {
+        if message.folder == Folder::Drafts {
+            return CATALOG.t_args(
+                "mail-draft-subject",
+                &[("subject", ArgValue::Text(message.subject.clone()))],
+            );
+        }
+        CATALOG.t_args(
+            "mail-row-name",
+            &[
+                ("sender", ArgValue::Text(message.from.display())),
+                ("subject", ArgValue::Text(message.subject.clone())),
+            ],
+        )
+    }
+
+    /// What the bulk bar's buttons are called, and the action each takes.
+    fn bulk_controls(all_trash: bool) -> Vec<(String, &'static str)> {
+        let names = [
+            ("mail-bulk-select-all", "select-all"),
+            ("mail-bulk-archive", "archive"),
+            ("mail-bulk-read", "read"),
+            ("mail-bulk-unread", "unread"),
+        ];
+        let last = if all_trash {
+            ("mail-bulk-purge", "purge")
+        } else {
+            ("mail-bulk-delete", "delete")
+        };
+        names
+            .into_iter()
+            .chain([last])
+            .map(|(key, action)| (CATALOG.t(key), action))
+            .collect()
     }
 
     /// The outbox page: a row per message still to leave, each saying why it
@@ -3961,7 +4029,13 @@ impl MailApp {
                 .enumerate()
                 .map(|(index, message)| {
                     AccessNode::new(Role::ListItem)
-                        .with_name(format!("To {}: {}", message.to, message.subject))
+                        .with_name(CATALOG.t_args(
+                            "mail-a11y-outbox-row",
+                            &[
+                                ("to", ArgValue::Text(message.to.clone())),
+                                ("subject", ArgValue::Text(message.subject.clone())),
+                            ],
+                        ))
                         .with_description(message.state_line())
                         .with_action_target(format!("mail.outbox:{}", message.id))
                         .with_position(index + 1, total)
@@ -3974,26 +4048,32 @@ impl MailApp {
         if let Some(message) = state.open_queued() {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Cancel sending to {}", message.to))
+                    .with_name(CATALOG.t_args(
+                        "mail-a11y-cancel-sending",
+                        &[("to", ArgValue::Text(message.to.clone()))],
+                    ))
                     .with_action_target(format!("mail.outbox-cancel:{}", message.id))
                     .with_state(AccessState::new().focusable(true)),
             );
             children.push(
                 AccessNode::new(Role::Group)
-                    .with_name("Queued message")
+                    .with_name(crate::i18n::t("mail-a11y-queued-message"))
                     .with_description(match &message.reason {
-                        Some(reason) => format!("The server refused this message: {reason}"),
-                        None => "This message has not been sent yet.".to_owned(),
+                        Some(reason) => CATALOG.t_args(
+                            "mail-a11y-refused",
+                            &[("reason", ArgValue::Text(reason.clone()))],
+                        ),
+                        None => CATALOG.t("mail-not-sent-yet"),
                     })
                     .with_value(message.body.clone()),
             );
         }
         children.extend(rows);
         let mut list = AccessNode::new(Role::List)
-            .with_name("Outbox")
+            .with_name(crate::i18n::t("mail-a11y-outbox"))
             .with_children(children);
         if total == 0 {
-            list = list.with_description("Nothing is waiting to be sent");
+            list = list.with_description(crate::i18n::t("mail-a11y-outbox-empty"));
         }
         list
     }
@@ -4008,12 +4088,23 @@ impl MailApp {
 
         let thread = state.selected_thread_messages();
         let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
-            return AccessNode::new(Role::Group).with_name("No message selected");
+            return AccessNode::new(Role::Group).with_name(crate::i18n::t("mail-a11y-no-message"));
         };
         let message_count = thread.len();
-        let mut children = vec![
+        // The banner above the conversation, as the reader paints it: the
+        // newest message is being looked at without being marked read.
+        let preview = thread
+            .last()
+            .filter(|head| state.inspection == Some(head.id) && !head.read)
+            .map(|_| {
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::i18n::t("mail-a11y-preview-unread"))
+                    .with_hashed_key("mail.preview")
+            });
+        let mut children: Vec<AccessNode> = preview.into_iter().collect();
+        children.push(
             AccessNode::new(Role::Toolbar)
-                .with_name("Message actions")
+                .with_name(crate::i18n::t("mail-a11y-message-actions"))
                 .with_children(
                     [
                         ("Reply", "reply"),
@@ -4031,10 +4122,13 @@ impl MailApp {
                     })
                     .collect(),
                 ),
-        ];
+        );
         children.extend(thread.iter().map(|message| {
             AccessNode::new(Role::Paragraph)
-                .with_name(format!("From {}", message.from.display()))
+                .with_name(CATALOG.t_args(
+                    "mail-from",
+                    &[("sender", ArgValue::Text(message.from.display()))],
+                ))
                 .with_value(message.body.clone())
         }));
         children.extend(
@@ -4045,10 +4139,12 @@ impl MailApp {
                 .map(|(index, attachment)| {
                     let downloadable = attachment.is_downloadable();
                     let mut node = AccessNode::new(Role::Button)
-                        .with_name(format!(
-                            "Save attachment {} ({})",
-                            attachment.filename,
-                            attachment.size_human()
+                        .with_name(CATALOG.t_args(
+                            "mail-a11y-save-attachment",
+                            &[
+                                ("file", ArgValue::Text(attachment.filename.clone())),
+                                ("size", ArgValue::Text(attachment.size_human())),
+                            ],
                         ))
                         .with_action_target(format!(
                             "mail.reader:{}:save-attachment:{index}",
@@ -4056,23 +4152,17 @@ impl MailApp {
                         ))
                         .with_state(AccessState::new().focusable(true).disabled(!downloadable));
                     if !downloadable {
-                        node = node.with_description("Download this attachment before saving it");
+                        node = node.with_description(crate::i18n::t("mail-a11y-download-first"));
                     }
                     node
                 }),
         );
         AccessNode::new(Role::Document)
-            .with_name(format!("Reading: {}", current.subject))
-            .with_description(format!(
-                "Current message from {}; {message_count} message{} in this conversation{}",
-                current.from.display(),
-                if message_count == 1 { "" } else { "s" },
-                if state.inspection == Some(current.id) {
-                    "; previewing without changing its read state"
-                } else {
-                    ""
-                },
+            .with_name(CATALOG.t_args(
+                "mail-a11y-reading",
+                &[("subject", ArgValue::Text(current.subject.clone()))],
             ))
+            .with_description(Self::thread_messages(message_count))
             .with_children(children)
     }
 }
@@ -4289,9 +4379,9 @@ impl Widget for MailApp {
     ) {
         // No ground of our own: the window paints it, the shell its regions.
         if self.is_first_run() {
-            self.first_run.draw(scene, t, tr, theme, presence);
+            self.first_run.draw_child(scene, t, tr, theme, presence);
         } else {
-            self.nav.draw(scene, t, tr, theme, presence);
+            self.nav.draw_child(scene, t, tr, theme, presence);
         }
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);
@@ -4476,7 +4566,7 @@ impl Widget for MailApp {
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
             // onboarding action and its existing activation path.
-            return Some(AccessNode::new(Role::Window).with_name("Mail"));
+            return Some(AccessNode::new(Role::Window).with_name(crate::i18n::t("mail-title")));
         }
 
         let st = self.shared.borrow();
@@ -4494,7 +4584,7 @@ impl Widget for MailApp {
         if self.state().awaiting_engine {
             children.push(
                 AccessNode::new(Role::Spinner)
-                    .with_name("Syncing mail")
+                    .with_name(crate::i18n::t("mail-a11y-syncing"))
                     .with_state(AccessState::new().busy(true)),
             );
         }
@@ -4523,20 +4613,23 @@ impl Widget for MailApp {
         }
 
         let composition = if drawer_open {
-            "folder drawer"
+            CATALOG.t("mail-view-drawer")
         } else if compact {
             if self.nav.front_pane() == NavPane::Content {
-                "reading pane"
+                CATALOG.t("mail-view-reading")
             } else {
-                "message list"
+                CATALOG.t("mail-view-list")
             }
         } else {
-            "folders, message list, and reading pane"
+            CATALOG.t("mail-view-all")
         };
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Mail")
-                .with_description(format!("Current view: {composition}"))
+                .with_name(crate::i18n::t("mail-title"))
+                .with_description(CATALOG.t_args(
+                    "mail-a11y-current-view",
+                    &[("view", ArgValue::Text(composition))],
+                ))
                 .with_children(children),
         )
     }
@@ -5076,9 +5169,12 @@ impl Mailroom {
         resource: String,
     ) -> ui::framework::Effected {
         self.shared.borrow_mut().status = Some(if saved {
-            format!("Saved a copy as {name}")
+            CATALOG.t_args(
+                "mail-status-copy-saved",
+                &[("file", ArgValue::Text(name.to_owned()))],
+            )
         } else {
-            "Attachment save cancelled".into()
+            CATALOG.t("mail-status-copy-cancelled")
         });
         self.dirty = true;
         ui::framework::Effected::Done(tilo_actions::ActionOutput {
@@ -5333,7 +5429,7 @@ impl Mailroom {
                 id,
                 "mail.thread",
                 if subject.is_empty() {
-                    "(no subject)".into()
+                    crate::i18n::no_subject()
                 } else {
                     subject
                 },
@@ -5584,6 +5680,31 @@ impl MailApp {
         true
     }
 
+    /// Apply `action` to the bulk selection and say what it did, once: every
+    /// path that acts on a bulk selection (the header, a shortcut, assistive
+    /// technology) reports through here, so the sentence lives in one place.
+    fn apply_bulk(&self, state: &mut ui::widget::Edits<'_>, action: BulkAction) -> usize {
+        let affected = self.shared.borrow_mut().apply_bulk_action(state, action);
+        if affected > 0 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+            )]
+            let count = affected as f64;
+            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                match action {
+                    BulkAction::Archive => "mail-status-archived",
+                    BulkAction::Delete => "mail-status-trashed",
+                    BulkAction::MarkRead => "mail-status-marked-read",
+                    BulkAction::MarkUnread => "mail-status-marked-unread",
+                    BulkAction::Purge => "mail-status-purged",
+                },
+                &[("count", ArgValue::Number(count))],
+            ));
+        }
+        affected
+    }
+
     /// Assistive technology reaches the exact same local selection and
     /// canonical bulk-action boundary as the header controls and shortcuts.
     fn perform_bulk_semantic_action(
@@ -5595,64 +5716,37 @@ impl MailApp {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        let mut mail = self.shared.borrow_mut();
-        match raw {
-            "toggle" => {
-                let selecting = mail.bulk_selecting;
-                mail.set_bulk_selecting(!selecting);
-            }
-            "select-all" if mail.bulk_selecting => {
-                drop(mail);
-                self.select_all_in_folder();
-                self.process_intents();
-                return true;
-            }
-            "archive" if mail.bulk_selecting => {
-                let affected = mail.apply_bulk_action(state, BulkAction::Archive);
-                if affected == 0 {
-                    return false;
-                }
-                mail.status = Some(format!(
-                    "Archived {affected} message{}",
-                    if affected == 1 { "" } else { "s" }
-                ));
-            }
-            "delete" if mail.bulk_selecting => {
-                let affected = mail.apply_bulk_action(state, BulkAction::Delete);
-                if affected == 0 {
-                    return false;
-                }
-                mail.status = Some(format!(
-                    "Moved {affected} message{} to Trash",
-                    if affected == 1 { "" } else { "s" }
-                ));
-            }
-            "purge" if mail.bulk_selecting => {
-                mail.push_intent(Intent::ConfirmBulkPurge);
-            }
-            "read" if mail.bulk_selecting => {
-                let affected = mail.apply_bulk_action(state, BulkAction::MarkRead);
-                if affected == 0 {
-                    return false;
-                }
-                mail.status = Some(format!(
-                    "Marked {affected} message{} read",
-                    if affected == 1 { "" } else { "s" }
-                ));
-            }
-            "unread" if mail.bulk_selecting => {
-                let affected = mail.apply_bulk_action(state, BulkAction::MarkUnread);
-                if affected == 0 {
-                    return false;
-                }
-                mail.status = Some(format!(
-                    "Marked {affected} message{} unread",
-                    if affected == 1 { "" } else { "s" }
-                ));
-            }
-            _ => return false,
+        if raw == "toggle" {
+            let selecting = self.shared.borrow().bulk_selecting;
+            self.shared.borrow_mut().set_bulk_selecting(!selecting);
+            self.process_intents();
+            self.dirty = true;
+            return true;
         }
-        drop(mail);
+        if !self.shared.borrow().bulk_selecting {
+            return false;
+        }
+        let bulk = match raw {
+            "archive" => Some(BulkAction::Archive),
+            "delete" => Some(BulkAction::Delete),
+            "read" => Some(BulkAction::MarkRead),
+            "unread" => Some(BulkAction::MarkUnread),
+            _ => None,
+        };
+        if let Some(bulk) = bulk {
+            if self.apply_bulk(state, bulk) == 0 {
+                return false;
+            }
+        } else {
+            match raw {
+                "select-all" => self.select_all_in_folder(),
+                "purge" => self
+                    .shared
+                    .borrow_mut()
+                    .push_intent(Intent::ConfirmBulkPurge),
+                _ => return false,
+            }
+        }
         self.process_intents();
         self.dirty = true;
         true
@@ -5794,16 +5888,7 @@ impl MailApp {
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("e") => {
                 if bulk_selecting {
-                    let affected = self
-                        .shared
-                        .borrow_mut()
-                        .apply_bulk_action(state, BulkAction::Archive);
-                    if affected > 0 {
-                        self.shared.borrow_mut().status = Some(format!(
-                            "Archived {affected} message{}",
-                            if affected == 1 { "" } else { "s" }
-                        ));
-                    }
+                    self.apply_bulk(state, BulkAction::Archive);
                     self.process_intents();
                     *handled = true;
                 } else if let Some(id) = selected {
@@ -5840,16 +5925,7 @@ impl MailApp {
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("u") => {
                 if bulk_selecting {
-                    let affected = self
-                        .shared
-                        .borrow_mut()
-                        .apply_bulk_action(state, BulkAction::MarkUnread);
-                    if affected > 0 {
-                        self.shared.borrow_mut().status = Some(format!(
-                            "Marked {affected} message{} unread",
-                            if affected == 1 { "" } else { "s" }
-                        ));
-                    }
+                    self.apply_bulk(state, BulkAction::MarkUnread);
                     *handled = true;
                 } else if let Some(id) = selected {
                     self.shared.borrow_mut().set_read(state, id, false);
@@ -5872,16 +5948,7 @@ impl MailApp {
     fn delete_shortcut(&mut self, state: &mut ui::widget::Edits<'_>) {
         let selected = self.shared.borrow().selected;
         if self.shared.borrow().bulk_selecting {
-            let affected = self
-                .shared
-                .borrow_mut()
-                .apply_bulk_action(state, BulkAction::Delete);
-            if affected > 0 {
-                self.shared.borrow_mut().status = Some(format!(
-                    "Moved {affected} message{} to Trash",
-                    if affected == 1 { "" } else { "s" }
-                ));
-            }
+            self.apply_bulk(state, BulkAction::Delete);
         } else if let Some(id) = selected {
             self.shared
                 .borrow_mut()
@@ -5898,6 +5965,7 @@ mod person_accounts;
 #[path = "server_deltas.rs"]
 mod server_deltas;
 use server_deltas::{first_fetch, pass_over_draft_copies, server_changes, take_found};
+use ui::i18n::ArgValue;
 
 #[path = "mailroom_rows.rs"]
 mod mailroom_rows;

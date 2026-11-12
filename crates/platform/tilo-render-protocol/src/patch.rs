@@ -47,12 +47,13 @@ pub mod validate;
 /// The version both ends name. A newer end must still read this one's messages.
 pub const VERSION: u16 = 1;
 
-/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList`, whose rows the
-/// app sends apart from the tree ([`ToUi::Rows`]) as the list shows them. A `list` in a view's
-/// content is drawn whole (a card's is its preview), so its rows travel in the tree.
+/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList` or a
+/// `ui.TreeView`, whose rows the app sends apart from the tree ([`ToUi::Rows`]) as the list
+/// shows them. A `list` in a view's content is drawn whole (a card's is its preview), so its
+/// rows travel in the tree.
 #[must_use]
 pub fn is_virtual_list(kind: &str) -> bool {
-    kind == "ui.VirtualList"
+    matches!(kind, "ui.VirtualList" | "ui.TreeView")
 }
 
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
@@ -180,12 +181,27 @@ pub enum Value {
     Action(Offered),
     /// A picture: where its bytes are read from, and what it says to assistive technology.
     Picture(Picture),
+    /// A record a view names: what refers to it, and how it reads for the person now.
+    Link {
+        reference: String,
+        title: String,
+    },
 }
 
 /// An action a node offers ([`Value::Action`]), as the toolkit holds one.
 pub use tilo_ui_graph::component::Offered;
 /// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
 pub use tilo_ui_graph::component::Picture;
+
+/// The description of the component a node of `kind` is of (`ui.BlockEditor`): what its props
+/// are, which is the one list of them a host reads a node's values by.
+#[must_use]
+pub fn description(kind: &str) -> Option<&'static tilo_ui_graph::component::Description> {
+    tilo_ui_graph::component::catalogue().get(kind.strip_prefix("ui.")?)
+}
+
+/// The type a described component's prop takes, as the catalogue declares it.
+pub use tilo_ui_graph::component::Type as PropType;
 
 impl Value {
     #[must_use]
@@ -523,8 +539,13 @@ pub enum ToUi {
     },
     /// The detail lane closed.
     Close,
-    /// The detail lane, already open, comes to the front.
-    Front(Front),
+    /// A lane's page comes to the front of a narrow window. When the window draws the item its
+    /// own view shows in place (a tree beside what it shows), `shows` is that item and the press
+    /// that showed it: what the person types after that press belongs to it.
+    Front {
+        front: Front,
+        shows: Option<(u64, ResourceRef)>,
+    },
     /// The runtime's patches to a lane's tree.
     Patch { lane: Lane, patches: Vec<Patch> },
     /// What the bound control `key` shows now. `acked` is the last of its splices the app took:
@@ -575,6 +596,9 @@ pub enum ToUi {
     /// The actions the app offers the person at this window, as their command palette lists
     /// them: the app's published actions, with the keys, icons and labels it gives them.
     Actions(ActionCatalogue),
+    /// The language the window reads in now (`de-DE`): the person chose another in Settings while
+    /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
+    Speak(String),
 }
 
 /// What the person did, as the window tells its app.
@@ -643,12 +667,14 @@ pub enum ToApp {
     },
     /// Back from the detail lane.
     Back,
-    /// The virtual list `list` shows the rows `start..end` now.
+    /// The virtual list `list` shows the rows `start..end` now, and the row `open` — its key —
+    /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document).
     Rows {
         lane: Lane,
         list: String,
         start: u32,
         end: u32,
+        open: Option<String>,
     },
     Answer(Answer),
     /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what
@@ -861,10 +887,12 @@ mod tests {
                             icon: None,
                             detail: None,
                         },
+                        preview: None,
                     },
                     rich::Embed {
                         reference: "u-ada".to_owned(),
                         view: rich::InlineView::Unreadable,
+                        preview: None,
                     },
                 ],
             ),

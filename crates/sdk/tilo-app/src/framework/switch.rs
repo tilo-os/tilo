@@ -9,6 +9,7 @@ use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
+use ui_core::widget::DrawChild;
 use ui_core::widget::{Element, Widget};
 use ui_core::winit::event::WindowEvent;
 use ui_core::{LocalState, Theme, taffy};
@@ -135,7 +136,8 @@ impl Widget for Switch {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.part.draw(scene, transform, text, theme, presence);
+        self.part
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {

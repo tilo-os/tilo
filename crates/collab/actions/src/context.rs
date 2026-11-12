@@ -341,6 +341,7 @@ impl ActionContext {
             id: id.into(),
             label: label.into(),
             kind: kind.into(),
+            title: None,
         });
         self
     }
@@ -1186,6 +1187,11 @@ pub struct ActionInvoker {
     /// door that admitted the invocation, and only for a bot allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
+    /// The name an agent goes by, as the host that admitted it knows it from
+    /// the key its person certified for it ("Jane Doe's agent"): what History
+    /// names it by. Never taken from the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[allow(
@@ -1205,6 +1211,7 @@ impl ActionInvoker {
             on_behalf_of: None,
             participant: None,
             appearance: None,
+            name: None,
         }
     }
 
@@ -1220,12 +1227,20 @@ impl ActionInvoker {
                 .filter(|person| *person != actor.id),
             participant: None,
             appearance: None,
+            name: None,
         }
     }
 
     #[must_use]
     pub fn with_participant(mut self, participant: ParticipantId) -> Self {
         self.participant = Some(participant);
+        self
+    }
+
+    /// The name the admitting host knows this agent by ([`Self::name`]).
+    #[must_use]
+    pub fn named(mut self, name: Option<String>) -> Self {
+        self.name = name;
         self
     }
 
@@ -1282,6 +1297,7 @@ impl ActionInvoker {
             on_behalf_of: named.and_then(|invoker| invoker.on_behalf_of.clone()),
             participant: named.and_then(|invoker| invoker.participant.clone()),
             appearance: named.and_then(|invoker| invoker.appearance.clone()),
+            name: named.and_then(|invoker| invoker.name.clone()),
         }
     }
 }
@@ -1317,6 +1333,11 @@ pub struct Cause {
 /// history keeps and undoes the run whole and each version names its run.
 pub const TASK_RUN_GROUP: &str = "task";
 
+/// The [`WorkGroup::kind`] of an agent connection's run: every action one
+/// connection of an agent (or a key it holds) takes, which history keeps,
+/// lists in Activity and undoes whole.
+pub const AGENT_RUN_GROUP: &str = "agent-run";
+
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1326,6 +1347,11 @@ pub struct WorkGroup {
     pub label: String,
     /// Open vocabulary: `issue`, `task`, `agent-run`, `session`, …
     pub kind: String,
+    /// What the caller itself called the work, when it named it: the title
+    /// an agent gave its run ("Fill Jane's application"). Words for people
+    /// to read, never the group itself, which a host may decide on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// [`ActionFacet::key`] of the risk ([`crate::RiskLevel::name`]) of the

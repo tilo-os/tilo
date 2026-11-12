@@ -2,7 +2,7 @@
 //! the windows over it, and the material it records for the compositor to fill in below.
 
 use super::{
-    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, Origin as _, ShellPart,
+    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, Origin, ShellPart,
     SurfaceHost, SurfaceKey,
 };
 
@@ -28,7 +28,7 @@ impl SurfaceHost for ShellPart {
     /// The live pictures the part's views name: each window's own pixels, where the view would
     /// draw it, for the compositor to draw over the part. A part that draws nothing pictures
     /// nothing, and a picture never reaches past the part's own display.
-    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+    fn window_pictures(&self) -> Vec<tilo_session_core::surface::WindowPicture> {
         let Some((previews, windows)) = self.previews.as_ref() else {
             return Vec::new();
         };
@@ -55,7 +55,7 @@ impl SurfaceHost for ShellPart {
                     rect.height(),
                 );
                 (rect.width() > 0.0 && rect.height() > 0.0).then_some(
-                    tilo_compositor::WindowPicture {
+                    tilo_session_core::surface::WindowPicture {
                         window,
                         rect: at,
                         opacity: 1.0,
@@ -120,7 +120,7 @@ impl SurfaceHost for ShellPart {
         self.widgets.pointer_axis(horizontal, vertical);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         // A part not yet told which output it stands on covers all of them, the tightest
         // bounding box there is.
         if self.output.is_some() || self.retired() {
@@ -142,7 +142,7 @@ impl SurfaceHost for ShellPart {
         ) else {
             return;
         };
-        self.output_scale = tilo_compositor::HostedOutput::scale_at(
+        self.output_scale = tilo_session_core::surface::HostedOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -163,11 +163,11 @@ impl SurfaceHost for ShellPart {
     /// The regions the shell's translucent material records: the compositor blurs what lies
     /// below the part there and hands it back ([`Self::set_backdrops`]), so a glass bar shows
     /// the wallpaper it stands on rather than its own ground.
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         SurfaceHost::backdrops(&self.widgets)
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         SurfaceHost::set_backdrops(&mut self.widgets, images);
     }
 
@@ -193,14 +193,17 @@ impl SurfaceHost for ShellPart {
         match action {
             SurfaceKey::Walk { back, app_scope } => {
                 // Holding Alt opens it; a further Tab walks it on (and back with Shift).
-                let steps = if back { "-1" } else { "1" };
+                let steps = if back { -1 } else { 1 };
                 let scope = if app_scope { "app" } else { "workspace" };
-                self.ask("walk-switcher", &[("steps", steps), ("scope", scope)]);
+                self.ask(
+                    "walk-switcher",
+                    &[("steps", steps.into()), ("scope", scope.into())],
+                );
             }
             SurfaceKey::Commit => self.ask("commit-switcher", &[]),
             SurfaceKey::Close => {
                 let up = self.origin.borrow().link.surface();
-                self.ask("close-surface", &[("surface", &up)]);
+                self.ask("close-surface", &[("surface", up.into())]);
             }
         }
     }

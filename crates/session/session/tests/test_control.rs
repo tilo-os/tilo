@@ -1,4 +1,4 @@
-//! The development session as `dist/dev/shell-run.sh` runs it: seen through the test-control
+//! The development session as `dist/dev/nested-session.sh` runs it: seen through the test-control
 //! socket `tilo-control snapshot` writes a PNG over, with the tilolang apps seeded, and ending on
 //! SIGTERM as it ends on its own, the files people choose for apps unmounted.
 
@@ -17,8 +17,6 @@
     reason = "a rectangle the test measured in the output it drew is within that output"
 )]
 
-mod common;
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -33,11 +31,11 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_service::Service as _;
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use crate::common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
 /// socket takes the click, and what it presses is what stands there.
@@ -170,7 +168,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
             walk(&resource.children, kinds);
         }
     }
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let resources = apps.resources();
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
@@ -192,7 +190,7 @@ fn mounted(at: &Path) -> bool {
         .any(|entry| entry.split(' ').nth(4) == Some(at.to_str().unwrap()))
 }
 
-/// A headless `tilo-session`, started as `dist/dev/shell-run.sh` starts its first pass, in a
+/// A headless `tilo-session`, started as `dist/dev/nested-session.sh` starts its first pass, in a
 /// runtime directory and a process group of its own.
 struct StartedSession {
     child: std::process::Child,
@@ -488,7 +486,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let note = apps
         .resources()
         .iter()
@@ -802,6 +800,92 @@ fn a_drag_through_the_socket_moves_a_tab_into_another_group() {
             .any(|(_, tabs)| tabs.contains(&20) && tabs.contains(&21))),
         "the dragged tab shares the other window's group: {:?}",
         groups(&session)
+    );
+}
+
+/// Where the window titled `title` stands on the screen, as `list_targets` reports it, and the
+/// picture the session shows, written to `png`.
+fn swipe_frame(session: &mut Session, socket: &Path, title: &str, png: &Path) -> f64 {
+    let shot = ask(
+        session,
+        socket,
+        &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
+    );
+    assert!(shot.get("ok").is_some(), "the snapshot is written: {shot}");
+    let targets = ask(session, socket, &json!({"op": "list_targets"}));
+    target_rect(&targets, title)
+        .unwrap_or_else(|| panic!("{title} stands somewhere: {targets}"))
+        .0
+}
+
+/// Three fingers through the socket carry a strip wider than the screen while they are down, each
+/// held swipe going on with the same gesture, and lifted while moving the strip coasts on: the
+/// control door drives the desk's gestures the way a touchpad does.
+#[test]
+fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let shots = std::env::var_os("STRIP_SWIPE_SHOTS")
+        .map_or_else(|| root.path().to_path_buf(), PathBuf::from);
+    let windows = [
+        (20, "Alpha"),
+        (21, "Beta"),
+        (22, "Gamma"),
+        (23, "Delta"),
+        (24, "Epsilon"),
+        (25, "Zeta"),
+    ];
+    let mut session = session_showing(desk(&windows), &socket);
+    let before = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-0-before.png"),
+    );
+
+    let swipe = |session: &mut Session, dx: f64, release: bool| {
+        let answer = ask(
+            session,
+            &socket,
+            &json!({"op": "swipe", "fingers": 3, "dx": dx, "dy": 0.0, "steps": 12,
+                    "release": release}),
+        );
+        assert_eq!(answer, json!({"ok": {}}), "the swipe is taken");
+    };
+    // Rightward under natural scrolling, the default: the windows go with the fingers.
+    swipe(&mut session, 150.0, false);
+    let first = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-1-held.png"),
+    );
+    swipe(&mut session, 150.0, false);
+    let second = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-2-held.png"),
+    );
+    assert!(
+        (first - before - 150.0).abs() <= 2.0 && (second - first - 150.0).abs() <= 2.0,
+        "the strip is where the fingers holding it took it: {before} then {first} then {second}"
+    );
+    // Lifted while still moving, the strip coasts on the way they went and rests there.
+    swipe(&mut session, 150.0, true);
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    let rested = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-3-lifted.png"),
+    );
+    assert!(
+        rested > second + 150.0,
+        "the strip coasts past where the fingers lifted: {second} then {rested}"
     );
 }
 

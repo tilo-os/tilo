@@ -1,32 +1,24 @@
-//! The workspace's activity, read from what this device keeps of it: the desk's own document
-//! ([`crate::desk_doc`]), and the records the workspace's apps keep in the store.
-//! The desk is one automerge document, and every change of it carries who made it and when. The
-//! activity pane reads those changes directly ([`ActivitySnapshot::of_desktop`]): the windows
-//! opened and closed, the strips renamed, the layouts restored, and who did each. A record the
-//! workspace holds carries its own history in the store, read here as a detached copy of the
-//! document its app writes.
-//! What the workspace holds is read away from the loop ([`Watched`]): the records belong to apps
-//! this process does not own, and one of them being slow to read must not hold up a frame. A change
-//! of what the history reads — a record an app wrote, an answer another device made — asks the desk
-//! for one frame, which is how an open history lists it with nobody asking. What this device has
-//! seen of a workspace is its own, kept in one file ([`HistoryMaps`]): only the person here marks
-//! it, and it never reaches a shared record.
-//! The desk's layout is this session's to write, so a change the person undoes or restores reaches
-//! the desk itself: the model hands the workspace back ([`ActivitySnapshot::committing`]), and the
-//! session takes it up as its own change on the pass after the frame it was made in.
+//! The workspace's activity: the desk's own document ([`crate::desk_doc`]) and the records its apps
+//! keep in the store, served to the Activity app and to presence.
+//! A record is read away from the loop ([`crate::platform::records::Reading`]) and a change asks the desk for
+//! the frame that lists it; what this device has seen of a workspace is its own ([`HistoryMaps`]) and
+//! never reaches a shared record.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
-use durable_store::{DurableStore, StorageKey};
+// The page runs this too, where std's clock does not exist: time is read
+// through the toolkit's.
+use ui::time::Instant;
+
+use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
@@ -35,96 +27,140 @@ use tilo_desktop_surface::activity::{
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
-use tilo_device_fabric::link::SharedLink;
-use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
-use ui::record::RecordCheckout;
 
 use crate::activity_provider::ActivityWire;
 use crate::desk_doc::{DeskDoc, Kept};
-use crate::lists::Lists;
-use crate::unlock_history::UnlockHistory;
+use crate::platform::Store;
+use crate::platform::apps::Apps;
+use crate::platform::authors::{People, Writers};
+use crate::platform::pane::Pane;
+#[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
+use ui::record::{RecordCheckout, RecordId, RecordKind};
 
-/// What this device keeps of its own view of the workspaces' activity: the changes it has seen,
-/// when it left a workspace, and the morning sources it chose.
+#[cfg(target_os = "linux")]
+use crate::platform::fabric::SharedLink;
+#[cfg(target_os = "linux")]
+use crate::unlock_history::UnlockHistory;
+
+/// The file this device's view was kept in before it was a record.
 const VIEW_FILE: &str = "activity-history.json";
 
-/// Seconds since the epoch, as a change of the desk names the time it was made.
+/// The package this device's view of the activity is kept under: the session's.
+const VIEW_PACKAGE: &str = "so.tilo.session.activity";
+
+/// Seconds since the epoch, as a change of the desk names its time.
 pub(crate) fn now_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::SystemTime::now()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |since| {
             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
         })
 }
 
-/// What the person has been told about one device's lasting refusals: the workspace it refuses in,
-/// the device, and the class of its reason. A device that refuses a person's next change for the
-/// same reason adds another row to the history, not another notification.
+/// One device's lasting refusal: its workspace, the device, the class of its reason.
+#[cfg(target_os = "linux")]
 type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 
-/// A workspace's activity, as this session serves it: to the desk's own model, and to the apps that
-/// ask through the broker.
+pub struct Given {
+    pub desk: DeskDoc,
+    /// Who sits here.
+    pub person: String,
+    pub store: Option<Store>,
+    pub state: Option<PathBuf>,
+    pub apps: Option<Arc<dyn Apps>>,
+    /// Who a principal is, as presence shows them.
+    pub people: People,
+    pub writers: Writers,
+    pub pane: Rc<dyn Pane>,
+    /// The model the desk's changes are described by, while this host answers one.
+    pub models: Option<Arc<dyn crate::platform::Models>>,
+    /// The one stream of record changes this host feeds.
+    pub changes: crate::platform::records::Changes,
+    pub wake: Option<tilo_service::Wake>,
+}
+
+/// A workspace's activity, as this session serves it.
 #[derive(Clone)]
-pub(crate) struct Activity(Rc<Inner>);
+pub struct Activity(Rc<Inner>);
 
 struct Inner {
-    /// The desk's document, whose changes are its history, and where it is kept.
     desk: DeskDoc,
-    /// What the person's devices answered when one of them asked to be unlocked, as their own
-    /// record.
+    /// What the devices answered when one asked to be unlocked.
+    #[cfg(target_os = "linux")]
     unlock: UnlockHistory,
     /// Who sits here.
     person: String,
-    host: Rc<NativeActivityHost>,
-    /// The records each workspace holds, read on a worker of its own.
-    records: RefCell<HashMap<String, Rc<Watched<Vec<DetachedRecordHistory>>>>>,
-    /// Where the records are read from; `None` on a session that keeps no records store.
-    store: Option<PathBuf>,
-    /// Moves whenever the records read for a workspace moved.
-    records_moved: Arc<AtomicU64>,
-    /// The workspace a change the model wrote back leaves the desk at, for the session to take up
-    /// on its next pass.
+    maps: HistoryMaps,
+    apps: Option<Arc<dyn Apps>>,
+    /// Who a principal is, as presence shows them.
+    people: People,
+    writers: Writers,
+    /// Where the activity model's code is.
+    pane: Rc<dyn Pane>,
+    /// The model the desk's changes are described by, while this host answers one.
+    models: Option<Arc<dyn crate::platform::Models>>,
+    /// The workspaces this device holds, once the session opened them.
+    #[cfg(target_os = "linux")]
+    engine: RefCell<Option<Arc<crate::engine::Engine>>>,
+    /// The session's action door, once its apps run here.
+    #[cfg(target_os = "linux")]
+    door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
+    /// The records' content this device keeps.
+    #[cfg(target_os = "linux")]
+    content: RefCell<Option<Arc<crate::content::Plane>>>,
+    #[cfg(target_os = "linux")]
+    undos: crate::task_undo::Undos,
+    /// The records each workspace holds, read on a worker of its own, told by the change stream
+    /// when one of them moved.
+    records:
+        RefCell<HashMap<String, Rc<crate::platform::records::Reading<Vec<DetachedRecordHistory>>>>>,
+    /// The records the session's services keep themselves, rather than an app's process or the
+    /// store: the workspace record a service publishes holds a root per package it runs.
+    services: RefCell<Option<Rc<RefCell<tilo_service::Services>>>>,
+    store: Option<Store>,
+    /// The one stream of record changes: what tells this session a workspace's records moved.
+    changes: crate::platform::records::Changes,
+    /// The stream's count and the reads that landed, as the last frame saw them: a change the
+    /// person has not been shown asks for the frame that shows it.
+    seen: Cell<(u64, u64)>,
+    /// The desk a change the model wrote back leaves, for the next pass.
     restored: RefCell<Option<DesktopTree>>,
-    /// The resources the person opened from the history, for the session to open their app on.
+    /// The resources the person opened from the history.
     openings: RefCell<Vec<(WorkspaceId, ui::HistoryResourceTarget)>>,
     /// The windows' end of what they ask of the activity, and what they follow.
     requests: ActivityRequests,
-    /// Raised when a window asked or followed something, or when what the history reads moved: the
-    /// desk draws a frame to take it.
+    /// Raised when a window asked, or what the history reads moved.
     woken: Arc<AtomicBool>,
     /// The broker's end of the same activity, once this session serves the apps it runs.
     wire: RefCell<Option<Arc<ActivityWire>>>,
     /// The revision the model last served its reads at, as the apps following them were last told.
     served: Cell<Option<u64>>,
-    /// What this device has already told the person about its lasting refusals: one notice per
-    /// device and reason, never one per write or per pass.
+    /// One notice per device and reason, never one per write or per pass.
+    #[cfg(target_os = "linux")]
     told_refusals: RefCell<BTreeSet<ToldRefusal>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
     /// Answers the model gave, waiting for the desk's thread to write them.
     described: Arc<Mutex<Vec<(Job, String)>>>,
-    /// Whether a model is being asked right now: one request at a time keeps a long history from
-    /// spending the person's provider on a burst.
+    /// One request at a time keeps a long history from spending the person's provider on a burst.
     describing: Arc<AtomicBool>,
     /// The desk's changes the describer last read, so a pass with nothing new asks nothing.
     described_heads: RefCell<Vec<automerge::ChangeHash>>,
-    /// When a model was last looked for: a provider the person configures while the session runs is
-    /// taken up without a frame per lookup.
+    /// When a model was last looked for.
     looked_for_model: Cell<Option<Instant>>,
+    /// What [`Activity::own_actions`] read of each record, by its origin: a tick reads only the
+    /// changes made since the last, and a record that did not move is not read at all.
+    own_reads: RefCell<HashMap<String, OwnRead>>,
     /// What wakes the session's loop when a model answered off this thread.
     wake: Option<tilo_service::Wake>,
 }
 
-/// How often a session with nothing new on its desk looks again for a model the person may have
-/// configured meanwhile.
+/// How often a session with nothing new looks again for a model the person may have configured.
 const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
 
-/// Something the history reads moved — a record an app wrote, an answer
-/// another of the person's devices made: the desk draws a frame to read it,
-/// as it does for a window that asked, and the session's loop wakes to serve
-/// it. Raised by a change alone, never by a pass or a clock.
+/// Something the history reads moved: the desk draws a frame, and the loop wakes.
 fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
     woken.store(true, Ordering::Release);
     if let Some(wake) = wake {
@@ -133,66 +169,115 @@ fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
 }
 
 impl Activity {
-    /// This session's activity: the desk's document under `state` (kept in memory alone without
-    /// one), the desk an older Tilo kept at `old_desk` brought over when this device has none, the
-    /// records under `store` , and the person here.
+    /// This session's activity: the desk under `state` and `old_desk` , the records, the person.
+    #[cfg(target_os = "linux")]
     pub(crate) fn new(
-        state: Option<&Path>,
-        old_desk: Option<&Path>,
+        state: Option<&std::path::Path>,
+        old_desk: Option<&std::path::Path>,
         person: String,
-        store: Option<PathBuf>,
-        lists: Lists,
+        store: Option<Store>,
+        changes: crate::platform::records::Changes,
+        apps: Option<Arc<dyn Apps>>,
         wake: Option<tilo_service::Wake>,
     ) -> Self {
+        let desk = DeskDoc::load(state, old_desk, &person);
+        let unlock = UnlockHistory::new(state, &person);
+        let given = Given {
+            desk,
+            person,
+            store,
+            state: state.map(std::path::Path::to_path_buf),
+            apps,
+            people: crate::platform::authors::unnamed(),
+            writers: Writers::untracked(),
+            pane: Rc::new(crate::platform::pane::Linked),
+            models: None,
+            changes,
+            wake,
+        };
+        Self::assemble(given, unlock)
+    }
+
+    /// This session's activity over what `given` names: every host's.
+    pub fn over(given: Given) -> Self {
+        #[cfg(target_os = "linux")]
+        let unlock = UnlockHistory::new(None, &given.person);
+        Self::assemble(
+            given,
+            #[cfg(target_os = "linux")]
+            unlock,
+        )
+    }
+
+    fn assemble(given: Given, #[cfg(target_os = "linux")] unlock: UnlockHistory) -> Self {
+        let Given {
+            desk,
+            person,
+            store,
+            state,
+            apps,
+            people,
+            writers,
+            pane,
+            models,
+            changes,
+            wake,
+        } = given;
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
+        let seen = (changes.moved(), 0);
         Self(Rc::new(Inner {
-            desk: DeskDoc::load(state, old_desk, &person),
-            unlock: UnlockHistory::new(state, &person),
-            host: Rc::new(NativeActivityHost {
-                person: person.clone(),
-                maps: HistoryMaps::load(state),
-                lists,
-                engine: RefCell::default(),
-                door: RefCell::default(),
-                content: RefCell::default(),
-                undos: crate::task_undo::Undos::default(),
-                woken: Arc::clone(&woken),
-                wake: wake.clone(),
-            }),
+            desk,
+            #[cfg(target_os = "linux")]
+            unlock,
+            maps: HistoryMaps::load(store.clone(), state.as_deref()),
+            apps,
+            people,
+            writers,
+            pane,
+            models,
+            #[cfg(target_os = "linux")]
+            engine: RefCell::default(),
+            #[cfg(target_os = "linux")]
+            door: RefCell::default(),
+            #[cfg(target_os = "linux")]
+            content: RefCell::default(),
+            #[cfg(target_os = "linux")]
+            undos: crate::task_undo::Undos::default(),
             person,
             records: RefCell::default(),
+            services: RefCell::default(),
             store,
-            records_moved: Arc::default(),
+            changes,
+            seen: Cell::new(seen),
             restored: RefCell::default(),
             openings: RefCell::default(),
             requests,
             woken,
             wire: RefCell::default(),
             served: Cell::default(),
+            #[cfg(target_os = "linux")]
             told_refusals: RefCell::default(),
             describer: RefCell::default(),
             described: Arc::default(),
             describing: Arc::default(),
             described_heads: RefCell::default(),
             looked_for_model: Cell::default(),
+            own_reads: RefCell::default(),
             wake,
         }))
     }
 
-    /// Show where a workspace's writes were refused from `engine` , the workspaces this device
-    /// holds: the history rows read the verdicts this device recorded, and the one place the person
-    /// hears of a lasting one.
+    /// Show where a workspace's writes were refused from `engine` .
+    #[cfg(target_os = "linux")]
     fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
-        *self.0.host.engine.borrow_mut() = Some(engine);
+        *self.0.engine.borrow_mut() = Some(engine);
     }
 
-    /// Tell the person about the refusals of this device's writes that waiting cannot change, once
-    /// each: a device that will not take the write says why, because the change is not arriving
-    /// there. A verdict that is gone is forgotten, so a device that refuses again later is heard
-    /// again.
+    /// Tell the person about the refusals waiting cannot change, once each until the verdict goes.
+    #[cfg(target_os = "linux")]
     fn tell_refusals(&self, notifications: &crate::notifications::SessionNotifications) {
-        let Some(engine) = self.0.host.engine.borrow().as_ref().map(Arc::clone) else {
+        let Some(engine) = self.0.engine.borrow().as_ref().map(Arc::clone) else {
             return;
         };
         let mut told = self.0.told_refusals.borrow_mut();
@@ -209,13 +294,16 @@ impl Activity {
                 .filter(|label| !label.is_empty())
                 .cloned()
                 .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
-            notifications.tell(crate::notices::refused_write_notice(&label, refusal.reason));
+            notifications.tell(&crate::notices::refused_write_notice(
+                &label,
+                refusal.reason,
+            ));
         }
         told.retain(|key| lasting.contains(key));
     }
 
-    /// Open this device's workspaces and show them in the activity: what refused one of the
-    /// history's writes, and what the devices call themselves.
+    /// Open this device's workspaces: what refused a write, and what the devices call themselves.
+    #[cfg(target_os = "linux")]
     pub(crate) fn open_engine(
         &self,
         options: &crate::Options,
@@ -226,57 +314,96 @@ impl Activity {
         Some(engine)
     }
 
-    /// The desk this device left, as its document holds it: what the session starts from, and what
-    /// became of the desk on disk when this build did not open it.
-    pub(crate) fn opened_desk(&self) -> Kept {
+    /// The desk this device left, and what became of the desk on disk if it did not open it.
+    pub fn opened_desk(&self) -> Kept {
         self.0.desk.opened()
     }
 
     /// What the windows ask of the activity and follow.
-    pub(crate) fn requests(&self) -> ActivityRequests {
+    pub fn requests(&self) -> ActivityRequests {
         self.0.requests.clone()
     }
 
-    /// Serve the apps this session runs: `wire` reads what the model served,
-    /// and is told when it served something new.
+    /// Serve the apps this session runs through `wire` .
+    #[cfg(target_os = "linux")]
     pub(crate) fn serve_apps(&self, wire: Arc<ActivityWire>) {
         *self.0.wire.borrow_mut() = Some(wire);
     }
 
-    /// Serve the apps this session runs through `door` : what undoes an agent's run in the records
-    /// it changed, as the person at the screen.
+    /// Undo an agent's run in the records it changed, as the person at the screen.
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_door(&self, door: Arc<dyn crate::task_undo::UndoDoor>) {
-        *self.0.host.door.borrow_mut() = Some(door);
+        *self.0.door.borrow_mut() = Some(door);
     }
 
-    /// Read the output of the command runs History shows from `content` , the records' content
-    /// this device keeps.
+    /// Take back the work of the run `run` in `workspace`, as the person at the screen: each
+    /// document `steps` names is asked through the session's door, on a thread of its own, as the
+    /// history's own Undo run asks. Answers whether it started; what came of it is in the
+    /// documents, which a person reads there.
+    ///
+    /// # Errors
+    /// The session serves no door to ask, so nothing was undone.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn undo_run(
+        &self,
+        workspace: &str,
+        run: &str,
+        steps: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        let Some(door) = self.0.door.borrow().as_ref().map(Arc::clone) else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "activity-undo-task-unavailable",
+            ));
+        };
+        let woken = Arc::clone(&self.0.woken);
+        let wake = self.0.wake.clone();
+        self.0.undos.start(
+            door,
+            self.0.person.clone(),
+            workspace.to_owned(),
+            uuid::Uuid::new_v4(),
+            run.to_owned(),
+            steps,
+            move || ask_for_frame(&woken, wake.as_ref()),
+        )
+    }
+
+    /// Read the output of command runs from `content` .
+    #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
-        *self.0.host.content.borrow_mut() = Some(content);
+        *self.0.content.borrow_mut() = Some(content);
     }
 
-    /// Take part in `link` 's fabric: what the person's devices answer each other about unlocking a
-    /// disk is kept in their own record here.
+    /// Read the records the session's own services keep from `services` : what History lists and
+    /// a run is undone in, where no app's process holds the record. The desktop mounts the
+    /// services, so only it attaches them.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_services(&self, services: Rc<RefCell<tilo_service::Services>>) {
+        *self.0.services.borrow_mut() = Some(services);
+    }
+
+    /// Take part in `link` 's fabric.
+    #[cfg(target_os = "linux")]
     pub(crate) fn watch_fabric(&self, link: SharedLink) {
         self.0.unlock.watch(link);
     }
 
-    /// Write what the person's fabric holds now into their own record,
-    /// whether or not a window shows the history: an answer stands for
-    /// minutes, so it is written while it is there to be read. An answer the
-    /// record did not hold yet is a change of the history, and asks the desk
-    /// for the frame that lists it.
+    /// Write what the fabric holds now into the person's own record.
+    #[cfg(target_os = "linux")]
     pub(crate) fn keep_unlock(&self) {
         if self.0.unlock.absorb() {
             ask_for_frame(&self.0.woken, self.0.wake.as_ref());
         }
     }
 
-    /// Serve what the activity holds on this pass: tell the apps following it that what they read
-    /// may have moved — once the model served its reads at a revision they have not been told of —
-    /// and tell the person about the refusals of this device's writes that will not change on their
-    /// own.
+    /// Serve what the activity holds on this pass: the apps following it, and the refusals owed.
+    #[cfg(target_os = "linux")]
     pub(crate) fn serve(&self, notifications: &crate::notifications::SessionNotifications) {
+        self.serve_following();
+        self.tell_refusals(notifications);
+    }
+
+    pub fn serve_following(&self) {
         let served = self.0.requests.served_revision();
         if served != self.0.served.get() {
             self.0.served.set(served);
@@ -284,12 +411,10 @@ impl Activity {
                 wire.changed();
             }
         }
-        self.tell_refusals(notifications);
     }
 
-    /// Record the desk as `tree` holds it, at `time` (seconds since the epoch), by the person here:
-    /// one change of the desk's document, and the document kept. Whether the desk changed at all.
-    pub(crate) fn record_desk(
+    /// Record the desk as `tree` holds it, at `time` , by the person here. Whether it changed.
+    pub fn record_desk(
         &self,
         tree: &DesktopTree,
         time: i64,
@@ -298,9 +423,8 @@ impl Activity {
         self.0.desk.record(tree, time, shows)
     }
 
-    /// [`Self::record_desk`], and write even how the desk looks now: what ends the session, which
-    /// the next one starts from.
-    pub(crate) fn record_desk_now(
+    /// [`Self::record_desk`], and write even how the desk looks: what ends the session.
+    pub fn record_desk_now(
         &self,
         tree: &DesktopTree,
         time: i64,
@@ -310,41 +434,38 @@ impl Activity {
     }
 
     /// The desk document, which the arrangement reads and changes too.
-    pub(crate) fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
+    pub fn desk(&self) -> std::rc::Rc<tilo_session_core::desk::Desk> {
         self.0.desk.desk()
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
-    pub(crate) fn take_restored(&self) -> Option<DesktopTree> {
+    pub fn take_restored(&self) -> Option<DesktopTree> {
         self.0.restored.borrow_mut().take()
     }
 
-    /// The resources the person opened from the history since this was last taken, each with the
-    /// workspace it was opened in.
-    pub(crate) fn take_openings(&self) -> Vec<(WorkspaceId, ui::HistoryResourceTarget)> {
+    /// The resources the person opened from the history, each with its workspace.
+    pub fn take_openings(&self) -> Vec<(WorkspaceId, ui::HistoryResourceTarget)> {
         std::mem::take(&mut *self.0.openings.borrow_mut())
     }
 
-    /// Whether a window asked the model something, or what the history reads moved, since this was
-    /// last taken: the desk draws a frame to take it.
-    pub(crate) fn take_woken(&self) -> bool {
-        self.0.woken.swap(false, Ordering::AcqRel)
+    /// Whether a window asked, or a record moved and was read again, since last taken.
+    pub fn take_woken(&self) -> bool {
+        let now = (self.0.changes.moved(), self.reads());
+        let moved = self.0.seen.replace(now) != now;
+        self.0.woken.swap(false, Ordering::AcqRel) || moved
     }
 
-    /// When this session next looks for a model, so a provider the person configures while it runs
-    /// is taken up with no pass in between.
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+    /// When this session next looks for a model.
+    pub fn next_deadline(&self) -> Option<Instant> {
         self.0
             .looked_for_model
             .get()
             .and_then(|at| at.checked_add(LOOK_FOR_MODEL))
     }
 
-    /// Say what the desk's changes were, and name the runs of them, when the desk moved since they
-    /// were last read: one request at a time, off the desk's thread, written into the desk's
-    /// document when the answer comes so every member reads the same words. Whether the document
-    /// changed and the desk has something new to show.
-    pub(crate) fn describe(&self) -> bool {
+    /// Say what the desk's changes were when the desk moved: one request at a time, off the desk's
+    /// thread. Whether the document changed.
+    pub fn describe(&self) -> bool {
         let mut wrote = false;
         let answers = std::mem::take(&mut *self.0.described.lock_recover());
         {
@@ -375,7 +496,7 @@ impl Activity {
         }
         *self.0.described_heads.borrow_mut() = heads;
         let mut describer = self.0.describer.borrow_mut();
-        describer.set_enabled(crate::activity_models::configured());
+        describer.set_enabled(self.0.models.is_some());
         let Some(job) = describer.next(&mut self.0.desk.document()) else {
             self.0.looked_for_model.set(Some(Instant::now()));
             return wrote;
@@ -387,14 +508,21 @@ impl Activity {
         let describing = Arc::clone(&self.0.describing);
         let woken = Arc::clone(&self.0.woken);
         let wake = self.0.wake.clone();
-        std::thread::spawn(move || {
-            let answer = crate::activity_models::ask(&job).unwrap_or_default();
+        let models = self.0.models.clone();
+        let ask = move || async move {
+            let answer = crate::activity_models::answer(models.as_deref(), &job).await;
             answers.lock_recover().push((job, answer));
             describing.store(false, Ordering::Release);
             // The desk draws a frame to write the answer where it belongs.
-            woken.store(true, Ordering::Release);
-            if let Some(wake) = &wake {
-                wake();
+            ask_for_frame(&woken, wake.as_ref());
+        };
+        // A page has one thread and nothing may block on it: the answer is a task of its own turn.
+        #[cfg(target_arch = "wasm32")]
+        tilo_rt::spawn_task(ask());
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(move || {
+            if let Ok(runtime) = tilo_rt::try_app() {
+                let _ = runtime.block_on(ask());
             }
         });
         wrote
@@ -408,33 +536,95 @@ impl Activity {
             .map(Workspace::id)
     }
 
-    /// The records the workspace `workspace_id` holds, as the worker last read them: made when the
-    /// history is first read for the workspace, and following them from then on.
-    fn records_of(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
-        let store = self.0.store.clone()?;
+    /// The records `workspace_id` holds: read when the change stream says one of them moved, on a
+    /// worker where this host has threads, so a workspace's records never hold up a frame.
+    fn records_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
+        self.records_held(workspace_id).as_ref().clone()
+    }
+
+    /// The records the session's own services keep, each as the record of its app: an agent's
+    /// run there is listed and undone in History as one in a running app's record is, though no
+    /// app's process holds it.
+    fn service_records(&self) -> Vec<DetachedRecordHistory> {
+        let Some(services) = self.services_held() else {
+            return Vec::new();
+        };
+        // A pass that is invoking a service has it borrowed: this one lists what it lists next.
+        let Ok(services) = services.try_borrow() else {
+            return Vec::new();
+        };
+        let kept = services.history_records();
+        kept.into_iter()
+            .map(|record| DetachedRecordHistory {
+                // The service's record is the app's record of the workspace, which the history
+                // names as its primary: one document may hold several apps' records, and the
+                // kind says whose steps in it this entry's are.
+                checkout: RecordCheckout::package_primary(RecordKind::new(record.kind)),
+                app: record.app,
+                document: Some(record.document),
+            })
+            .collect()
+    }
+
+    /// The services this session runs, once it has started them.
+    fn services_held(&self) -> Option<Rc<RefCell<tilo_service::Services>>> {
+        self.0
+            .services
+            .try_borrow()
+            .ok()
+            .and_then(|held| held.clone())
+    }
+
+    /// The records `workspace_id` holds as last read, shared rather than copied.
+    fn records_held(&self, workspace_id: WorkspaceId) -> Arc<Vec<DetachedRecordHistory>> {
+        let Some(store) = self.0.store.clone() else {
+            return Arc::default();
+        };
         let key = workspace_id.to_string();
+        let watch = crate::platform::records::Watch::Workspace(key.clone());
         if let Some(known) = self.0.records.borrow().get(&key) {
-            return Some(Rc::clone(known));
+            let known = Rc::clone(known);
+            return known.following(&self.0.changes, &watch);
         }
-        let directories = record_directories(&store, &key);
+        let reading = store.clone();
         let by_workspace = key.clone();
-        let read = move || read_workspace_records(&store, &by_workspace);
-        let watch = Watched::start("tilo-activity-records", directories, read).ok()?;
-        let moved = Arc::clone(&self.0.records_moved);
-        // The record was read again because it changed: the model reading it is told, so an open
-        // history lists the change with no one asking.
-        let woken = Arc::clone(&self.0.woken);
-        let wake = self.0.wake.clone();
-        watch.on_change(move || {
-            moved.fetch_add(1, Ordering::AcqRel);
-            ask_for_frame(&woken, wake.as_ref());
+        let noted = crate::platform::authors::new_noted({
+            let noted = self.0.writers.noted.clone();
+            move |actor| noted(actor)
         });
-        let watch = Rc::new(watch);
-        self.0.records.borrow_mut().insert(key, Rc::clone(&watch));
-        Some(watch)
+        let read = move || read_workspace_records(reading.as_ref(), &by_workspace, &noted);
+        #[cfg(target_os = "linux")]
+        let known = Rc::new(crate::platform::records::Reading::start(
+            "tilo-activity-records",
+            self.0.changes.clone(),
+            crate::platform::records::Watch::Workspace(key.clone()),
+            read,
+            {
+                let woken = Arc::clone(&self.0.woken);
+                let wake = self.0.wake.clone();
+                move || ask_for_frame(&woken, wake.as_ref())
+            },
+        ));
+        #[cfg(not(target_os = "linux"))]
+        let known = Rc::new(crate::platform::records::Reading::read(
+            &self.0.changes,
+            &watch,
+            read,
+        ));
+        let value = known.get();
+        self.0.records.borrow_mut().insert(key, Rc::clone(&known));
+        value
+    }
+
+    /// The reads of the workspaces' records that landed: their count tells a frame that what the
+    /// history reads changed since it was last served.
+    fn reads(&self) -> u64 {
+        self.0
+            .records
+            .borrow()
+            .values()
+            .map(|known| known.reads())
+            .sum()
     }
 }
 
@@ -466,21 +656,13 @@ impl HistorySource for Activity {
         workspace: WorkspaceSlot,
     ) -> Vec<DetachedRecordHistory> {
         let mut records = Vec::new();
-        if let Some(workspace_id) = Self::id_of(tree, workspace)
-            && let Some(watch) = self.records_of(workspace_id)
-        {
-            let held = tree.workspace_records_held.get(&workspace_id);
-            let read = watch.get();
-            records.extend(
-                read.iter()
-                    .filter(|record| {
-                        held.is_none_or(|held| held.contains_key(record.checkout.id.as_str()))
-                    })
-                    .cloned(),
-            );
+        if let Some(workspace_id) = Self::id_of(tree, workspace) {
+            records.extend(self.records_of(workspace_id));
         }
+        records.extend(self.service_records());
         // What the person's devices answered when one of them asked to be unlocked is theirs and
         // not any one workspace's: it reads the same in every workspace's history.
+        #[cfg(target_os = "linux")]
         if let Some(record) = self.0.unlock.history() {
             records.push(record);
         }
@@ -488,14 +670,17 @@ impl HistorySource for Activity {
     }
 
     fn host(&self) -> Rc<dyn ActivityHost> {
-        Rc::clone(&self.0.host) as Rc<dyn ActivityHost>
+        Rc::new(Host(Rc::clone(&self.0))) as Rc<dyn ActivityHost>
     }
 
     fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
+        // Who this host's own mounts write as: a record's changes by the person who made them.
+        (self.0.writers.register)(authors);
         // The names the desk's changes are known by: the person here, and whoever the desk came
         // from when it was read into its document.
         let known = self.0.desk.authors();
-        history_log::register_authors(authors, &known, &|_| None);
+        let people = &*self.0.people;
+        history_log::register_authors(authors, &known, people);
         // The changes this device made are the person's own: they read as presence shows them here,
         // not as another participant.
         let mine = self.0.person.clone();
@@ -506,31 +691,44 @@ impl HistorySource for Activity {
         }
         // The devices that answered a boot are named as their own snapshots name them, and this one
         // of them is the person here.
-        history_log::register_authors(authors, &self.0.unlock.authors(), &|_| None);
-        if let Some(actor) = self.0.unlock.local_actor() {
-            authors.register_local_identity(&actor);
+
+        #[cfg(target_os = "linux")]
+        {
+            let unlock = &self.0.unlock;
+            history_log::register_authors(authors, &unlock.authors(), people);
+            if let Some(actor) = unlock.local_actor() {
+                authors.register_local_identity(&actor);
+            }
         }
     }
 
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
-        // What the fabric holds now is written before the record is read: a pass that hears an
-        // answer is the pass that lists it. The desk is reading the history as it stands, so this
-        // write needs no frame.
+        #[cfg(target_os = "linux")]
         self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.0.desk.heads().hash(&mut hasher);
+        #[cfg(target_os = "linux")]
         self.0.unlock.heads().hash(&mut hasher);
-        self.0
-            .records_moved
-            .load(Ordering::Acquire)
-            .hash(&mut hasher);
+        // What the records say moved, and the reads of them that landed since: a history open on
+        // this device is served again.
+        self.0.changes.moved().hash(&mut hasher);
+        self.reads().hash(&mut hasher);
+        // What the session's own services keep moves without a store's change stream: an agent's
+        // step in a record the session holds is one of its runs, and asks for the frame listing it.
+        if let Some(services) = self.services_held()
+            && let Ok(services) = services.try_borrow()
+        {
+            services.revision().hash(&mut hasher);
+        }
         hasher.finish()
     }
 
-    /// The person opened a resource from the history: its app shows it. No window here is bound to
-    /// a record, so the session opens the app on the target on its next pass, after the frame that
-    /// asked.
+    fn activity_pane(&self) -> tilo_desktop_surface::ActivityPaneCode {
+        self.0.pane.pane_code()
+    }
+
+    /// The person opened a resource from the history: its app opens on the next pass.
     fn resource_tab(
         &self,
         tree: &DesktopTree,
@@ -538,6 +736,7 @@ impl HistorySource for Activity {
     ) -> Option<tilo_desktop_model::TabId> {
         // No app holds the person's own record of what their devices answered: its rows are read in
         // the history, and opened nowhere.
+        #[cfg(target_os = "linux")]
         if self.0.unlock.holds(&target.id) {
             return None;
         }
@@ -550,60 +749,58 @@ impl HistorySource for Activity {
     }
 }
 
-/// The directories that change when a record a workspace holds does: the workspace's index, where
-/// its app names the records it holds, and each record's, where the app writes the document. A
-/// record an app starts holding after this is read is picked up by its workspace's index; what the
-/// app writes into it after that is read when a session reads the history again.
-fn record_directories(store: &Path, workspace: &str) -> Vec<PathBuf> {
-    let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
-    let indexes = match device.workspace_indexes() {
-        Ok(indexes) => indexes,
+/// The packages that hold records in `workspace` , as their apps' indexes name them.
+fn workspace_packages(store: &dyn DurableStore, workspace: &str) -> Vec<(String, String)> {
+    match store.workspace_indexes() {
+        Ok(indexes) => indexes
+            .into_iter()
+            .filter(|(_, room)| room == workspace)
+            .collect(),
         Err(error) => {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            return Vec::new();
+            Vec::new()
         }
-    };
-    let mut directories = BTreeSet::new();
-    for (package, index_room) in indexes {
-        if index_room != workspace {
-            continue;
-        }
-        let Ok(directory) = app_state::workspace_index_directory(store, &package, &index_room)
+    }
+}
+
+/// Every record a workspace holds, with the document its app last wrote.
+fn read_workspace_records(
+    store: &dyn DurableStore,
+    workspace: &str,
+    noted: &crate::platform::authors::Noted,
+) -> Vec<DetachedRecordHistory> {
+    let mut read = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (package, index_room) in workspace_packages(store, workspace) {
+        let Some((checkouts, primary)) =
+            crate::platform::records::workspace_records(store, &package, &index_room)
         else {
             continue;
         };
-        for record in named_in(device.as_ref(), &package, &index_room) {
-            directories.insert(directory.join("records").join(record.id.as_str()));
+        // The app's own record (Notes' notebook, Chat's chat) is the workspace's document itself,
+        // which also keeps the index: read as a record of its own once anything was done in it.
+        if let Some(document) = primary
+            && seen.insert((
+                package.clone(),
+                RecordId::package_primary().as_str().to_owned(),
+            ))
+        {
+            noted(document.get_actor());
+            read.push(DetachedRecordHistory {
+                app: package.clone(),
+                checkout: RecordCheckout::package_primary(RecordKind::new(package.as_str())),
+                document: Some(document),
+            });
         }
-        directories.insert(directory);
-    }
-    directories.into_iter().collect()
-}
-
-/// Every record a workspace holds, as its apps' indexes name them, with the document its app last
-/// wrote. One the index does not name is one no app of the workspace may open, so it is not read
-/// here.
-fn read_workspace_records(store: &Path, workspace: &str) -> Vec<DetachedRecordHistory> {
-    let device: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(store));
-    let indexes = match device.workspace_indexes() {
-        Ok(indexes) => indexes,
-        Err(error) => {
-            tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            return Vec::new();
-        }
-    };
-    let mut read = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (package, index_room) in indexes {
-        if index_room != workspace {
-            continue;
-        }
-        for checkout in named_in(device.as_ref(), &package, &index_room) {
+        for checkout in checkouts {
             let id = checkout.id.as_str().to_owned();
             if !seen.insert((package.clone(), id.clone())) {
                 continue;
             }
-            let document = document_of(device.as_ref(), &package, workspace, &id);
+            let document = crate::platform::records::document(store, &package, workspace, &id);
+            if let Some(document) = &document {
+                noted(document.get_actor());
+            }
             read.push(DetachedRecordHistory {
                 app: package.clone(),
                 checkout,
@@ -614,135 +811,67 @@ fn read_workspace_records(store: &Path, workspace: &str) -> Vec<DetachedRecordHi
     read
 }
 
-/// The records `package` 's index for `workspace` names, as the store holds it.
-fn named_in(store: &dyn DurableStore, package: &str, workspace: &str) -> Vec<RecordCheckout> {
-    let Ok(Some(stored)) = store.read(&StorageKey::workspace_index(package, workspace)) else {
-        return Vec::new();
-    };
-    if stored.bytes.is_empty() {
-        return Vec::new();
-    }
-    // An app keeping the index appends to it, and this read may land on a tail it has not finished
-    // writing: the changes before it are the index as of the last write that completed.
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => ui::record::index::discoverable_references(&doc),
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a workspace's index does not load");
-            Vec::new()
-        }
-    }
-}
+/// What the model asks of the session, over the one state this activity keeps.
+struct Host(Rc<Inner>);
 
-/// The document `package` keeps for record `record` in `workspace` , as its app last committed it:
-/// `None` while the app holds changes it has not committed, so the history shows none of them.
-fn document_of(
-    store: &dyn DurableStore,
-    package: &str,
-    workspace: &str,
-    record: &str,
-) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::record(package, workspace, record)) {
-        Ok(stored) => stored?,
-        Err(error) => {
-            tracing::warn!(%error, %package, %record, "a record is not read");
-            return None;
-        }
-    };
-    if stored.bytes.is_empty() {
-        return None;
-    }
-    let options = LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
-    match AutoCommit::load_with_options(&stored.bytes, options) {
-        Ok(doc) => Some(doc),
-        Err(error) => {
-            tracing::warn!(%error, %package, %record, "a record does not load");
-            None
-        }
-    }
-}
-
-/// What the model may ask of this session: who is looking, what they have seen, and the names of
-/// the apps that hold the records.
-struct NativeActivityHost {
-    person: String,
-    maps: HistoryMaps,
-    lists: Lists,
-    /// The workspaces this device holds, once the session opened them: what refused one of the
-    /// history's writes, and what the devices call themselves.
-    engine: RefCell<Option<Arc<crate::engine::Engine>>>,
-    /// The session's action door, once its apps run here: the records an agent's run is undone in.
-    door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
-    /// The records' content this device keeps: what a command an agent ran printed.
-    content: RefCell<Option<Arc<crate::content::Plane>>>,
-    undos: crate::task_undo::Undos,
-    /// What asks the desk for the frame that shows how an undo ended.
-    woken: Arc<AtomicBool>,
-    wake: Option<tilo_service::Wake>,
-}
-
-impl ActivityHost for NativeActivityHost {
+impl ActivityHost for Host {
     fn local_user(&self) -> String {
-        self.person.clone()
+        self.0.person.clone()
     }
 
     fn local_author(&self, authors: &mut ui::AuthorDirectory, actor: &str) -> Option<String> {
         if authors.register_local_identity(actor) {
             return None;
         }
-        (!self.person.is_empty()).then(|| self.person.clone())
+        (!self.0.person.is_empty()).then(|| self.0.person.clone())
     }
 
     fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
-        self.maps.map("morning_sources")
+        self.0.maps.map("morning_sources")
     }
 
     fn save_morning_sources(&self, sources: &HashMap<u64, morning::MorningPreferences>) {
-        self.maps.save("morning_sources", sources);
+        self.0.maps.save("morning_sources", sources);
     }
 
     fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
-        self.maps.map("seen_frontiers")
+        self.0.maps.map("seen_frontiers")
     }
 
     fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
-        self.maps.save("seen_frontiers", frontiers);
+        self.0.maps.save("seen_frontiers", frontiers);
     }
 
     fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
-        self.maps.map("departures")
+        self.0.maps.map("departures")
     }
 
     fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
-        self.maps.save("departures", departures);
+        self.0.maps.save("departures", departures);
     }
 
     fn mutations_available(&self) -> bool {
         true
     }
 
-    /// The desk's own layout is this session's to write, so undoing or restoring a change of it
-    /// reaches the desk. A record's history is its app's to write, and this session holds no writer
-    /// for one.
+    /// The desk's own layout is this session's to write; a record's history is its app's.
     fn writable(&self, origin: &HistoryOrigin) -> bool {
         matches!(origin, HistoryOrigin::DesktopTree)
     }
 
+    #[cfg(target_os = "linux")]
     fn record_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
-        self.content.borrow().as_ref()?.read(workspace, app, hash)
+        self.0.content.borrow().as_ref()?.read(workspace, app, hash)
     }
 
     fn app_display_name(&self, app: &str) -> Option<String> {
-        self.lists
-            .latest()
-            .applications
-            .iter()
-            .find(|entry| entry.id == app)
-            .map(|entry| entry.title.clone())
+        let name = self.0.apps.as_ref()?.name(app);
+        (!name.is_empty()).then_some(name)
     }
 
+    #[cfg(target_os = "linux")]
     fn refusals(&self, workspace: &str) -> Vec<wire::Refusal> {
-        let Some(engine) = self.engine.borrow().as_ref().map(Arc::clone) else {
+        let Some(engine) = self.0.engine.borrow().as_ref().map(Arc::clone) else {
             return Vec::new();
         };
         let labels = engine.device_labels(workspace);
@@ -774,71 +903,411 @@ impl ActivityHost for NativeActivityHost {
 
     fn undo_task_run(&self, undo: TaskRunUndo) -> Result<(), String> {
         // Undone by each changed document's own history, as the person at the screen.
-        let Some(door) = self.door.borrow().as_ref().map(Arc::clone) else {
-            return Err(tilo_desktop_surface::i18n::t(
+        #[cfg(target_os = "linux")]
+        {
+            let Some(door) = self.0.door.borrow().as_ref().map(Arc::clone) else {
+                return Err(tilo_desktop_surface::i18n::t(
+                    "activity-undo-task-unavailable",
+                ));
+            };
+            let woken = Arc::clone(&self.0.woken);
+            let wake = self.0.wake.clone();
+            self.0.undos.start(
+                door,
+                self.0.person.clone(),
+                undo.workspace,
+                undo.invocation,
+                undo.task_id,
+                undo.steps,
+                move || ask_for_frame(&woken, wake.as_ref()),
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = undo;
+            Err(tilo_desktop_surface::i18n::t(
                 "activity-undo-task-unavailable",
-            ));
-        };
-        let woken = Arc::clone(&self.woken);
-        let wake = self.wake.clone();
-        self.undos.start(
-            door,
-            self.person.clone(),
-            undo.workspace,
-            undo.invocation,
-            undo.task_id,
-            undo.steps,
-            move || ask_for_frame(&woken, wake.as_ref()),
-        )
+            ))
+        }
     }
 
     fn poll_task_run_undo(
         &self,
         invocation: uuid::Uuid,
     ) -> Option<Result<Vec<TaskRunDocument>, String>> {
-        match self.undos.poll(invocation)? {
-            crate::task_undo::UndoState::Running => None,
-            crate::task_undo::UndoState::Ended(outcome) => Some(outcome),
+        #[cfg(target_os = "linux")]
+        {
+            match self.0.undos.poll(invocation)? {
+                crate::task_undo::UndoState::Running => None,
+                crate::task_undo::UndoState::Ended(outcome) => Some(outcome),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = invocation;
+            None
         }
     }
 }
 
-/// This device's private view of the workspaces' activity, kept in one file.
-/// Read once, when the session starts, and written by the state writer ([`tilo_durable_writer`]).
+/// One step the person took, as presence reports it to the people they are with: the titles of what
+/// they did, never the content.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct OwnAction {
+    /// The step's history entry id, 32 hex.
+    pub id: String,
+    /// What the step did, e.g. "Edited the text".
+    pub action: String,
+    /// The record's title.
+    pub resource: String,
+    /// The app's name.
+    pub app: String,
+    pub at_ms: u64,
+}
+
+/// The most of its own steps a device reports as what its person is doing.
+const MAX_OWN_ACTIONS: usize = 16;
+
+/// What [`Activity::own_actions`] read of one record: its newest steps, as of the committed heads
+/// and the authors they were read under, and the log a later read continues from.
+#[derive(Default)]
+struct OwnRead {
+    heads: Vec<automerge::ChangeHash>,
+    authors: Option<ui::AuthorDirectory>,
+    log: ui::history_source::HistoryLog,
+    entries: Vec<ui::widget::HistoryEntry>,
+}
+
+impl OwnRead {
+    /// Bring the steps up to `doc` as `authors` name them: nothing is read while neither moved,
+    /// and only the changes made since otherwise.
+    fn follow(&mut self, doc: &automerge::AutoCommit, authors: &ui::AuthorDirectory) {
+        let heads = ui::history_source::committed_heads(doc);
+        if heads == self.heads && self.authors.as_ref() == Some(authors) {
+            return;
+        }
+        // The held record is shared with every other reader of it; the copy is this read's.
+        let mut doc = doc.clone();
+        self.entries = ui::HistorySource::new()
+            .without_record_genesis()
+            .with_authors(authors.clone())
+            .with_max_entries(MAX_OWN_ACTIONS)
+            .entries_since(&mut doc, &mut self.log);
+        self.heads = heads;
+        self.authors = Some(authors.clone());
+    }
+}
+
+/// The bound, in characters, of each title reported.
+const MAX_OWN_TITLE_CHARS: usize = 96;
+
+impl Activity {
+    /// What `author` did in `workspace`'s records since `since_ms` (Unix milliseconds), oldest
+    /// first: the titles of their own steps, never the content. A run of the same step on the same
+    /// resource — typing commits one a second — is one thing they did.
+    pub fn own_actions(
+        &self,
+        tree: &DesktopTree,
+        workspace: WorkspaceSlot,
+        author: &str,
+        since_ms: u64,
+    ) -> Vec<OwnAction> {
+        let Some(workspace_id) = Self::id_of(tree, workspace) else {
+            return Vec::new();
+        };
+        let shown: HashMap<String, TabId> = self
+            .0
+            .desk
+            .desk()
+            .records()
+            .into_iter()
+            .map(|(tab, record)| (record, tab))
+            .collect();
+        let titles: HashMap<TabId, &str> = tree
+            .tabs()
+            .map(|tab| (tab.id, tab.title.as_str()))
+            .collect();
+        let mut authors = ui::AuthorDirectory::new();
+        (self.0.writers.register)(&mut authors);
+        authors.set_reader(author);
+        let mut actions = Vec::new();
+        let records = self.records_held(workspace_id);
+        let mut reads = self.0.own_reads.borrow_mut();
+        let mut kept = HashMap::with_capacity(records.len());
+        for record in records.iter() {
+            let Some(doc) = record.document.as_ref() else {
+                continue;
+            };
+            let key = record.origin().key();
+            let mut read = reads.remove(&key).unwrap_or_default();
+            read.follow(doc, &authors);
+            kept.insert(key.clone(), read);
+            let Some(entries) = kept.get(&key).map(|read| read.entries.as_slice()) else {
+                continue;
+            };
+            let app_name = self
+                .0
+                .apps
+                .as_ref()
+                .map_or_else(String::new, |apps| apps.name(&record.app));
+            let tab = shown.get(record.checkout.id.as_str()).copied();
+            let in_tree = record.checkout.id.tree().is_some();
+            for entry in entries {
+                let mine = entry.author.relation == ui::widget::AuthorRelation::Reader
+                    || entry.author.name == author;
+                let at_ms = entry
+                    .timestamp
+                    .duration_since(ui::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+                if !mine || at_ms < since_ms || !is_doing(entry) {
+                    continue;
+                }
+                let (action, resource) = match &entry.context {
+                    Some(context) => (
+                        ui::history_source::sentence::step_title(context),
+                        if in_tree {
+                            shared_part(context)
+                        } else {
+                            context.resource.as_ref().map(|r| r.label.clone())
+                        },
+                    ),
+                    None => (None, None),
+                };
+                let action = bounded_title(&action.unwrap_or_else(|| "Edited".to_owned()));
+                if action.is_empty() {
+                    continue;
+                }
+                let resource = resource
+                    .filter(|label| !label.trim().is_empty())
+                    .or_else(|| {
+                        tab.and_then(|tab| titles.get(&tab))
+                            .map(|title| (*title).to_owned())
+                    })
+                    .unwrap_or_default();
+                actions.push(OwnAction {
+                    id: hex::encode(entry.id.0),
+                    action,
+                    resource: bounded_title(&resource),
+                    app: bounded_title(&app_name),
+                    at_ms,
+                });
+            }
+        }
+        // A record no longer held is forgotten with it.
+        *reads = kept;
+        drop(reads);
+        actions.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then_with(|| a.id.cmp(&b.id)));
+        actions.dedup_by(|a, b| a.id == b.id);
+        actions.reverse();
+        actions.dedup_by(|older, newer| {
+            older.action == newer.action
+                && older.resource == newer.resource
+                && older.app == newer.app
+        });
+        actions.reverse();
+        actions.truncate(MAX_OWN_ACTIONS);
+        actions
+    }
+
+    /// How many changes [`Self::own_actions`] read, across every call: what a test holds a tick to.
+    #[cfg(test)]
+    fn own_changes_read(&self) -> usize {
+        self.0
+            .own_reads
+            .borrow()
+            .values()
+            .map(|read| read.log.changes_read())
+            .sum()
+    }
+}
+
+/// The most bytes of the line a device says of what its person is doing: what a presence status
+/// carries.
+const MAX_DOING_BYTES: usize = collab_types::presence::MAX_ACTIVITY_BYTES;
+
+/// What someone is doing now, read off the newest of their own steps (`actions`, oldest first, as
+/// [`Activity::own_actions`] gives them): "Writing in #general", "Editing ‘Launch plan’ in Notes".
+/// The verb comes from the step's title (an app's past-tense history sentence, "Posted a message",
+/// "Edited the text") where it says plainly what kind of work it was, else it is "Working on". A
+/// record named like its app (a chat's one record, "Chat") is said once: "Working in Chat", never
+/// "Working on Chat in Chat". `None` while they took no step lately.
+#[must_use]
+pub fn doing_now(actions: &[OwnAction]) -> Option<String> {
+    let action = actions.last()?;
+    let title = action.action.trim();
+    let verb = doing(title);
+    let resource = action.resource.trim();
+    let app = action.app.trim();
+    let line = if resource.is_empty() && app.is_empty() {
+        title.to_owned()
+    } else if resource.is_empty() || resource.eq_ignore_ascii_case(app) || resource.starts_with('#')
+    {
+        // In the app as a whole, or in a channel, named as the app shows it.
+        let place = if resource.starts_with('#') {
+            resource
+        } else {
+            app
+        };
+        format!("{} in {place}", verb.unwrap_or("Working"))
+    } else {
+        let verb = verb.unwrap_or("Working on");
+        if app.is_empty() {
+            format!("{verb} ‘{resource}’")
+        } else {
+            format!("{verb} ‘{resource}’ in {app}")
+        }
+    };
+    let line = clipped(&line, ui::MAX_STATUS_CHARS, MAX_DOING_BYTES);
+    (!line.is_empty()).then_some(line)
+}
+
+/// The present-tense verb for a step's title, where its first word says what kind of work it was:
+/// writing, editing, drawing, reviewing.
+fn doing(title: &str) -> Option<&'static str> {
+    let first = title
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    Some(match first.as_str() {
+        "post" | "posted" | "send" | "sent" | "reply" | "replied" | "write" | "wrote"
+        | "answer" | "answered" | "message" | "messaged" => "Writing",
+        "edit" | "edited" | "change" | "changed" | "type" | "typed" | "rename" | "renamed"
+        | "format" | "formatted" | "rewrite" | "rewrote" => "Editing",
+        "draw" | "drew" | "sketch" | "sketched" | "paint" | "painted" => "Drawing",
+        "comment" | "commented" | "review" | "reviewed" | "resolve" | "resolved" | "suggest"
+        | "suggested" => "Reviewing",
+        "add" | "added" | "create" | "created" | "make" | "made" | "insert" | "inserted" => {
+            "Adding to"
+        }
+        _ => return None,
+    })
+}
+
+/// At most `chars` characters and `bytes` bytes of `text`, an ellipsis marking a cut.
+fn clipped(text: &str, chars: usize, bytes: usize) -> String {
+    if text.chars().count() <= chars && text.len() <= bytes {
+        return text.to_owned();
+    }
+    let mut kept = String::new();
+    for (index, c) in text.chars().enumerate() {
+        if index.saturating_add(1) >= chars
+            || kept
+                .len()
+                .saturating_add(c.len_utf8())
+                .saturating_add('…'.len_utf8())
+                > bytes
+        {
+            break;
+        }
+        kept.push(c);
+    }
+    let mut kept = kept.trim_end().to_owned();
+    kept.push('…');
+    kept
+}
+
+/// `text` as a title a person is shown: one line, bounded.
+fn bounded_title(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_OWN_TITLE_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// The part of a window's tree a step went to, named where everyone the window is shared with sees
+/// it too: the place its app recorded on the step ([`tilo_actions::PLACE_FACET`], a post's channel),
+/// or a channel it was done to. A private part is never named.
+fn shared_part(context: &tilo_actions::ActionContext) -> Option<String> {
+    if let Some(place) = context
+        .facets
+        .iter()
+        .find(|facet| facet.key == tilo_actions::PLACE_FACET)
+        .map(|facet| facet.value.trim())
+        .filter(|place| !place.is_empty())
+    {
+        return Some(place.to_owned());
+    }
+    let resource = context.resource.as_ref()?;
+    let label = resource.label.trim();
+    if label.is_empty() || !resource.kind.ends_with(".channel") {
+        return None;
+    }
+    Some(if label.starts_with('#') {
+        label.to_owned()
+    } else {
+        format!("#{label}")
+    })
+}
+
+/// Whether `entry` is something its author did: housekeeping an app does on its own, and content
+/// from outside, are not what someone is doing.
+fn is_doing(entry: &ui::widget::HistoryEntry) -> bool {
+    entry
+        .context
+        .as_ref()
+        .is_none_or(tilo_actions::ActionContext::is_activity)
+}
+
 struct HistoryMaps {
     known: RefCell<serde_json::Map<String, Value>>,
-    path: Option<PathBuf>,
+    store: Option<Store>,
+    /// The claim on the record, held for as long as this session writes it.
+    lease: RefCell<Option<durable_store::Lease>>,
 }
 
 impl HistoryMaps {
-    fn load(state: Option<&Path>) -> Self {
-        let path = state.map(|state| state.join("tilo").join(VIEW_FILE));
-        let known = path
-            .as_deref()
-            .and_then(|path| match std::fs::read(path) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %path.display(),
-                        "the remembered history map view could not be read"
-                    );
-                    None
-                }
-            })
-            .and_then(|bytes| {
-                serde_json::from_slice(&bytes)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the remembered history map view does not read back");
-                    })
-                    .ok()
-            })
+    fn load(store: Option<Store>, state: Option<&std::path::Path>) -> Self {
+        let known = store
+            .as_ref()
+            .and_then(|store| Self::read(store.as_ref()))
+            .or_else(|| state.map(Self::kept_in).unwrap_or_default())
             .unwrap_or_default();
-        Self {
+        let maps = Self {
             known: RefCell::new(known),
-            path,
+            store,
+            lease: RefCell::default(),
+        };
+        // What the file held is part of the record from now on: the file is left where it is.
+        if !maps.known.borrow().is_empty() {
+            maps.keep();
         }
+        maps
+    }
+
+    /// What this device's store holds of the view.
+    fn read(store: &dyn DurableStore) -> Option<serde_json::Map<String, Value>> {
+        let key = StorageKey::package(VIEW_PACKAGE);
+        let stored = match store.read(&key) {
+            Ok(stored) => stored?,
+            Err(error) => {
+                tracing::warn!(%error, "the remembered history view is not read");
+                return None;
+            }
+        };
+        serde_json::from_slice(&stored.bytes)
+            .inspect_err(
+                |error| tracing::warn!(%error, "the remembered history view does not read back"),
+            )
+            .ok()
+    }
+
+    /// The map the file under `state` held, before this device kept it in its store.
+    fn kept_in(state: &std::path::Path) -> Option<serde_json::Map<String, Value>> {
+        let path = state.join("tilo").join(VIEW_FILE);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "the remembered history map view could not be read");
+                return None;
+            }
+        };
+        serde_json::from_slice(&bytes)
+            .inspect_err(|error| tracing::warn!(%error, "the remembered history map view does not read back"))
+            .ok()
     }
 
     /// `key` 's per-workspace map, as this session last kept it.
@@ -858,8 +1327,7 @@ impl HistoryMaps {
             .collect()
     }
 
-    /// Keep `values` as `key` 's map, for this session at once and for the next one once the burst
-    /// of saves is over.
+    /// Keep `values` as `key` 's map, for this session and the next.
     fn save<T: serde::Serialize>(&self, key: &str, values: &HashMap<u64, T>) {
         let map = Value::Object(
             values
@@ -867,12 +1335,31 @@ impl HistoryMaps {
                 .filter_map(|(id, value)| Some((id.to_string(), serde_json::to_value(value).ok()?)))
                 .collect(),
         );
-        let mut known = self.known.borrow_mut();
-        known.insert(key.to_owned(), map);
-        if let Some(path) = &self.path
-            && let Ok(bytes) = serde_json::to_vec(&*known)
-        {
-            tilo_durable_writer::keep(path.clone(), bytes);
+        self.known.borrow_mut().insert(key.to_owned(), map);
+        self.keep();
+    }
+
+    /// Write the view to this device's store, as it stands now.
+    fn keep(&self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let key = StorageKey::package(VIEW_PACKAGE);
+        let Ok(bytes) = serde_json::to_vec(&*self.known.borrow()) else {
+            return;
+        };
+        let mut lease = self.lease.borrow_mut();
+        if lease.is_none() {
+            match store.lease(&key) {
+                Ok(held) => *lease = Some(held),
+                Err(error) => {
+                    tracing::warn!(%error, "the remembered history view is not written");
+                    return;
+                }
+            }
+        }
+        if let Err(error) = store.write(&key, WriteOp::Replace(bytes), None) {
+            tracing::warn!(%error, "the remembered history view is not written");
         }
     }
 }
@@ -883,6 +1370,51 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the desk.
 
     use super::*;
+
+    fn step(action: &str, resource: &str, app: &str) -> super::OwnAction {
+        super::OwnAction {
+            id: String::new(),
+            action: action.into(),
+            resource: resource.into(),
+            app: app.into(),
+            at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_line_says_what_kind_of_work_and_where_from_the_newest_step() {
+        use super::doing_now;
+        assert_eq!(doing_now(&[]), None, "no step lately, nothing to say");
+        let older = step("Opened", "Plan", "Notes");
+        assert_eq!(
+            doing_now(&[older.clone(), step("Posted a message", "#general", "Chat")]).as_deref(),
+            Some("Writing in #general")
+        );
+        assert_eq!(
+            doing_now(&[step("Post", "Chat", "Chat")]).as_deref(),
+            Some("Writing in Chat"),
+            "a bare verb reads the same"
+        );
+        assert_eq!(
+            doing_now(&[step("Opened", "chat", "Chat")]).as_deref(),
+            Some("Working in Chat"),
+            "a record named like its app is said once, whatever the case"
+        );
+        assert_eq!(
+            doing_now(&[step("Edited the text", "Launch plan", "Notes")]).as_deref(),
+            Some("Editing ‘Launch plan’ in Notes")
+        );
+        assert_eq!(
+            doing_now(&[older]).as_deref(),
+            Some("Working on ‘Plan’ in Notes")
+        );
+        let long = doing_now(&[step("Edited", &"é".repeat(200), "Notes")]).expect("a line");
+        assert!(
+            long.len() <= collab_types::presence::MAX_ACTIVITY_BYTES,
+            "{long}"
+        );
+        assert!(long.ends_with('…'));
+    }
 
     use tilo_actions::InvocationId;
     use tilo_actions::remote::workspace_activity as wire;
@@ -910,8 +1442,7 @@ mod tests {
         Caller::local_person("ada").in_workspace("workspace")
     }
 
-    /// A desk of one workspace with Notes open, its activity served from the desk's own log the way
-    /// this session serves it.
+    /// A desk of one workspace with Notes open, its activity served as this session serves it.
     struct Desk {
         surface: DesktopSurface,
         handle: DesktopHandle,
@@ -921,6 +1452,11 @@ mod tests {
 
     impl Desk {
         fn new() -> Self {
+            Self::seeded(|minter, notes| seed_tree(minter, "Studio", vec![notes]))
+        }
+
+        /// A desk seeded by `seed` , given its minter and the Notes window it shows.
+        fn seeded(seed: impl FnOnce(&mut IdMinter, Tab) -> DesktopTree) -> Self {
             let mut minter = IdMinter::new(7);
             let notes = Tab {
                 id: minter.mint(),
@@ -934,11 +1470,18 @@ mod tests {
                 view: String::new(),
                 pinned: false,
             };
-            let tree = seed_tree(&mut minter, "Studio", vec![notes]);
+            let tree = seed(&mut minter, notes);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let activity =
-                Activity::new(None, None, "ada".to_string(), None, Lists::default(), None);
+            let activity = Activity::new(
+                None,
+                None,
+                "ada".to_string(),
+                None,
+                crate::platform::records::Changes::default(),
+                None,
+                None,
+            );
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
             Self {
@@ -949,13 +1492,16 @@ mod tests {
             }
         }
 
-        /// One pass of the desk: what the windows asked is answered. The desk as it stood is
-        /// recorded first, as the pass before this one recorded it, so what this pass draws is what
-        /// the desk is.
+        /// One pass of the desk: the desk as it stood is recorded, then what the windows asked is
+        /// answered.
         fn frame(&mut self) {
             let tree = self.handle.read(Clone::clone);
             self.activity.record_desk(&tree, now_seconds(), &[]);
-            ui::Widget::update(&mut self.surface, &AutoCommit::new(), &ui::automerge::ROOT);
+            ui::Widget::update(
+                &mut self.surface,
+                &ui::automerge::AutoCommit::new(),
+                &ui::automerge::ROOT,
+            );
         }
 
         /// The person asks for this workspace's history, and it opens.
@@ -1013,8 +1559,245 @@ mod tests {
         }
     }
 
-    /// The activity opens from its command as a window of the desk, and it lists the workspace's
-    /// real changes: a rename the person made here.
+    /// Lines an agent appends to `body` of `notebook` as one run, each a change of its own a second
+    /// after the last.
+    #[cfg(target_os = "linux")]
+    fn agent_appends(
+        notebook: &mut ui::automerge::AutoCommit,
+        body: &ui::automerge::ObjId,
+        time: &mut i64,
+        lines: usize,
+    ) {
+        use ui::automerge::ReadDoc as _;
+        use ui::automerge::transaction::Transactable as _;
+        for line in 0..lines {
+            *time = time.saturating_add(1);
+            let wrote = tilo_actions::ActionContext {
+                invoker: Some(
+                    tilo_actions::ActionInvoker::actor("agent:Claude Code".to_owned())
+                        .with_kind(tilo_actions::ActorKind::Agent)
+                        .acting_for("ada".to_owned()),
+                ),
+                what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                    tilo_actions::ActionKey::new(
+                        "so.tilo.notes",
+                        "notes.notebook",
+                        "append-paragraph",
+                    ),
+                    std::iter::empty(),
+                ))),
+                ..tilo_actions::ActionContext::default()
+            }
+            .with_group("run-7", "Claude Code", "agent-run");
+            let end = notebook.length(body);
+            notebook
+                .splice_text(body, end, 0, &format!("Launch notes, line {line}.\n"))
+                .unwrap();
+            notebook.commit_with(
+                ui::automerge::transaction::CommitOptions::default()
+                    .with_message(wrote.change_message().expect("a message"))
+                    .with_time(*time),
+            );
+        }
+    }
+
+    /// An agent's work in an app's own record (Notes' notebook is the workspace's Notes document,
+    /// which also keeps its index) is one of its runs, with what it did: the record a host opens
+    /// for an agent is that one. Its card lists the run, and the notice that it finished counts
+    /// the record it changed. Each time it writes again, the history reads what it added and
+    /// lists that too.
+    ///
+    /// The desk is seeded in the workspace as a page in it seeds its own, and what the host
+    /// delivers is kept by the workspace's id, as a page's replica keeps it: the desk's workspace
+    /// is that one, so its history finds the agent's writes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_agents_run_in_an_apps_own_record_is_listed_with_its_changes() {
+        use ui::automerge::transaction::Transactable as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
+        let mut desk = Desk::seeded(|minter, notes| {
+            tilo_desktop_surface::seed_tree_in(
+                minter,
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                "Workspace",
+                vec![notes],
+            )
+        });
+        // The notebook as a host keeps it: what the agent wrote, for the person, in its run.
+        let mut notebook = ui::automerge::AutoCommit::new();
+        let body = notebook
+            .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
+            .unwrap();
+        notebook.commit();
+        let key = StorageKey::workspace_index("so.tilo.notes", workspace);
+        let _lease = store.lease(&key).unwrap();
+        // Each write is noted on the one stream of record changes, as the store's writers note it.
+        let changes = crate::platform::records::Changes::default();
+        let mut time = 0;
+        let mut write = |notebook: &mut ui::automerge::AutoCommit, lines: usize| {
+            agent_appends(notebook, &body, &mut time, lines);
+            store
+                .write(&key, WriteOp::Replace(notebook.save()), None)
+                .unwrap();
+            changes.note(workspace, "so.tilo.notes", "", false);
+        };
+        write(&mut notebook, 2);
+
+        desk.activity = Activity::over(Given {
+            desk: DeskDoc::load(None, None, "ada"),
+            person: "ada".into(),
+            store: Some(Arc::clone(&store)),
+            state: None,
+            apps: None,
+            people: crate::platform::authors::unnamed(),
+            writers: Writers::untracked(),
+            pane: Rc::new(crate::platform::pane::Linked),
+            models: None,
+            changes: changes.clone(),
+            wake: None,
+        });
+        desk.surface
+            .set_history_source(Box::new(desk.activity.clone()));
+        desk.surface.serve_activity(desk.activity.requests());
+        desk.open_history();
+        let invocation = InvocationId::new();
+        let InvokeArgument::Json(query) = wire::argument(&wire::RunsQuery::default()) else {
+            panic!("the runs take a query");
+        };
+        desk.activity
+            .requests()
+            .follow(&person(), invocation, wire::RUNS, query)
+            .expect("the runs are followed");
+        // The records are read again on a worker once the stream says they moved: a pass lists
+        // what that read found once it landed.
+        let mut runs_until = |landed: &dyn Fn(&wire::AgentRun) -> bool| -> wire::Runs {
+            for _ in 0..300 {
+                desk.frame();
+                let runs: wire::Runs = serde_json::from_value(
+                    desk.activity
+                        .requests()
+                        .served(&invocation)
+                        .expect("the runs are served")
+                        .expect("runs"),
+                )
+                .expect("runs");
+                if runs.runs.iter().any(landed) {
+                    return runs;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the agent's run is never listed");
+        };
+        let first = runs_until(&|run| run.last_ms == 2_000);
+        let [run] = first.runs.as_slice() else {
+            panic!("the agent's one run: {first:?}");
+        };
+        assert_eq!(run.agent.name, "Claude Code", "{run:?}");
+        let [action] = run.actions.as_slice() else {
+            panic!("one action, in the notebook: {run:?}");
+        };
+        assert_eq!(action.app_id, "so.tilo.notes", "{action:?}");
+        assert_eq!(action.changes, 2, "its two writes: {action:?}");
+        assert_eq!(
+            action.record,
+            ui::record::RecordId::package_primary().as_str(),
+            "{action:?}"
+        );
+        let finished = tilo_desktop::here::AgentFinished {
+            publisher: String::new(),
+            label: "Claude Code".into(),
+        };
+        assert_eq!(
+            finished.summary(&first).map(|summary| summary.changes),
+            Some(2),
+            "the finished notice counts the two changes it made in the notebook"
+        );
+
+        // It writes again: the run ends at what it added, its fifth change.
+        write(&mut notebook, 3);
+        let again = runs_until(&|run| run.last_ms == 5_000);
+        assert_eq!(again.runs.len(), 1, "still the agent's one run: {again:?}");
+    }
+
+    /// What the person is doing is read off their newest steps on every tick, across every record of
+    /// the workspace: a tick reads the changes made since the last one, however long a record's
+    /// history is, and a tick after nothing moved reads none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_the_person_is_doing_reads_each_change_once() {
+        use ui::automerge::transaction::Transactable as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
+        let desk = Desk::seeded(|minter, notes| {
+            tilo_desktop_surface::seed_tree_in(
+                minter,
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                "Workspace",
+                vec![notes],
+            )
+        });
+        let mut notebook = ui::automerge::AutoCommit::new();
+        let body = notebook
+            .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
+            .unwrap();
+        notebook.commit();
+        let key = StorageKey::workspace_index("so.tilo.notes", workspace);
+        let _lease = store.lease(&key).unwrap();
+        let changes = crate::platform::records::Changes::default();
+        let mut time = 0;
+        let mut write = |notebook: &mut ui::automerge::AutoCommit, lines: usize| {
+            agent_appends(notebook, &body, &mut time, lines);
+            store
+                .write(&key, WriteOp::Replace(notebook.save()), None)
+                .unwrap();
+            changes.note(workspace, "so.tilo.notes", "", false);
+        };
+        write(&mut notebook, 2_000);
+        let activity = Activity::over(Given {
+            desk: DeskDoc::load(None, None, "ada"),
+            person: "ada".into(),
+            store: Some(Arc::clone(&store)),
+            state: None,
+            apps: None,
+            people: crate::platform::authors::unnamed(),
+            writers: Writers::untracked(),
+            pane: Rc::new(crate::platform::pane::Linked),
+            models: None,
+            changes: changes.clone(),
+            wake: None,
+        });
+        let tree = desk.handle.read(Clone::clone);
+        let tick = || {
+            activity.own_actions(&tree, tree.active, "ada", 0);
+            activity.own_changes_read()
+        };
+        let first = tick();
+        assert!(first > 0, "the notebook is read");
+        assert!(first <= 2_002, "the notebook is read once: {first} changes");
+        assert_eq!(tick(), first, "a tick after nothing moved reads nothing");
+
+        write(&mut notebook, 3);
+        // The records are read again on a worker once the stream says they moved.
+        let mut now = first;
+        for _ in 0..300 {
+            now = tick();
+            if now != first {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            now - first,
+            3,
+            "a tick reads the three changes made since, and no more"
+        );
+        assert_eq!(tick(), now, "and then nothing");
+    }
+
+    /// The activity opens from its command and lists the workspace's real changes.
     #[test]
     fn the_activity_pane_opens_from_its_command_and_lists_a_real_edit() {
         let mut desk = Desk::new();
@@ -1036,14 +1819,21 @@ mod tests {
             "the rename is what happened: {:?}",
             feed.entries[0]
         );
-        // The desk's own change names the person who made it as its invoker, and the pane reads
-        // the history as that person: their own rename is theirs, so it reads as "You", as every
-        // history says the reader's own changes.
-        assert_eq!(feed.entries[0].author.name, "You", "and who did it");
+        // Whoever wrote it, a row names the person reading it as such: the wire says the change is
+        // the reader's own, and words it as every history row does.
         assert_eq!(
             feed.entries[0].author.relation,
             wire::Relation::Reader,
-            "the person here made the change"
+            "and who did it: the person here"
+        );
+        assert_eq!(
+            feed.entries[0].author.name, "ada",
+            "the row carries the account's name, what its face and the search read"
+        );
+        assert_eq!(
+            ui::wire_author_line(&feed.entries[0].author),
+            "You",
+            "and the line words the person reading it as such, never by their account's name"
         );
         assert!(
             feed.mutations,
@@ -1051,8 +1841,7 @@ mod tests {
         );
     }
 
-    /// Nothing the history reads moved, so no pass asks the desk for a frame: the model is read
-    /// again when a change says so, never on a clock and never because a frame was drawn.
+    /// Nothing moved, so no pass asks for a frame: a change says when the model is read again.
     #[test]
     fn a_pass_with_nothing_new_asks_for_no_frame() {
         let mut desk = Desk::new();
@@ -1071,8 +1860,7 @@ mod tests {
         );
     }
 
-    /// An arrangement action is one step of the desk's own history: the person takes exactly that
-    /// step back, and the desk it takes them back to is staged for the pass to apply.
+    /// An arrangement action is one step the person takes back, staged for the next pass.
     #[test]
     fn an_arrangements_action_is_one_step_the_person_takes_back() {
         let mut desk = Desk::new();
@@ -1130,8 +1918,7 @@ mod tests {
         );
     }
 
-    /// A version restored from the history reaches the desk: the session takes up what the model
-    /// wrote and the desk is as it was, and the restore is itself a change of it.
+    /// A version restored from the history reaches the desk, as a change of it.
     #[test]
     fn a_restore_from_the_history_writes_the_desk_back() {
         let mut desk = Desk::new();
@@ -1178,5 +1965,50 @@ mod tests {
             "the restore is a change on top: {:?}",
             feed.entries
         );
+    }
+
+    /// What a person is doing, as the people here are told it, is their work: an app introducing
+    /// them to a chat under the name they arrived with is its housekeeping, not something they did.
+    #[test]
+    fn housekeeping_and_outside_content_are_not_what_someone_is_doing() {
+        use tilo_actions::{ActionContext, ChangeKind};
+        use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+        let entry = |context: Option<ActionContext>| HistoryEntry {
+            id: HistoryEntryId([0; 16]),
+            author: HistoryAuthor::new("Ada", 120.0, "deadbeef"),
+            entry_kind: EntryKind::Details,
+            artifact_kind: ArtifactKind::Note,
+            timestamp: ui::time::UNIX_EPOCH,
+            summary: String::new(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context,
+        };
+        assert!(is_doing(&entry(None)));
+        assert!(is_doing(&entry(Some(ActionContext::default()))));
+        for kind in [ChangeKind::Housekeeping, ChangeKind::External] {
+            assert!(
+                !is_doing(&entry(Some(ActionContext::default().with_change(kind)))),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A step in a window's tree is named by the place its app recorded (a post's channel), else a
+    /// channel it was done to; anything else (a direct conversation) is not named at all.
+    #[test]
+    fn a_step_is_named_by_the_shared_place_it_went_to() {
+        let post = tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages")
+            .with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::PLACE_FACET,
+                "#general",
+            ));
+        assert_eq!(shared_part(&post).as_deref(), Some("#general"));
+        let channel = tilo_actions::ActionContext::for_resource("c1", "chat.channel", "design");
+        assert_eq!(shared_part(&channel).as_deref(), Some("#design"));
+        let direct =
+            tilo_actions::ActionContext::for_resource("chain", "chat.messages", "Messages");
+        assert_eq!(shared_part(&direct), None);
     }
 }

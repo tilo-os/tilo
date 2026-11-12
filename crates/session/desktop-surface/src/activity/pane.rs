@@ -1168,9 +1168,17 @@ impl WorkspaceActivityPane {
         self.record_id_is_open(&step.record)
     }
 
-    /// Whether the record `record` is open here, which undoing its share of a run needs.
+    /// Whether the record `record` is open here, which undoing its share of a run needs: whether
+    /// a document this host admitted is that record, named as the history names it — a record's
+    /// own id, or a package's record of the workspace, which travels as its primary.
     fn record_id_is_open(&self, record: &str) -> bool {
-        RecordId::parse(record).is_some_and(|id| self.open_agent_records.contains(&id))
+        let primary = RecordId::package_primary();
+        let id = if record == primary.as_str() {
+            Some(primary)
+        } else {
+            RecordId::parse(record)
+        };
+        id.is_some_and(|id| self.open_agent_records.contains(&id))
     }
 
     /// Whether one record of the selected run can be undone on its own from the task view.
@@ -1741,7 +1749,7 @@ impl WorkspaceActivityPane {
     pub fn refresh_detached_records(
         &mut self,
         tree: &mut impl ActivityTree,
-        records: Vec<super::index::DetachedRecordHistory>,
+        mut records: Vec<super::index::DetachedRecordHistory>,
     ) {
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
@@ -1755,7 +1763,7 @@ impl WorkspaceActivityPane {
             .unwrap_or_default();
         let changed =
             self.history_index
-                .refresh_detached(tree, query, &self.scoped_tree_rows, &records);
+                .refresh_detached(tree, query, &self.scoped_tree_rows, &mut records);
         self.detached_records = records;
         self.feed_coverage = self.history_index.coverage().clone();
         self.refresh_detached_agent_runs(tree);
@@ -3031,11 +3039,21 @@ fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
             ("kinds", kinds.into()),
             (
                 "node",
-                tilo_action_policy::describe_node(&grant.node, &tilo_action_policy::Ids).into(),
+                tilo_action_policy::describe_node(&grant.node, &GrantTree).into(),
             ),
             ("subject", describe_grantee(&grant.subject).into()),
         ],
     )
+}
+
+/// The grant tree as the activity pane names it: the whole tree in the
+/// window's language, every node below by its id.
+struct GrantTree;
+
+impl tilo_action_policy::Labels for GrantTree {
+    fn everything(&self) -> String {
+        t("activity-grant-everything")
+    }
 }
 
 fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {

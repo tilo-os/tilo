@@ -48,7 +48,7 @@ fn rig() -> Rig {
         .build()
         .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -68,13 +68,7 @@ fn rig() -> Rig {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let principal = hex::encode(certificate.user_public_key);
     let custody = Custody::with_host(
-        tilo_identity_host::custody::HostIdentity {
-            device_cert: certificate,
-            device_signing_key: device,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            identity_paths: None,
-        },
+        tilo_identity_host::custody::HostIdentity::kept(certificate, device),
         &principal,
         "device",
     )

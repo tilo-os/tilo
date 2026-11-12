@@ -128,8 +128,10 @@ mod schema;
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
 /// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
-/// kebab case and its label the first doc line. Variant options:
-/// `#[effect(label = "...", view, row, job, cancellable, returns,
+/// kebab case and its label the crate's catalogue message
+/// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
+/// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
+/// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
 /// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
@@ -155,6 +157,7 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 }
 
 mod effect;
+mod words;
 
 #[derive(Default)]
 #[allow(
@@ -1624,35 +1627,6 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
         _ => None,
     };
     Some((segment.ident.to_string(), inner))
-}
-
-/// How a parameter of Rust type `ty` holds bytes, when it does (`Vec<u8>`,
-/// or a list of them): the decoder that takes them inline or by a content
-/// reference, and the schema saying both. Actions carry intent and
-/// references; bytes travel by session transport into the content store.
-fn byte_param(ty: &Type) -> Option<(Tokens, Tokens)> {
-    let krate = krate();
-    let is_bytes = |ty: &Type| {
-        last_ident(ty).is_some_and(|(name, inner)| {
-            name == "Vec"
-                && inner
-                    .and_then(last_ident)
-                    .is_some_and(|(byte, _)| byte == "u8")
-        })
-    };
-    let (name, inner) = last_ident(ty)?;
-    if is_bytes(ty) {
-        return Some((
-            quote!(#krate::content::bytes),
-            quote!(#krate::content::bytes_schema),
-        ));
-    }
-    (name == "Vec" && inner.is_some_and(is_bytes)).then(|| {
-        (
-            quote!(#krate::content::byte_lists),
-            quote!(#krate::content::byte_list_schema),
-        )
-    })
 }
 
 /// The declared type of a parameter of Rust type `ty`, and whether it is

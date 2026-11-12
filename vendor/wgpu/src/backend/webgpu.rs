@@ -1283,12 +1283,17 @@ impl WebBuffer {
         let mut mapping = self.mapping.borrow_mut();
         let range = mapping.range.clone();
         let array_buffer = mapping.mapped_buffer.get_or_insert_with(|| {
+            // Tilo: a buffer whose device was lost is no longer mapped, and the
+            // browser refuses its range. What is written to it goes nowhere
+            // either way, so it is written to memory of its own size instead of
+            // taking the page down; the device-lost callback has reported the
+            // loss and the caller draws again on a new device.
             self.inner
                 .get_mapped_range_with_f64_and_f64(
                     range.start as f64,
                     (range.end - range.start) as f64,
                 )
-                .unwrap()
+                .unwrap_or_else(|_| js_sys::ArrayBuffer::new((range.end - range.start) as u32))
         });
         js_sys::Uint8Array::new_with_byte_offset_and_length(
             array_buffer,

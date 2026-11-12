@@ -9,6 +9,7 @@
 //!   screen's.
 //! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*`.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::time::Duration;
 use vello::Scene;
@@ -594,6 +595,9 @@ pub struct ToastCard<'a> {
     /// leads the card, in their presence colour, ahead of any glyph. Plain
     /// information with neither a person nor an icon leads with its text.
     pub person: Option<(&'a str, &'a str)>,
+    /// The card's `person` is an agent: its own square face in its client's tint
+    /// ([`crate::widget::AvatarFace::agent`]), as every other place shows it.
+    pub person_agent: bool,
     /// The sending application's own artwork, where a glyph cannot name it.
     /// A person's avatar leads ahead of it; a severity glyph wins over it,
     /// so an alert never loses its state colour.
@@ -644,6 +648,7 @@ impl<'a> ToastCard<'a> {
             kind,
             icon: None,
             person: None,
+            person_agent: false,
             app_image: None,
             alpha: 1.0,
             closable: false,
@@ -682,6 +687,14 @@ impl<'a> ToastCard<'a> {
     #[must_use]
     pub fn person(mut self, name: &'a str, identity: &'a str) -> Self {
         self.person = Some((name, identity));
+        self.person_agent = false;
+        self
+    }
+    /// Lead the card with the face of the agent it is from (`identity` its publisher).
+    #[must_use]
+    pub fn agent(mut self, name: &'a str, identity: &'a str) -> Self {
+        self.person = Some((name, identity));
+        self.person_agent = true;
         self
     }
     /// Lead plain information with the sending application's artwork.
@@ -804,13 +817,11 @@ pub fn minimum_card_height(
     card: &ToastCard<'_>,
 ) -> f64 {
     let (_, pad_y) = card_pad(theme);
-    let caption = single_line_text(card.caption);
-    let time = single_line_text(card.time);
-    let header = if caption.is_empty() { time } else { caption };
+    let text = CardText::of(card);
     let text_height: f64 = [
-        (header.as_str(), theme.text(TextRole::Caption)),
-        (card.title, theme.text(TextRole::Label).strong()),
-        (card.body, theme.text(TextRole::Caption)),
+        (text.caption.as_str(), theme.text(TextRole::Caption)),
+        (text.title.as_str(), theme.text(TextRole::Label).strong()),
+        (text.body.as_str(), theme.text(TextRole::Caption)),
     ]
     .into_iter()
     .map(|(text, style)| {
@@ -842,9 +853,18 @@ pub fn minimum_card_height(
 /// enough to choose, and a title that ran on would bury its actions.
 const BODY_LINES: usize = 2;
 
+/// A card's title wraps to at most this many lines: on a phone a title such
+/// as "Claude Code finished: 8 changes in Workspace" is the whole news and
+/// must read whole, yet a title that ran on would bury the card's actions.
+const TITLE_LINES: usize = 2;
+
 /// A card's text, normalised to the single lines (or wrapped body lines)
 /// it paints. The attribution line is the app's name and how long ago it
-/// arrived, sharing one line.
+/// arrived, sharing one line. A card without an app's name has no
+/// attribution line: how long ago it arrived follows its body ("Launch
+/// notes · just now"), or is the body, rather than standing alone over the
+/// title at the text column's end, which beside an action is the card's
+/// middle.
 struct CardText {
     caption: String,
     time: String,
@@ -854,11 +874,27 @@ struct CardText {
 
 impl CardText {
     fn of(card: &ToastCard<'_>) -> Self {
+        let caption = single_line_text(card.caption);
+        let time = single_line_text(card.time);
+        let body = single_line_text(card.body);
+        if caption.is_empty() && !time.is_empty() {
+            let body = if body.is_empty() {
+                time
+            } else {
+                format!("{body} \u{b7} {time}")
+            };
+            return Self {
+                caption,
+                time: String::new(),
+                title: single_line_text(card.title),
+                body,
+            };
+        }
         Self {
-            caption: single_line_text(card.caption),
-            time: single_line_text(card.time),
+            caption,
+            time,
             title: single_line_text(card.title),
-            body: single_line_text(card.body),
+            body,
         }
     }
 
@@ -918,7 +954,11 @@ pub fn card_height(
     let title_h = if text.title.is_empty() {
         0.0
     } else {
-        line_height(text_renderer, &title_style)
+        let lines = text_renderer
+            .clamp_to_lines(&text.title, &title_style, text_width, TITLE_LINES)
+            .len()
+            .max(1);
+        lines as f64 * line_height(text_renderer, &title_style)
     };
     let body_h = if text.body.is_empty() {
         0.0
@@ -1146,6 +1186,23 @@ pub fn paint_card(
     hit
 }
 
+/// The face a card from `name` leads with: an agent's own square face in its client's hue (the
+/// identity's for a client this build does not know), else the person's avatar.
+fn agent_or_person_face<'a>(
+    card: &ToastCard<'_>,
+    name: &'a str,
+    identity: &'a str,
+) -> crate::widget::AvatarFace<'a> {
+    let face = crate::widget::AvatarFace::new(name, identity);
+    if !card.person_agent {
+        return face;
+    }
+    match crate::tokens::colors::PresenceHue::of_agent_client(name) {
+        Some(hue) => face.hue(hue).agent(),
+        None => face.agent(),
+    }
+}
+
 /// The offered reply: the shared field face (its frame, its hover and
 /// focus edge, its placeholder), with the caret where the person is typing.
 fn paint_reply_field(
@@ -1161,7 +1218,7 @@ fn paint_reply_field(
     if faded {
         scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &rect);
     }
-    let placeholder = crate::i18n!("toast-reply-placeholder");
+    let placeholder = widget_text("toast-reply-placeholder");
     let face = FieldFace::new(rect, card.reply_text)
         .placeholder(&placeholder)
         .text_role(TextRole::Caption)
@@ -1232,7 +1289,7 @@ fn paint_leading(
                 &rect,
             );
         }
-        crate::widget::AvatarFace::new(name, identity).paint(ctx, rect);
+        agent_or_person_face(card, name, identity).paint(ctx, rect);
         if faded {
             ctx.scene.pop_layer();
         }
@@ -1289,6 +1346,7 @@ fn paint_card_actions(
     if card.secondary_action.is_empty() || card.primary_action.is_empty() {
         return None;
     }
+    let theme = &on_card(theme);
     let (pad_x, _) = card_pad(theme);
     let left = rect.x0 + pad_x;
     let right = rect.x1 - pad_x;
@@ -1494,6 +1552,7 @@ fn paint_single_action(
     card: &ToastCard<'_>,
     alpha: f32,
 ) -> Rect {
+    let theme = &on_card(theme);
     let width = single_action_width(text_renderer, theme, card.primary_action);
     let height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
     let x1 = if card.closable {
@@ -1525,6 +1584,12 @@ fn paint_single_action(
         scene.pop_layer();
     }
     rect
+}
+
+/// The theme of the controls standing on a card: a secondary face steps off the card's own ground,
+/// as it does on any floating panel, rather than off the window's content it would sink into.
+fn on_card(theme: &Theme) -> Theme {
+    theme.on_ground(crate::widget::floating_surface::card_ground(theme))
 }
 
 /// The height a card's progress bar and the gap above it take.
@@ -1588,7 +1653,7 @@ fn paint_dismiss_button(
                 .control_size(crate::widget::control_size::ControlSize::Small)
                 .hovered(card.close_hovered)
                 .pressed(card.close_pressed)
-                .accessible_name("Dismiss"),
+                .accessible_name(&crate::i18n::widget_format("widget-dismiss", &[])),
         );
     } else {
         // At rest the close is a small glyph in the faintest ink, well
@@ -1630,21 +1695,38 @@ fn paint_card_text(
     let body_style = theme.text(TextRole::Caption);
     let text = CardText::of(card);
 
-    // The block is the attribution line (app and time), the title on one
-    // semibold line, then the body clamped to two lines. A card laid out
-    // shorter than that (a compact in-app card, the lock screen's alert)
-    // keeps the body on one line.
+    // The block is the attribution line (app and time), the title in
+    // semibold wrapped to two lines, then the body clamped to two lines. A
+    // card laid out shorter than that (a compact in-app card, the lock
+    // screen's alert) keeps the title and the body on one line each.
     let body_line_h = line_height(ctx.text, &body_style);
+    let title_line_h = line_height(ctx.text, &title_style);
     let header_h = if text.has_header() {
         line_height(ctx.text, &caption_style)
     } else {
         0.0
     };
-    let title_h = if text.title.is_empty() {
+    // The title takes a second line only where the body keeps its first.
+    let body_first = if text.body.is_empty() {
         0.0
     } else {
-        line_height(ctx.text, &title_style)
+        body_line_h
     };
+    let title_room = column.height() - 2.0 * pad_y - header_h - body_first;
+    let title_cap = if title_line_h > 0.0 {
+        (title_room / title_line_h)
+            .floor()
+            .clamp(1.0, TITLE_LINES as f64) as usize
+    } else {
+        1
+    };
+    let title_lines = if text.title.is_empty() {
+        Vec::new()
+    } else {
+        ctx.text
+            .clamp_to_lines(&text.title, &title_style, width, title_cap)
+    };
+    let title_h = title_lines.len() as f64 * title_line_h;
     let room = column.height() - 2.0 * pad_y - header_h - title_h;
     let body_cap = if body_line_h > 0.0 {
         (room / body_line_h).floor().clamp(1.0, BODY_LINES as f64) as usize
@@ -1695,20 +1777,18 @@ fn paint_card_text(
         }
         ty += header_h;
     }
-    if !text.title.is_empty() {
-        let title = ctx
-            .text
-            .elide_to_width_style(&text.title, width, &title_style);
+    // The leading mark stands on the title's first line, where reading starts.
+    let title_centre = ty + title_line_h / 2.0;
+    for line in &title_lines {
         ctx.text(
-            &title,
+            line,
             &title_style,
             primary,
             Point::new(text_x, ty),
             Some(width),
         );
+        ty += title_line_h;
     }
-    let title_centre = ty + title_h / 2.0;
-    ty += title_h;
     for line in &body_lines {
         ctx.text(line, &body_style, dim, Point::new(text_x, ty), Some(width));
         ty += body_line_h;

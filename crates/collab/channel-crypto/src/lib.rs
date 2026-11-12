@@ -67,19 +67,23 @@ pub mod content;
 pub mod crypto;
 pub mod endpoint;
 pub mod errors;
+mod formats;
 pub mod gate;
 pub mod group;
 pub mod peer;
 pub mod persistence;
 pub mod signer;
+pub mod welcome;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
-pub use errors::{Error, Result};
+pub use errors::{Error, Result, WelcomeRefusal};
 pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};
-pub use peer::{Access, ChannelPeer, PeerEvent, Reconciled, backs};
+#[cfg(not(target_arch = "wasm32"))]
+pub use peer::Files;
+pub use peer::{Access, ChannelPeer, PeerEvent, PeerStates, Reconciled, backs};
 pub use persistence::VaultKey;
 pub use signer::{DeviceSigner, SignFuture};
 // Re-exported so callers can take/return KeyPackage values without
@@ -107,7 +111,7 @@ pub fn decode_key_package(bytes: &[u8]) -> Result<KeyPackage> {
     use openmls::prelude::OpenMlsProvider as _;
     use openmls::prelude::tls_codec::Deserialize as _;
 
-    let provider = openmls_rust_crypto::OpenMlsRustCrypto::default();
+    let provider = crate::welcome::Provider::default();
     openmls::prelude::KeyPackageIn::tls_deserialize_exact(bytes)
         .map_err(Error::tls_codec)
         .and_then(|package| {

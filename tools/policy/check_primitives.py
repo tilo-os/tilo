@@ -174,9 +174,6 @@ ADVICE = {
 MODEL_TEXT = (
     "apps/agent/src/tools.rs",
     "apps/agent/src/tools/",
-    # A tool catalogue: the descriptions an agent's model is handed, not copy a
-    # person reads on a surface.
-    "apps/web-search/src/actions.rs",
 )
 # The rules about string literals a person reads.
 TEXT_RULES = ("glyph-join", "glyph-icon")

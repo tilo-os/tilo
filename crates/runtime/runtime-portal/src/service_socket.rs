@@ -1,5 +1,8 @@
 //! Ownership of an inherited service connection which can refuse a request.
 
+use std::io;
+#[cfg(unix)]
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
@@ -61,6 +64,101 @@ impl InheritedControlSocket {
         drop(exchange);
         Ok(result)
     }
+
+    /// Exchange lines with the service over the control connection, retaining only the connection:
+    /// `exchanged` writes a line ([`Link::send`]) and reads its one-line answer
+    /// ([`Link::answer`]) as the service's protocol asks, and no answer may carry descriptors. A
+    /// host without inherited descriptors has no connection to exchange on and answers
+    /// [`ServiceSocketError::Missing`] without calling `exchanged`, so callers need no target
+    /// checks.
+    ///
+    /// # Safety
+    /// As [`with_control`](Self::with_control): this instance alone must own the inherited fd, and
+    /// nothing exchanged may return this connection as a lease.
+    ///
+    /// # Errors
+    /// The socket's own errors ([`ServiceSocketError`]), or [`ControlError::Answer`] when a line
+    /// could not be written or read.
+    pub unsafe fn exchange<T>(
+        &self,
+        exchanged: impl FnOnce(&mut Link<'_>) -> T,
+    ) -> Result<T, ControlError> {
+        #[cfg(unix)]
+        {
+            // SAFETY: the caller guarantees this instance alone owns the fd.
+            unsafe { self.with_control(|stream| exchanged(&mut Link { stream })) }
+                .map_err(ControlError::Socket)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = exchanged;
+            Err(ControlError::Socket(ServiceSocketError::Missing))
+        }
+    }
+}
+
+/// The control connection as an exchange uses it: one line out, its one-line answer back, and
+/// never a descriptor.
+pub struct Link<'a> {
+    #[cfg(unix)]
+    stream: &'a UnixStream,
+    #[cfg(not(unix))]
+    _target: std::marker::PhantomData<&'a ()>,
+}
+
+impl Link<'_> {
+    /// Write one line to the service.
+    ///
+    /// # Errors
+    /// The line could not be written or flushed.
+    pub fn send(&mut self, line: &[u8]) -> Result<(), ControlError> {
+        #[cfg(unix)]
+        {
+            let mut writer = self.stream;
+            writer
+                .write_all(line)
+                .and_then(|()| writer.flush())
+                .map_err(ControlError::Answer)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = line;
+            Err(ControlError::Socket(ServiceSocketError::Missing))
+        }
+    }
+
+    /// Read the answer to the line just sent, refusing one that carries descriptors.
+    ///
+    /// # Errors
+    /// The answer could not be read, or came with descriptors this exchange never asked for.
+    pub fn answer(&mut self) -> Result<Vec<u8>, ControlError> {
+        #[cfg(unix)]
+        {
+            let (payload, descriptors) =
+                crate::fd_transport::recv_with_fds(self.stream).map_err(ControlError::Answer)?;
+            if descriptors.is_empty() {
+                return Ok(payload);
+            }
+            Err(ControlError::UnexpectedDescriptors)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(ControlError::Socket(ServiceSocketError::Missing))
+        }
+    }
+}
+
+/// Why an exchange over the control connection did not answer.
+#[derive(Debug, thiserror::Error)]
+pub enum ControlError {
+    #[error(transparent)]
+    Socket(#[from] ServiceSocketError),
+    /// The service answered with descriptors nobody asked for.
+    #[error("the service answered with descriptors nobody asked for")]
+    UnexpectedDescriptors,
+    /// Writing a line or reading its answer failed.
+    #[error("the control exchange failed: {0}")]
+    Answer(io::Error),
 }
 
 #[derive(Debug, thiserror::Error)]

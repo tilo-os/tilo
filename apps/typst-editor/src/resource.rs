@@ -19,7 +19,7 @@ use ui::widget::Element;
 #[cfg(feature = "samples")]
 use crate::samples::{DEFAULT_INDEX, SAMPLES};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// One Typst file of the workspace.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
@@ -55,7 +55,26 @@ impl Workspace {
     }
 }
 
-#[resource(kind = "typst-editor.workspace", label = "Typst workspace")]
+impl Workspace {
+    /// What the record holds: the Typst files, each with its name, the path it is saved at and
+    /// its source.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "typst-editor.workspace",
+    read_content = Workspace::read_document
+)]
 impl Workspace {
     /// Create a Typst file.
     #[action]
@@ -267,3 +286,25 @@ pub(crate) struct CaptureFile(pub(crate) Id);
 mod tests;
 
 ui::reach_tests!(TypstEditorShell);
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("typst-view-preview"), "Vorschau");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("typst-view-preview"), "Preview");
+    }
+}

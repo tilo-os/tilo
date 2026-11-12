@@ -46,3 +46,40 @@ weather-updated-date = Aktualisiert { $when }
 weather-outdated-ago = Zuletzt aktualisiert { $when }, und veraltet
 weather-outdated-clock = Zuletzt aktualisiert um { $when }, und veraltet
 weather-outdated-date = Zuletzt aktualisiert { $when }, und veraltet
+weather-window-name = Wetter
+weather-forecast = Vorhersage
+weather-refresh = Vorhersage erneut laden
+weather-saved-places = Gespeicherte Orte
+weather-places = Orte
+weather-places-hint = Mit den Pfeiltasten den Ort wechseln, mit Eingabe seine Vorhersage öffnen.
+weather-city-name = Ortsname
+weather-no-places = Noch keine Orte. Füge einen Ort hinzu, um seine Vorhersage zu sehen.
+weather-choose-place = Wähle einen gespeicherten Ort, um seine Vorhersage zu sehen.
+
+## Fenster- und Barrierefreiheits-Texte
+weather-a11y-places = Orte
+weather-add-place = Ort hinzufügen
+weather-loading = Aktuelle Bedingungen werden geladen
+weather-now-conditions = Aktuelle Bedingungen
+weather-air-quality = Luftqualität
+weather-notice-retry-message = Prüfe deine Verbindung und versuche es erneut.
+weather-notice-offline-message = Das ist die letzte auf diesem Gerät gespeicherte Vorhersage.
+
+## Die Plätze der Fensterleiste
+weather-refresh-forecast = Vorhersage aktualisieren
+
+## Die Vorhersageseite, solange die Vorhersage unterwegs ist
+weather-loading-forecast = Die Vorhersage wird geladen
+
+## Actions
+
+weather-effects-refresh = Vorhersagen aktualisieren
+weather-effects-open-location = Vorhersage öffnen
+weather-locations = Wetter
+weather-locations-save-location = Ort hinzufügen
+weather-locations-use-as-default = Als Standardort verwenden
+weather-locations-move-to-top = Nach oben
+weather-locations-remove = Ort entfernen
+
+## The forecast's own button
+weather-retry = Erneut versuchen

@@ -9,7 +9,8 @@
 //! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's writes the record
 //! now holds and leaves every other one — the derived ones, which the record never holds, and
 //! the saved ones whose change has not come back yet: [`Inner::drop_committed_local`] takes the
-//! committed ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs
+//! committed ones out of [`super::Inner::local`] — the overlay keeps them until the index their
+//! app reads from reflects the change that carried them — [`Inner::rescan`] keeps the derived docs
 //! known, and [`Inner::reapply_kept`] writes everything still pending onto the record's new copy
 //! again. An origin's update thus never round-trips through the record: no action is committed,
 //! no peer replays it, and no index is rebuilt for it; and a change that arrives from elsewhere
@@ -21,18 +22,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
 
 use crate::action::{DynEdit, Made, apply_edits};
-use crate::chunk::ChunkNo;
+use crate::chunk::{ChunkNo, Chunks, Stamps};
 use crate::index as idx;
 use crate::index::derive::Derive;
 use crate::index::overlay::{Overlay, OverlaySink};
 use crate::index::reflect::Ends;
 use crate::schema::lookup;
 
-use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
+use super::{Accepted, Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
 
 /// Whether a write touches only resources its origin derives
 /// ([`crate::schema::TypeSchema::derived`]): it belongs in the unsaved layer. `touched` names
@@ -70,7 +72,44 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
     if state.saved > 0 {
         return false;
     }
+    tell(inner, state, by);
+    true
+}
+
+/// Note and tell what the transaction `state` committed to the record, the store's writes up to
+/// `writes` its own: it is told now, as the mirror's open transaction and the overlay show it,
+/// and the record's change that brings it back tells only what the record says differently
+/// ([`super::TiloStore::sync`]). A `marked` transaction (a migration's or a trigger's mark) wrote
+/// what it names no field of, and its change tells all it wrote.
+pub(super) fn tell_saved(
+    inner: &mut Inner,
+    state: &mut TxnState,
+    note: &ChangeNote,
+    writes: usize,
+    marked: bool,
+) {
+    for doc in state.touched.keys() {
+        inner
+            .notes
+            .entry(doc.clone())
+            .or_default()
+            .push(note.clone());
+    }
+    tell(inner, state, &note.invoker);
+    if !marked {
+        let start = state.start.min(writes);
+        for write in inner.local.iter_mut().take(writes).skip(start) {
+            write.told = true;
+        }
+    }
+}
+
+/// Tell whoever reads what the transaction `state` wrote: each document it reached, with the
+/// fields it changed and how each collection's listing moved, `by` naming who made it. Returns
+/// the documents told.
+pub(super) fn tell(inner: &mut Inner, state: &mut TxnState, by: &str) -> Vec<DocId> {
     let mut collections = std::mem::take(&mut state.collections);
+    let mut told = Vec::new();
     for (doc, fields) in std::mem::take(&mut state.touched) {
         if fields.is_empty() {
             continue;
@@ -91,8 +130,20 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
             listings: own,
             by: Some(by.to_owned()),
         });
+        told.push(doc);
     }
-    true
+    told
+}
+
+/// The store's writes a sync found the record holds ([`Inner::drop_committed_local`]).
+pub(super) struct Taken {
+    /// The collection items they added, removed or moved.
+    pub(super) items: ItemTouches,
+    /// Whether they are every edit the record's new changes carry, and those who read the
+    /// mirror were told each when its action committed.
+    pub(super) told: bool,
+    /// The versions they told, provisional: per resource, what its action made of it.
+    pub(super) versions: super::Ends,
 }
 
 /// Keep what `write` took out of each collection it moved items of, with the version that
@@ -142,7 +193,7 @@ impl Inner {
         if !self.chunks.has_record() {
             return;
         }
-        let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
+        let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
             return;
         };
         let snapshot = std::sync::Arc::clone(&held.snapshot);
@@ -170,24 +221,37 @@ impl Inner {
     }
 
     /// The store's writes the record now holds — the ones in the chunk `chunk` whose edit is one
-    /// of `committed`, the edits the record's new changes carry — taking them out of the
-    /// store's pending writes and its overlay. Every write the record has not taken stays: a
-    /// change that arrives from elsewhere leaves the edits a person has here, and the reads that
-    /// answer from the store keep showing them, until the record's change for them comes back.
+    /// of `committed`, the edits the record's new changes carry, each with the change carrying
+    /// it — taking them out of the store's pending writes. Each stays in the overlay, as
+    /// accepted by its change, until the index its app reads from reflects that change
+    /// ([`Self::rebuild_overlay`]): an index still being derived off the frame does not hold it
+    /// yet, and the write reads back from the overlay meanwhile. Every write the record has not
+    /// taken stays pending: a change that arrives from elsewhere leaves the edits a person has
+    /// here, and the reads that answer from the store keep showing them, until the record's
+    /// change for them comes back.
+    ///
+    /// Also says whether those who read the mirror were told every one of `committed` already:
+    /// each is a write of the store's, told when its action committed ([`tell`]), and with
+    /// the versions those writes told provisionally.
     pub(super) fn drop_committed_local(
         &mut self,
         chunk: ChunkNo,
-        committed: &[DynEdit],
-    ) -> ItemTouches {
+        committed: &[(ChangeHash, DynEdit)],
+    ) -> Taken {
         let mut items = ItemTouches::new();
-        let mut held: Vec<DynEdit> = committed.iter().map(|edit| edit.bare().clone()).collect();
+        let mut told = true;
+        let mut versions = super::Ends::new();
+        let mut held: Vec<(ChangeHash, DynEdit)> = committed
+            .iter()
+            .map(|(change, edit)| (*change, edit.bare().clone()))
+            .collect();
         let mut kept = Vec::with_capacity(self.local.len());
         for write in std::mem::take(&mut self.local) {
             let at = if write.derived || write.chunk != chunk {
                 None
             } else {
                 let bare = write.edit.bare();
-                held.iter().position(|edit| edit == bare)
+                held.iter().position(|(_, edit)| edit == bare)
             };
             // A write an origin derives is never the record's, whatever edit the record's
             // changes carry: it stays in the mirror and the overlay.
@@ -195,13 +259,39 @@ impl Inner {
                 kept.push(write);
                 continue;
             };
-            held.swap_remove(at);
-            for (key, id) in write.items {
-                items.entry(key).or_default().insert(id);
+            let (change, _) = held.swap_remove(at);
+            for (key, id) in &write.items {
+                items.entry(key.clone()).or_default().insert(id.clone());
             }
+            told &= write.told;
+            if let Some(ends) = &write.versions {
+                versions.extend(ends.iter().map(|(at, end)| (at.clone(), end.clone())));
+            }
+            self.accepted.push(Accepted { write, change });
         }
         self.local = kept;
-        items
+        // An edit the record holds in this chunk's document that the store routed to another
+        // chunk — a record kept as one document, whose manifest places items in chunks above it —
+        // stays pending there ([`super::TiloStore::sync`]); it was told all the same.
+        for (_, edit) in &held {
+            let Some(write) = self
+                .local
+                .iter()
+                .find(|write| !write.derived && write.edit.bare() == edit)
+            else {
+                told = false;
+                continue;
+            };
+            told &= write.told;
+            if let Some(ends) = &write.versions {
+                versions.extend(ends.iter().map(|(at, end)| (at.clone(), end.clone())));
+            }
+        }
+        Taken {
+            items,
+            told,
+            versions,
+        }
     }
 
     /// Write the store's pending writes of the chunk `chunk` onto the mirror again, as pending
@@ -316,19 +406,38 @@ impl Inner {
 }
 
 impl Inner {
-    /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed. What the record holds is the index's, not derived
-    /// here again ([`Self::settle_versions`]).
+    /// Derive the store's writes anew into an empty overlay: after a rollback, once an index
+    /// they were written over changed, or once the record took some. What an index reflects is
+    /// the index's, not derived here again: a write whose versions the record told
+    /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
+    /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
+        // What each index has yet to take in of each chunk, read once per index and chunk
+        // however many writes wait on it.
+        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
+        let accepted = std::mem::take(&mut self.accepted);
+        self.accepted = accepted
+            .into_iter()
+            .filter(|accepted| {
+                let write = &accepted.write;
+                let Some(held) = self.apps.get(&write.app) else {
+                    return false;
+                };
+                !behind
+                    .entry((write.app.clone(), write.chunk))
+                    .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
+                    .reflects(&accepted.change)
+            })
+            .collect();
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
-            for write in self
+            let pending = self
                 .local
                 .iter()
-                .filter(|write| !settled.contains(&write.seed))
-            {
-                let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
+                .filter(|write| !settled.contains(&write.seed));
+            for write in pending.chain(self.accepted.iter().map(|accepted| &accepted.write)) {
+                let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
                     continue;
                 };
                 let mut sink = OverlaySink {
@@ -364,6 +473,7 @@ impl Inner {
         &mut self,
         app: &str,
         start: usize,
+        until: usize,
         note: &ChangeNote,
         made: &[Made],
     ) -> BTreeMap<DocId, Vec<FieldKey>> {
@@ -400,7 +510,7 @@ impl Inner {
             ends.insert(resource, end);
         }
         // Kept with the action's last write, so they go when its writes go.
-        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
+        let Some(write) = self.local.get_mut(start..until).and_then(<[_]>::last_mut) else {
             return BTreeMap::new();
         };
         write.versions = Some(ends.clone());
@@ -414,7 +524,7 @@ impl Inner {
         };
         if let (true, Some(held)) = (
             self.chunks.has_record(),
-            self.apps.get(app).filter(|held| held.ready()),
+            self.apps.get(app).filter(|held| held.answers()),
         ) {
             let snapshot = Arc::clone(&held.snapshot);
             let mut sink = OverlaySink {
@@ -460,5 +570,49 @@ impl Inner {
         self.settled
             .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
         self.settled.extend(settled);
+    }
+}
+
+/// What an index has yet to take in of one chunk of the record.
+enum Behind {
+    /// It derived the chunk up to the heads the store holds: every change of it.
+    Nothing,
+    /// It never derived the chunk: none of its changes.
+    Everything,
+    /// The chunk's changes since the heads it derived it up to.
+    Since(BTreeSet<ChangeHash>),
+}
+
+impl Behind {
+    /// What an index stamped with `heads` has yet to take in of the chunk `chunk`. The changes
+    /// since its heads are read only when it is behind the chunk's: what it has to derive yet.
+    fn of(heads: &Stamps, chunks: &Chunks, chunk: ChunkNo) -> Self {
+        let Some(heads) = heads.get(&chunk) else {
+            return Self::Everything;
+        };
+        let Some(mirror) = chunks.mirror(chunk) else {
+            // The chunk left the store: nothing reads it to derive a write from.
+            return Self::Nothing;
+        };
+        let document = mirror.committed_document();
+        if heads.as_slice() == document.get_heads().as_slice() {
+            return Self::Nothing;
+        }
+        Self::Since(
+            document
+                .get_changes(heads)
+                .iter()
+                .map(automerge::Change::hash)
+                .collect(),
+        )
+    }
+
+    /// Whether the index holds `change`.
+    fn reflects(&self, change: &ChangeHash) -> bool {
+        match self {
+            Self::Nothing => true,
+            Self::Everything => false,
+            Self::Since(since) => !since.contains(change),
+        }
     }
 }

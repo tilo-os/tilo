@@ -115,9 +115,9 @@ struct Following {
 impl Following {
     fn into_outcome(self) -> Result<StepOutcome, TaskActionStop> {
         self.outcome.unwrap_or_else(|| {
-            Err(TaskActionStop::Failed(
-                "Task action did not reach a terminal state before its deadline".into(),
-            ))
+            Err(TaskActionStop::Failed(crate::i18n::t(
+                "agent-fail-no-terminal-state",
+            )))
         })
     }
 }
@@ -129,11 +129,17 @@ fn task_action_from_offer(
     let peer_id = match (offer.broker_peer_id, offer.broker_provider.as_ref()) {
         (Some(peer), _) => peer,
         (None, Some(_)) => 0,
-        (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
+        (None, None) => return Err(crate::i18n::t("agent-fail-local-only")),
     };
     if !offer.wants_content() {
-        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
-            .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
+        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments).map_err(
+            |error| {
+                crate::i18n::t_args(
+                    "agent-fail-arguments",
+                    &[("error", error.to_string().into())],
+                )
+            },
+        )?;
     }
     Ok(TaskAction {
         app: offer.app.clone(),
@@ -180,9 +186,6 @@ pub struct Config {
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
     pub content: ui::content::ContentStore,
-    /// Applications started beside the agent whose actions its first run
-    /// waits for (`Session::await_companions`).
-    pub companions: Vec<String>,
     /// The model the desktop chose for this agent, when it launched it with
     /// one; otherwise the Settings default this process can read, if any.
     pub provider: Option<crate::providers::ProviderSelection>,
@@ -207,11 +210,8 @@ pub struct Session {
     native_task: Option<native_task::NativeTaskState>,
     /// The broker's pushed, permission-filtered live action directory the
     /// task loop surveys.
-    broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
+    broker_catalogue: ui::collaboration::ActionCatalogue,
     next_broker_request: u64,
-    /// The companions not yet seen in the catalogue, until the first run
-    /// waited for them; empty afterwards.
-    awaiting_companions: Vec<String>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -230,6 +230,10 @@ pub struct Session {
     failure_detail: Option<String>,
     /// What the run in progress may spend today, as its keeper counted it.
     spending: Option<agent_loop::Spending>,
+    /// The agent's own web tools, with the client and the engines' backoff
+    /// they keep from one call to the next; set up on the first call that
+    /// needs them.
+    web: Option<crate::tools::web::Web>,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -287,7 +291,6 @@ impl Session {
             "joined the workspace; waiting for the document"
         );
         let is_managed = managed.is_some();
-        let cfg_companions = cfg.companions.clone();
         let chooser = match managed {
             Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
@@ -310,9 +313,8 @@ impl Session {
             managed: is_managed,
             task_deadline: None,
             native_task: None,
-            broker_surfaces: Vec::new(),
+            broker_catalogue: ui::collaboration::ActionCatalogue::default(),
             next_broker_request: 1,
-            awaiting_companions: cfg_companions,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
@@ -320,7 +322,16 @@ impl Session {
             record: None,
             failure_detail: None,
             spending: None,
+            web: None,
         })
+    }
+
+    /// The agent's web tools, ready to run a search or read a page: their
+    /// client, runtime and engines' backoff are made once and kept.
+    fn web(&mut self) -> &mut crate::tools::web::Web {
+        let content = self.cfg.content.clone();
+        self.web
+            .get_or_insert_with(|| crate::tools::web::Web::new(content))
     }
 
     /// Answer the turns the broker delivers: an unattended run may invoke
@@ -345,8 +356,8 @@ impl Session {
         tracing::info!(agent = %self.cfg.name, "waiting for the conversations' turns");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(CollabEvent::TaskRun(run)) => {
                     if let Err(error) = self.run_task(&run) {
@@ -480,6 +491,9 @@ impl Session {
         reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
     fn run_task_steps(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        // What this run says is the person's language as it stands now: they
+        // may have changed it since the app started.
+        crate::i18n::follow();
         self.task_deadline = run.execution_budget.and_then(|budget| {
             ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
         });
@@ -504,13 +518,12 @@ impl Session {
         self.begin_task_watch();
         self.record = None;
         let plan = self.planner(run);
-        let route = if plan.is_model() { "model" } else { "floor" };
-        self.start_turn(cause, (route, plan.announcing()));
+        self.start_turn(cause);
         // The reply that answers the turn is recorded through the
         // conversation's own action, so the actions this workspace publishes
         // are read before the first record: the person sees the reply the
         // moment the run is taken.
-        self.wait_for_task_catalogue()?;
+        self.wait_for_task_catalogue();
         self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         // The cancellation poll is not waited for here: its answer, with the
         // run's messages, is read before the first turn (or the first
@@ -518,7 +531,7 @@ impl Session {
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
-                message: "Reading the actions this workspace's apps publish".into(),
+                message: crate::i18n::t("agent-run-reading-actions"),
                 presentation: None,
             },
         )?;
@@ -539,7 +552,7 @@ impl Session {
         if plan.is_model() {
             let end = self.run_task_loop(run)?;
             return match end {
-                agent_loop::LoopEnd::Finished(finish, _completed) => {
+                agent_loop::LoopEnd::Finished(finish, completed) => {
                     if !finish.done {
                         return self.fail_task(
                             run,
@@ -547,7 +560,7 @@ impl Session {
                                 finish
                                     .reply
                                     .as_deref()
-                                    .unwrap_or("Needs your decision before continuing"),
+                                    .unwrap_or(&crate::i18n::t("agent-run-needs-decision")),
                             ),
                         );
                     }
@@ -556,13 +569,7 @@ impl Session {
                     // that ends with nothing said is not reported as a success
                     // with a line nobody wrote: the person reads that the
                     // agent finished without answering.
-                    let Some(message) = finish.reply else {
-                        return self.fail_task(
-                            run,
-                            &agent_loop::Failure::said(crate::i18n::t("agent-failure-no-answer")),
-                        );
-                    };
-                    self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+                    self.succeed_turn(run, finish.reply, planning::finished(&plan, completed))
                 }
                 agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
@@ -573,25 +580,20 @@ impl Session {
             .as_ref()
             .is_some_and(|state| state.pending.is_some())
         {
-            return self.fail_task_said(
-                run,
-                "Directions require model planning or person review; none were acknowledged",
-            );
+            return self
+                .fail_task_said(run, &crate::i18n::t("agent-run-directions-require-review"));
         }
         // The rules-only planner has no model call to overlap: settle the
         // poll already out before planning, as before.
         if self.task_cancelled(run)? {
-            return self.cancel_task(run, "Cancelled before planning");
+            return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-planning"));
         }
         let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
                 return self.fail_task_said(
                     run,
-                    &planning::unmatched(
-                        &plan,
-                        "No published action carries the words of the request.",
-                    ),
+                    &planning::unmatched(&plan, &crate::i18n::t("agent-plan-no-action")),
                 );
             }
             Err(message) => return self.fail_task_said(run, &message),
@@ -600,7 +602,7 @@ impl Session {
         let mut previous: Option<StepOutcome> = None;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(run)? {
-                return self.cancel_task(run, "Cancelled before the next action");
+                return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-action"));
             }
             let arguments = match arguments_for_step(
                 action.carries.as_deref(),
@@ -613,11 +615,13 @@ impl Session {
             self.report_task(
                 run,
                 runtime_collab::TaskRunUpdate::Progress {
-                    message: format!(
-                        "Running {} of {}: {}",
-                        index + 1,
-                        actions.len(),
-                        action.label
+                    message: crate::i18n::t_args(
+                        "agent-run-step",
+                        &[
+                            ("index", (index + 1).into()),
+                            ("total", actions.len().into()),
+                            ("action", action.label.as_str().into()),
+                        ],
                     ),
                     presentation: None,
                 },
@@ -631,15 +635,12 @@ impl Session {
                     previous = Some(outcome);
                 }
                 Err(TaskActionStop::Cancelled(_)) => {
-                    return self.cancel_task(run, "Cancelled while an action was running");
+                    return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-in-action"));
                 }
                 Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
             }
         }
-        let message = reply
-            .or_else(|| planning::finished(&plan, actions.len()))
-            .unwrap_or_else(|| crate::i18n::t("agent-failure-no-answer"));
-        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+        self.succeed_turn(run, reply, planning::finished(&plan, actions.len()))
     }
 
     /// Invoke one planned action through the broker's invocation path.
@@ -718,26 +719,14 @@ impl Session {
         )
     }
 
-    fn wait_for_task_catalogue(&mut self) -> Result<()> {
-        if !self.broker_surfaces.is_empty() {
-            return Ok(());
-        }
-        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
-        let mut deferred = Vec::new();
-        while ui::time::now() < deadline {
-            let remaining = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
-                    self.link.defer(deferred);
-                    return Ok(());
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
-        self.link.defer(deferred);
-        Ok(())
+    fn wait_for_task_catalogue(&mut self) {
+        let wait = self
+            .task_wait_deadline(TASK_CATALOGUE_WAIT)
+            .saturating_duration_since(ui::time::now());
+        let since = self.broker_revision;
+        self.await_catalogue(wait, |session| {
+            session.broker_revision != since || !session.broker_catalogue.surfaces().is_empty()
+        });
     }
 
     fn task_wait_deadline(&self, maximum: Duration) -> Instant {
@@ -917,8 +906,8 @@ impl Session {
                     CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
                 )
                 | None => {}
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
             }

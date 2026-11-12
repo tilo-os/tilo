@@ -2,19 +2,18 @@
 //! HTTP/1.1), served by the relay itself.
 //!
 //! What a page needs before it holds a session rides it: the host's
-//! certificate and address (`/host`), device certification, joining a
-//! workspace, the public directory, root envelopes and profiles, the fetch
-//! proxy and the static entry. Everything after that — presence, membership,
-//! records, previews, calls — is the page's own session, whatever its
-//! carrier. Routes are listed in [`tilo_relay_protocol::web`].
+//! certificate and address (`/host`), joining a workspace, the public
+//! directory, root envelopes and profiles, the fetch proxy and the static
+//! entry. Everything after that — certification, presence, membership,
+//! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_relay_protocol::web`].
 //!
 //! No owner loop runs here: every handler is async and awaits the relay's
 //! own locks; workspace I/O already runs on the blocking pool.
 
 mod envelopes;
 mod fetch;
-mod here;
 pub mod install;
+mod link;
 mod login_codes;
 mod page_errors;
 pub(crate) mod plane;
@@ -38,7 +37,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
 pub(crate) use tilo_relay_protocol::web as protocol;
-use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES};
+use tilo_relay_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
 
 use crate::daemon::{Relay, RelayError, WebContext};
 
@@ -64,6 +63,24 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
+    /// The wait list this host keeps for a workspace that takes people by
+    /// invitation, when whoever runs it keeps one
+    /// ([`crate::door::WaitListDoor`]).
+    pub door: Option<Arc<crate::door::WaitListDoor>>,
+    /// Where the host takes WebTransport sessions, when not on the UDP port of
+    /// [`Self::listen`] at the origin pages are told: a deployment whose
+    /// HTTPS arrives through a proxy that carries no UDP names a way around
+    /// it. `None` listens beside the HTTPS listener.
+    pub link: Option<LinkListen>,
+}
+
+/// A WebTransport listener of its own ([`WebConfig::link`]).
+#[derive(Clone, Debug)]
+pub struct LinkListen {
+    /// The UDP address it binds.
+    pub listen: SocketAddr,
+    /// The `https://` origin devices open its sessions at.
+    pub origin: String,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -74,6 +91,8 @@ pub struct WebHandle {
     pub origin: String,
     /// SHA-256 of a development certificate.
     pub certificate_sha256: Option<String>,
+    /// Where pages reach the host over WebTransport, as `/host` publishes it.
+    pub link: WebLink,
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -115,68 +134,16 @@ impl Drop for WebHandle {
     }
 }
 
-/// The relay's answer to a session asking who is here: the same account its
-/// HTTPS route answers with, read from the live plane and the summaries the
-/// route keeps.
-struct Board {
-    here: Arc<here::Here>,
-    /// Weak: the plane's authority holds the relay's handler, which holds
-    /// this board, so a strong reference would keep the handler — and the
-    /// endpoint and socket it holds — alive after the relay shuts down.
-    presence: std::sync::Weak<plane::Authority>,
-    profiles: Arc<envelopes::Envelopes>,
-}
-
-impl crate::peer::HereBoard for Board {
-    fn answer<'a>(
-        &'a self,
-        peer: &'a crate::auth::AuthenticatedPeer,
-        request: protocol::HereRequest,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<protocol::HereReply, String>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            request.validate().map_err(ToString::to_string)?;
-            let presence = self
-                .presence
-                .upgrade()
-                .ok_or_else(|| "this host is shutting down".to_string())?;
-            if !presence.admits_page(peer, request.workspace_id).await {
-                return Err("not admitted to this workspace".into());
-            }
-            let members = presence.persons_in(request.workspace_id);
-            drop(presence);
-            let (mut reply, job) = self.here.post(
-                request,
-                peer.device_public_key,
-                peer.user_public_key,
-                std::time::Instant::now(),
-                tilo_clock::unix_now_ms(),
-            );
-            here::pair_members(&mut reply, &members);
-            for person in &mut reply.people {
-                person.profile_ms = self.profiles.issued_at(&person.user).unwrap_or(0);
-            }
-            if let Some(job) = job {
-                tokio::spawn(self.here.clone().summarize(job));
-            }
-            Ok(reply)
-        })
-    }
-}
-
 struct Web {
     context: WebContext,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
-    /// The workspaces this relay governs, for `/join`.
+    /// The workspaces this relay governs, for their directory and doors.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
-    /// Members' profiles, for `/profile`, and for the profile age a session's
-    /// answer to who is here carries.
+    /// Members' profiles, for `/profile`.
     profiles: Arc<envelopes::Envelopes>,
-    /// Who is here and what they are doing, for `/here`.
-    here: Arc<here::Here>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -192,6 +159,40 @@ struct Web {
     login_codes: Arc<login_codes::LoginCodes>,
     /// The stand-in approvers this host keeps for people.
     stand_ins: Arc<stand_in::StandIns>,
+    /// The wait list the door keeps for a workspace taking people by
+    /// invitation, when whoever runs this host keeps one.
+    door: Option<Arc<crate::door::WaitListDoor>>,
+}
+
+/// Where this host keeps the stand-ins it approves for people with.
+#[must_use]
+pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
+    state_root.join("stand-ins")
+}
+
+/// Make this host the stand-in approver of `root`'s person, with a certificate
+/// their root signs: what a host that places browser sessions certifies them
+/// with. Placing sessions is the agents feature's, which is the only thing
+/// that keeps one.
+///
+/// # Errors
+///
+/// The state directory cannot be read or written, or the root would not sign.
+#[cfg(feature = "agents")]
+pub(crate) fn keep_stand_in(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+) -> Result<(), String> {
+    stand_in::keep(&stand_ins_dir(state_root), root)
+}
+
+/// The stand-in certificate and key this host keeps for `user`, when it keeps
+/// a live one.
+pub(crate) fn stand_in_for(
+    state_root: &std::path::Path,
+    user: &[u8; 32],
+) -> Option<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+    stand_in::kept(&stand_ins_dir(state_root), user)
 }
 
 /// Checks the published origins against the listeners they front.
@@ -298,7 +299,7 @@ impl Relay {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-        let tcp = bind_listener(config.listen).map_err(|error| failed(error.to_string()))?;
+        let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
@@ -318,15 +319,14 @@ impl Relay {
         }
         let host_cert = context.relay.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
-        // the relay it was told to reach it through. A page has no UDP socket,
-        // so without that relay an endpoint it binds carries no packet at all —
-        // and an endpoint names its relay only once it has connected to it,
-        // which a start that restarts on kept state opens its listener before.
-        let mut endpoint_addr = self.node_addr();
-        if let Some(relay) = &self.pages_reach {
-            endpoint_addr = endpoint_addr.with_relay_url(relay.clone());
-        }
+        // the relay it is reached through — which the endpoint names from the
+        // moment this host serves anything ([`Relay::start`] waits for it), as
+        // a page has no UDP socket and its own endpoint carries no packet
+        // without one.
+        let endpoint_addr = self.node_addr();
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
+        let (link_listener, web_link) =
+            bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
         let web = Arc::new(Web {
             context: context.clone(),
             host_info: HostInfo {
@@ -334,6 +334,7 @@ impl Relay {
                 address: Some(HostAddress {
                     endpoint_addr,
                     relay_url,
+                    web: Some(web_link.clone()),
                 }),
             },
             allowed_origins: config.allowed_origins,
@@ -343,23 +344,22 @@ impl Relay {
                 envelopes::Record::Profile,
                 self.state_root().join("profiles"),
             )),
-            here: Arc::new(here::Here::new(here::from_env())),
             fetch: fetch.proxy,
             grants: Arc::default(),
             presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
-            shelf: shelf::Shelf::default(),
+            // A link is read days after it was made, so what it names waits on
+            // this host's disk: a restart, an upgrade or a deploy over this
+            // relay leaves it there.
+            shelf: shelf::Shelf::opening(
+                self.state_root().join("invitations"),
+                tilo_clock::unix_now_ns(),
+            ),
             login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
-            stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
+            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
+            door: config.door.clone(),
         });
         web.serve_stand_ins();
-        // Sessions ask who is here over their own carrier; the relay answers
-        // with the one account its HTTPS route keeps.
-        let _ = context.relay.here.set(Arc::new(Board {
-            here: Arc::clone(&web.here),
-            presence: Arc::downgrade(&web.presence),
-            profiles: Arc::clone(&web.profiles),
-        }));
         // A page's fetch proxy token is minted on the session it fetched from.
         if web.fetch.is_some() {
             let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
@@ -379,12 +379,21 @@ impl Relay {
             plain_origin = Some(format!("http://localhost:{port}"));
             tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
         }
+        tasks.push(tokio::spawn(link::serve(
+            link_listener,
+            link::Serving {
+                relay: context.relay.clone(),
+                certification: context.certification.clone(),
+                plane: plane.origin(),
+            },
+        )));
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
         let published_origin = self.publish_browser_origin(public_origin.clone())?;
         Ok(WebHandle {
             addr,
             origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
             certificate_sha256: identity.fingerprint,
+            link: web_link,
             plain_origin,
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
@@ -396,7 +405,91 @@ impl Relay {
 
 impl Relay {}
 
-/// The HTTPS listener on `listen`. For port 0 the kernel picks the port.
+/// Where a page reaches this host: WebTransport on `socket`, at the HTTPS
+/// listener's origin and certificate unless the deployment names another way in.
+fn bind_link(
+    config: &WebConfig,
+    socket: std::net::UdpSocket,
+    addr: SocketAddr,
+    public_origin: Option<&String>,
+    identity: &tls::Identity,
+) -> Result<(tilo_net::webtransport::Listener, WebLink), String> {
+    let bound = socket
+        .local_addr()
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
+        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let link = WebLink {
+        origin: named_port(
+            &config
+                .link
+                .as_ref()
+                .map(|link| link.origin.clone())
+                .or_else(|| public_origin.cloned())
+                .unwrap_or_else(|| format!("https://{addr}")),
+            bound.port(),
+        ),
+        certificate_sha256: identity
+            .fingerprint
+            .as_deref()
+            .and_then(|fingerprint| hex::decode(fingerprint).ok())
+            .and_then(|bytes| bytes.try_into().ok()),
+    };
+    Ok((listener, link))
+}
+
+/// `origin` naming the port `bound` a listener took. An origin ending in `:0`
+/// names none of its own: the kernel picked the port, and this is where it
+/// answers. Any other origin is reached exactly as written, at the name and
+/// port its deployment publishes.
+fn named_port(origin: &str, bound: u16) -> String {
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return origin.to_owned();
+    };
+    let (authority, path) = rest
+        .find('/')
+        .map_or((rest, ""), |slash| rest.split_at(slash));
+    match authority.strip_suffix(":0") {
+        Some(name) => format!("{scheme}://{name}:{bound}{path}"),
+        None => origin.to_owned(),
+    }
+}
+
+/// How many kernel-picked ports [`bind_listeners`] tries before it gives up.
+const PORT_PAIR_ATTEMPTS: usize = 64;
+
+/// The HTTPS listener on `config.listen` and the UDP socket WebTransport takes
+/// sessions on: beside it on the same port unless [`WebConfig::link`] names
+/// its own. For port 0 the kernel picks a UDP port and the HTTPS listener takes
+/// the same one, so the pair is held from the start; a port whose TCP side is
+/// in use is passed over for the next one the kernel picks.
+fn bind_listeners(
+    config: &WebConfig,
+) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
+    let listen = config.listen;
+    if let Some(link) = &config.link {
+        return Ok((
+            bind_listener(listen)?,
+            std::net::UdpSocket::bind(link.listen)?,
+        ));
+    }
+    if listen.port() != 0 {
+        return Ok((bind_listener(listen)?, std::net::UdpSocket::bind(listen)?));
+    }
+    let mut last = None;
+    for _ in 0..PORT_PAIR_ATTEMPTS {
+        let udp = std::net::UdpSocket::bind(listen)?;
+        let paired = SocketAddr::new(listen.ip(), udp.local_addr()?.port());
+        match bind_listener(paired) {
+            Ok(tcp) => return Ok((tcp, udp)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse)))
+}
+
+/// The HTTPS listener on `listen`.
 fn bind_listener(listen: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let socket = if listen.is_ipv4() {
         tokio::net::TcpSocket::new_v4()?
@@ -531,8 +624,10 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<workspace>/join`, `…/report` or
-/// `…/errors`): JSON in, JSON out, a refusal as `{error}` the person reads.
+/// A public workspace's door (`/directory/<workspace>/report` or `…/errors`,
+/// and its wait list): JSON in, JSON out, a refusal as `{error}` the person
+/// reads. A person is let in through it on their device's session
+/// ([`tilo_relay_protocol::entering`]), not here.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -541,53 +636,53 @@ async fn directory_door(
     web: &Web,
     route: &str,
     bytes: &[u8],
+    client: std::net::IpAddr,
 ) -> Result<Response<Body>, Response<Body>> {
-    use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
+    use tilo_relay_protocol::directory::{
+        DoorReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING, door_route,
+    };
     let (workspace, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
     // A relay that governs no workspaces refuses before the request is parsed.
-    governed_workspaces(web)?;
+    let workspaces = governed_workspaces(web)?;
+    // The wait list a workspace taking people by invitation keeps: an address
+    // left, confirmed, taken off, and where it stands.
+    if matches!(
+        step,
+        WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+    ) {
+        let Some(door) = &web.door else {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        };
+        if door.workspace() != workspace {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        }
+        let answered = crate::door::route(door, workspaces, client, step, bytes).await;
+        let mut response = json_status(answered.status, &answered.body);
+        if let Some(seconds) = answered.retry_after_secs
+            && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return Ok(response);
+    }
     let refused = |error: crate::workspaces::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
             &serde_json::json!({ "error": error.to_string() }),
         )
     };
-    let door_refused = |error: crate::workspaces::DoorRefusal| {
-        let full = match &error {
-            crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            crate::workspaces::DoorRefusal::Refused(_)
-            | crate::workspaces::DoorRefusal::InvitationOnly => StatusCode::FORBIDDEN,
-        };
-        let mut response = json_status(full, &serde_json::json!({ "error": error.to_string() }));
-        if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
-            && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
-        {
-            response.headers_mut().insert(header::RETRY_AFTER, seconds);
-        }
-        response
-    };
     match step {
-        "join" => {
-            let join: DoorJoin = serde_json::from_slice(bytes)
-                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = governed_workspaces(web)?
-                .admit_listed(workspace, &join)
-                .await
-                .map_err(door_refused)?;
-            Ok(json(&DoorAnswer {
-                invitation: base64::Engine::encode(
-                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                    issued.signed_invitation,
-                ),
-                admission_token: token,
-                origin: None,
-            }))
-        }
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            governed_workspaces(web)?
+            workspaces
                 .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
@@ -636,7 +731,7 @@ fn public_directory_route(path: &str) -> bool {
 /// A relay's own routes live below [`API_PREFIX`]. A site names its directory
 /// in its `entry.json` and hangs each door off that address
 /// ([`tilo_relay_protocol::directory`]), so the same routes answer at the
-/// site's own paths — `/directory` and `/directory/<workspace>/join` — for a
+/// site's own paths — `/directory` and `/directory/<workspace>/report` — for a
 /// host a site's person reaches without the prefix: the ingress in front of
 /// it sends the site's paths to the relay.
 fn directory_route(path: &str) -> Option<&str> {
@@ -648,7 +743,7 @@ fn directory_route(path: &str) -> Option<&str> {
 
 /// CORS for the public directory: any origin, no credentials, and the
 /// `Retry-After` a full door answers with. A page on any site reads the
-/// listings and joins a workspace without going through its host.
+/// listings and reports a workspace without going through its host.
 fn public_cors(response: &mut Response<Body>) {
     let headers = response.headers_mut();
     headers.insert(
@@ -900,28 +995,23 @@ async fn route(
     if let Some(answer) = login_route(web, route, &bytes, client) {
         return Ok(answer);
     }
-    let certification = &web.context.certification;
     match route {
         "/host" => Ok(encoded(&web.host_info)),
-        "/certify/approve" => {
-            let approval: crate::certify::MemberApproval = decode(&bytes)?;
-            if !admitted_anywhere(web, approval.user_public_key).await {
-                return Err(status(
-                    StatusCode::FORBIDDEN,
-                    "only a member approves devices here",
-                ));
-            }
-            Ok(encoded(
-                &certification.member_approve(approval, tilo_clock::unix_now_ns()),
-            ))
+        tilo_relay_protocol::web::WORKSPACE_DELETED_PATH => {
+            let workspace: String = decode(&bytes)?;
+            let deleted = web.workspaces.as_ref().is_some_and(|workspaces| {
+                tilo_relay_protocol::room_workspace_id(&workspace)
+                    .is_ok_and(|workspace_id| workspaces.deleted(workspace_id))
+            });
+            Ok(encoded(&deleted))
         }
-        "/join" => {
+        tilo_relay_protocol::web::INVITATION_PATH => {
             let workspaces = web
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let step = decode(&bytes)?;
-            Ok(encoded(&workspaces.page_join(step).await))
+            let invitation: Vec<u8> = decode(&bytes)?;
+            Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
         }
         tilo_relay_protocol::directory::DIRECTORY_PATH => {
             let workspaces = web
@@ -934,7 +1024,8 @@ async fn route(
             }))
         }
         _ if tilo_relay_protocol::directory::door_route(route).is_some() => {
-            directory_door(web, route, &bytes).await
+            let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            directory_door(web, route, &bytes, client).await
         }
         "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();

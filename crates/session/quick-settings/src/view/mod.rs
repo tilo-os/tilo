@@ -37,6 +37,8 @@ use crate::resource::{Page, QuickSettings};
 pub(crate) struct Parts {
     sliders: LocalState<Sliders>,
     tiles: LocalState<Vec<TileFace>>,
+    /// The radios' switches their sections' pages carry in their headers.
+    switches: LocalState<Vec<TileFace>>,
     rows: LocalState<Vec<RowFace>>,
     sections: Rc<HashMap<QsSection, LocalState<Vec<Item>>>>,
     accessory: LocalState<Accessory>,
@@ -97,6 +99,7 @@ impl Parts {
         Self {
             sliders: readings.project(Sliders::of),
             tiles: readings.project(faces::tiles),
+            switches: readings.project(faces::section_switches),
             rows: readings.project(faces::rows),
             sections: Rc::new(sections),
             accessory: readings.project(|state| Accessory {
@@ -118,9 +121,9 @@ impl Parts {
     }
 }
 
-/// What the panel reads and changes: the session's published resources when
-/// the session started it ([`Live`]); a screenshot's stand-in; or, for a
-/// panel run on its own, one with stand-in readings.
+/// What the panel reads and changes: the session's published resources,
+/// which a panel run on its own reaches as soon as a session serves them; or
+/// a screenshot's or test's stand-ins, lent to it.
 fn host_of(cx: &ViewCx<QuickSettings>) -> Rc<dyn PanelHost> {
     if let Some(crate::host::Lent(host)) = cx.take_lent::<crate::host::Lent>() {
         return host;
@@ -128,52 +131,61 @@ fn host_of(cx: &ViewCx<QuickSettings>) -> Rc<dyn PanelHost> {
     if let Some(fixture) = cx.fixture::<FixtureHost>() {
         return fixture;
     }
-    if let Some(host) = Live::of(cx.waker()) {
-        return host;
-    }
-    Rc::new(FixtureHost::new(QuickSettingsState::fixture()))
+    Live::of(cx.waker())
 }
 
 /// The whole panel.
 pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let host = host_of(cx);
-    let readings = Readings::new(QuickSettingsState::fixture());
-    host.attach(readings.feed());
+    let readings = host.readings().readings();
+    readings.built_again();
     answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
+    // Opened to paste, the panel is the clipboard and nothing else: no footer to reach past the
+    // copies the person is choosing from. The card is built again as that changes, because a
+    // footer is part of the card, not of the page it shows.
+    let pasting = cx.value(|panel: &QuickSettings| panel.showing().pasting);
     let told = Rc::clone(&host);
-    let page = cx.switch(&showing, move |cx, showing| {
-        told.showing(showing);
-        // The page stands one deep when it is not the controls, and the
-        // page it replaces leaves as it arrives: Back runs it the other
-        // way.
-        Box::new(PageSlide::new(
-            usize::from(showing.is_deeper()),
-            with_refusal(cx, showing, &parts),
+    cx.switch(&pasting, move |cx, &pasting| {
+        let told = Rc::clone(&told);
+        let parts = parts.clone();
+        let showing = showing.clone();
+        let page = cx.switch(&showing, move |cx, showing| {
+            told.showing(showing);
+            // The page stands one deep when it is not the controls, and the
+            // page it replaces leaves as it arrives: Back runs it the other
+            // way.
+            Box::new(PageSlide::new(
+                usize::from(showing.is_deeper()),
+                with_refusal(cx, showing, &parts),
+            ))
+        });
+        // One inset for the whole page, so the tiles, the sliders and the rows
+        // share one left and right edge inside the card.
+        let body = Container::new()
+            .with_no_padding()
+            .with_inset(Rhythm::Related)
+            .with_child(page);
+        // The panel is the floating card every surface of its kind stands on,
+        // and the whole of its surface: as tall as the page it shows, growing
+        // and shrinking with it as a section opens and closes, up to the room
+        // the desk gives a popover — a page with more than that scrolls in the
+        // body.
+        let card = FloatingPanel::new(Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_label(crate::i18n::t("qs-title"))
+                .with_child(Box::new(body)),
         ))
-    });
-    // One inset for the whole page, so the tiles, the sliders and the rows
-    // share one left and right edge inside the card.
-    let body = Container::new()
-        .with_no_padding()
-        .with_inset(Rhythm::Related)
-        .with_child(page);
-    // The panel is the floating card every surface of its kind stands on, and
-    // its footprint is the surface's: the window it stands in is the size the
-    // desk gives a popover, so the card keeps its edges whichever page it
-    // shows — a page with more on it scrolls inside the body, and one with
-    // less leaves the footer where it was.
-    let card = FloatingPanel::new(Box::new(
-        Scrollable::new_vertical()
-            .fill_parent_height()
-            .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(body)),
-    ))
-    .footer(root::footer(cx))
-    .fill_width()
-    .fill_height();
-    Box::new(card) as Element
+        .fill_width()
+        .fit_height();
+        if pasting {
+            Box::new(card) as Element
+        } else {
+            Box::new(card.footer(root::footer(cx))) as Element
+        }
+    })
 }
 
 /// `page`, told why the last press did not reach the device when it did not:

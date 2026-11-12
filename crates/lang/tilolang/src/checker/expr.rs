@@ -932,6 +932,9 @@ impl Checker<'_> {
                 Ex::host(imp, vec![b], ty)
             }
             Ty::Identifier => self.identifier_part(b, name),
+            // A file's parts: what it is called, what it holds, how large it is, where its
+            // bytes are (`.text()` is the method that reads them).
+            Ty::File => self.file_part(b, name),
             Ty::RichText => self.rich_part(b, name),
             // A filter's fields: what a query names it by, what a control shows, what it asks.
             Ty::Filter(_) => {
@@ -953,6 +956,11 @@ impl Checker<'_> {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {
                     return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
+                }
+                // `.id`: the id the resource is, which every record has and no field holds — what
+                // a map of a notebook's notes is keyed by, as `{n}` in a text says it.
+                if name.name == "id" {
+                    return Ex::host(Imp::RefId, vec![b], Ty::Text);
                 }
                 // `host.Resource`: any resource at all, whose fields depend on what it is.
                 if key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME {

@@ -4,9 +4,13 @@
 //!   X25519-HKDF-SHA256, ChaCha20-Poly1305). Used for anything addressed to
 //!   a device or member key: enrollment offers, per-device secrets, key
 //!   history for channel joiners.
+//! * [`content`]: content a record references, sealed in chunks under a
+//!   fresh key its reference carries.
 //! * [`envelope`]: at-rest XChaCha20-Poly1305 envelopes under a symmetric
 //!   key or an Argon2id password, with a versioned header, 192-bit random
 //!   nonces, mandatory [`Context`] binding and key wrapping.
+//! * [`live`]: live-plane frames, XChaCha20-Poly1305 with a random nonce
+//!   in each frame, for keys a sender's every session derives alike.
 //! * [`discord_voice`]: the `*_rtpsize` AEAD modes (AES-256-GCM,
 //!   XChaCha20-Poly1305) Discord's voice gateway fixes for RTP.
 //! * [`secret_service`]: the Secret Service API's session encryption
@@ -35,12 +39,14 @@
 )]
 
 pub mod compat;
+pub mod content;
 pub mod discord_voice;
 pub mod envelope;
 pub mod error;
 pub mod hpke;
 pub mod keys;
 pub mod label;
+pub mod live;
 pub mod secret_service;
 pub mod web;
 pub mod wrapped;

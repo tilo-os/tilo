@@ -74,6 +74,105 @@ fn hosted_model_advances_retained_job_once_without_draw_or_private_fixture_drain
     )).count(), 1, "one actual completion emits exactly one terminal update");
 }
 
+/// An app the session runs with no window publishes its actions and answers
+/// one on its wakes alone: nothing is laid out or drawn for it.
+#[test]
+fn an_app_with_no_window_publishes_and_answers_on_its_wakes() {
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(CounterCard::with_async_post_bump_reset()),
+    );
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    let sent = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    app.wake_unshown();
+    assert!(
+        app.actions
+            .last_published_actions
+            .as_ref()
+            .is_some_and(|actions| !actions.is_empty()),
+        "its actions are published before anything shows"
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        871,
+        invocation,
+        "test.counter".into(),
+        "async-bump".into(),
+        None,
+        "original-caller",
+        None,
+    );
+    for _ in 0..3 {
+        app.wake_unshown();
+    }
+    assert_eq!(counter(&app), 1, "the action ran");
+    assert!(
+        sent.borrow().iter().any(|request| matches!(request,
+            CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }, .. } if *observed == invocation)),
+        "its caller is answered"
+    );
+}
+
+/// An app with no window whose view waits for what its workspace holds
+/// hears from the shell where the workspace stands, on its wakes alone, and
+/// then publishes what the view answers, as a window of it does.
+#[cfg(feature = "native")]
+#[test]
+fn an_app_with_no_window_hears_its_workspace_and_publishes_its_view() {
+    use std::io::Write as _;
+    let (app_side, mut shell_side) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::workspace_sync::hosted_by_shell();
+    let view = crate::widget::ArrivingView::new(&crate::workspace_sync::holdings(), |()| {
+        Box::new(CounterCard::with_async_post_bump_reset()) as crate::widget::Element
+    });
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(view));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.floating.client =
+        Some(crate::floating_surface::FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(Rc::default()));
+    let bumps = |app: &App| {
+        app.actions
+            .last_published_actions
+            .iter()
+            .flatten()
+            .any(|action| action.address.action == "async-bump")
+    };
+    app.wake_unshown();
+    assert!(
+        !bumps(&app),
+        "nothing of the view is built before the workspace is"
+    );
+    let mut told = serde_json::to_vec(
+        &crate::floating_surface::FloatingSurfaceHostMessage::appearance(
+            &crate::theme::WindowAppearance::default(),
+        ),
+    )
+    .unwrap();
+    told.push(b'\n');
+    shell_side.write_all(&told).unwrap();
+    // An answer whose placeholder already showed keeps it a moment: the app
+    // wakes when it asks to, as its event loop does.
+    let mut next = app.wake_unshown();
+    for _ in 0..8 {
+        if bumps(&app) {
+            break;
+        }
+        if let Some(at) = next {
+            std::thread::sleep(at.saturating_duration_since(crate::time::now()));
+        }
+        next = app.wake_unshown();
+    }
+    assert!(
+        bumps(&app),
+        "the view's actions are published once the shell said"
+    );
+}
+
 fn hosted_directory_fixture() -> App {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
@@ -543,6 +642,7 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
     events.borrow_mut().push(CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     });
     app.pump_hosted_model();
     assert!(
@@ -591,6 +691,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
             collaborators: vec![],
             permissions: vec![],
+            apps: Vec::new(),
         }]));
         app.collaboration.manager =
             CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
@@ -625,6 +726,7 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     }]));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
@@ -666,6 +768,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
             person("person:z", 5_000, false),
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let second = crate::permissions::UserId("person:z".into());
     assert_eq!(app.presence_ctx.self_label().as_deref(), Some("Ada (1)"));
@@ -678,6 +781,7 @@ fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
             person("person:z", 5_000, false),
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let newcomer = crate::permissions::UserId("person:a".into());
     assert_eq!(app.presence_ctx.display_name(&first), "Ada (1)");
@@ -716,6 +820,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
             },
         ],
         permissions: vec![],
+        apps: Vec::new(),
     });
     let opaque = crate::permissions::UserId("opaque-member".into());
     let spoof = crate::permissions::UserId("agent:spoof".into());
@@ -738,6 +843,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
             joined_at: None,
         }],
         permissions: vec![],
+        apps: Vec::new(),
     });
     assert!(!app.presence_ctx.names.contains_key(&opaque));
     assert!(!app.presence_ctx.names.contains_key(&spoof));
@@ -749,6 +855,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
     app.apply_collab_event_for_test(CollabEvent::Context {
         collaborators: vec![],
         permissions: vec![],
+        apps: Vec::new(),
     });
     assert!(app.presence_ctx.self_id().is_none());
 }

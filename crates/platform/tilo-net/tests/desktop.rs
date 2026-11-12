@@ -152,10 +152,12 @@ async fn a_silent_server_times_out() {
 
 #[tokio::test]
 async fn an_unreachable_server_is_a_connect_error() {
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    // A socket that holds its address without listening on it: the port is
+    // nothing's to take, so the client's refusal is this socket's own for as
+    // long as the test runs.
+    let held = tokio::net::TcpSocket::new_v4().unwrap();
+    held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = held.local_addr().unwrap().port();
     let error = Client::new()
         .get(format!("http://127.0.0.1:{port}/"))
         .send()
@@ -163,6 +165,7 @@ async fn an_unreachable_server_is_a_connect_error() {
         .unwrap_err();
     assert!(error.is_connect(), "{error:?}");
     assert!(!error.may_be_cors());
+    drop(held);
 }
 
 #[tokio::test]
@@ -223,14 +226,14 @@ async fn a_webtransport_session_carries_streams_and_datagrams() {
     let certificate = params.self_signed(&key).unwrap();
     let der = certificate.der().clone();
     let hash: [u8; 32] = sha2::Sha256::digest(der.as_ref()).into();
-    let port = free_udp_port();
     let mut server = web_transport_quinn::ServerBuilder::new()
-        .with_addr(([127, 0, 0, 1], port).into())
+        .with_addr(([127, 0, 0, 1], 0).into())
         .with_certificate(
             vec![der],
             rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
         )
         .unwrap();
+    let port = server.local_addr().unwrap().port();
     let echo = tokio::spawn(async move {
         let session = server.accept().await.unwrap().ok().await.unwrap();
         let (mut send, mut recv) = session.accept_bi().await.unwrap();
@@ -266,14 +269,14 @@ async fn an_unpinned_self_signed_webtransport_server_is_refused() {
     let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
     let key = rcgen::KeyPair::generate().unwrap();
     let certificate = params.self_signed(&key).unwrap();
-    let port = free_udp_port();
     let mut server = web_transport_quinn::ServerBuilder::new()
-        .with_addr(([127, 0, 0, 1], port).into())
+        .with_addr(([127, 0, 0, 1], 0).into())
         .with_certificate(
             vec![certificate.der().clone()],
             rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
         )
         .unwrap();
+    let port = server.local_addr().unwrap().port();
     tokio::spawn(async move { while server.accept().await.is_some() {} });
     let error = tilo_net::webtransport::connect(
         &format!("https://127.0.0.1:{port}/"),
@@ -377,12 +380,4 @@ async fn extra_trust_takes_a_ca_or_an_exact_self_signed_certificate_and_nothing_
     let plain = Client::new();
     assert!(fetched(&plain, self_signed).await.is_err());
     assert!(fetched(&plain, chained).await.is_err());
-}
-
-fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }

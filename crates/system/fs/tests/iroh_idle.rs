@@ -260,12 +260,14 @@ mod netns {
     }
 
     /// Run test `name` again in a user and network namespace of its own, where
-    /// it may change `lo`, and require that it passed.
+    /// it may change `lo`, and require that it passed. The child selects it by
+    /// its own name: these tests are a module of one test binary, so their
+    /// names carry the module, and the name alone is what matches a filter.
     pub(super) fn rerun_in_private_network(name: &str) {
         let output = std::process::Command::new("unshare")
             .args(["--user", "--map-root-user", "--net", "--"])
             .arg(std::env::current_exe().expect("this test binary"))
-            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .args([name, "--nocapture", "--test-threads=1"])
             .env(CHILD, "1")
             .output_locked()
             .expect("util-linux unshare runs");

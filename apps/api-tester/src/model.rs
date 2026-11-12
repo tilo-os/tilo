@@ -152,7 +152,7 @@ pub enum Auth {
 
 impl std::fmt::Debug for Auth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
+        f.write_str(self.scheme())
     }
 }
 
@@ -177,8 +177,10 @@ impl Serialize for Auth {
 }
 
 impl Auth {
-    /// Stable label for the Auth-mode selector.
-    pub fn label(&self) -> &'static str {
+    /// The scheme's public name as records carry it: a credential's stored
+    /// scheme is matched back to the fields it needs by exactly this word, so
+    /// it stays the same in every language.
+    pub fn scheme(&self) -> &'static str {
         match self {
             Auth::SecretRef { scheme, .. } => match scheme.as_str() {
                 "Bearer Token" => "Bearer Token",
@@ -193,7 +195,23 @@ impl Auth {
         }
     }
 
-    pub const LABELS: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
+    /// The catalogue message naming `scheme` in the Auth selector.
+    pub fn scheme_message(scheme: &str) -> &'static str {
+        match scheme {
+            "Bearer Token" => "api-tester-auth-bearer",
+            "Basic Auth" => "api-tester-auth-basic",
+            "API Key" => "api-tester-auth-api-key",
+            "Stored Authentication" => "api-tester-auth-stored",
+            _ => "api-tester-auth-none",
+        }
+    }
+
+    /// The catalogue message naming this scheme in the Auth selector.
+    pub fn message(&self) -> &'static str {
+        Self::scheme_message(self.scheme())
+    }
+
+    pub const SCHEMES: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
     /// The credential of this scheme: the token, the password, the key.
     pub fn secret(&self) -> Option<&str> {
         match self {
@@ -241,12 +259,12 @@ pub enum BodyMode {
 }
 
 impl BodyMode {
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            BodyMode::None => "None",
-            BodyMode::Json => "JSON",
-            BodyMode::Form => "Form",
-            BodyMode::Raw => "Raw",
+            BodyMode::None => "api-tester-body-none",
+            BodyMode::Json => "api-tester-body-json",
+            BodyMode::Form => "api-tester-body-form",
+            BodyMode::Raw => "api-tester-body-raw",
         }
     }
 
@@ -268,12 +286,12 @@ pub enum RequestTab {
 }
 
 impl RequestTab {
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            RequestTab::Params => "Params",
-            RequestTab::Headers => "Headers",
-            RequestTab::Auth => "Auth",
-            RequestTab::Body => "Body",
+            RequestTab::Params => "api-tester-tab-params",
+            RequestTab::Headers => "api-tester-tab-headers",
+            RequestTab::Auth => "api-tester-tab-auth",
+            RequestTab::Body => "api-tester-tab-body",
         }
     }
 
@@ -294,11 +312,11 @@ pub enum ResponseView {
 }
 
 impl ResponseView {
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            ResponseView::Pretty => "Pretty",
-            ResponseView::Raw => "Raw",
-            ResponseView::Headers => "Headers",
+            ResponseView::Pretty => "api-tester-view-pretty",
+            ResponseView::Raw => "api-tester-view-raw",
+            ResponseView::Headers => "api-tester-view-headers",
         }
     }
 
@@ -426,7 +444,7 @@ impl RequestSnapshot {
             Auth::None => (String::new(), String::new()),
             // A literal credential in a builder request is on its way to the
             // secret store; its scheme is public, its value is not recorded.
-            other => (other.label().to_owned(), String::new()),
+            other => (other.scheme().to_owned(), String::new()),
         };
         Self {
             method: request.method,

@@ -288,6 +288,9 @@ pub enum ChromeIntent {
     SwitchWorkspace(i32),
     ToggleQuickSettings,
     ShowQuickSettings,
+    /// Open the notification centre, or close it when it is up: the bell in the status cluster,
+    /// which is its own target inside the cluster's quick settings control.
+    ToggleNotifications,
     ToggleCollaborators,
     /// Invite someone to this workspace, straight from the bar's invite button: the host's own
     /// invite flow, in one step.
@@ -521,6 +524,14 @@ pub trait ChromeSource {
     fn may_delete_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
         Err(crate::i18n::t("desktop-cannot-delete-workspace"))
     }
+    /// Whether the person may branch the workspace `workspace` : they read all of it. Asked after
+    /// whether they may make a workspace at all.
+    ///
+    /// # Errors
+    /// The refusal, in words for the person.
+    fn may_branch_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+        Ok(())
+    }
     /// Where the workspace shown is hosted (`example.org`); `None` on a desktop of the person's
     /// own.
     fn workspace_host(&self) -> Option<String> {
@@ -708,6 +719,11 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
 
     fn may_delete_workspace(&self, workspace: WorkspaceSlot) -> Result<(), String> {
         self.source.may_delete_workspace(workspace)
+    }
+
+    fn may_branch_workspace(&self, workspace: WorkspaceSlot) -> Result<(), String> {
+        self.may_create_workspace()?;
+        self.source.may_branch_workspace(workspace)
     }
 
     fn made_strip(&self, strip: StripId) {

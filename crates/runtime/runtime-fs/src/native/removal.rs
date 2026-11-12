@@ -1,7 +1,7 @@
 //! Host-bound private same-mount removal custody. No pathname constructs it.
 use super::{
-    Arc, Dir, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, GrantedEntry,
-    MetadataExt, NativeIdentity, NativeLocator, OFlags, io_error, lock,
+    Arc, Dir, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, MetadataExt,
+    NativeIdentity, NativeLocator, OFlags, io_error, lock,
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, AsRawFd};
@@ -17,7 +17,6 @@ pub(crate) struct RemovalCustody {
     pub identity: NativeIdentity,
     guard_identity: NativeIdentity,
     pub(super) owner_key: std::sync::Mutex<Option<[u8; 32]>>,
-    history_verifier: std::sync::Mutex<Option<crate::external_history::VerifierClaims>>,
 }
 fn host_identity(metadata: &std::fs::Metadata) -> NativeIdentity {
     NativeIdentity {
@@ -102,7 +101,6 @@ impl FsSession {
             identity,
             guard_identity,
             owner_key: std::sync::Mutex::new(None),
-            history_verifier: std::sync::Mutex::new(None),
         });
         custody.check()?;
         let mut slot = lock(&self.inner.removal)?;
@@ -181,131 +179,6 @@ impl FsSession {
             .ok_or(FsError::Denied)?;
         Ok(key)
     }
-    /// Bind only the root-created sealed verifier admitted by the installed
-    /// daemon and launcher for this exact original-source custody. This is not
-    /// a public byte-array/key constructor and does not sign or complete history.
-    /// # Errors
-    /// Refuses wrong custody/owner, unsealed descriptors, malformed context and
-    /// rebinding. Non-Linux workers cannot accept root-sealed source authority.
-    #[cfg(target_os = "linux")]
-    pub fn bind_retained_history_verifier(
-        &self,
-        root: &DirectoryGrant,
-        mut sealed: std::fs::File,
-    ) -> Result<(), FsError> {
-        use std::io::{Read, Seek};
-        let table = self.call()?;
-        self.validate(&table, &root.lease, Some(FsRight::Enumerate))?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        if !Arc::ptr_eq(&root.lease.record, &custody.root.record) {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        let metadata = sealed.metadata().map_err(io_error)?;
-        let seals = unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_GET_SEALS) };
-        let required =
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        if metadata.uid() != 0
-            || !metadata.is_file()
-            || metadata.nlink() != 0
-            || metadata.len() == 0
-            || metadata.len() > 4096
-            || seals < 0
-            || seals & required != required
-        {
-            return Err(FsError::Denied);
-        }
-        sealed.rewind().map_err(io_error)?;
-        let mut bytes = Vec::new();
-        sealed
-            .take(4097)
-            .read_to_end(&mut bytes)
-            .map_err(io_error)?;
-        let verifier =
-            crate::external_history::VerifierClaims::decode(&bytes).map_err(|_| FsError::Denied)?;
-        if *lock(&custody.owner_key)? != Some(verifier.source_owner) {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        self.validate(&table, &root.lease, Some(FsRight::Enumerate))?;
-        let mut slot = lock(&custody.history_verifier)?;
-        if slot.is_some() {
-            return Err(FsError::Busy);
-        }
-        *slot = Some(verifier);
-        drop(slot);
-        drop(table);
-        Ok(())
-    }
-    /// Bind retained history authority only on supported hosts.
-    #[cfg(not(target_os = "linux"))]
-    pub fn bind_retained_history_verifier(
-        &self,
-        _root: &DirectoryGrant,
-        _sealed: std::fs::File,
-    ) -> Result<(), FsError> {
-        Err(FsError::Unsupported(
-            "root-sealed retained history requires Linux",
-        ))
-    }
-    /// Private live-custody observation; caller text cannot construct a verifier.
-    pub(crate) fn retained_history_verifier(
-        &self,
-    ) -> Result<crate::external_history::VerifierClaims, FsError> {
-        let table = self.call()?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
-        custody.check()?;
-        let verifier = lock(&custody.history_verifier)?
-            .clone()
-            .ok_or(FsError::Denied)?;
-        if *lock(&custody.owner_key)? != Some(verifier.source_owner) {
-            return Err(FsError::Denied);
-        }
-        Ok(verifier)
-    }
-    /// Keep the existing exact native grants and revocation gate through signed
-    /// journal metadata publication. This cannot create Replace authority.
-    pub(crate) fn with_retained_replacement_scope<T>(
-        &self,
-        original: &GrantedEntry,
-        victim: &GrantedEntry,
-        parent: &DirectoryGrant,
-        source_owner: [u8; 32],
-        effect: impl FnOnce() -> Result<T, FsError>,
-    ) -> Result<T, FsError> {
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.replacement_effect(&custody, original, victim, parent, || {
-            if *lock(&custody.owner_key)? != Some(source_owner) {
-                return Err(FsError::Denied);
-            }
-            effect()
-        })
-    }
-    pub(crate) fn replacement_effect<T>(
-        &self,
-        custody: &RemovalCustody,
-        original: &GrantedEntry,
-        victim: &GrantedEntry,
-        parent: &DirectoryGrant,
-        effect: impl FnOnce() -> Result<T, FsError>,
-    ) -> Result<T, FsError> {
-        let table = self.call()?;
-        self.validate(&table, &custody.root, Some(FsRight::Replace))?;
-        self.validate(&table, original.lease(), Some(FsRight::Rename))?;
-        self.validate(&table, original.lease(), Some(FsRight::Write))?;
-        self.validate(&table, victim.lease(), Some(FsRight::Replace))?;
-        self.validate(&table, &parent.lease, Some(FsRight::Create))?;
-        self.validate(&table, &parent.lease, Some(FsRight::Replace))?;
-        if !original.lease().descends_from(&custody.root)
-            || !victim.lease().descends_from(&custody.root)
-            || !parent.lease.descends_from(&custody.root)
-        {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        effect()
-    }
     pub(crate) fn observe_replacement(
         &self,
         parent: &DirectoryGrant,
@@ -360,58 +233,6 @@ impl FsSession {
                 [published.device, published.inode],
             ))
         })
-    }
-    pub(crate) fn created_temporary_custody(
-        &self,
-        parent: &DirectoryGrant,
-        created: &GrantedEntry,
-    ) -> Result<Arc<RemovalCustody>, FsError> {
-        let table = self.call()?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
-        self.validate(&table, &parent.lease, Some(FsRight::Create))?;
-        self.validate(&table, created.lease(), Some(FsRight::Rename))?;
-        if !parent.lease.descends_from(&custody.root)
-            || !created.lease().descends_from(&parent.lease)
-        {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        Ok(custody)
-    }
-    pub(crate) fn created_temporary_effect<T>(
-        &self,
-        custody: &RemovalCustody,
-        parent: &DirectoryGrant,
-        created: &GrantedEntry,
-        effect: impl FnOnce() -> Result<T, FsError>,
-    ) -> Result<T, FsError> {
-        let table = self.call()?;
-        self.validate(&table, &custody.root, Some(FsRight::Enumerate))?;
-        self.validate(&table, &parent.lease, Some(FsRight::Create))?;
-        self.validate(&table, created.lease(), Some(FsRight::Rename))?;
-        if !parent.lease.descends_from(&custody.root)
-            || !created.lease().descends_from(&parent.lease)
-        {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        effect()
-    }
-    pub(crate) fn replacement_directory(
-        &self,
-        temporary: &GrantedEntry,
-    ) -> Result<Arc<RemovalCustody>, FsError> {
-        let table = self.call()?;
-        let custody = lock(&self.inner.removal)?.clone().ok_or(FsError::Denied)?;
-        self.validate(&table, &custody.root, Some(FsRight::Replace))?;
-        self.validate(&table, temporary.lease(), Some(FsRight::Rename))?;
-        self.validate(&table, temporary.lease(), Some(FsRight::Write))?;
-        if !temporary.lease().descends_from(&custody.root) {
-            return Err(FsError::Denied);
-        }
-        custody.check()?;
-        Ok(custody)
     }
     pub(crate) fn retained_journal_roots(
         &self,

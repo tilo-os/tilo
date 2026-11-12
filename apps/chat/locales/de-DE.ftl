@@ -96,17 +96,12 @@ chat-start-call = Anruf starten
 chat-start-video-call = Videoanruf starten
 
 # Belege, die an der Antwort eines Agents hängen; die Verfügbarkeit kommt aus der Präsenz.
-chat-agent-work-taken = Anfrage angenommen
-chat-agent-work-waiting = Zuletzt gemeldet: wartet auf den Zustand der App: { $app }
-chat-agent-work-intent = Letzte Absicht: { $action }
-chat-agent-work-intent-about = Letzte Absicht: { $action }: { $about }
-chat-agent-work-done = Erledigt: { $action }
+chat-agent-work-waiting = Wartet auf { $app }
+chat-agent-work-did = { $count ->
+    [one] Hat eine Sache erledigt
+   *[other] Hat { $count } Sachen erledigt
+}
 chat-agent-work-refused = Diese Anfrage konnte nicht abgeschlossen werden
-chat-agent-work-model-rationale = Begründung des Modells
-chat-agent-work-rule-match = Regel passt
-chat-agent-work-model-choice = Vom eingestellten Modell gewählt
-chat-agent-work-rule-choice = Gegen die veröffentlichte Aktionsliste geprüft
-chat-agent-work-rationale = { $route }: { $why }
 chat-agent-work-step-requested = Angefragt: { $target }
 chat-agent-work-step-applied = Angewandt: { $target }
 chat-agent-work-step-no-change = Keine Änderung: { $target }
@@ -149,12 +144,16 @@ chat-header-call-open = Anruf öffnen
 
 chat-identity-available = Verfügbar
 chat-identity-in-voice = Im Sprachraum
+chat-member-in-channel = In { $channel }
 
-chat-resource-copy-link = Link zum Objekt kopieren
+chat-resource-copy-link = Link kopieren
 chat-resource-not-opened = Konnte nicht geöffnet werden
 chat-agent-kind = Agent
 chat-channel-empty-message = Sag Hallo. Alle in #{ $channel } sehen es.
 chat-send = Senden
+chat-voice-channel = Sprachkanal
+chat-quote-caption = Antwort auf
+chat-quote-earlier = Eine Nachricht weiter oben
 chat-conversation-read-only = Du kannst diese Unterhaltung lesen, aber nicht darin schreiben.
 chat-direct-unavailable = Diese Unterhaltung geht noch nicht auf: Dieses Gerät hat den Chat des Arbeitsbereichs nicht geladen.
 chat-person-unknown = In diesem Arbeitsbereich gibt es niemanden zum Anschreiben.
@@ -293,84 +292,10 @@ chat-sheet-topic-placeholder = Wofür dieser Kanal da ist (optional)
 # Rückmeldungsauswahl („Nachricht in Chat“).
 chat-message-kind = Nachricht
 
-## Eine abgegebene Rückmeldung, wie ihr Kanal sie zeigt
-# Ein gewählter Teil des Bildschirms: sein Ort, was er war, und die App.
-chat-feedback-pick = { $index }. { $what } in { $app }
-# Ein gewählter Teil aus einer App ohne bekannten Namen: sein Ort und was er
-# war, nie die Kennung der App.
-chat-feedback-pick-alone = { $index }. { $what }
-# Was ein gewählter Teil war, wenn die App gesagt hat, was für ein Ding er ist.
-chat-feedback-part-kind = { $kind }
-# Was ein gewählter Teil war, nach dem eigenen Namen der App und seiner Rolle.
-chat-feedback-part-named = { $role ->
-    [Button] Die Schaltfläche „{ $name }“
-    [ToggleButton] Die Schaltfläche „{ $name }“
-    [Link] Der Link „{ $name }“
-    [Tab] Der Reiter „{ $name }“
-    [MenuItem] Der Menüeintrag „{ $name }“
-    [Checkbox] Das Kästchen „{ $name }“
-    [Switch] Der Schalter „{ $name }“
-    [TextInput] Das Feld „{ $name }“
-    [MultilineTextInput] Das Feld „{ $name }“
-    [Heading] Die Überschrift „{ $name }“
-   *[other] „{ $name }“ als { $role }
-}
-# Was ein gewählter Teil war, nur an seiner Rolle erkannt.
-chat-feedback-part-role = { $role ->
-    [ListItem] Ein Listeneintrag
-    [Row] Eine Zeile
-    [Cell] Eine Zelle
-    [Button] Eine Schaltfläche
-    [ToggleButton] Eine Schaltfläche
-    [Link] Ein Link
-    [Image] Ein Bild
-    [TextInput] Ein Feld
-    [MultilineTextInput] Ein Feld
-    [StaticText] Ein Text
-    [Paragraph] Ein Absatz
-    [Heading] Eine Überschrift
-    [List] Eine Liste
-    [Group] Eine Gruppe
-    [Window] Ein Fenster
-    [Toolbar] Eine Werkzeugleiste
-    [Menu] Ein Menü
-    [MenuItem] Ein Menüeintrag
-    [Tab] Ein Reiter
-   *[other] Ein Teil
-}
-chat-feedback-note = „{ $note }“
-# Ein Text, den ein gewählter Teil zeigte, wie er geprüft wurde.
-chat-feedback-text = { $text }
-# Eine der letzten Aktionen der meldenden Person, nach dem Namen, den ihre App
-# ihr gibt; $outcome ist done, refused oder failed.
-chat-feedback-action = { $outcome ->
-    [refused] { $label } (abgelehnt)
-    [failed] { $label } (fehlgeschlagen)
-   *[done] { $label }
-}
-# Eine Aktion, deren App ihr keinen Namen gab, nach ihrer Kennung und Art des Objekts.
-chat-feedback-action-unnamed = { $action } an { $resource }
-chat-feedback-recent = Kurz davor: { $actions }
-# Die Aufzeichnung, die eine Meldung trägt: die App, deren Verlauf aufgezeichnet
-# wurde, Anfang und Ende und wie viele Änderungen sie durchläuft.
-chat-feedback-recording = Aufzeichnung von { $app } von { $from } bis { $to }, { $steps ->
-    [one] eine Änderung
-   *[other] { $steps } Änderungen
-}
+## Die Aufzeichnung einer abgegebenen Rückmeldung
 chat-feedback-replay = Aufzeichnung abspielen
 chat-feedback-replay-failed = Die Aufzeichnung ging nicht auf
 chat-feedback-replay-description = Die Aufzeichnung in { $app } öffnen und Schritt für Schritt durchgehen
-chat-feedback-slow = Langsam: { $slow } der letzten { $frames } Bilder brauchten über { $budget } ms, das langsamste { $worst } ms
-# Ein ausgeblendeter Abschnitt eines gemeldeten Textes, nach dem, was er verbarg.
-chat-feedback-hidden = { $kind ->
-    [name] ‹Name›
-    [email] ‹E-Mail›
-    [phone] ‹Telefon›
-    [address] ‹Adresse›
-    [account] ‹Kontonummer›
-    [credential] ‹Zugangsdaten›
-   *[personal] ‹Persönlich›
-}
 
 ## Die eigenen Bedienelemente und Bezeichnungen der Unterhaltung
 chat-surface = Chat
@@ -383,6 +308,7 @@ chat-composer = Nachrichtenfeld
 chat-send-message = Nachricht senden
 chat-undo = Rückgängig
 chat-retry = Erneut versuchen
+chat-failure-details = Einzelheiten
 chat-close = Schließen
 # Eine Nachricht, die den Arbeitsbereich nicht erreicht hat; $reason sagt, warum.
 chat-not-sent = Nicht gesendet: { $reason }
@@ -390,6 +316,8 @@ chat-message-deleted = Nachricht gelöscht
 chat-message-edited = Bearbeitet
 # Neben der Uhrzeit einer angehefteten Nachricht.
 chat-message-pinned-marker = Angeheftet
+# Anstelle der Uhrzeit, solange die Unterhaltung noch auf dem Gerät ankommt.
+chat-message-sending = Wird gesendet…
 chat-empty-title = Noch keine Nachrichten
 chat-empty-title-read-only = Hier ist noch nichts gesagt
 chat-jump-latest = Zum Neuesten springen
@@ -486,3 +414,44 @@ chat-attach-share = Datei teilen
 chat-send-empty = Schreib eine Nachricht oder häng etwas an.
 chat-send-needs-recipient = Wähle, an wen die Nachricht geht.
 chat-send-one-conversation = Ein Gespräch steht für sich: wähle es, oder die Personen, an die es geht.
+chat-channel-composer-placeholder = Nachricht an #{ $channel }
+
+## What the window shows
+chat-writing = Schreibt…
+chat-voice-channel-unnamed = Der Sprachkanal konnte nicht benannt werden
+
+## Actions
+
+chat-effects-model-control = Zu diesem Beitrag fragen
+chat-effects-show-agent-reasoning = Begründung anzeigen
+chat-effects-open-channel = Unterhaltung öffnen
+chat-effects-open-category = Kategorie öffnen
+chat-effects-toggle-category = Kategorie ein- oder ausklappen
+chat-effects-reveal-message = Beitrag anzeigen
+chat-effects-reveal-message-range = Beiträge anzeigen
+chat-effects-open-person = Person öffnen
+chat-effects-open-agent = Unterhaltung mit Agent öffnen
+chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
+chat-effects-send-direct-message = Direktnachricht senden
+chat-effects-send = Nachricht senden
+chat-effects-export-content = Unterhaltung exportieren
+chat-effects-attach-file = Datei anhängen
+chat-effects-share-live-context = Live-Kontext teilen
+chat-effects-stop-sharing-live-context = Live-Kontext nicht mehr teilen
+chat-effects-live-context-status = Status des Live-Kontexts
+chat-effects-open-slack-channel = Slack-Kanal im Browser öffnen
+chat-effects-open-discord-channel = Discord-Kanal im Browser öffnen
+chat-effects-join-call = Anruf beitreten
+chat-effects-leave-call = Anruf verlassen
+chat-effects-mute = Stummschalten
+chat-effects-unmute = Stummschaltung aufheben
+chat-effects-deafen = Ton aus
+chat-effects-undeafen = Ton an
+chat-effects-camera-on = Kamera einschalten
+chat-effects-camera-off = Kamera ausschalten
+chat-effects-share-screen = Bildschirm teilen
+chat-effects-stop-sharing-screen = Bildschirm nicht mehr teilen
+chat-effects-call-status = Anrufstatus
+chat-effects-start-call = Anruf starten
+chat-effects-start-video-call = Videoanruf starten
+chat-effects-select-input = Mikrofon wählen

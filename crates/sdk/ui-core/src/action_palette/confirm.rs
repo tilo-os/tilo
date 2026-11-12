@@ -23,6 +23,7 @@ use super::{ActionPalette, ConfirmationPolicy, ObjId, PendingOperation};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::modal_dialog::{ModalAction, ModalSpec, body_width};
 use crate::widget::{Button, ButtonRole, PromptBody, Row, TextInput, Widget};
 
@@ -427,10 +428,11 @@ impl ActionPalette {
         } else {
             ModalAction::primary(&state.button_label)
         };
+        let cancel_label = crate::i18n::widget_text("widget-dialog-cancel");
         // In `SUBMIT`, `CANCEL` order: the sheet answers `Action(SUBMIT)`.
         let actions = [
             submit.enabled(enabled).focused(submit_focused),
-            ModalAction::secondary("Cancel").focused(cancel_focused),
+            ModalAction::secondary(&cancel_label).focused(cancel_focused),
         ];
         // Beside the control that asked, a popover as wide as a question
         // needs; asked with no control, a sheet over the window.
@@ -527,7 +529,7 @@ impl ActionPalette {
                     &spec,
                     |scene, transform, text_renderer, theme, rect: Rect| {
                         placed = place(body, theme, rect.origin(), rect.width(), text_renderer);
-                        body.draw(scene, transform, text_renderer, theme, presence);
+                        body.draw_child(scene, transform, text_renderer, theme, presence);
                     },
                 );
                 phrase.placed = placed;

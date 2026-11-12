@@ -7,6 +7,34 @@
 // finished. Every wait here ends when the desk's own answer says so, and the
 // frames it may also look at are progress only while the desk still owes work.
 
+import {availableParallelism} from 'node:os';
+import {readFileSync} from 'node:fs';
+
+/** How long one step of a page test may take before the run calls it hung
+ * and says which step it was: one thing a person does and the page's answer.
+ * TILO_STEP_SECONDS sets it (default 5), for a machine whose pages answer
+ * slower; every wait in the drivers is a whole number of steps, so a hang
+ * fails in seconds and a slow step is named by its own wait, never hidden
+ * inside a minutes-long one. */
+export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
+
+/** The window a driven desk is drawn in. Every pixel of it goes through the
+ * software rasteriser on every frame, so it is the smallest size that still
+ * gets the desk's desktop layout (the narrow layouts begin below 720 px wide
+ * and 600 px tall): 1024 by 640 draws a third fewer pixels than 1280 by 800.
+ * `empty` is a point on the desk below the windows it opens, where a click
+ * gives the page focus without pressing anything: 100 px above the bottom
+ * edge, as it was in the larger window, since what the desk draws along that
+ * edge keeps its size in pixels whatever the window's. */
+export const DESK = {width: 1024, height: 640, empty: {x: 512, y: 540}};
+
+/** The device metrics that give a tab the desk's window. */
+export const deskMetrics = {width: DESK.width, height: DESK.height, deviceScaleFactor: 1, mobile: false};
+
+/** `n` steps, for what takes a person more than one: a page loading and
+ * joining (6), an answer crossing to another person's page (4). */
+export const stepLimit = n => n * STEP_MS;
+
 /** The page's own word for whether the open search still has rows to find:
  * a source still to answer, or rows not yet cut to the card. A settled search
  * (and a closed one) reads false. */
@@ -23,6 +51,12 @@ export const searchOpen = tab => tab.evaluate('!!globalThis.tiloMount?.state()?.
  * `owed` says there is nothing left to draw, and never outlives the work it
  * waits for.
  *
+ * `idleMs` ends the wait when the desk has presented no frame for that long,
+ * for a desk that has no answer of its own to give: a desk drawing a
+ * megapixel through a software rasteriser presents every second or two, so a
+ * longer silence is a desk with nothing left to draw, and waiting for the
+ * timeout instead spends it on every step.
+ *
  * `evaluate` reads an expression in the page (`tab.evaluate` in the gate,
  * a stub in a test); `sleep` and `now` are the clock and pause, injectable
  * so a test can prove the wait ends on state without any frame advancing.
@@ -32,18 +66,27 @@ export async function settle({
   evaluate,
   by = 2,
   owed = () => true,
+  idleMs = 0,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   now = () => Date.now(),
-  timeoutMs = 120_000,
+  timeoutMs = stepLimit(3),
   pollMs = 100,
   onTimeout = null,
 }) {
   const from = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
   const deadline = now() + timeoutMs;
+  let lastFrame = from;
+  let lastChange = now();
   for (;;) {
     const frames = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
     if (frames >= from + by) return 'frames';
     if (!await owed()) return 'settled';
+    if (frames !== lastFrame) {
+      lastFrame = frames;
+      lastChange = now();
+    } else if (idleMs && now() - lastChange >= idleMs) {
+      return 'idle';
+    }
     if (now() > deadline) {
       if (onTimeout) return onTimeout({from, by});
       return 'timeout';
@@ -56,3 +99,34 @@ export async function settle({
  * no rows (`searchSearching` false) as much as when the frames came. */
 export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} = {}) =>
   settle({evaluate, owed: () => searching(tab), ...rest});
+
+/** What the machine was doing when a wait ran out, so a run that timed out
+ * because the machine never gave the page a turn reads differently from one
+ * where the page itself hung. It reads the load against this machine's cores,
+ * the CPU pressure (the share of the last ten seconds in which something
+ * runnable waited for a core) of the machine and of this job's own cgroup,
+ * and how much of this job's CPU time its cgroup throttled.
+ * `starved` is true when this job's own tasks waited for a core a quarter of
+ * the last ten seconds or more (the machine's pressure where the job's own
+ * cannot be read): then a frame or an answer that never came may be the
+ * machine, not the product. The machine's load is shown but not judged: it
+ * counts every job on the node, and a job can get its cores while the node's
+ * load is several times its cores. */
+export function machine() {
+  const read = path => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
+  const avg10 = text => Number(text.match(/^some avg10=([\d.]+)/m)?.[1] ?? NaN);
+  const cores = availableParallelism();
+  const [load1] = read('/proc/loadavg').split(' ').map(Number);
+  const hostPressure = avg10(read('/proc/pressure/cpu'));
+  const jobPressure = avg10(read('/sys/fs/cgroup/cpu.pressure'));
+  const stat = Object.fromEntries(read('/sys/fs/cgroup/cpu.stat').trim().split('\n')
+    .map(line => line.split(' ')).filter(pair => pair.length === 2).map(([k, v]) => [k, Number(v)]));
+  const throttled = stat.throttled_usec ? `, throttled ${(stat.throttled_usec / 1e6).toFixed(1)} s in ${stat.nr_throttled} periods` : '';
+  const pressure = Number.isFinite(jobPressure) ? jobPressure : hostPressure;
+  const starved = pressure >= 25;
+  const given = process.env.OMP_NUM_THREADS ? `, this job given ${process.env.OMP_NUM_THREADS} threads` : '';
+  const text = `${starved ? 'STARVED' : 'not starved'}: load ${load1?.toFixed(1)} on ${cores} cores${given}, `
+    + `cpu pressure ${Number.isFinite(hostPressure) ? hostPressure : '?'}% (machine) `
+    + `${Number.isFinite(jobPressure) ? jobPressure : '?'}% (this job)${throttled}`;
+  return {starved, text};
+}

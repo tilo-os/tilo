@@ -14,8 +14,8 @@ use tilolang_runtime::store::StoreError;
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
 use super::{
-    HistoryAsk, Instance, NoNames, Shown, bound_values, convert_with, patch_in_place, plain,
-    referenced_resource, rows_message, show_content_rows, sort, virtual_list_paths, virtual_lists,
+    HistoryAsk, Instance, Shown, bound_values, convert_with, patch_in_place, referenced_resource,
+    rows_message, show_content_rows, sort, virtual_list_paths, window_tree,
 };
 use crate::host::Host;
 use crate::runtime::Store as _;
@@ -24,15 +24,8 @@ use crate::runtime::{ResourceRef, ViewEvent};
 impl Instance {
     /// Open the package's root view.
     pub(super) fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of_layer(&self.app, &self.root_view) {
-            Ok(target) => target,
-            Err(error) => {
-                tracing::warn!(app = self.app, %error, "the app has no root to open");
-                return;
-            }
-        };
-        match host.open_layer(&self.app, &self.root_view) {
-            Ok(view) => {
+        match host.open_layer_at(&self.app, &self.root_view) {
+            Ok((target, view)) => {
                 self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
                     self.out.push(ToUi::Close);
@@ -84,7 +77,7 @@ impl Instance {
             .is_some_and(|detail| detail.target == *target && with.is_none())
         {
             if let Some(front) = front {
-                self.out.push(ToUi::Front(front));
+                self.out.push(ToUi::Front { front, shows: None });
             }
             return;
         }
@@ -120,7 +113,12 @@ impl Instance {
     /// its type (`on show`) in its own state, so a list opens the item's row where it stands and
     /// the window follows the item to the place it belongs to. What the view does not open in
     /// place — an item of a type it does not list — opens in the detail lane, as it always has.
-    pub(super) fn show_in_window(&mut self, target: &ResourceRef, front: Option<ui::Front>) {
+    pub(super) fn show_in_window(
+        &mut self,
+        target: &ResourceRef,
+        front: Option<ui::Front>,
+        press: u64,
+    ) {
         let shown = self
             .root
             .as_ref()
@@ -132,8 +130,14 @@ impl Instance {
                 }
             });
         if shown {
+            if let Some(root) = self.root.as_mut() {
+                root.in_place = Some(target.clone());
+            }
             if let Some(front) = front {
-                self.out.push(ToUi::Front(front));
+                self.out.push(ToUi::Front {
+                    front,
+                    shows: Some((press, wire::resource(target))),
+                });
             }
             return;
         }
@@ -175,13 +179,10 @@ impl Instance {
         };
         view.lists.clear();
         view.bound.clear();
-        let tree = {
-            let instance = view.view.borrow();
-            convert_with(&host, &*names, &instance, |convert| {
-                convert.node(instance.tree())
-            })
-        };
+        let tree = window_tree(&host, &*names, &view.view);
         view.sent = Some(tree.clone());
+        // The item the window draws its page for, when its view lists it there.
+        view.in_place = in_place_of(view.view.borrow().tree());
         let target = wire::resource(&view.target);
         self.out.push(ToUi::Open {
             lane,
@@ -203,18 +204,21 @@ impl Instance {
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let lists = virtual_lists(view.view.borrow().tree());
+        let lists = virtual_list_paths(view.view.borrow().tree());
         let handle = Rc::clone(&view.view);
-        view.lists
-            .retain(|key, rows| lists.contains(key) && rows.reads(&handle, key));
+        view.lists.retain(|key, rows| {
+            lists.iter().any(|(list, _)| list == key) && rows.reads(&handle, key)
+        });
         let mut sent = Vec::new();
-        for list in lists {
+        for (list, _) in lists {
             if view.lists.contains_key(&list) {
                 continue;
             }
             let mut rows = ListRows::of(&handle, &list);
             let first = 0..FIRST_ROWS.min(rows.len());
-            let requested = rows.request(first);
+            // Which row a list shows open is its list's to say: the host asks for it with the
+            // rows it shows, and the open a view kept arrives with that ask.
+            let requested = rows.request(first, None);
             sent.push(rows_message(
                 &host, &*names, &handle, lane, &list, requested,
             ));
@@ -268,6 +272,9 @@ impl Instance {
                     continue;
                 }
             };
+            // The item its page draws, when it lists the items it shows: a press that selects a
+            // row moves the page, and what is typed into it is that item's.
+            view.in_place = in_place_of(view.view.borrow().tree());
             if patches.is_empty() {
                 changed |= stale;
                 continue;
@@ -286,8 +293,7 @@ impl Instance {
                 } else {
                     let mut structural = rows.apply(&changes.structure);
                     let changed = rows.changed(&changes.rows);
-                    let instance = handle.borrow();
-                    convert_with(&host, &*names, &instance, |convert| {
+                    convert_with(&host, &*names, &handle, |convert, _| {
                         structural.extend(changed.iter().map(|row| ui::RowChange::Changed {
                             row: convert.node(row),
                         }));
@@ -312,20 +318,14 @@ impl Instance {
                 // the clock's text, not the window.
                 let in_place = match (&mut view.sent, &sorted.changed) {
                     (Some(sent), Some(changed)) => {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
+                        convert_with(&host, &*names, &view.view, |convert, instance| {
                             patch_in_place(sent, instance.tree(), changed, convert)
                         })
                     }
                     _ => None,
                 };
                 let patches = in_place.unwrap_or_else(|| {
-                    let tree = {
-                        let instance = view.view.borrow();
-                        convert_with(&host, &*names, &instance, |convert| {
-                            convert.node(instance.tree())
-                        })
-                    };
+                    let tree = window_tree(&host, &*names, &view.view);
                     let mut patches = Vec::new();
                     match &view.sent {
                         Some(sent) => wire::diff(sent, &tree, &mut patches),
@@ -339,9 +339,9 @@ impl Instance {
                 }
             }
             self.out.extend(messages);
-            if sorted.content {
-                self.track_lists(lane);
-            }
+            // A row that changed can hold a list it did not (the document of a row that opened),
+            // and the content one.
+            self.track_lists(lane);
         }
         if changed {
             self.send_bound(Lane::Root);
@@ -420,20 +420,25 @@ impl Instance {
     /// Send the window what each bound control of the view of `lane` (and of the rows it
     /// shows) holds now, where that changed.
     pub(super) fn send_bound(&mut self, lane: Lane) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let names = Rc::clone(&self.names);
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
-        let instance = Rc::clone(&view.view);
-        let instance = instance.borrow();
+        let handle = Rc::clone(&view.view);
         let mut now: Vec<(String, ui::Value)> = Vec::new();
-        bound_values(instance.tree(), &instance, &mut now);
-        for rows in view.lists.values() {
-            for key in rows.shown() {
-                if let Some(row) = instance.find(key) {
-                    bound_values(row, &instance, &mut now);
+        convert_with(&host, &*names, &handle, |convert, instance| {
+            bound_values(instance.tree(), instance, convert, &mut now);
+            for rows in view.lists.values() {
+                for key in rows.shown() {
+                    if let Some(row) = instance.find(key) {
+                        bound_values(row, instance, convert, &mut now);
+                    }
                 }
             }
-        }
+        });
         let mut sent = Vec::new();
         for (key, value) in now {
             if view.bound.get(&key) == Some(&value) {
@@ -448,7 +453,6 @@ impl Instance {
                 acked,
             });
         }
-        drop(instance);
         self.out.extend(sent);
     }
 
@@ -478,13 +482,23 @@ impl Instance {
     /// is applied: the value the app holds is what its next frame draws, and the control shows
     /// it until then only as the person's own touch, which a frame from the app replaces.
     pub(super) fn shown_by_window(&mut self, lane: Lane, key: &str) {
-        let Some(value) = self
-            .view(lane)
-            .and_then(|view| view.borrow().bound_value(key))
-        else {
+        let Some(host) = self.host() else {
             return;
         };
-        let shown = plain(&NoNames).value(&value);
+        let names = Rc::clone(&self.names);
+        let Some(handle) = self.lane(lane).map(|view| Rc::clone(&view.view)) else {
+            return;
+        };
+        let Some(value) = handle.borrow().bound_value(key) else {
+            return;
+        };
+        let mut converted = None;
+        convert_with(&host, &*names, &handle, |convert, _| {
+            converted = Some(convert.value(&value));
+        });
+        let Some(shown) = converted else {
+            return;
+        };
         let Some(view) = self.lane_mut(lane) else {
             return;
         };
@@ -500,4 +514,29 @@ impl Instance {
             acked,
         });
     }
+}
+
+/// The item a tree of `node` says it selected, when a window draws its page for it beside the
+/// list: the resource of its selected row.
+fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
+    use crate::runtime::Value;
+    fn walk(node: &crate::runtime::UiNode, out: &mut Option<crate::runtime::Value>) -> bool {
+        if let Some(Value::List(items)) = node.props.get("selection")
+            && let Some(Value::Ref(chosen)) = items.first()
+        {
+            *out = Some(Value::Ref(chosen.clone()));
+            return true;
+        }
+        node.children.iter().any(|child| walk(child, out))
+    }
+    let mut chosen = None;
+    walk(node, &mut chosen);
+    let Some(Value::Ref(chosen)) = chosen else {
+        return None;
+    };
+    let resource = ui::ResourceRef {
+        id: chosen.target.id_string(),
+        ty: chosen.target.ty.clone(),
+    };
+    wire::runtime_resource(&resource)
 }

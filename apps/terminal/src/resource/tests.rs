@@ -12,7 +12,7 @@ fn feed(app: &mut TestApp<TerminalShell>, bytes: &[u8]) {
 }
 
 fn target_action(target: &SessionTarget) -> Invoke<Terminal> {
-    Terminal::RECORD_TARGET.with(target.encode())
+    Terminal::RECORD_TARGET.with((target.encode(), None::<String>))
 }
 
 #[test]
@@ -83,12 +83,12 @@ fn the_record_takes_valid_facts_only() {
     let mut session = Replica::<Terminal>::new();
     assert!(
         session
-            .apply(Terminal::RECORD_TARGET.with("not a target".to_owned()))
+            .apply(Terminal::RECORD_TARGET.with(("not a target".to_owned(), None::<String>)))
             .is_err()
     );
     assert!(
         session
-            .apply(Terminal::CLAIM_PANE.with("pane".to_owned()))
+            .apply(Terminal::CLAIM_PANE.with(("pane".to_owned(), None::<String>)))
             .is_err()
     );
     assert!(
@@ -116,10 +116,10 @@ fn the_record_takes_valid_facts_only() {
 fn replicas_converge_on_one_pane() {
     let mut ours = Replica::<Terminal>::new();
     let mut theirs = ours.fork();
-    ours.apply(Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+    ours.apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
         .unwrap();
     theirs
-        .apply(Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+        .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
         .unwrap();
     ours.sync_with(&mut theirs).unwrap();
     let pane = ours.state().unwrap().pane_id().to_owned();
@@ -143,7 +143,10 @@ fn a_session_nested_in_another_record_stays_under_its_object() {
         .object(&mut doc, automerge::ObjType::Map)
         .unwrap();
     let pane = uuid::Uuid::new_v4().to_string();
-    let action = Terminal::CLAIM_PANE.with(pane.clone()).build(0).unwrap();
+    let action = Terminal::CLAIM_PANE
+        .with((pane.clone(), None::<String>))
+        .build(0)
+        .unwrap();
     Terminal::apply_under(&action, &mut doc, &panel).unwrap();
     assert_eq!(Terminal::read_under(&doc, &panel).unwrap().pane_id(), pane);
     assert!(
@@ -345,7 +348,7 @@ fn history_reads_a_requested_run_from_the_stored_record() {
     use ui::tilo_resource::Settled;
     let mut session = Replica::<Terminal>::new().as_author("agent:claude-code");
     session
-        .apply(Terminal::CLAIM_PANE.with(uuid::Uuid::new_v4().to_string()))
+        .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
         .unwrap();
     session
         .apply(Terminal::RUN.with("cargo test -p signup".to_owned()))

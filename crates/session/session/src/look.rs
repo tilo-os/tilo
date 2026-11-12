@@ -7,12 +7,12 @@
 //! and kept in the workspace's content store under the address every caller
 //! of the action protocol reads content by. The surface that names the
 //! window never draws it: an invocation from the session's own loop passes
-//! this in ([`tilo_surface_host::Look`]), and one from anywhere else finds
+//! this in ([`tilo_session_core::door::Look`]), and one from anywhere else finds
 //! none and is refused.
 
 use tilo_compositor::Compositor;
 use tilo_compositor::capture::Target;
-use tilo_surface_host::{Look, Shot};
+use tilo_session_core::door::{Look, Shot};
 
 use crate::content::Plane;
 

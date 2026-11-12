@@ -45,7 +45,6 @@ pub mod process_binding;
 pub mod registration_gate;
 #[cfg(unix)]
 pub mod request_rendezvous;
-pub mod retained_replacement;
 pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
@@ -60,7 +59,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 19;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 21;
 
 use std::env;
 use std::io;

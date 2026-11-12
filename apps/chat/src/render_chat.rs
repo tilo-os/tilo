@@ -296,7 +296,7 @@ impl ChatApp {
             if !stream.detail.is_empty() {
                 lines.push(stream.detail.clone());
             }
-            if self.expanded_reasoning.contains(&m.id) && !stream.reasoning.is_empty() {
+            if self.expanded_agent.contains(&m.id) && !stream.reasoning.is_empty() {
                 lines.push(crate::i18n::t("chat-agent-provider-reasoning"));
                 lines.push(stream.reasoning.clone());
             }
@@ -399,7 +399,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         if m.author.starts_with("bot:")
-            || self.agent_authors.contains_key(&m.author)
+            || self.is_agent_author(&m.author)
             || self.is_provider_output(m)
         {
             return;
@@ -455,7 +455,7 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if self.agent_authors.contains_key(&m.author) {
+        } else if self.is_agent_author(&m.author) {
             Author::Agent {
                 name,
                 for_person: None,
@@ -594,6 +594,16 @@ pub(crate) fn typing_line(
 /// same one Messages shows on every line.
 fn clock_label(ts: i64) -> String {
     ConversationClock::local().clock(ts)
+}
+
+/// What a message's header says where its time stands: its time, or that it
+/// is being sent.
+fn time_label(m: &crate::model::Message) -> String {
+    if m.sending {
+        crate::i18n::t("chat-message-sending")
+    } else {
+        clock_label(m.ts)
+    }
 }
 
 /// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
@@ -780,9 +790,36 @@ pub(crate) struct RowM {
     /// field (padded) plus a controls row.
     pub(crate) editing: bool,
     edit_ctrl_h: f64,
+    /// This row was not measured this frame: it stands where a row is estimated to,
+    /// out of view, and is measured when it comes into view.
+    pub(crate) unmeasured: bool,
 }
 
 impl RowM {
+    /// A row the frame did not measure, standing `height` tall where nothing of it
+    /// shows: the timeline's own total is summed from what its rows were measured at,
+    /// and a row out of view is measured when it comes into it.
+    pub(crate) fn unmeasured(id: &str, height: f64) -> Self {
+        Self {
+            idx_id: id.to_owned(),
+            show_header: false,
+            top_gap: height,
+            pad: 0.0,
+            header_h: 0.0,
+            body_h: 0.0,
+            work_h: 0.0,
+            reasoning_h: 0.0,
+            resource_h: 0.0,
+            att_h: 0.0,
+            react_h: 0.0,
+            edited_h: 0.0,
+            thread_h: 0.0,
+            editing: false,
+            edit_ctrl_h: 0.0,
+            unmeasured: true,
+        }
+    }
+
     pub(crate) fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {
@@ -831,11 +868,9 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::agent_work::{AgentWorkLineStyle, AgentWorkPresentation};
+    use super::agent_work::AgentWorkPresentation;
     use super::{RowM, TimelineItem, media_face, media_meta};
-    use crate::model::{
-        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
-    };
+    use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
 
@@ -877,6 +912,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;
@@ -885,9 +921,11 @@ mod tests {
             line("b", start.saturating_add(3_600)),
             line("c", start.saturating_add(4 * 86_400)),
         ];
-        let groups = crate::model::group_messages(&app.messages);
+        let groups = crate::model::group_messages(&app.messages, true);
         let clock = ui::widget::ConversationClock::at(0, start);
-        let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
+        let (items, _) =
+            app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock, (0.0, f64::MAX));
+
         let dividers = items
             .iter()
             .filter(|item| matches!(item, TimelineItem::Divider { .. }))
@@ -946,49 +984,39 @@ mod tests {
     }
 
     #[test]
-    fn agent_work_projection_names_only_recorded_state_rationale_and_dispatches() {
-        let cases = [
-            (AgentWorkState::Taken, "Request accepted"),
-            (
-                AgentWorkState::Waiting {
-                    app: "Calculator".into(),
-                },
-                "Last reported: waiting for app state: Calculator",
-            ),
-            (
-                AgentWorkState::Doing {
-                    did: "Add function".into(),
-                    about: "the revenue curve".into(),
-                },
-                "Latest intent: Add function: the revenue curve",
-            ),
-            (
-                AgentWorkState::Done {
-                    did: "Add function".into(),
-                },
-                "Completed: Add function",
-            ),
-            (AgentWorkState::Refused, "Could not complete this request"),
-        ];
-        for (state, expected) in cases {
-            assert_eq!(
-                AgentWorkPresentation::from(&AgentWork::new(state, 42)).summary,
-                expected
-            );
+    fn agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer() {
+        let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false, false);
+        let doing = AgentWorkState::Doing {
+            did: "Add function".into(),
+            about: "the revenue curve".into(),
+        };
+        for state in [AgentWorkState::Taken, doing] {
+            assert_eq!(working(state).unwrap().summary.as_deref(), Some("Working"));
         }
+        let waiting = AgentWorkState::Waiting {
+            app: "Calculator".into(),
+        };
+        assert_eq!(
+            working(waiting).unwrap().summary.as_deref(),
+            Some("Waiting for Calculator")
+        );
+        assert_eq!(
+            working(AgentWorkState::Refused).unwrap().summary.as_deref(),
+            Some("Could not complete this request")
+        );
+        // A refused run whose reply carries the failure in its own words
+        // says it once: the card adds no second failure.
+        assert_eq!(
+            AgentWorkPresentation::of(&AgentWork::new(AgentWorkState::Refused, 42), false, true),
+            None
+        );
+        // An answer with nothing done is the reply's words alone.
+        let complete = AgentWorkState::ProviderFinished {
+            outcome: crate::agent_stream::AgentFinish::Complete,
+        };
+        assert_eq!(working(complete.clone()), None);
 
-        let work = AgentWork::new(
-            AgentWorkState::Doing {
-                did: "Add function".into(),
-                about: String::new(),
-            },
-            42,
-        )
-        .because(AgentReasoning {
-            route: AgentRoute::Floor,
-            why: "The request matched the app's exported action.".into(),
-        })
-        .with_trace(vec![
+        let steps = vec![
             AgentStep::authored(
                 "calculator.workspace",
                 "Add function",
@@ -1009,25 +1037,26 @@ mod tests {
                 },
                 2,
             ),
-        ]);
-        let presentation = AgentWorkPresentation::from(&work);
-        assert_eq!(presentation.summary, "Latest intent: Add function");
+        ];
+        let lines = [
+            "Requested: Add function",
+            "No change: Add function",
+            "Refused: Set bounds: Outside the granted range",
+        ];
+        // While it works, every dispatched operation shows as it happens.
+        let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
+        let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
+        assert_eq!(shown.did, None);
+        assert_eq!(shown.steps, lines);
+        // Done, it is one line that opens the list.
+        let done = AgentWork::new(complete, 42).with_trace(steps);
+        let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
+        assert_eq!(folded.summary, None);
+        assert_eq!(folded.did.as_deref(), Some("Did 3 things"));
+        assert!(folded.steps.is_empty());
         assert_eq!(
-            presentation.details[0].text,
-            "Rule match: The request matched the app's exported action."
-        );
-        assert_eq!(presentation.details[0].style, AgentWorkLineStyle::Rationale);
-        assert_eq!(presentation.details[1].text, "Requested: Add function");
-        assert_eq!(presentation.details[2].text, "No change: Add function");
-        assert_eq!(
-            presentation.details[3].text,
-            "Refused: Set bounds: Outside the granted range"
-        );
-        assert!(
-            presentation
-                .details
-                .iter()
-                .all(|line| !line.text.to_ascii_lowercase().contains("chain of thought"))
+            AgentWorkPresentation::of(&done, true, false).unwrap().steps,
+            lines
         );
     }
 
@@ -1050,11 +1079,10 @@ mod tests {
             42,
         )
         .with_trace(steps);
-        let presentation = AgentWorkPresentation::from(&work);
-        assert_eq!(presentation.details.len(), 7);
-        for (index, line) in presentation.details.iter().enumerate() {
-            assert_eq!(line.text, format!("Applied: Action {index}"));
-            assert_eq!(line.style, AgentWorkLineStyle::Step);
+        let presentation = AgentWorkPresentation::of(&work, true, false).unwrap();
+        assert_eq!(presentation.steps.len(), 7);
+        for (index, line) in presentation.steps.iter().enumerate() {
+            assert_eq!(*line, format!("Applied: Action {index}"));
         }
 
         let row = RowM {
@@ -1073,6 +1101,7 @@ mod tests {
             thread_h: 0.0,
             editing: false,
             edit_ctrl_h: 0.0,
+            unmeasured: false,
         };
         assert_eq!(
             row.height(),

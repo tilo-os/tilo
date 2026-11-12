@@ -236,6 +236,7 @@ pub enum MusicEffect {
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
     #[effect(attended, job)]
+    #[effect(label = "music-connect-spotify")]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
@@ -329,9 +330,11 @@ pub enum MusicEffect {
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
     #[effect(job)]
+    #[effect(label = "music-disconnect-spotify")]
     DisconnectSpotify,
     /// Browse Spotify
     #[effect(job)]
+    #[effect(label = "music-browse-spotify")]
     BrowseSpotify,
     /// Browse `YouTube` Music
     #[effect(job)]
@@ -349,6 +352,7 @@ pub enum MusicEffect {
     ///
     /// Plays a local audio file the person chooses on this device.
     #[effect(attended, job, returns)]
+    #[effect(label = "music-open-audio-file")]
     OpenFile,
     /// Open
     #[effect(view, row)]
@@ -372,6 +376,7 @@ pub enum MusicEffect {
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
     #[effect(row, job, returns)]
+    #[effect(label = "music-recommendations-play")]
     Play {
         track: String,
         queued: Option<usize>,
@@ -487,12 +492,7 @@ pub fn portable_cover_value(value: &str) -> bool {
         .is_ok_and(|bytes| {
             bytes.len() <= MAX_PORTABLE_COVER_BYTES
                 && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                && image::ImageReader::with_format(
-                    std::io::Cursor::new(&bytes),
-                    image::ImageFormat::Png,
-                )
-                .into_dimensions()
-                .is_ok_and(|(width, height)| {
+                && ui::image_codec::dimensions(&bytes).is_some_and(|(width, height)| {
                     width > 0
                         && height > 0
                         && width <= MAX_PORTABLE_COVER_EDGE
@@ -501,7 +501,11 @@ pub fn portable_cover_value(value: &str) -> bool {
                 // Header dimensions cap the decode allocation. Fully decode
                 // afterwards so a PNG signature with malformed/truncated data
                 // never becomes a durable cover peers cannot render.
-                && image::load_from_memory(&bytes).is_ok()
+                && ui::png::decode_rgba8_within(
+                    &bytes,
+                    u64::from(MAX_PORTABLE_COVER_EDGE).saturating_mul(u64::from(MAX_PORTABLE_COVER_EDGE)),
+                )
+                .is_ok()
         })
 }
 
@@ -660,7 +664,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
             .operation(if id.starts_with("spotify:") {
                 MusicEffect::KeepOffline { tracks }.bound().unavailable(
                     "spotify_offline_unsupported",
-                    "Spotify protected audio cannot be downloaded through Tilo",
+                    crate::i18n::CATALOG.t("music-spotify-protected"),
                 )
             } else if self.device.offline(id) {
                 MusicEffect::RemoveOffline { tracks }.bound()
@@ -841,13 +845,16 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         } else {
             move_up.unavailable(
                 "first_queue_item",
-                "This item is already first in the queue",
+                crate::i18n::CATALOG.t("music-already-first"),
             )
         })
         .operation(if index + 1 < total {
             move_down
         } else {
-            move_down.unavailable("last_queue_item", "This item is already last in the queue")
+            move_down.unavailable(
+                "last_queue_item",
+                crate::i18n::CATALOG.t("music-already-last"),
+            )
         });
         if !artist.is_empty() {
             row = row.presentation(tilo_actions::ResourcePresentation {
@@ -899,10 +906,7 @@ fn like_operation(track: &str, liked: bool) -> ActionSpec {
 }
 
 /// `spec` refusing with `unavailable`, when there is a reason it cannot act.
-fn with_unavailable(
-    spec: ActionSpec,
-    unavailable: Option<(&'static str, &'static str)>,
-) -> ActionSpec {
+fn with_unavailable(spec: ActionSpec, unavailable: Option<(&'static str, String)>) -> ActionSpec {
     match unavailable {
         Some((code, reason)) => spec.unavailable(code, reason),
         None => spec,
@@ -924,41 +928,47 @@ fn transport(
     } else {
         play.unavailable(
             "nothing_playing",
-            "Choose a track before using playback controls",
+            crate::i18n::CATALOG.t("music-choose-track-playback"),
         )
     });
     row = row
         .effect(&MusicEffect::ToggleMute)
         .operation(bound(
             &MusicEffect::ToggleShuffle,
-            if playback.shuffle {
-                "Turn shuffle off"
+            &crate::i18n::CATALOG.t(if playback.shuffle {
+                "music-shuffle-off"
             } else {
-                "Turn shuffle on"
-            },
+                "music-shuffle-on"
+            }),
         ))
         .effect(&MusicEffect::CycleRepeat);
     let like = MusicEffect::ToggleLikePlaying.bound();
     row = row.operation(if playback.current.is_some() {
         like
     } else {
-        like.unavailable("nothing_playing", "Choose a track to like")
+        like.unavailable(
+            "nothing_playing",
+            crate::i18n::CATALOG.t("music-choose-track-like"),
+        )
     });
-    let unavailable = if playback.current.is_none() {
+    let unavailable: Option<(&str, String)> = if playback.current.is_none() {
         Some((
             "nothing_playing",
-            "Choose a track before using playback controls",
+            crate::i18n::CATALOG.t("music-choose-track-playback"),
         ))
     } else if playback.queue.is_empty() {
-        Some(("empty_queue", "There are no queued tracks"))
+        Some(("empty_queue", crate::i18n::CATALOG.t("music-empty-queue")))
     } else {
         None
     };
     // Next steps through this device's own shuffle order while shuffle is
     // on, as the transport's button does; the order stays device-local and
     // never reaches the shared library.
-    row.operation(with_unavailable(MusicEffect::Previous.bound(), unavailable))
-        .operation(with_unavailable(MusicEffect::Next.bound(), unavailable))
+    row.operation(with_unavailable(
+        MusicEffect::Previous.bound(),
+        unavailable.clone(),
+    ))
+    .operation(with_unavailable(MusicEffect::Next.bound(), unavailable))
 }
 
 fn open_queue() -> ActionSpec {
@@ -1362,8 +1372,8 @@ mod tests {
                 .iter()
                 .map(|f| f.action.label.as_str())
                 .collect();
-            assert!(flat.contains(&"Create a new playlist"), "{flat:?}");
-            assert!(flat.contains(&"Delete a playlist"), "{flat:?}");
+            assert!(flat.contains(&"Create playlist"), "{flat:?}");
+            assert!(flat.contains(&"Delete playlist"), "{flat:?}");
             assert!(flat.contains(&"Open in playlist"), "{flat:?}");
         }
 

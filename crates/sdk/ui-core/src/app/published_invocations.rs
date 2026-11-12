@@ -1,6 +1,5 @@
 use crate::invocation_scope::{
-    PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
-    ResourceInvocationScope,
+    PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
 };
 
 impl super::App {
@@ -51,13 +50,15 @@ impl super::App {
         };
         scope.map(Some).map_err(tilo_actions::DoorError::Failed)
     }
+    #[cfg(test)]
     pub(crate) fn require_published_invocation_authorizer(&mut self) {
         self.actions.published_invocations.required = true;
     }
 
+    #[cfg(test)]
     pub(crate) fn install_published_invocation_authorizer(
         &mut self,
-        authorizer: PublishedInvocationAuthorizer,
+        authorizer: crate::invocation_scope::PublishedInvocationAuthorizer,
     ) -> Result<(), String> {
         let runtime = &mut self.actions.published_invocations;
         if !runtime.required || runtime.authorizer.is_some() || runtime.failure.is_some() {

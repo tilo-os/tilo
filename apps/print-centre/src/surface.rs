@@ -7,6 +7,8 @@ use ui::framework::{
     Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow,
     Publishes, RunMode, ViewCx,
 };
+use ui::i18n::ArgValue;
+use ui::image_codec::DecodedImage;
 use ui::widget::Element;
 
 use ui::widget::{AppModel, ModelPath};
@@ -200,15 +202,19 @@ struct ScannedPage {
 }
 
 impl ScannedPage {
+    /// The page's pixels, as the toolkit's codec works on them.
+    fn pixels(&self) -> Result<DecodedImage, String> {
+        DecodedImage::from_rgba(self.width, self.height, self.rgba.to_vec())
+            .ok_or_else(|| "scanned page pixels were incomplete".to_string())
+    }
+
     fn rotate_clockwise(&mut self) -> Result<(), String> {
-        let source = image::RgbaImage::from_raw(self.width, self.height, self.rgba.to_vec())
-            .ok_or_else(|| "scanned page pixels were incomplete".to_string())?;
-        let rotated = image::imageops::rotate90(&source);
-        let png = ui::png::encode_rgba8(rotated.width(), rotated.height(), rotated.as_raw())
+        let rotated = self.pixels()?.turned(1);
+        let png = ui::png::encode_rgba8(rotated.width, rotated.height, &rotated.rgba)
             .map_err(|error| format!("could not update the scanned page: {error}"))?;
-        self.width = rotated.width();
-        self.height = rotated.height();
-        self.rgba = Arc::from(rotated.into_raw());
+        self.width = rotated.width;
+        self.height = rotated.height;
+        self.rgba = Arc::from(rotated.rgba);
         self.png = Arc::from(png);
         self.recognized_text = None;
         self.ocr_note = "Text recognition needs updating after rotation.".into();
@@ -235,8 +241,7 @@ impl ScannedPage {
         {
             return Err("crop selection was invalid".into());
         }
-        let source = image::RgbaImage::from_raw(self.width, self.height, self.rgba.to_vec())
-            .ok_or_else(|| "scanned page pixels were incomplete".to_string())?;
+        let source = self.pixels()?;
         let width = f64::from(self.width);
         let height = f64::from(self.height);
         let x = (crop.left.clamp(0.0, 0.95) * width).floor() as u32;
@@ -251,12 +256,14 @@ impl ScannedPage {
             .saturating_sub(y)
             .max(1)
             .min(self.height.saturating_sub(y));
-        let cropped = image::imageops::crop_imm(&source, x, y, crop_width, crop_height).to_image();
-        let png = ui::png::encode_rgba8(cropped.width(), cropped.height(), cropped.as_raw())
+        let cropped = source
+            .cropped(x, y, crop_width, crop_height)
+            .ok_or_else(|| "crop selection was invalid".to_string())?;
+        let png = ui::png::encode_rgba8(cropped.width, cropped.height, &cropped.rgba)
             .map_err(|error| format!("could not update the scanned page: {error}"))?;
-        self.width = cropped.width();
-        self.height = cropped.height();
-        self.rgba = Arc::from(cropped.into_raw());
+        self.width = cropped.width;
+        self.height = cropped.height;
+        self.rgba = Arc::from(cropped.rgba);
         self.png = Arc::from(png);
         self.recognized_text = None;
         self.ocr_note = "Text recognition needs updating after cropping.".into();
@@ -401,11 +408,17 @@ fn display_name(raw: &str) -> String {
 }
 fn job_title(job: &os_actions::printing::PrintJob) -> String {
     job.title.clone().unwrap_or_else(|| {
-        format!(
-            "Document {}",
-            job.id
-                .rsplit_once('-')
-                .map_or(job.id.as_str(), |(_, id)| id)
+        crate::locales::CATALOG.t_args(
+            "print-job-document",
+            &[(
+                "number",
+                ArgValue::Text(
+                    job.id
+                        .rsplit_once('-')
+                        .map_or(job.id.as_str(), |(_, id)| id)
+                        .to_owned(),
+                ),
+            )],
         )
     })
 }
@@ -558,15 +571,15 @@ fn discovered_row(printer: &os_actions::printing::DiscoveredPrinter) -> LiveRow 
         printer: printer.uri.clone(),
     })
 }
-fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> &'static str {
+fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> String {
     use os_actions::printing::QueueState;
-    match queue.state {
-        QueueState::Ready if queue.accepting_jobs => "Ready",
-        QueueState::Ready => "Not accepting new documents",
-        QueueState::Printing => "Printing",
-        QueueState::Paused => "Paused",
-        QueueState::Offline => "Cannot reach this printer",
-    }
+    crate::locales::CATALOG.t(match queue.state {
+        QueueState::Ready if queue.accepting_jobs => "print-centre-queue-ready",
+        QueueState::Ready => "print-centre-queue-not-accepting",
+        QueueState::Printing => "print-centre-queue-printing",
+        QueueState::Paused => "print-centre-queue-paused",
+        QueueState::Offline => "print-centre-queue-unreachable",
+    })
 }
 fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)> {
     let percent = queue
@@ -578,23 +591,24 @@ fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)>
         .min()?;
     Some((f32::from(percent) / 100.0, percent))
 }
-fn friendly_reason(reason: &str) -> &'static str {
+fn friendly_reason(reason: &str) -> String {
     let normalized = reason.to_ascii_lowercase();
-    if normalized.contains("media-empty") || normalized.contains("out-of-paper") {
-        "Add paper to continue."
+    let key = if normalized.contains("media-empty") || normalized.contains("out-of-paper") {
+        "print-centre-reason-out-of-paper"
     } else if normalized.contains("jam") {
-        "Clear the paper jam, then resume the printer."
+        "print-centre-reason-jam"
     } else if normalized.contains("cover-open") || normalized.contains("door-open") {
-        "Close the printer cover."
+        "print-centre-reason-cover-open"
     } else if normalized.contains("toner-low") || normalized.contains("marker-supply-low") {
-        "A supply is running low; printing can usually continue for now."
+        "print-centre-reason-supply-low"
     } else if normalized.contains("toner-empty") || normalized.contains("marker-supply-empty") {
-        "Replace the empty supply to continue."
+        "print-centre-reason-supply-empty"
     } else if normalized.contains("offline") || normalized.contains("not-connected") {
-        "Check that the printer is awake and connected."
+        "print-centre-reason-offline"
     } else {
-        "The printer reported a condition that may need attention."
-    }
+        "print-centre-reason-unknown"
+    };
+    crate::locales::CATALOG.t(key)
 }
 fn demo_snapshot() -> Snapshot {
     use os_actions::printing::{
@@ -661,22 +675,22 @@ fn demo_snapshot() -> Snapshot {
 
 fn demo_print_preview() -> PrintPreview {
     let (width, height) = (320, 420);
-    let mut page = image::RgbaImage::from_pixel(width, height, image::Rgba([248, 248, 246, 255]));
+    let mut page = DecodedImage::filled(width, height, [248, 248, 246, 255]);
     for y in 28..88 {
         for x in 24..296 {
-            page.put_pixel(x, y, image::Rgba([44, 91, 162, 255]));
+            page.set_pixel(x, y, [44, 91, 162, 255]);
         }
     }
     for (index, line_width) in [238, 260, 214, 248, 176, 226].into_iter().enumerate() {
         let y = 126_u32.saturating_add(u32::try_from(index).unwrap_or(0).saturating_mul(38));
         for row in y..y.saturating_add(7) {
             for x in 28..28_u32.saturating_add(line_width) {
-                page.put_pixel(x, row, image::Rgba([54, 59, 68, 255]));
+                page.set_pixel(x, row, [54, 59, 68, 255]);
             }
         }
     }
     PrintPreview::Ready {
-        rgba: Arc::from(page.into_raw()),
+        rgba: Arc::from(page.rgba),
         width,
         height,
         // The scenario says how many pages the document stands for.
@@ -2201,6 +2215,16 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     notice::serial()
 }
 
+/// The page `bytes` a scanner wrote, decoded by the toolkit's codec: the
+/// browser's own decoder on the web. This runs in the scan job, off the
+/// frame, which is where decoding at once is allowed.
+fn scanned_page_image(bytes: &[u8]) -> Result<DecodedImage, String> {
+    ui::rt::app()
+        .block_on(ui::image_codec::decode(bytes, None))
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("scanner returned an invalid image: {error}"))
+}
+
 /// A page the scanner returned as `png`, with its text recognized in
 /// `ocr_code` (named `ocr_language`).
 fn decode_scanned_page(
@@ -2208,11 +2232,8 @@ fn decode_scanned_page(
     ocr_code: &str,
     ocr_language: &str,
 ) -> Result<ScannedPage, String> {
-    let decoded = image::load_from_memory(&png)
-        .map_err(|error| format!("scanner returned an invalid image: {error}"))?;
-    let width = decoded.width();
-    let height = decoded.height();
-    let rgba: Arc<[u8]> = Arc::from(decoded.to_rgba8().into_raw());
+    let decoded = scanned_page_image(&png)?;
+    let (width, height) = (decoded.width, decoded.height);
     let (recognized_text, ocr_note) = match tilo_ocr::recognize(&decoded, ocr_code) {
         Ok(document) if document.words.is_empty() => {
             (None, "No text was found on this page.".into())
@@ -2235,7 +2256,7 @@ fn decode_scanned_page(
     };
     Ok(ScannedPage {
         png: Arc::from(png),
-        rgba,
+        rgba: Arc::from(decoded.rgba),
         width,
         height,
         recognized_text,
@@ -2249,15 +2270,16 @@ fn decode_scanned_page(
 /// `page`'s text, recognized again in the language it was scanned in, with
 /// a note on what was found.
 fn recognize_page(page: &ScannedPage) -> Result<(Option<String>, String), String> {
-    let rgba = image::RgbaImage::from_raw(page.width, page.height, page.rgba.to_vec())
-        .ok_or_else(|| "The scanned page pixels were incomplete.".to_string())?;
+    let rgba = page
+        .pixels()
+        .map_err(|_| "The scanned page pixels were incomplete.".to_string())?;
     let code = match page.ocr_language.as_str() {
         "German" => "deu",
         "French" => "fra",
         "Spanish" => "spa",
         _ => "eng",
     };
-    tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(rgba), code)
+    tilo_ocr::recognize(&rgba, code)
         .map(|document| {
             let count = document.words.len();
             let text = document.plain_text();

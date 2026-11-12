@@ -1,11 +1,7 @@
-//! Desktop notifications: the model, the live banners and retained history,
-//! the banner stack and the notification centre, shared by every host.
-//!
-//! A host owns a [`NotificationLog`] and answers the effects only it can
-//! perform (telling a sender its notification closed, routing an action back
-//! to another device, handing a notification to an agent) through
-//! [`NotificationHost`]. The native desktop feeds the log from the
-//! freedesktop notification service; the browser feeds it its own notices.
+//! Desktop notifications: the model, the live banners, the retained history and the centre, shared
+//! by every host. A host owns a [`NotificationLog`] and answers the effects only it can perform
+//! (telling a sender it closed, routing an action to another device) through [`NotificationHost`]:
+//! the native desktop feeds the log from the notification service, the browser its own notices.
 
 use std::cell::Ref;
 
@@ -33,11 +29,11 @@ pub use model::INLINE_REPLY;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use model::ScheduledNotificationTarget;
 pub use model::{
-    Addressed, ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
+    ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
     NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationPerson, NotificationSeverity,
     PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
 };
-pub use persistence::{decode_history, encode_history};
+pub(crate) use persistence::{decode_history, encode_history};
 pub use stack::{Banner, BannerAsk, BannerFeed, CORNER_INSET, NotificationStack, transient_slot};
 
 /// What the banner stack and the notification centre need from the desktop that shows them. Reads

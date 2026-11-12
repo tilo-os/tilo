@@ -396,7 +396,7 @@ impl Tube {
                         t_args(
                             "tube-notice-skipped-segment",
                             &[
-                                arg("segment", s.category.label()),
+                                arg("segment", crate::i18n::t(s.category.message())),
                                 arg("start", crate::util::clock(s.start)),
                                 arg("end", crate::util::clock(s.end)),
                             ],

@@ -19,6 +19,7 @@ ignored = ["getrandom", "getrandom03"]
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Transport hints and invite grants of the workspace join contract.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
+collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-client = { path = "../tilo-relay-client", default-features = false }
@@ -30,7 +31,6 @@ serde_bytes.workspace = true
 # insertion-ordered JSON maps on every target, wasm32 included.
 serde_json = { workspace = true, features = ["preserve_order"] }
 postcard = { workspace = true, features = ["use-std"] }
-ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 blake3.workspace = true
 uuid.workspace = true
 thiserror.workspace = true

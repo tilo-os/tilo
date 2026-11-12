@@ -20,14 +20,6 @@ enum Priority {
     urgent (icon: .triangle_alert, tone: .danger)
 }
 
-/// What the place a task's row stands in already says, and the row therefore leaves out.
-enum RowPlace {
-    /// The day it is grouped under, as a list of a day is.
-    day
-    /// Its project, as a project's list is of one.
-    project
-}
-
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
     title: Text
@@ -121,7 +113,7 @@ primary action new_task(
 
 /// Starts a project.
 action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New project") {
-    tasks.projects.insert(Project(name: "New project"))
+    tasks.projects.insert(Project(name: say("New project")))
 }
 
 /// Checks a task off with every task under it, or opens it again with the tasks it is under.
@@ -383,7 +375,7 @@ destructive action remove_project(tasks: Tasks, p: Project) (
 
 /// Adds a section at the end of a project's board.
 action new_section(p: Project) -> Section (icon: .plus, label: "New section") {
-    tasks.sections.insert(Section(name: "New section", project: p))
+    tasks.sections.insert(Section(name: say("New section"), project: p))
 }
 
 /// Renames a section.
@@ -466,9 +458,11 @@ fn folded(items: List<Task>, t: Task) -> Bool {
     finished(items, t) and items.ancestors(t, .parent).all(a -> finished(items, a))
 }
 
-/// How many of a task's subtasks are done ("1/3"); none before the whole workspace is read.
-fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
-    let mine = kids.filter(x -> x.parent == t)
+/// How many of a task's subtasks are done ("1/3"), wherever they stand: its own column of the
+/// index, so a change to any other task leaves it as it was. None before the whole workspace is
+/// read.
+fn subtask_count(t: Task) -> Option<Text> {
+    let mine = tasks.items.filter(x -> x.parent == t)
     if let total = mine.counted() {
         if not mine.is_empty() { "{mine.count(x -> x.done)}/{total}" }
     }
@@ -508,17 +502,6 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     }
 }
 
-/// The tasks a list shows, with the one held open where it stands until it is closed.
-fn holding(listed: List<Task>, opened: Option<Task>) -> List<Task> {
-    if let o = opened {
-        if listed.contains(o) {
-            listed
-        } else {
-            tasks.items.filter(x -> x == o or listed.contains(x))
-        }
-    } else { listed }
-}
-
 /// The place a task stands in: its project's, or the first of `side` that holds it, else Inbox.
 fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
     if let p = x.project {
@@ -532,11 +515,14 @@ fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
 view home(t: Tasks) {
     state place: Filter<Task> = Task.today
     state opened: Option<Task> = .none
+    // What the bar's search holds: it narrows the place's tasks beside the place chosen.
+    state searched: Text = ""
     on show(x: Task): set(place, place_of(places(workspace.members.len() > 1), x))
         .then(set(opened, x))
     let side = places(workspace.members.len() > 1)
     let chosen = side.find(f -> f == place)
-    let found = holding(t.items.matching(place), opened)
+    let listed = t.items.matching(place)
+    let found = if searched.is_empty() { listed } else { listed.matching(searched) }
     let project = t.projects.find(p -> place == Task.project(p))
     // A place of days groups by day and a project's list folds finished work under its foot.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
@@ -545,8 +531,6 @@ view home(t: Tasks) {
     let in_today = place == Task.today
     // Due soonest first, Done newest finished first, a project's list with finished work last.
     let ordered = found.sort_by(.due)
-    // The tasks that name a parent, read once: a row counts its own under them.
-    let kids = found.filter(x -> x.parent != .none)
     let shown = if done_place {
         found.sort_by(x -> changed(x, .done)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
@@ -571,6 +555,7 @@ view home(t: Tasks) {
         count: header_count,
         actions: [new_task, clear_done],
     ) {
+        on search(q: Text): set(searched, q)
         sidebar: {
             ui.NavList(selected: place) {
                 for f in side {
@@ -592,15 +577,16 @@ view home(t: Tasks) {
                 }
             }
         }
-        // The place's tasks at the readable measure, on the page's own scroller: a task opens
-        // where it stands under its row, and in front of the list in a window too narrow to
-        // hold one beside the other.
+        // The place's tasks: the list is the column's own scroller, so the window lays out the
+        // rows it shows whatever the workspace holds, and a task opens where it stands under its
+        // row, in front of the list in a window too narrow to hold one beside the other. The
+        // entry that adds to them is docked at the window's foot.
         content: {
             ui.Docked {
                 foot: {
                     stack {
                         if all_done {
-                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
+                            task_list(shown, by_day, done_place, folds, opened, project)
                         }
                         // A task typed in Today that names no day is due today, so it stands
                         // where it was typed.
@@ -610,14 +596,12 @@ view home(t: Tasks) {
                 }
                 if all_done {
                     ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
-                } else if shown.is_empty() {
+                } else if shown.is_empty() and opened == .none {
+                    // A task open in the list stands in it after it leaves the place, so the
+                    // list stays while one is open.
                     ui.EmptyState("No tasks here", icon: .list_checks)
                 } else {
-                    ui.Scroll {
-                        page {
-                            task_list(shown, kids, by_day, done_place, folds, opened, .day)
-                        }
-                    }
+                    task_list(shown, by_day, done_place, folds, opened, project)
                 }
             }
         }
@@ -627,12 +611,11 @@ view home(t: Tasks) {
 /// The tasks of a place as a list, branches nested under their tasks, finished work under the foot.
 view task_list(
     items: List<Task>,
-    kids: List<Task>,
     by_day: Bool,
     done_place: Bool,
     folds: Bool,
     opened: State<Option<Task>>,
-    place: RowPlace,
+    project: Option<Project>,
 ) {
     std.list(
         items,
@@ -640,7 +623,6 @@ view task_list(
         tree: true,
         ungrouped: if by_day { phrase("tilolang-no-date") },
         tail_title: if folds { phrase("tilolang-done") },
-        in_column: false,
     ) { (x, at) ->
         let heading = task_day(x, by_day, done_place)
         let tail = folds and folded(items, x)
@@ -651,7 +633,7 @@ view task_list(
                 p
             }
         }
-        task_item(x, at, place, heading, done_place, tail, above, subtask_count(kids, x))
+        task_item(x, at, project, heading, done_place, tail, above, subtask_count(x))
     }
 }
 
@@ -659,7 +641,7 @@ view task_list(
 view task_item(
     t: Task,
     at: Option<Principal>,
-    place: RowPlace,
+    project: Option<Project>,
     group: Option<Date>,
     group_done: Bool,
     tail: Bool,
@@ -671,6 +653,7 @@ view task_item(
         presence: at,
         group: group,
         group_done: group_done,
+        done: t.done,
         tail: tail,
         above: above,
         parent: t.parent,
@@ -685,7 +668,8 @@ view task_item(
             remove,
         ],
     ) {
-        task_row(t, place, t.parent)
+        // The row leaves out the project the window is of, and the day its group is headed by.
+        task_row(t, project, group != .none, t.parent)
         detail: {
             task_body(t)
         }
@@ -701,14 +685,12 @@ view task_item(
 view project_list(p: Project) {
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
-    let shown = tasks.items.filter(t -> t.project == p)
-    let kids = shown.filter(x -> x.parent != .none)
-    let listed = holding(shown, opened)
+    let listed = tasks.items.filter(t -> t.project == p)
     ui.NavShell(content_kind: .list, title: p.name) {
         content: {
-            // The project's tasks on the page's own scroller, the entry that adds to it docked
-            // at the window's foot: a task opens where it stands under its row, in front of
-            // the list where the window has not the room.
+            // The project's tasks as the column's own scroller, the entry that adds to them
+            // docked at the window's foot: a task opens where it stands under its row, in front
+            // of the list where the window has not the room.
             ui.Docked {
                 foot: {
                     stack {
@@ -718,11 +700,7 @@ view project_list(p: Project) {
                 if listed.is_empty() {
                     ui.EmptyState("No tasks yet", icon: .folder)
                 } else {
-                    ui.Scroll {
-                        page {
-                            task_list(listed, kids, false, false, false, opened, .project)
-                        }
-                    }
+                    task_list(listed, false, false, false, opened, .some(p))
                 }
             }
         }
@@ -743,7 +721,7 @@ view project_board(p: Project) {
                         std.add_entry("New task", new_task(tasks, p: p))
                     }
                     for t in loose {
-                        task_card(t, sections)
+                        task_card(t, p, sections)
                     }
                 }
                 for s in sections {
@@ -754,7 +732,7 @@ view project_board(p: Project) {
                             std.add_entry("New task", new_task(tasks, p: p, s: s))
                         }
                         for t in cards {
-                            task_card(t, sections)
+                            task_card(t, p, sections)
                         }
                     }
                 }
@@ -764,7 +742,7 @@ view project_board(p: Project) {
 }
 
 /// A task on a board: its row, opening in a window of its own, with its lane moves in its menu.
-view task_card(t: Task, sections: List<Section>) {
+view task_card(t: Task, p: Project, sections: List<Section>) {
     ui.BoardCard(t, actions: [check(primary: true), schedule(group: "Plan"), assign, remove]) {
         on activate: open(t)
         menu: {
@@ -781,19 +759,21 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
         }
-        task_row(t, .project, .none)
+        task_row(t, .some(p), false, .none)
     }
 }
 
-/// One task as a row, leaving out what the list and the row over it already say.
-view task_row(t: Task, place: RowPlace, under: Option<Task>) {
-    let project = if place != .project { t.project?.name }
-    let due = if place != .day { own_due(t, under) }
+/// One task as a row, leaving out what the window and the row over it already say: the project
+/// the window is of (`none` for a place that gathers the tasks of every project), and the day
+/// the row's group is headed by.
+view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>) {
+    let place = if t.project != project { t.project?.name }
+    let due: Option<Date> = if day { .none } else { own_due(t, under) }
     row(
         t.title,
         checkbox: t.done,
         check: check(t),
-        secondary: project,
+        secondary: place,
         note: proposal_note(t),
         meta: due,
         mark: t.priority,
@@ -834,69 +814,78 @@ view task_page(t: Task) {
 /// A task where it stands: opened in the list it is an item of, or as a page of its own.
 template view task_body(t: Task) {
     state step: Text
-    stack(gap: .related) {
-        row(gap: .related, align: .start) {
-            ui.Checkbox(bind: t.done) {
-                on check: check(t)
-            }
-            ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
-        }
-        stack(lead: 1) {
-            std.origin(t)
-            ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
-        }
-    }
-    std.body() {
-        std.suggestions(t)
-        facts(t) {
-            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                    on choose: unfile(t)
+    // The task's head — what it is and what was written of it — and the groups under it: the
+    // page's own blocks, a group gutter apart.
+    stack(gap: .group) {
+        stack(gap: .related) {
+            row(gap: .related, align: .start) {
+                ui.Checkbox(bind: t.done) {
+                    on check: check(t)
                 }
-                for p in tasks.projects {
-                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                        on choose: file(t, p)
+                ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+            }
+            stack(lead: 1) {
+                std.origin(t)
+                ui.BlockEditor(bind: t.notes, placeholder: "Anything worth remembering about it.")
+            }
+        }
+        std.body() {
+            std.suggestions(t)
+            facts(t) {
+                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                        on choose: unfile(t)
+                    }
+                    for p in tasks.projects {
+                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                            on choose: file(t, p)
+                        }
+                    }
+                }
+                ui.MenuButton(
+                    if t.remind == .none { "Remind" } else { "Reminder set" },
+                    icon: .bell,
+                ) {
+                    ui.MenuItem("Remind me…", icon: .bell) {
+                        on choose: remind_at(t)
+                    }
+                    ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
+                        on choose: remind_clear(t)
                     }
                 }
             }
-            ui.MenuButton(if t.remind == .none { "Remind" } else { "Reminder set" }, icon: .bell) {
-                ui.MenuItem("Remind me…", icon: .bell) {
-                    on choose: remind_at(t)
+            section("Subtasks") {
+                // The walk over the tasks under this one is made only where there is one.
+                if not tasks.items.filter(x -> x.parent == t).is_empty() {
+                    let kids = tasks.items.descendants(t, .parent)
+                    std.outline(
+                        "Subtasks",
+                        kids,
+                        x -> x.parent,
+                        x -> x.title,
+                        "No subtasks yet",
+                        (moved, parent, before) -> move_to(
+                            tasks,
+                            moved,
+                            parent,
+                            before,
+                        ),
+                        x -> check(x),
+                        progress: x -> subtask_count(x),
+                        fill: false,
+                    ) { (x, under) ->
+                        task_outline_row(x, t.project, under)
+                    }
                 }
-                ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
-                    on choose: remind_clear(t)
+                ui.TextInput(bind: step, placeholder: "Add a subtask") {
+                    on submit: add_subtask(tasks, t, step).then(set(step, ""))
                 }
+            }
+            std.after_body {
+                std.linked(t, without: discussion.said_about(t))
+                discussion.thread(t)
+                std.history(t)
             }
         }
-        section("Subtasks") {
-            // The walk over the tasks under this one is made only where there is one.
-            if not tasks.items.filter(x -> x.parent == t).is_empty() {
-                let kids = tasks.items.descendants(t, .parent)
-                std.outline(
-                    "Subtasks",
-                    kids,
-                    x -> x.parent,
-                    x -> x.title,
-                    "No subtasks yet",
-                    (moved, parent, before) -> move_to(
-                        tasks,
-                        moved,
-                        parent,
-                        before,
-                    ),
-                    x -> check(x),
-                    progress: x -> subtask_count(kids, x),
-                    fill: false,
-                ) { (x, under) ->
-                    task_outline_row(x, t.project, under)
-                }
-            }
-            ui.TextInput(bind: step, placeholder: "Add a subtask") {
-                on submit: add_subtask(tasks, t, step).then(set(step, ""))
-            }
-        }
-        std.linked(t, without: discussion.said_about(t))
-        discussion.thread(t)
-        std.history(t)
     }
 }

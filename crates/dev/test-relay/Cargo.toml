@@ -1,0 +1,36 @@
+[package]
+name = "test-relay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A relay host on this machine's loopback and fresh device keys for tests: no test reaches a relay or directory out on the internet, and two runs side by side are never one node"
+
+# Test support only: depend on this from [dev-dependencies], never from a
+# production dependency table.
+
+[dependencies]
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+settings-store = { path = "../../system/settings-store" }
+tilo-workspace-join = { path = "../../collab/workspace-join" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tempfile.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+ed25519-dalek.workspace = true
+iroh.workspace = true
+# The QUIC address discovery service, and its self-signed certificate, as iroh-relay serves them.
+iroh-relay = { version = "1.0.3", features = ["server", "test-utils"] }
+tilo-net = { path = "../../platform/tilo-net" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

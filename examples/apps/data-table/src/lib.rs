@@ -20,7 +20,6 @@ pub mod locales;
 
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// How many rows the source reports.
@@ -46,7 +45,7 @@ pub enum Status {
 
 impl Status {
     fn label(self) -> String {
-        I18nManager::lookup_plain(match self {
+        crate::locales::CATALOG.t(match self {
             Self::Open => "data-status-open",
             Self::Closed => "data-status-closed",
         })
@@ -220,8 +219,9 @@ impl ResourceApp for App {
         // was; they bind their buttons through the resource's actions.
         let actions = cx.actions();
         let columns = vec![
-            ColumnDef::<Row>::new("name", "data-name-column", ColumnWidth::Flex(1.0))
-                .with_text(|row| I18nManager::format("data-row", &[("id", row.id.into())])),
+            ColumnDef::<Row>::new("name", "data-name-column", ColumnWidth::Flex(1.0)).with_text(
+                |row| crate::locales::CATALOG.t_args("data-row", &[("id", row.id.into())]),
+            ),
             ColumnDef::<Row>::new("status", "data-status-column", ColumnWidth::Fixed(120.0))
                 .with_text(|row| row.status.label()),
             ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
@@ -243,15 +243,15 @@ impl ResourceApp for App {
         let recent = cx
             .text(|review| {
                 if review.opened.is_empty() {
-                    return I18nManager::lookup_plain("data-none-opened");
+                    return crate::locales::CATALOG.t("data-none-opened");
                 }
                 let rows = review
                     .opened
                     .iter()
-                    .map(|id| I18nManager::format("data-row", &[("id", (*id).into())]))
+                    .map(|id| crate::locales::CATALOG.t_args("data-row", &[("id", (*id).into())]))
                     .collect::<Vec<_>>()
                     .join(", ");
-                I18nManager::format("data-recent", &[("rows", rows.into())])
+                crate::locales::CATALOG.t_args("data-recent", &[("rows", rows.into())])
             })
             .with_id("recently-opened");
         Box::new(ui::column![table, recent])

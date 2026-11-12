@@ -15,11 +15,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_actions::InvocationId;
+use tilo_actions::remote::ActionHost as _;
+use tilo_app::linked_accounts::ActionAnswer;
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desk::{Desk, Store};
+use tilo_session_core::remote::SessionActions;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -29,6 +33,8 @@ use ui::permissions::{SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
+
+use crate::shell::{HostRequest, HostRequests};
 
 /// Applications the page can open, in launcher order: every application
 /// the bundle registered from its manifests (`ui::application::registry`).
@@ -141,6 +147,8 @@ pub(crate) struct Inputs {
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose workspace this desktop shows, when it has one.
     pub peer: Option<u32>,
+    /// The content store the desktop lends every window it opens.
+    pub content: tilo_content::ContentStore,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -352,6 +360,9 @@ pub(crate) struct Shared {
     opened_content: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
+    /// The agent run that opened each window an agent opened, by tab, as the
+    /// workspace's desk last said.
+    pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
     /// The workspace renamed since the mount last looked, for a notice when
     /// someone else did it.
     pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
@@ -374,10 +385,14 @@ pub(crate) struct Shared {
     pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
     /// The person's accounts with the services this workspace is connected to,
     /// read from the connectors' workspace records by the workspace's host
-    /// ([`HostRecordActions`]).
+    /// ([`RecordActions`]).
     pub linked: tilo_app::linked_accounts::LinkedAccounts,
-    /// The workspace actions this desktop asked the workspace's host to run.
-    pub record_actions: HostRecordActions,
+    /// The workspace's record actions, run by the host this page's session
+    /// is with.
+    pub record_actions: RecordActions,
+    /// What the desktop asks of the page: the requests its host reads each
+    /// frame (`crate::shell::HostRequests`).
+    pub requests: HostRequests,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<crate::app_load::Loads>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -388,6 +403,11 @@ pub(crate) struct Shared {
     /// Actions of apps the person chose in the desktop's own chrome (a
     /// launchpad card), for the desktop's session to deliver as theirs.
     app_actions: Rc<RefCell<Vec<tilo_desktop::launchpad::LaunchpadAppAction>>>,
+    /// The peer whose workspace this desktop shows, when it has one: what it asks its session for
+    /// the pages of the windows other devices host.
+    pub peer: Option<u32>,
+    /// The workspace it shows: whose plane those windows' pages travel.
+    pub workspace: String,
 }
 
 impl Shared {
@@ -404,10 +424,14 @@ impl Shared {
         }
     }
 
-    /// Ask the host to run the surface's update pass before the next frame
-    /// (queued navigation, a replaced tree).
+    /// Ask the host to run the surface's update pass, and for the frame it runs in (queued
+    /// navigation, a replaced tree, an app action chosen in the bar's cards). A page draws only
+    /// when something changes: a flag alone waited for whatever drew next, so the card a press on
+    /// an agent's "Open card" asked Console for could stay unopened on a page with nothing else
+    /// to draw.
     pub fn wake(&self) {
         self.woken.store(true, Ordering::Release);
+        crate::browser::wake_desktops();
     }
 
     /// A record arrived: build the tabs still waiting for theirs again.
@@ -449,6 +473,14 @@ impl Shared {
             .iter()
             .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
             .map(|(tab, _)| *tab)
+    }
+
+    /// The applications whose code the page is fetching now: a window of one
+    /// fills in, and offers its views, once it arrives.
+    pub(crate) fn loading_apps(&self) -> Vec<&'static str> {
+        let mut apps: Vec<_> = self.loading.borrow().in_flight().collect();
+        apps.sort_unstable();
+        apps
     }
 
     /// Whether an application finished loading since the last call.
@@ -534,6 +566,11 @@ impl Shared {
             .clone()
             .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
+        // A record not here is the workspace's to send or to say it has none
+        // of, never a fresh one of this page's.
+        if self.record_actions.peer.is_some() {
+            store.ask_workspace_for_missing();
+        }
         self.stores.borrow_mut().push(store.clone());
         Ok(store)
     }
@@ -617,7 +654,7 @@ impl Shared {
         if self.window_capture_protected(tree, tab) {
             return None;
         }
-        let workspace = crate::replication::workspace_uuid(self.record_actions.peer?)?;
+        let workspace = crate::replicated::workspace_uuid(self.record_actions.peer?)?;
         let (_, record) = self.live_record_of(tree, tab)?;
         Some(tilo_desktop::feedback::ShownRecord { workspace, record })
     }
@@ -635,55 +672,147 @@ impl Shared {
     pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
         tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
     }
+
+    /// The record each window shows, by its tab: what the session's roster places a person's
+    /// record by, as a native session's windows note theirs. An app's primary record is spelled
+    /// empty, as an agent working in it names it, and the roster matches the window's app too: a
+    /// Notes window showing Notes' primary record is where an agent writing a note there is, and
+    /// following it brings that window forward rather than opening Notes again. A window drawn by
+    /// its app's own surface names no app here; the desk's tree says which app it runs.
+    pub fn shown_records(&self) -> Vec<(u64, Option<String>, String)> {
+        self.records
+            .borrow()
+            .iter()
+            .map(|(tab, checkout)| (*tab, None, checkout.id.route().to_owned()))
+            .collect()
+    }
 }
 
-/// An action of a workspace record the desktop asked the workspace's host to run, as
-/// the page reads it from the mount's status (`room-action`) and answers it
-/// ([`crate::browser::desktop_exports::desktop_record_action_answer`]).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct RecordActionRequest {
-    pub id: u32,
-    pub app: String,
-    pub action: String,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-/// The workspace actions the desktop asked for and not answered yet.
-#[derive(Default)]
-struct RecordActionQueue {
-    next: u32,
-    outbox: Vec<RecordActionRequest>,
-    waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
-    /// Addresses to go to, leaving the page (a service's consent page).
-    opens: Vec<String>,
-}
-
-/// The desktop's door to the workspace's records, run by the workspace's host: the
-/// page asks the host (`peer.actions`) to run each action as the person
-/// and hands the answer back. No app code runs in the page for it, so a
-/// connector the page never loads (Discord) answers too.
+/// The workspace's record actions, run by the workspace's host: the page
+/// asks the host over the session it already holds with it
+/// ([`SessionActions`]), as it asks any other device's actions, and the host
+/// runs each through the record's own door as the person. No app code runs in
+/// the page for it, so a connector the page never loads (Discord) answers
+/// too.
 #[derive(Clone, Default)]
-pub(crate) struct HostRecordActions {
-    queue: Rc<RefCell<RecordActionQueue>>,
+pub(crate) struct RecordActions {
+    /// The workspace's host, when this page has a session with one.
+    host: Option<SessionActions>,
     /// The peer whose workspace this desktop shows, for the records it holds.
     peer: Option<u32>,
+    /// The workspace this page is in, and the person asking.
+    workspace: String,
+    author: String,
+    /// What only the page can do with an answer: leave for an address.
+    requests: HostRequests,
+    /// What waits for the host's answer, by invocation.
+    waiting: Waiting,
+    /// The answers that came, for the next frame to hand on: the page's own
+    /// thread answers what asked, never the session's.
+    answered: Arc<std::sync::Mutex<Vec<(InvocationId, ActionAnswer)>>>,
+    /// Wakes the mount once an answer is there to hand on.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl HostRecordActions {
-    /// The requests the page has to send, once.
-    pub fn take_requests(&self) -> Vec<RecordActionRequest> {
-        std::mem::take(&mut self.queue.borrow_mut().outbox)
+/// What waits for one of the host's answers, by the invocation it answers.
+type Waiting = Rc<RefCell<HashMap<InvocationId, Box<dyn FnOnce(ActionAnswer)>>>>;
+
+impl RecordActions {
+    /// The records' actions `host` runs for this page's person in
+    /// `workspace`; `requests` takes what only the page can do, and `wake`
+    /// asks for the frame that hands an answer on.
+    pub fn new(
+        host: Option<SessionActions>,
+        peer: Option<u32>,
+        workspace: &str,
+        author: &str,
+        requests: HostRequests,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            host,
+            peer,
+            workspace: workspace.to_owned(),
+            author: author.to_owned(),
+            requests,
+            waiting: Rc::default(),
+            answered: Arc::default(),
+            wake: Some(wake),
+        }
     }
 
-    /// The addresses the page is to go to, once.
-    pub fn take_opens(&self) -> Vec<String> {
-        std::mem::take(&mut self.queue.borrow_mut().opens)
+    /// Hand the host's answers to what asked for them; whether any came.
+    pub fn follow(&self) -> bool {
+        let answers: Vec<(InvocationId, ActionAnswer)> =
+            std::mem::take(&mut *self.answered.lock_recover());
+        let any = !answers.is_empty();
+        for (invocation, answer) in answers {
+            if let Some(done) = self.waiting.borrow_mut().remove(&invocation) {
+                done(answer);
+            }
+        }
+        any
+    }
+}
+
+impl tilo_app::linked_accounts::WorkspaceRecordActions for RecordActions {
+    fn apps(&self) -> Vec<String> {
+        let workspace_apps = self
+            .peer
+            .map(crate::replicated::records)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, record)| record.is_empty())
+            .map(|(app, _)| app)
+            .filter(|app| app != crate::replicated::DESKTOP_APP);
+        // An app this page can open runs here, not on the workspace's host: no
+        // connector, so its record is not asked for a reading.
+        let here = known_applications();
+        tilo_app::linked_accounts::connector_apps(workspace_apps, |app| {
+            here.iter().any(|(id, _)| *id == app)
+        })
     }
 
-    pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
-        let done = self.queue.borrow_mut().waiting.remove(&id);
-        if let Some(done) = done {
-            done(answer);
+    fn invoke(
+        &self,
+        app: &str,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        done: Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>,
+    ) {
+        let Some(host) = &self.host else {
+            done(Err("this page reaches no workspace host".to_owned()));
+            return;
+        };
+        let request = tilo_app::linked_accounts::record_invocation(
+            tilo_actions::InvocationId::new(),
+            app,
+            action,
+            arguments,
+        );
+        let caller = tilo_actions::remote::Caller::local_person(self.author.clone())
+            .in_workspace(self.workspace.clone());
+        let invocation = request.invocation;
+        self.waiting.borrow_mut().insert(invocation, done);
+        let answered = Arc::clone(&self.answered);
+        let wake = self.wake.clone();
+        host.invoke(&caller, request).then(move |answered_| {
+            answered.lock_recover().push((
+                invocation,
+                tilo_app::linked_accounts::record_answer(answered_),
+            ));
+            if let Some(wake) = &wake {
+                wake();
+            }
+        });
+    }
+
+    fn open(&self, url: &str) {
+        // Only a web address: the page leaves for it.
+        if url.starts_with("https://") || url.starts_with("http://") {
+            self.requests
+                .borrow_mut()
+                .push(HostRequest::Open(url.to_owned()));
         }
     }
 }
@@ -705,51 +834,6 @@ fn linked_accounts(
             }),
         ),
     ))
-}
-
-impl tilo_app::linked_accounts::WorkspaceRecordActions for HostRecordActions {
-    fn apps(&self) -> Vec<String> {
-        let workspace_apps = self
-            .peer
-            .map(crate::replication::records)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(_, record)| record.is_empty())
-            .map(|(app, _)| app)
-            .filter(|app| app != crate::replication::DESKTOP_APP);
-        // An app this page can open runs here, not on the workspace's host: no
-        // connector, so its record is not asked for a reading.
-        let here = known_applications();
-        tilo_app::linked_accounts::connector_apps(workspace_apps, |app| {
-            here.iter().any(|(id, _)| *id == app)
-        })
-    }
-
-    fn invoke(
-        &self,
-        app: &str,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        done: Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>,
-    ) {
-        let mut queue = self.queue.borrow_mut();
-        queue.next = queue.next.wrapping_add(1);
-        let id = queue.next;
-        queue.waiting.insert(id, done);
-        queue.outbox.push(RecordActionRequest {
-            id,
-            app: app.to_owned(),
-            action: action.to_owned(),
-            arguments,
-        });
-    }
-
-    fn open(&self, url: &str) {
-        // Only a web address: the page leaves for it.
-        if url.starts_with("https://") || url.starts_with("http://") {
-            self.queue.borrow_mut().opens.push(url.to_owned());
-        }
-    }
 }
 
 struct Tiles {
@@ -865,12 +949,12 @@ impl Tiles {
         }
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
-        context.provide_content(crate::page_content());
-        // What another window handed this one to open, from the page's
+        context.provide_content(self.inputs.content.clone());
+        // What another window handed this one to open, from the desktop's
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
-            let (file, _) = crate::content_open::opened_file(&hash, &crate::page_content())?;
+            let (file, _) = crate::content_open::opened_file(&hash, &self.inputs.content)?;
             context.provide_open_file(file);
         }
         context.provide_workspace_records(crate::workspace_records::in_page(
@@ -878,15 +962,13 @@ impl Tiles {
             &self.shared.stores,
             &self.inputs.workspace,
             self.inputs.author.clone(),
+            self.shared.record_actions.peer.is_some(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
-        // Only registered control panels receive the administration capability.
-        if crate::host_services::provider_admin_app(definition.app_id()) {
-            crate::host_services::provide_provider_admin(
-                &mut context,
-                self.inputs.provider_admin.clone(),
-            )?;
-        }
+        crate::host_services::provide_provider_admin(
+            &mut context,
+            self.inputs.provider_admin.clone(),
+        );
         crate::page_content::serve_window(
             &context.wake_handle(),
             &self.shared.images,
@@ -938,7 +1020,9 @@ impl Tiles {
         let checkout = RecordCheckout::new(id, definition.record_kind.clone());
         match store.try_open_record(&checkout) {
             Ok(_) => {}
-            Err(ui::record::RecordOpenError::MissingRecord) => {
+            Err(
+                ui::record::RecordOpenError::MissingRecord | ui::record::RecordOpenError::Arriving,
+            ) => {
                 return Err("It shows once it reaches you".into());
             }
             Err(error) => return Err(error.to_string()),
@@ -973,8 +1057,8 @@ fn embed_instance(view: &ResourceView) -> TabId {
 }
 
 /// Where an app's code comes from: the host that served this page, by
-/// the name its address gives it.
-fn code_host() -> ui::arriving::Source {
+/// the name its address gives it. A window showing its app arrive says it.
+pub(crate) fn code_host() -> ui::arriving::Source {
     let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
         .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
         .ok()
@@ -1061,7 +1145,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
         let saved = self.shared.records.borrow().get(&tab).cloned();
         match saved {
             Some(checkout) => Ok((
@@ -1074,11 +1158,22 @@ impl Tiles {
             None if definition.keeps_workspace_record() => Ok((
                 definition
                     .unsaved_target(store)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| self.unopened(tab, &error))?,
                 None,
             )),
             None => self.unbound_target(definition, store, tab),
         }
+    }
+
+    /// Why `tab`'s record did not open: one the workspace still sends (or
+    /// still has to say it has none of) keeps the window waiting for it,
+    /// built again once it is here, instead of starting one of its own.
+    fn unopened(&self, tab: TabId, error: &ui::record::RecordOpenError) -> Unready {
+        if matches!(error, ui::record::RecordOpenError::Arriving) {
+            self.shared.waiting.borrow_mut().insert(tab);
+            return Unready::Arriving;
+        }
+        Unready::Notice(error.to_string())
     }
 
     /// What a tab no record is bound to opens: the workspace's default record
@@ -1090,7 +1185,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
         let default = RecordCheckout::new(
             RecordId::workspace_default(),
             definition.record_kind.clone(),
@@ -1115,13 +1210,23 @@ impl Tiles {
             Err(ui::record::RecordOpenError::MissingRecord) => {
                 Ok((LaunchTarget::New, Some(default.id)))
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(self.unopened(tab, &error)),
         }
     }
 }
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        // Another device's window whose pictures or page travel here: this page draws it, as the
+        // native desk does.
+        if let TileContent::HostedWindow { app_id, label, .. } = &tab.tile {
+            let title = if label.is_empty() { &tab.title } else { label };
+            if let Some(host) = crate::window_pictures::tile(tab.id, title, app_id)
+                .or_else(|| crate::pages::tile(tab.id, &tab.title))
+            {
+                return host;
+            }
+        }
         let shared = self.shared.clone();
         let id = tab.id;
         if let Some(notice) =
@@ -1169,16 +1274,15 @@ impl TileSource for Tiles {
         }
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        let (app, record, content) = if let Some((app, hash)) =
-            tilo_desktop_surface::session::launched_content(app)
-        {
-            (app, None, Some(hash))
-        } else if let Some((app, record)) = tilo_desktop_surface::session::launched_record(app) {
-            (app, Some(record), None)
-        } else {
-            (app, None, None)
-        };
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
+        let (app, record, content) =
+            if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
+                (app, None, Some(hash))
+            } else if let Some((app, record)) = tilo_desktop_search::launched_record(app) {
+                (app, Some(record), None)
+            } else {
+                (app, None, None)
+            };
         let title = known_application(app)?;
         if let Some(hash) = content {
             self.shared
@@ -1201,7 +1305,7 @@ impl TileSource for Tiles {
     }
 
     fn showing(&self, app: &str) -> Option<TabId> {
-        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let (app, record) = tilo_desktop_search::launched_record(app)?;
         let kind = application(app)?.record_kind.clone();
         self.shared
             .records
@@ -1231,24 +1335,6 @@ impl TileSource for Tiles {
     fn embed(&mut self, view: &ResourceView) -> Result<TileHost, String> {
         self.embedded(view)
     }
-
-    fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        web_applications().collect()
-    }
-}
-
-/// The applications this page offers to open itself: those of the bundle
-/// that run on the web.
-fn web_applications() -> impl Iterator<Item = tilo_desktop_search::providers::AppEntry> {
-    known_applications()
-        .into_iter()
-        .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))
-        .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
-            id: id.into(),
-            title: title.into(),
-            category: None,
-            description: None,
-        })
 }
 
 fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
@@ -1339,7 +1425,7 @@ impl Persistence {
         let time = ui::time::unix_now_i64();
         if self
             .peer
-            .and_then(crate::replication::desktop_history_heads)
+            .and_then(crate::replicated::desktop_history_heads)
             .is_some()
         {
             // The workspace holds the desk itself; the copy keeps the view alone.
@@ -1368,20 +1454,6 @@ impl Persistence {
         Ok(())
     }
 
-    /// Write what `write` decides into the desk's document — a description of
-    /// a change, a name over a run of them — as this page's own change, and
-    /// keep it. Whether anything was written.
-    ///
-    /// Only where this page's copy is the desk: in a workspace the desk is
-    /// the workspace's document, and its history metadata reaches everyone
-    /// from the device that writes it there.
-    pub fn write_metadata(&self, write: impl FnOnce(&mut AutoCommit) -> bool) -> bool {
-        if self.peer.is_some() {
-            return false;
-        }
-        self.desk.write_metadata(write) && self.profile.refused().is_none()
-    }
-
     /// Take the workspace's desk document into the profile's copy, once the page's
     /// desk is the workspace's: a reload opens the desk as the workspace has it, and
     /// what the workspace changed reaches the file as the desk's own history.
@@ -1390,7 +1462,7 @@ impl Persistence {
         let Some(peer) = self.peer else {
             return Ok(false);
         };
-        let Some(heads) = crate::replication::desktop_history_heads(peer) else {
+        let Some(heads) = crate::replicated::desktop_history_heads(peer) else {
             return Ok(false);
         };
         if heads
@@ -1399,7 +1471,7 @@ impl Persistence {
         {
             return Ok(false);
         }
-        let Some(bytes) = crate::replication::desk_bytes(peer) else {
+        let Some(bytes) = crate::replicated::desk_bytes(peer) else {
             return Ok(false);
         };
         self.desk
@@ -1414,20 +1486,10 @@ impl Persistence {
         if notifications_revision == self.saved_notifications_revision.get() {
             return Ok(());
         }
-        let history: Vec<_> = self
+        let bytes = self
             .notifications
-            .log()
-            .history()
-            .iter()
-            .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
-            .cloned()
-            .collect();
-        let bytes = tilo_desktop_surface::notifications::encode_history(
-            &history,
-            ui::time::SystemTime::now(),
-            ui::time::now(),
-        )
-        .map_err(|error| error.to_string())?;
+            .kept(ui::time::SystemTime::now())
+            .map_err(|error| error.to_string())?;
         self.store
             .write(&self.notifications_key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
@@ -1476,6 +1538,7 @@ pub(crate) fn shared_value(
         tree,
         records,
         authors,
+        opened_by: shared.opened_by.borrow().clone(),
     }
 }
 
@@ -1499,6 +1562,7 @@ pub(crate) fn apply_shared(
             authors.entry(*id).or_insert_with(|| author.clone());
         }
         drop(authors);
+        shared.opened_by.borrow_mut().clone_from(&desktop.opened_by);
         let mut records = shared.records.borrow_mut();
         for (tab, checkout) in bound {
             if records
@@ -1665,6 +1729,38 @@ fn take_up_feedback(
     }
 }
 
+/// What a page's desktop knows before it mounts: the session it holds with
+/// the workspace's host, which runs its records' actions, and the person's
+/// linked accounts, which that host answers.
+fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -> Shared {
+    let requests = crate::shell::HostRequests::default();
+    let host = inputs.peer.and_then(|peer| {
+        let workspace = crate::peer::workspace_number(&inputs.workspace).ok()?;
+        crate::peer_sync::actions_of(peer, workspace)
+    });
+    let record_actions = RecordActions::new(
+        host,
+        inputs.peer,
+        &inputs.workspace,
+        &inputs.author,
+        Rc::clone(&requests),
+        Arc::clone(notify),
+    );
+    let mut shared = Shared {
+        record_actions,
+        requests,
+        peer: inputs.peer,
+        workspace: inputs.workspace.clone(),
+        ..Shared::default()
+    };
+    if inputs.peer.is_some() {
+        // In a workspace, the person holds what the workspace answers, once it has.
+        shared.standing = Standing::unknown();
+    }
+    shared.linked = linked_accounts(&shared, notify);
+    shared
+}
+
 pub(crate) fn mount(
     mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
@@ -1674,13 +1770,7 @@ pub(crate) fn mount(
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
-    let mut shared = Shared::default();
-    shared.record_actions.peer = inputs.peer;
-    if inputs.peer.is_some() {
-        // In a workspace, the person holds what the workspace answers, once it has.
-        shared.standing = Standing::unknown();
-    }
-    shared.linked = linked_accounts(&shared, &notify);
+    let shared = shared_with_its_host(&inputs, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
@@ -1717,25 +1807,18 @@ pub(crate) fn mount(
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .unwrap_or("Workspace");
-        tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
+        // In a workspace the desk is that workspace's, by its id: the one its records are kept by.
+        match tilo_desktop_model::WorkspaceId::parse(&inputs.workspace) {
+            Some(identity) => tilo_desktop_surface::seed_tree_in(&mut minter, identity, name, tabs),
+            None => tilo_desktop_surface::seed_tree(&mut minter, name, tabs),
+        }
     };
     let notifications_key =
         StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
-    if let Some(history) = store
-        .read(&notifications_key)
-        .ok()
-        .flatten()
-        .and_then(|stored| {
-            tilo_desktop_surface::notifications::decode_history(
-                &stored.bytes,
-                ui::time::SystemTime::now(),
-                ui::time::now(),
-            )
-            .ok()
-        })
-    {
-        notifications.restore_history(history);
+    if let Some(stored) = store.read(&notifications_key).ok().flatten() {
+        // A record this page cannot read leaves the centre empty rather than the page unopened.
+        let _ = notifications.restore_kept(&stored.bytes, ui::time::SystemTime::now());
     }
     let saved_notifications_revision = Cell::new(notifications.revision());
     let profile = Rc::new(ProfileStore {

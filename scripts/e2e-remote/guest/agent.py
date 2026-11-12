@@ -182,6 +182,9 @@ def devices(client: Client, out: dict) -> None:
         want in line and line.rstrip().endswith("  reachable") for line in text.splitlines()),
         WAIT_S)
     out["devices_at"] = client.since()
+    # The same action the agent takes on the other device, taken here: whether this door
+    # carries it out tells a refusal of the other device's door from every door's.
+    out["open_here"] = client.tool("tilo_do", {"path": "notes#open"})
 
 
 def unanswered(client: Client, out: dict) -> None:

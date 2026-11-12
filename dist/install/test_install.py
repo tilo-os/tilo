@@ -1,7 +1,7 @@
 """The `tilo` install script (dist/install/tilo.sh, served as https://tilo.sh):
-it installs a release only when its SHA256SUMS carries a signature by the
-release key and the archive matches it, needs no root, and trusts the key
-Tilo's releases are signed with (keys/cosign.pub).
+it installs a release only when the archive matches its SHA256SUMS and, where
+openssl exists, the SHA256SUMS carries a signature by the release key; it needs
+no root and trusts the key Tilo's releases are signed with (keys/cosign.pub).
 
 Each case runs the real script under `sh` against a release on disk
 (`file://`), signed with a throwaway P-256 key given as a mirror's key.
@@ -102,7 +102,7 @@ class Install(unittest.TestCase):
         self.archive.write_bytes(self.archive.read_bytes() + b"\0")
         done = self.install()
         self.assertNotEqual(done.returncode, 0)
-        self.assertIn("does not match the signed release", done.stderr)
+        self.assertIn("does not match the release's SHA256SUMS", done.stderr)
         self.assertFalse(self.installed.exists())
 
     def test_sums_signed_by_another_key_install_nothing(self):
@@ -118,6 +118,30 @@ class Install(unittest.TestCase):
         done = self.install(TILO_RELEASE_KEY="")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("does not verify", done.stderr)
+        self.assertFalse(self.installed.exists())
+
+    def without_openssl(self):
+        """A PATH holding every tool the installer may use except openssl, as on
+        stock Fedora."""
+        bin_dir = pathlib.Path(self.scratch.name) / "no-openssl-bin"
+        bin_dir.mkdir(exist_ok=True)
+        for tool in ("sh", "uname", "tar", "gzip", "curl", "wget", "sha256sum", "shasum", "awk", "cut", "mktemp",
+                     "rm", "cp", "chmod", "mv", "mkdir", "cat", "printf"):
+            found = shutil.which(tool)
+            if found and not (bin_dir / tool).exists():
+                (bin_dir / tool).symlink_to(found)
+        return str(bin_dir)
+
+    def test_without_openssl_the_sums_alone_decide(self):
+        (self.release / "SHA256SUMS.sig").unlink()
+        done = self.install(PATH=self.without_openssl())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(run(self.installed).stdout, b"tilo 0.0.0\n")
+        self.archive.write_bytes(self.archive.read_bytes() + b"\0")
+        self.installed.unlink()
+        done = self.install(PATH=self.without_openssl())
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("does not match the release's SHA256SUMS", done.stderr)
         self.assertFalse(self.installed.exists())
 
     def test_a_release_without_this_machine_installs_nothing(self):

@@ -5,6 +5,7 @@ use super::{
     PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
     WindowEvent,
 };
+use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath};
 
 impl HistoryHost {
@@ -487,7 +488,7 @@ impl Widget for HistoryHost {
             if let Some(preview) = canvas.preview.as_mut() {
                 preview.set_window_presents_search(window_presents);
             }
-            canvas.draw(scene, transform, text, theme, presence);
+            canvas.draw_child(scene, transform, text, theme, presence);
         }
         if self.banner_node.is_some() {
             let band = self.banner.get_rect();
@@ -498,7 +499,8 @@ impl Widget for HistoryHost {
                 None,
                 &band,
             );
-            self.banner.draw(scene, transform, text, theme, presence);
+            self.banner
+                .draw_child(scene, transform, text, theme, presence);
         }
         let side = self.panel_node.is_some();
         // However History came to be open, its panel slides in the first
@@ -555,7 +557,7 @@ impl Widget for HistoryHost {
             crate::history_mode::door::bar_edge(scene, transform, theme, self.toolbar.get_rect());
         }
         self.toolbar
-            .draw(scene, bar_transform, text, theme, presence);
+            .draw_child(scene, bar_transform, text, theme, presence);
         if side && let Some(head) = self.toolbar.children().first() {
             // The panel's name, at the head's leading edge, on its centre line.
             let style = theme.text(crate::tokens::TextRole::Title);
@@ -590,10 +592,10 @@ impl Widget for HistoryHost {
         }
         if self.show_timeline() && !self.timeline_available() {
             self.unavailable
-                .draw(scene, bar_transform, text, theme, presence);
+                .draw_child(scene, bar_transform, text, theme, presence);
         } else if self.show_timeline() {
             self.timeline
-                .draw(scene, bar_transform, text, theme, presence);
+                .draw_child(scene, bar_transform, text, theme, presence);
         }
         if self.footer_node.is_some() {
             let foot = self.footer.get_rect();
@@ -607,7 +609,7 @@ impl Widget for HistoryHost {
                 theme.tokens.colors.surfaces.inspector,
             );
             self.footer
-                .draw(scene, bar_transform, text, theme, presence);
+                .draw_child(scene, bar_transform, text, theme, presence);
         }
         if sliding {
             scene.pop_layer();

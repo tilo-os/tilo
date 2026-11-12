@@ -20,7 +20,7 @@ use crate::tools::{Sheet, Tools, ViewRequest};
 /// Individual shared controls let the shell move each command into More
 /// without laying a wider private row beneath its inspector and History.
 pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Vec<Element> {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut actions = vec![
         menu(cx, tools),
         Box::new(icon_button(
@@ -67,7 +67,7 @@ pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -
 /// canvas takes the answer when the chooser gives it.
 pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
-    let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
+    let name = crate::locales::CATALOG.t("canvas-add-picture");
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
             .control_size(size)
@@ -84,9 +84,9 @@ pub(crate) fn pick_picture(tools: &Tools) {
 }
 
 fn pick_request() -> ui::portal::ContentsChannel {
-    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
-    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
-    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
+    let title = crate::locales::CATALOG.t("canvas-add-picture-title");
+    let confirm = crate::locales::CATALOG.t("canvas-add-picture-confirm");
+    let kinds = crate::locales::CATALOG.t("canvas-pictures");
     ui::portal::PickRequest::open(&title, &confirm)
         .filter(
             ui::portal::FileFilter::new(&kinds)
@@ -224,7 +224,7 @@ impl Command {
     }
 
     fn label(&self) -> String {
-        ui::i18n::I18nManager::lookup_plain(&self.id)
+        crate::locales::CATALOG.t(&self.id)
     }
 
     /// The command's button: its icon and label, or the icon alone with
@@ -299,9 +299,9 @@ fn strip(
     // Painting a mask is said where the painting happens, with the way
     // back to the layer's own paint, said in full when there is room.
     let lead = masked.map(|(owner, name)| {
-        let full =
-            ui::i18n::I18nManager::format("canvas-painting-mask", &[("name", name.clone().into())]);
-        let short = ui::i18n::I18nManager::lookup_plain("canvas-medium-mask");
+        let full = crate::locales::CATALOG
+            .t_args("canvas-painting-mask", &[("name", name.clone().into())]);
+        let short = crate::locales::CATALOG.t("canvas-medium-mask");
         let said = if text_room(&full, 7.0) + 30.0 + slot + spacing.s2 + icons <= room {
             full
         } else {
@@ -395,7 +395,7 @@ fn overflow(cx: &ViewCx<Artwork>, commands: Vec<Command>) -> Element {
     let mut menu = Dropdown::from_state(Vec::new(), &state)
         .as_menu(Icon::MoreHorizontal)
         .with_id("canvas-strip-more")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-strip-more"));
+        .with_accessible_name(crate::locales::CATALOG.t("canvas-strip-more"));
     menu.set_value_options(options);
     // The chosen command's edit, as the one member of a group: the menu is
     // bound to whichever verb the command makes.
@@ -421,7 +421,7 @@ fn overflow(cx: &ViewCx<Artwork>, commands: Vec<Command>) -> Element {
 /// an edit.
 fn mask_back(tools: &Tools, owner: String) -> Element {
     let chosen = tools.layer.clone();
-    let label = ui::i18n::I18nManager::lookup_plain("canvas-paint-layer");
+    let label = crate::locales::CATALOG.t("canvas-paint-layer");
     Box::new(
         Button::icon_only("canvas-paint-layer", Icon::Brush, &label)
             .control_size(ControlSize::Small)
@@ -658,7 +658,7 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 /// A button opening one of the window's dialogs.
 fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let sheet = tools.sheet.clone();
-    let name = ui::i18n::I18nManager::lookup_plain(id);
+    let name = crate::locales::CATALOG.t(id);
     Button::new(id, "")
         .with_icon(icon)
         .role(ui::widget::ButtonRole::Plain)
@@ -673,7 +673,7 @@ fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.recents.clone(), move |_, recents| {
         let recents = recents.on(&tools.device);
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let items = [
             ("new", "canvas-menu-new"),
             ("open", "canvas-menu-open"),
@@ -698,7 +698,7 @@ fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
             };
             (
                 format!("{RECENT}{}", recent.path),
-                ui::i18n::I18nManager::format("canvas-menu-recent", &[("name", name.into())]),
+                crate::locales::CATALOG.t_args("canvas-menu-recent", &[("name", name.into())]),
             )
         }));
         options.extend(rest.iter().map(entry));
@@ -733,7 +733,7 @@ const MENU_RECENTS: usize = 5;
 /// agent zooms the way a person does.
 fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Element {
     let view = tools.view.clone();
-    let name = ui::i18n::I18nManager::lookup_plain(id);
+    let name = crate::locales::CATALOG.t(id);
     Box::new(
         Button::icon_only(id, icon, &name)
             .control_size(ControlSize::Small)

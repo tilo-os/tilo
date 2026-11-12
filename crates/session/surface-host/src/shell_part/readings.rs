@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilolang_tilo::origin::OriginCx;
+use tilolang_tilo::records_service::{app_of, placed_records};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{ArrangementReading, Ask, SessionLink, SessionOrigin};
@@ -87,7 +88,7 @@ impl SessionLink {
 
     /// The apps whose package the shell's runtime loads here, each with the module it loads:
     /// the ones whose declared actions are their package's, so no published verb of theirs is
-    /// counted ([`published_actions`]).
+    /// counted (`tilolang_tilo::published::from_resources`).
     #[must_use]
     pub fn packages_loaded(&self) -> BTreeMap<String, String> {
         self.packages
@@ -184,39 +185,16 @@ impl SessionLink {
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
         let mut changed = false;
-        for (id, ty) in placed_records(arrangement, resources) {
+        for (id, ty) in placed_records(
+            arrangement.places.iter().map(|place| place.record.as_str()),
+            resources,
+        ) {
             if let Some(reading) = read(&id) {
                 changed |= self.publish_reading(&id, &ty, reading);
             }
         }
         changed
     }
-}
-
-/// Each resource a place of `arrangement` names that `resources`, the session's catalogue,
-/// holds as a tilolang record: its id, and its type as the shell's runtime names another
-/// app's (`<app>#<Type>`).
-#[must_use]
-pub fn placed_records(
-    arrangement: &ArrangementReading,
-    resources: &[ui::tilo_actions::ResourceSpec],
-) -> BTreeMap<String, String> {
-    arrangement
-        .places
-        .iter()
-        .filter(|place| !place.record.is_empty())
-        .filter_map(|place| {
-            let ty = find_resource(resources, &place.record)
-                .and_then(tilolang_tilo::records_service::reading_type_of)?;
-            Some((place.record.clone(), ty))
-        })
-        .collect()
-}
-
-/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
-#[must_use]
-pub fn app_of(ty: &str) -> Option<&str> {
-    ty.split_once('#').map(|(app, _)| app)
 }
 
 /// Each app of `packages`, the apps a place shows and the session serves, with the apps whose
@@ -282,80 +260,6 @@ fn held_here(app: &str) -> bool {
             false
         }
     }
-}
-
-/// The verbs each resource of `resources`, the session's catalogue, publishes that no loaded
-/// package of `loaded` declares ([`tilolang_tilo::runtime::published`]): the resource's id, the verb's
-/// id, the app that runs it, and the arguments it takes after the resource (`channel`, `text`).
-///
-/// A verb of an app whose package the shell loads here is that package's declared action
-/// (`chat.workspace#rename-channel`), and is not counted: the runtime resolves a declared action
-/// before it looks a published one up. A verb with no parameter tilolang code can give is left
-/// out, as the catalogue leaves it out of a package's actions.
-#[must_use]
-pub fn published_actions(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    loaded: &BTreeMap<String, String>,
-) -> tilolang_tilo::runtime::published::Published {
-    let mut published = tilolang_tilo::runtime::published::Published::default();
-    collect_published(resources, loaded, &mut published);
-    published
-}
-
-fn collect_published(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    loaded: &BTreeMap<String, String>,
-    out: &mut tilolang_tilo::runtime::published::Published,
-) {
-    for resource in resources {
-        let Some(app) = resource.app() else {
-            collect_published(&resource.children, loaded, out);
-            continue;
-        };
-        // The app's package loading here declares its own actions already.
-        if !loaded.contains_key(app) {
-            for action in &resource.actions {
-                out.insert(
-                    resource.id.as_str(),
-                    action.id.as_str(),
-                    tilolang_tilo::runtime::published::PublishedAction {
-                        app: app.to_owned(),
-                        params: action
-                            .params()
-                            .iter()
-                            .map(|param| param.name.to_string())
-                            .collect(),
-                    },
-                );
-            }
-        }
-        collect_published(&resource.children, loaded, out);
-    }
-}
-
-/// The apps whose views this process links as Rust apps (one-app-model.md §2): a resource of one
-/// of their types is drawn by the app's own view, not by a package's, and its reading is followed
-/// though the app publishes no module.
-#[must_use]
-pub fn rust_view_apps() -> Vec<String> {
-    tilolang_tilo::views::declared_apps()
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The resource `id` in `resources` or among their children.
-fn find_resource<'a>(
-    resources: &'a [ui::tilo_actions::ResourceSpec],
-    id: &str,
-) -> Option<&'a ui::tilo_actions::ResourceSpec> {
-    resources.iter().find_map(|spec| {
-        if spec.id.as_str() == id {
-            Some(spec)
-        } else {
-            find_resource(&spec.children, id)
-        }
-    })
 }
 
 impl SessionOrigin {
@@ -486,49 +390,36 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         let ask = match invocation {
             Invocation::Action {
                 action,
-                args,
                 subject: Some(subject),
                 from,
                 ..
-            } => {
-                let subject_id = subject.id_string();
-                let mut arguments = BTreeMap::new();
-                for (name, value) in args {
-                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
-                        || matches!(value, Value::Opt(None))
-                    {
-                        continue;
-                    }
-                    arguments.insert(name.clone(), argument_text(value));
-                }
+            } => Ask {
+                resource: subject.id_string(),
+                action: action.clone(),
+                arguments: invocation.door_arguments().into_iter().collect(),
+                from: from
+                    .as_ref()
+                    .map(|from| ui::tilo_actions::params::MadeFrom {
+                        resource: from.id_string(),
+                        kind: from.ty.clone(),
+                    }),
+            },
+            Invocation::Action { app, action, .. }
+                if app == super::SESSION_APP && self.session.contains_key(action) =>
+            {
                 Ask {
-                    // The session's own address for the resource, never the runtime's flattened
-                    // reference: the door finds an action by the id its catalogue published.
-                    resource: self
-                        .link
-                        .published_address(&subject_id)
-                        .unwrap_or(subject_id),
+                    // The guard says this action's resource is here; read it
+                    // without indexing so a later change to the guard cannot
+                    // panic a press.
+                    resource: self.session.get(action).cloned().unwrap_or_default(),
                     action: action.clone(),
-                    arguments,
-                    from: from
-                        .as_ref()
-                        .map(|from| ui::tilo_actions::params::MadeFrom {
-                            resource: from.id_string(),
-                            kind: from.ty.clone(),
-                        }),
+                    arguments: session_arguments(
+                        self.verbs.get(action),
+                        invocation.door_arguments(),
+                    ),
+                    from: None,
                 }
             }
-            Invocation::Action {
-                app, action, args, ..
-            } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
-                // The guard says this action's resource is here; read it
-                // without indexing so a later change to the guard cannot
-                // panic a press.
-                resource: self.session.get(action).cloned().unwrap_or_default(),
-                action: action.clone(),
-                arguments: session_arguments(self.verbs.get(action), args),
-                from: None,
-            },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
                     "`{name}` names no resource of its app to be sent to"
@@ -552,8 +443,11 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                         .unwrap_or_else(|| target.id_string()),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
-                        ("field".to_owned(), field_id.clone()),
-                        ("value".to_owned(), argument_text(value)),
+                        ("field".to_owned(), field_id.clone().into()),
+                        (
+                            "value".to_owned(),
+                            tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default(),
+                        ),
                     ]),
                     from: None,
                 }
@@ -564,56 +458,18 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
     }
 }
 
-/// The arguments of a call of one of the session's loose actions, `verb` as its description
-/// declares it: each left-out one dropped, and those of a parameter published as a field of
-/// another nested back under that parameter, as its JSON.
+/// The arguments `given` of a call of one of the session's loose actions, `verb` as its
+/// description declares it: those of a parameter published as a field of another nested back
+/// under that parameter.
 fn session_arguments(
     verb: Option<&ui::tilo_actions::surface::VerbSurface>,
-    args: &[(String, Value)],
-) -> BTreeMap<String, String> {
-    let given = args
-        .iter()
-        .filter(|(_, value)| !matches!(value, Value::Opt(None)));
-    let Some(verb) = verb.filter(|verb| verb.params.iter().any(|param| param.within.is_some()))
-    else {
-        return given
-            .map(|(name, value)| (name.clone(), argument_text(value)))
-            .collect();
-    };
-    let json = given
-        .map(|(name, value)| {
-            let text = argument_text(value);
-            let json = match value {
-                Value::Text(_) => serde_json::Value::String(text),
-                Value::Opt(Some(inner)) if matches!(**inner, Value::Text(_)) => {
-                    serde_json::Value::String(text)
-                }
-                _ => serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
-            };
-            (name.clone(), json)
-        })
-        .collect();
-    ui::tilo_actions::surface::nest_arguments(verb, json)
-        .into_iter()
-        .map(|(name, value)| {
-            let text = match value {
-                serde_json::Value::String(text) => text,
-                other => other.to_string(),
-            };
-            (name, text)
-        })
-        .collect()
-}
-
-/// An argument as the session's door takes it from the shell: a text as it is, anything else
-/// as its JSON, read back by the parameter's type.
-fn argument_text(value: &Value) -> String {
-    match value {
-        Value::Text(text) => text.clone(),
-        Value::Ref(r) => r.target.id_string(),
-        Value::Opt(Some(value)) => argument_text(value),
-        other => tilolang_tilo::runtime::value::to_json(other)
-            .map_or_else(|_| String::new(), |json| json.to_string()),
+    given: serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    match verb {
+        Some(verb) => ui::tilo_actions::surface::nest_arguments(verb, given.into_iter().collect())
+            .into_iter()
+            .collect(),
+        None => given.into_iter().collect(),
     }
 }
 

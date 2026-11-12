@@ -1167,7 +1167,6 @@ d-2fofsa7f = Strip window
     .w-open-something-into-this-strip = Open something into this strip.
 
 d-p5wzoqr5 = Window controls
-    .w-this-window = This window
     .w-narrow = Narrow
     .w-normal = Normal
     .w-wide = Wide

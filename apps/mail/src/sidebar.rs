@@ -83,8 +83,11 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
             let items = AccountStore::folders_for(account)
                 .into_iter()
                 .map(|folder| {
-                    let item = NavItem::new(folder_row_id(index, folder), folder.title())
-                        .icon(folder.icon());
+                    let item = NavItem::new(
+                        folder_row_id(index, folder),
+                        crate::i18n::t(folder.message()),
+                    )
+                    .icon(folder.icon());
                     if !active {
                         if folder != Folder::Inbox {
                             return item;
@@ -164,7 +167,7 @@ pub fn sidebar(shared: &Shared, settings: Option<ActionBinding<String>>) -> NavL
     let on_select = shared.clone();
     let follow = shared.clone();
     let mut list = NavList::new(Vec::new())
-        .with_accessible_name("Mailboxes")
+        .with_accessible_name(crate::i18n::t("mail-a11y-mailboxes"))
         .on_view("mail-mailboxes", move |id| {
             if id == ALL_INBOXES {
                 on_select.borrow_mut().push_command(Command::OpenAllInboxes);

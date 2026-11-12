@@ -320,3 +320,20 @@ fn an_earlier_version_chosen_in_the_history_is_restored() {
     assert_eq!(art.marks.len(), 1, "back to the first stroke");
     assert_eq!(art.marks[0].id, "first");
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[test]
+fn a_german_window_reads_the_catalogue() {
+    let catalogue = &canvas::locales::CATALOG;
+    assert!(
+        catalogue.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalogue.languages()
+    );
+    catalogue.set_locale("de-DE");
+    assert_eq!(catalogue.t("canvas-tool-brush"), "Pinsel");
+    catalogue.set_locale("en-US");
+    assert_eq!(catalogue.t("canvas-tool-brush"), "Brush");
+}

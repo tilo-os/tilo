@@ -200,6 +200,22 @@ impl DesktopGuard {
         let _ = self.doc.merge_incoming(other);
     }
 
+    /// Take in `mutation`, a write the door's own device made, without judging it: the
+    /// writes the door decides later build on it, and would otherwise be decided against
+    /// a desktop that lacks it.
+    ///
+    /// # Errors
+    /// The write is not one of the desktop's documents.
+    pub fn absorb_write(&mut self, mutation: &DocumentMutation) -> Result<(), DesktopRefusal> {
+        let bytes = match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+        };
+        self.doc
+            .load_incoming(bytes)
+            .map(drop)
+            .map_err(|error| DesktopRefusal::Unreadable(error.to_string()))
+    }
+
     /// Decide `mutation`, a write by `writer` ([`admit`]): taken in when it
     /// is admitted, and the desktop left as it was when it is refused.
     ///

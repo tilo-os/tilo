@@ -128,20 +128,6 @@ impl GestureTracker {
         self.config = config;
     }
 
-    pub fn config(&self) -> GestureConfig {
-        self.config
-    }
-
-    pub fn active_fingers(&self) -> Option<u32> {
-        self.fingers
-    }
-
-    /// True while a gesture the *shell* owns is in flight — the signal the event loop uses to keep
-    /// forwarding it away from clients even though finger count is only reported on `begin` .
-    pub fn shell_owns_current(&self) -> bool {
-        self.fingers.is_some_and(claims)
-    }
-
     pub fn swipe_begin(&mut self, fingers: u32) {
         self.fingers = Some(fingers);
         self.delta = (0.0, 0.0);
@@ -224,14 +210,6 @@ impl GestureTracker {
         action
     }
 
-    pub fn pinch_begin(&mut self, fingers: u32) {
-        self.fingers = Some(fingers);
-        self.delta = (0.0, 0.0);
-        self.fired = false;
-        self.strip_pan_engaged = false;
-        self.strip_deck_engaged = false;
-    }
-
     /// Feed one pinch update. `scale` is absolute against the gesture's begin, so the thresholds
     /// are absolute too.
     pub fn pinch_update(&mut self, scale: f64) -> Option<GestureAction> {
@@ -242,10 +220,6 @@ impl GestureTracker {
         let action = pinch_action(scale)?;
         self.fired = true;
         Some(action)
-    }
-
-    pub fn pinch_end(&mut self) {
-        let _ = self.swipe_end();
     }
 }
 
@@ -313,31 +287,14 @@ mod tests {
         assert!(claims(3));
         assert!(claims(4));
         assert!(claims(5));
-        {
-            let mut t = GestureTracker::new(cfg());
-            t.swipe_begin(2);
-            assert_eq!(t.swipe_update(0.0, -500.0), None);
-            assert!(
-                !t.shell_owns_current(),
-                "a two-finger gesture must stay the client's for its whole duration"
-            );
-        }
-        {
-            // The finger count only arrives on `begin` , so the loop needs the in-flight answer to
-            // route the updates that follow.
-            let mut t = GestureTracker::new(cfg());
-            t.swipe_begin(3);
-            assert!(t.shell_owns_current());
-            t.swipe_update(0.0, -150.0);
-            assert!(t.shell_owns_current(), "still ours after it has fired");
-            t.swipe_end();
-            assert!(!t.shell_owns_current());
-        }
-        {
-            let mut t = GestureTracker::new(cfg());
-            t.pinch_begin(2);
-            assert_eq!(t.pinch_update(0.3), None);
-        }
+        let mut t = GestureTracker::new(cfg());
+        t.swipe_begin(2);
+        assert_eq!(
+            t.swipe_update(0.0, -500.0),
+            None,
+            "two fingers stay the client's"
+        );
+        assert_eq!(t.pinch_update(0.3), None);
     }
 
     // swipe direction policy
@@ -541,7 +498,7 @@ mod tests {
         assert_eq!(pinch_action(1.1), None);
         {
             let mut t = GestureTracker::new(cfg());
-            t.pinch_begin(3);
+            t.swipe_begin(3);
             assert_eq!(t.pinch_update(0.9), None);
             assert_eq!(t.pinch_update(0.6), Some(GestureAction::ShowOverview));
             assert_eq!(
@@ -549,8 +506,8 @@ mod tests {
                 None,
                 "latched for the rest of the pinch"
             );
-            t.pinch_end();
-            t.pinch_begin(3);
+            t.swipe_end();
+            t.swipe_begin(3);
             assert_eq!(t.pinch_update(0.4), Some(GestureAction::ShowOverview));
         }
     }
@@ -599,7 +556,6 @@ mod tests {
             // not accumulate into the next gesture.
             let mut t = GestureTracker::new(cfg());
             assert_eq!(t.swipe_update(0.0, -500.0), None);
-            assert_eq!(t.active_fingers(), None);
         }
     }
 }

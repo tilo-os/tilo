@@ -19,8 +19,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -28,7 +26,7 @@ use serde_json::{Value, json};
 use tilo_compositor::InputEvent;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::arrangement::StripReading;
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
@@ -53,19 +51,14 @@ const KEY_LEFT_META: u32 = 125;
 /// A session as a development one starts: the tilolang shell as the whole screen, the seeded apps
 /// published, and the appearance section beside them.
 fn session() -> Session {
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     crate::common::headless(Options {
-        person: common::PERSON.to_owned(),
+        person: crate::common::PERSON.to_owned(),
         shell: false,
         collab: false,
-        search: tilo_session::SearchOptions {
-            // The apps installed on this device, as a real session reads them: the launcher
-            // opens them, and the desk names their windows by their own names.
-            apps: Some(std::sync::Arc::new(tilo_session::Lists::fixed(
-                tilo_session::AppLists::read(),
-            ))),
-            ..tilo_session::SearchOptions::default()
-        },
+        // The apps installed on this device, as a real session reads them: the launcher opens
+        // them, and the desk names their windows by their own names.
+        lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
         services: vec![
             Box::new(apps),
             Box::new(tilo_settings_service::SettingsService::new()),

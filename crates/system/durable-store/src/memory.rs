@@ -429,6 +429,25 @@ impl crate::DurableStore for MemoryStore {
         }))
     }
 
+    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
+        // Every key that names a workspace holds a record or an index there: a page's store has no
+        // directories to list, so that is what says which packages a profile holds.
+        let state = self.state.borrow();
+        let mut held = std::collections::BTreeSet::new();
+        for key in state.slots.keys() {
+            match key {
+                StorageKey::Record {
+                    package, workspace, ..
+                }
+                | StorageKey::WorkspaceIndex { package, workspace } => {
+                    held.insert((package.clone(), workspace.clone()));
+                }
+                StorageKey::Package { .. } | StorageKey::View { .. } => {}
+            }
+        }
+        Ok(held.into_iter().collect())
+    }
+
     fn records(&self, package: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
         // `slots` is ordered, so the answer is sorted.
         Ok(self

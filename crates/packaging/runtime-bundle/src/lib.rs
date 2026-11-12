@@ -1678,7 +1678,7 @@ fn binary_is_executable(metadata: &fs::Metadata) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _metadata = metadata;
+        let _ = metadata;
         false
     }
 }
@@ -1907,6 +1907,10 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let fonts = work.path().join("fonts");
         let prepared = std::process::Command::new("python3")
+            // Isolated, as the CI helpers in `tools/ci` are run: without it Python lists the
+            // script's directory, so this test would read every file in `tools/` and rerun when
+            // any of them changes. The tool imports nothing of its own.
+            .arg("-I")
             .arg(repo.join("tools/font-catalog.py"))
             .arg("prepare")
             .arg(repo.join("crates/sdk/ui-core/assets/fonts"))

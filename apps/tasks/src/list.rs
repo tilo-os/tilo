@@ -119,6 +119,19 @@ fn tree(
 
 /// The list over `rows`: the flat rows stand as the tree their parents make,
 /// and each opens its issue, ticks its box and moves under another.
+/// What a row is about: the issue itself, the item of the tracker its row publishes, named as
+/// the row reads ("#1 Write the launch notes").
+fn issue_subject(resource: &str, label: &str) -> ui::shared_selection::SharedSelection {
+    ui::shared_selection::SharedSelection::of_items([(resource, label)]).in_resource(
+        ui::tilo_actions::ActionResource {
+            id: resource.to_owned(),
+            kind: ui::tilo_resource::items::item_kind(resource)
+                .unwrap_or_else(|| crate::model::KIND.to_owned()),
+            label: label.to_owned(),
+        },
+    )
+}
+
 fn list(
     rows: Vec<Row>,
     ids: Rc<Vec<Id>>,
@@ -151,8 +164,9 @@ fn list(
         tracker.clone(),
         dispatcher.clone(),
     );
-    // What each row is about, by its key: the issue's resource and the row's label, so the menu
-    // opened on a row carries that issue as its subject.
+    // What each row is about, by its key: the issue itself, the item of the tracker its row
+    // publishes, named as the row reads ("#1 Write the launch notes"), so the menu opened on a row
+    // carries that issue as its subject and what it sends names it.
     let subjects: Rc<Vec<(String, String)>> = Rc::new(
         rows.iter()
             .map(|row| (crate::model::issue_resource(&row.issue), row.label.clone()))
@@ -163,13 +177,7 @@ fn list(
         move |key: &u64| {
             let index = usize::try_from(*key).ok()?.checked_sub(1)?;
             let (resource, label) = subjects.get(index)?;
-            Some(
-                ui::shared_selection::SharedSelection::of_items([(
-                    resource.as_str(),
-                    label.as_str(),
-                )])
-                .in_kind(crate::model::KIND),
-            )
+            Some(issue_subject(resource, label))
         }
     };
     let Ok(model) =
@@ -269,7 +277,7 @@ fn row(
 fn status_text(row: &Row) -> String {
     let mut status = tr(row.status.label_key());
     if row.progress.1 > 0 {
-        status = ui::i18n::I18nManager::format(
+        status = crate::locales::CATALOG.t_args(
             "tasks-status-with-progress",
             &[
                 ("status", status.into()),

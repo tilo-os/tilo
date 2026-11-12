@@ -26,6 +26,48 @@ fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
 }
 
 #[test]
+fn a_field_under_another_surface_keeps_its_text_and_gives_up_the_caret() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let mut input = TextInput::local().with_initial_value("kept");
+    input.set_focus(true);
+    input.set_selection(1, 3);
+    let theme = Theme::dark();
+    let mut held = Scene::new();
+    input.draw_single_line_caret(&mut held, Affine::IDENTITY, &theme);
+    assert!(
+        !held.encoding().draw_tags.is_empty(),
+        "the surface with the keyboard paints its caret"
+    );
+    let mut left = Scene::new();
+    {
+        let _keyboard = crate::caret_owner::holding(false);
+        assert!(!crate::caret_owner::shown());
+        input.draw_single_line_caret(&mut left, Affine::IDENTITY, &theme);
+    }
+    assert!(
+        left.encoding().draw_tags.is_empty(),
+        "the surface that lost the keyboard paints no caret"
+    );
+    assert!(
+        input.is_focused(),
+        "the field keeps the keyboard's place in it"
+    );
+    assert_eq!(
+        (input.cursor_pos(), input.selection_range()),
+        (3, Some((1, 3))),
+        "the text and the selection are still where the person left them"
+    );
+    let mut back = Scene::new();
+    input.draw_single_line_caret(&mut back, Affine::IDENTITY, &theme);
+    assert_eq!(
+        back.encoding().draw_tags.len(),
+        held.encoding().draw_tags.len(),
+        "the caret is back with the keyboard"
+    );
+}
+
+#[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();

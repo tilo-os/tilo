@@ -13,6 +13,7 @@ use ui::widget::TaffyTreeExt;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -26,6 +27,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
+use crate::CATALOG;
 use crate::app::{Action, Core, Requests, Shared};
 use crate::model::{Language, SnippetId, SnippetPaths, Snippets};
 use crate::resource::SnippetsView;
@@ -187,7 +189,10 @@ fn facts_row(
         let mut chip = Chip::new(folder.to_owned())
             .with_id(format!("snippets.snippet:{id}.folder"))
             .with_lead(ChipLead::Glyph(Icon::Folder))
-            .with_accessible_name(format!("Folder: {folder}"));
+            .with_accessible_name(CATALOG.t_args(
+                "snippets-a11y-folder",
+                &[("folder", ArgValue::Text(folder.to_owned()))],
+            ));
         if let Some(reveal) = reveal(
             Snippets::folder_place(folder.to_owned()),
             SnippetsView::RevealFolder {
@@ -201,7 +206,9 @@ fn facts_row(
     for tag in tags {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
-            .with_accessible_name(format!("Tag: {tag}"));
+            .with_accessible_name(
+                CATALOG.t_args("snippets-a11y-tag", &[("tag", ArgValue::Text(tag.clone()))]),
+            );
         if let Some(reveal) = reveal(
             Snippets::tag_place(tag.clone()),
             SnippetsView::Reveal { tag: tag.clone() },
@@ -313,7 +320,10 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
         let remove = Button::icon_only(
             &format!("snippets.snippet:{id}.tag:{tag}.remove"),
             Icon::X,
-            &format!("Remove the tag {tag}"),
+            &CATALOG.t_args(
+                "snippets-remove-tag",
+                &[("tag", ui::i18n::ArgValue::Text(tag.clone()))],
+            ),
         )
         .control_size(ControlSize::Small)
         .on_own_device_effect(move || {
@@ -323,9 +333,9 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
         });
         row = row.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    Chip::new(tag.clone()).with_accessible_name(format!("Tag: {tag}")),
-                ))
+                .push(Box::new(Chip::new(tag.clone()).with_accessible_name(
+                    CATALOG.t_args("snippets-a11y-tag", &[("tag", ArgValue::Text(tag.clone()))]),
+                )))
                 .push(Box::new(remove)),
         ));
     }

@@ -17,6 +17,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::i18n::widget_text;
 use crate::widget::ModelPath;
 use tilo_sort::CompactSort as _;
 
@@ -37,6 +38,7 @@ use crate::search::{
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
     ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, ResourceSpec,
@@ -58,7 +60,7 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-mod api;
+pub(crate) mod api;
 mod empty_state;
 mod facet_chips;
 mod history;
@@ -517,6 +519,9 @@ pub struct ActionPalette {
     /// The modifiers held now, so a selected row can show what its
     /// alternative activation would do before it is chosen.
     held: winit::keyboard::ModifiersState,
+    /// The modifier held as the last row was chosen: where it asked the row to open, read by the
+    /// host after the person may have let go of it.
+    chosen_with: Option<crate::search::ActivationModifier>,
     /// The keycap notation the host's rows are drawn with.
     platform: crate::platform::PlatformConventions,
     /// The theme's text and interface scales, as last laid out.
@@ -677,7 +682,7 @@ impl ActionPalette {
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
-                .with_placeholder("Search actions and results"),
+                .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[])),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -740,7 +745,7 @@ impl ActionPalette {
             bypass_fuzzy: false,
             searching: false,
             ranked_generation: crate::search::engine_generation(),
-            query_placeholder: crate::i18n!("palette-placeholder"),
+            query_placeholder: widget_text("palette-placeholder"),
             host_step: None,
             saved_host_query: String::new(),
             outcome: None,
@@ -754,6 +759,7 @@ impl ActionPalette {
             max_list_height: None,
             max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
+            chosen_with: None,
             platform: crate::platform::PlatformConventions::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
@@ -1158,7 +1164,7 @@ impl ActionPalette {
             .field_source
             .build()
             .control_size(FIELD_SIZE)
-            .with_placeholder("Search actions and results");
+            .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[]));
         field.set_scope_token(self.scope.as_ref().map(scope_token_label));
         field
     }
@@ -2725,13 +2731,13 @@ impl ActionPalette {
             return;
         };
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
         self.results
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.controls_node.is_some() {
             self.controls
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         pose.end(scene);
     }
@@ -3281,6 +3287,7 @@ pub(crate) fn observed_history_editor(
 #[cfg(test)]
 mod tests {
     include!("action_palette/deferred_tests.rs");
+    include!("action_palette/copy_tests.rs");
     include!("action_palette/confirmation_tests.rs");
     include!("action_palette/platform_search_tests.rs");
     include!("action_palette/search_tests.rs");

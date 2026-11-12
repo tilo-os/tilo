@@ -12,6 +12,7 @@
 //! *unfiltered* history, so toggling a chip narrows the list without re-chunking it under the
 //! reader.
 
+use crate::i18n::{widget_format, widget_text};
 use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ModelPath;
@@ -101,7 +102,8 @@ fn wash(surface: Color, alpha: u8) -> Color {
 fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
     let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short);
     if author.relation == crate::widget::history::AuthorRelation::Software {
-        face.glyph(crate::icons::Icon::Bot)
+        face.hue(crate::tokens::colors::PresenceHue::of_agent(&author.name))
+            .agent()
     } else {
         face.presence(colour)
     }
@@ -135,7 +137,7 @@ impl ChipKind {
     ];
 
     pub fn label(&self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             ChipKind::All => "history-chip-all",
             ChipKind::Edits => "history-chip-edits",
             ChipKind::Comments => "history-chip-comments",
@@ -147,7 +149,7 @@ impl ChipKind {
     /// Used when the full label set will not fit; every chip switches
     /// together, or mixed lengths would read as a rendering accident.
     pub fn short_label(&self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             ChipKind::All => "history-chip-all",
             ChipKind::Edits => "history-chip-edits-short",
             ChipKind::Comments => "history-chip-comments-short",
@@ -858,7 +860,7 @@ impl ActivityTimeline {
             parts.push(
                 self.time_range_label
                     .clone()
-                    .unwrap_or_else(|| crate::i18n!("history-filter-dates")),
+                    .unwrap_or_else(|| widget_text("history-filter-dates")),
             );
         }
         parts.join(" \u{00b7} ")
@@ -866,16 +868,19 @@ impl ActivityTimeline {
 
     pub fn empty_state_lines(&self) -> (String, Option<String>) {
         if self.entries.is_empty() {
-            return (crate::i18n!("history-empty"), None);
+            return (widget_text("history-empty"), None);
         }
         let hidden = self.entries.len();
         let summary = self.active_filter_summary();
         let detail = if summary.is_empty() {
-            crate::i18n!("history-empty-hidden", "count" => hidden)
+            widget_format("history-empty-hidden", &[("count", hidden.into())])
         } else {
-            crate::i18n!("history-empty-hidden-by", "count" => hidden, "filters" => summary)
+            widget_format(
+                "history-empty-hidden-by",
+                &[("count", hidden.into()), ("filters", summary.into())],
+            )
         };
-        (crate::i18n!("history-empty-filtered"), Some(detail))
+        (widget_text("history-empty-filtered"), Some(detail))
     }
 
     pub fn author_pill_rect(&self) -> Rect {
@@ -1199,11 +1204,12 @@ impl ActivityTimeline {
 
     /// The name an entry's author goes by in this History: an agent by its
     /// own name where History filters by person, else the author's.
-    fn author_label<'a>(&self, entry: &'a HistoryEntry) -> &'a str {
-        match &entry.author.attribution {
+    fn author_label(&self, entry: &HistoryEntry) -> String {
+        if self.filters_people {
             // An agent's own name; its row's place in the History says for whom.
-            Some(who) if self.filters_people => who.actor_name.as_str(),
-            _ => entry.author.name.as_str(),
+            entry.author.name.clone()
+        } else {
+            crate::history_source::sentence::author_line(&entry.author)
         }
     }
 
@@ -1913,11 +1919,17 @@ impl ActivityTimeline {
             // reader cannot catch.
             facts.insert(
                 0,
-                crate::i18n!("history-band-shown", "shown" => visible_count, "total" => total_count),
+                widget_format(
+                    "history-band-shown",
+                    &[
+                        ("shown", visible_count.into()),
+                        ("total", total_count.into()),
+                    ],
+                ),
             );
         }
         if g.open {
-            facts.insert(0, crate::i18n!("history-band-open"));
+            facts.insert(0, widget_text("history-band-open"));
         }
         let gi = row_groups.len();
         row_groups.push(RowGroup {
@@ -2518,11 +2530,16 @@ impl ActivityTimeline {
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
-                    crate::i18n!(
+                    widget_format(
                         "history-redacted",
-                        "who" => redaction.redactor_label.as_str(),
-                        "when" => format_relative_time(redaction.redacted_at, now),
-                        "reason" => redaction.reason.as_str()
+                        &[
+                            ("who", redaction.redactor_label.as_str().into()),
+                            (
+                                "when",
+                                format_relative_time(redaction.redacted_at, now).into(),
+                            ),
+                            ("reason", redaction.reason.as_str().into()),
+                        ],
                     ),
                     true,
                 )
@@ -2609,7 +2626,7 @@ impl ActivityTimeline {
                 text_renderer,
                 theme,
                 self.copy_chip_painted(row, offers_revert),
-                &crate::i18n!("history-entry-copy"),
+                &widget_text("history-entry-copy"),
                 false,
             );
         }
@@ -2646,7 +2663,7 @@ impl ActivityTimeline {
                 text_renderer,
                 theme,
                 chip_rect,
-                &crate::i18n!("history-entry-revert"),
+                &widget_text("history-entry-revert"),
                 false,
             );
         }
@@ -2745,7 +2762,7 @@ impl ActivityTimeline {
                     tr,
                     theme,
                     r,
-                    &crate::i18n!("history-band-undo"),
+                    &widget_text("history-band-undo"),
                     false,
                 );
             }
@@ -2756,7 +2773,7 @@ impl ActivityTimeline {
                     tr,
                     theme,
                     r,
-                    &crate::i18n!("history-band-restore"),
+                    &widget_text("history-band-restore"),
                     false,
                 );
             }
@@ -3119,7 +3136,7 @@ impl ActivityTimeline {
         // The author pill is anchored right when this standalone widget owns
         // people filtering. The host's Activity view can supply that control itself.
         let author_label = if self.author_query.is_empty() {
-            crate::i18n!("history-author-anyone")
+            widget_text("history-author-anyone")
         } else {
             self.author_query.clone()
         };
@@ -3216,7 +3233,7 @@ impl ActivityTimeline {
         let &FilterStripPaint { strip, chip_h } = paint;
         let cy = f64::midpoint(strip.y0, strip.y1);
         let chosen = self.filter.authors.first().cloned();
-        let everyone = crate::i18n!("history-chip-all");
+        let everyone = widget_text("history-chip-all");
         let mut chips: Vec<(Option<String>, String, crate::widget::ChipLead)> =
             vec![(None, everyone, crate::widget::ChipLead::None)];
         for author in self.people() {
@@ -3227,10 +3244,7 @@ impl ActivityTimeline {
                 crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
             };
             // An agent's chip names the agent itself; its rows say for whom.
-            let label = author
-                .attribution
-                .as_ref()
-                .map_or_else(|| author.name.clone(), |who| who.actor_name.clone());
+            let label = author.name.clone();
             chips.push((Some(author.name.clone()), label, lead));
         }
         let mut x = strip.x0;
@@ -3317,8 +3331,8 @@ impl ActivityTimeline {
             Some(NameTarget::Selection)
         );
 
-        let clear_label = crate::i18n!("history-selection-clear");
-        let name_label = crate::i18n!("history-selection-name");
+        let clear_label = widget_text("history-selection-clear");
+        let name_label = widget_text("history-selection-name");
         let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
             (f64::from(tr.measure_style(label, None, &style).0) + 20.0).max(min)
         };
@@ -3337,7 +3351,7 @@ impl ActivityTimeline {
         self.clear_selection_rect = clear;
         draw_chip(scene, transform, tr, theme, clear, &clear_label, false);
 
-        let label = crate::i18n!("history-selection-count", "count" => n);
+        let label = widget_format("history-selection-count", &[("count", n.into())]);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, &style, label_budget);
         let label_top = text_top(tr, &style, bar.center().y);
@@ -3387,7 +3401,7 @@ impl Widget for ActivityTimeline {
         }
         (0..self.row_count()).find_map(|i| {
             let face = self.avatar_rect(i).filter(|face| face.contains(point))?;
-            Some((face, self.author_label(self.row_entry(i)?).to_owned()))
+            Some((face, self.author_label(self.row_entry(i)?)))
         })
     }
 
@@ -3614,7 +3628,11 @@ impl Widget for ActivityTimeline {
                         let said = if item.is_genesis() {
                             self.summary_of(item).to_owned()
                         } else {
-                            format!("{}: {}", item.author.name, self.summary_of(item))
+                            format!(
+                                "{}: {}",
+                                crate::history_source::sentence::author_line(&item.author),
+                                self.summary_of(item)
+                            )
                         };
                         let name = Self::entry_breadcrumb(item).map_or_else(
                             || said.clone(),
@@ -3655,7 +3673,7 @@ impl Widget for ActivityTimeline {
             .collect();
         Some(
             AccessNode::new(Role::List)
-                .with_name(crate::i18n!("history-entries"))
+                .with_name(widget_text("history-entries"))
                 .with_description(description)
                 .with_state(
                     AccessState::new()
@@ -3826,7 +3844,7 @@ impl ActivityTimeline {
 
             // `[Clear filters]` — the way back out. Without it the user has
             // to remember which chip they pressed to get here.
-            let label = crate::i18n!("history-filters-clear");
+            let label = widget_text("history-filters-clear");
             let label = label.as_str();
             let (lw, lh) = text_renderer.measure_style(label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
@@ -4324,7 +4342,6 @@ mod tests {
                 .with_attribution(crate::widget::history::HistoryAttribution {
                     actor: "bot:standup".into(),
                     kind,
-                    actor_name: "Standup Bot".into(),
                     on_behalf_of: Some("ada".into()),
                     on_behalf_of_name: Some("Ada".into()),
                 })

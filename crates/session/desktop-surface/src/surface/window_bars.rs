@@ -7,7 +7,7 @@
 //! passes on what it asked ([`DesktopHandle::declare_bar`] and its siblings), and takes back what
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
 
-use super::{DesktopHandle, DesktopSurface, descriptor, route_of};
+use super::{DesktopHandle, DesktopSurface, TabId, descriptor, route_of};
 use crate::navigation::Admitted;
 use ui::hosted_window::HostedWindow;
 use ui::widget::WindowGroup;
@@ -27,6 +27,11 @@ pub(super) struct Bars {
     offered: Vec<(u64, u64, WindowOffer)>,
     /// Tabs whose app asked for its location to be edited.
     edits: Vec<u64>,
+    /// Tabs a person asked to name in their window's bar.
+    renames: Vec<u64>,
+    /// A field in a window's bar takes what is typed (a tab being named, a location edited): the
+    /// desk holds the keyboard until it closes, so the keys do not reach the app under it.
+    typing: bool,
     /// Tabs whose app asked for its search, and how it opens.
     searches: Vec<(u64, SearchOpening)>,
     /// Connections that closed: what they declared goes with them.
@@ -89,6 +94,17 @@ impl DesktopHandle {
         self.queue_bar_ask(|bars| bars.edits.push(tab));
     }
 
+    /// Open `tab`'s name field in its window's bar, as its menu's Rename and a double click on the
+    /// tab do: the field holds the keyboard, Enter names the tab and Escape leaves it as it was.
+    pub fn rename_in_bar(&self, tab: u64) {
+        self.queue_bar_ask(|bars| bars.renames.push(tab));
+    }
+
+    /// Whether a field in a window's bar takes what is typed now.
+    pub(super) fn bar_takes_typing(&self) -> bool {
+        self.shared.borrow().bars.typing
+    }
+
     /// `tab` 's app asked for its window's search in the bar to open, as its own Ctrl+F (or Ctrl+H,
     /// for `opening` ) does.
     pub fn open_bar_search(&self, tab: u64, opening: SearchOpening) {
@@ -135,6 +151,63 @@ impl DesktopHandle {
             }
         }
         shown
+    }
+
+    /// Press the control `name` of `tab`'s window: the one *that* window shows, whichever other
+    /// window goes by the same name. What a person pointing at the window in front presses.
+    ///
+    /// # Errors
+    /// `tab`'s window is not drawn, shows no control by that name, or it answers nothing of
+    /// `action`.
+    pub fn press_window_control_in(
+        &self,
+        tab: TabId,
+        name: &str,
+        action: TargetAction,
+    ) -> Result<(), String> {
+        let mut shared = self.shared.borrow_mut();
+        let Some((connection, targets)) = shared.bars.targets.get(&tab) else {
+            return Err(format!("no window {tab} shows a control named {name}"));
+        };
+        let Some(target) = targets
+            .iter()
+            .find(|target| target.name == name && target.actions.contains(&action))
+        else {
+            return Err(format!("window {tab} shows no control named {name}"));
+        };
+        let (name, role) = (target.name.clone(), target.role.clone());
+        let connection = *connection;
+        shared.bars.presses.push((connection, name, role, action));
+        shared.changed();
+        Ok(())
+    }
+
+    /// The window a press by name reaches first: the active window of the strip the person works
+    /// on, whose content is what stands in front of them. `None` while the desk shows none.
+    #[must_use]
+    pub fn window_in_front(&self) -> Option<TabId> {
+        let shared = self.shared.borrow();
+        let tree = &shared.tree;
+        let strip_id = tree.active_strip_id()?;
+        let group_id = tree.active_group_for(strip_id)?;
+        let workspace = tree.active_workspace()?;
+        let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+        let group = strip
+            .window_groups
+            .iter()
+            .find(|group| group.id == group_id)?;
+        Some(group.active_tab)
+    }
+
+    /// Whether the app of `tab` described a control named `name` for its window's content.
+    #[must_use]
+    pub fn window_offers(&self, tab: TabId, name: &str) -> bool {
+        let shared = self.shared.borrow();
+        shared
+            .bars
+            .targets
+            .get(&tab)
+            .is_some_and(|(_, targets)| targets.iter().any(|target| target.name == name))
     }
 
     /// Press the control `name` of a window the desk shows, as an assistive
@@ -186,7 +259,41 @@ impl DesktopHandle {
     }
 }
 
+impl DesktopHandle {
+    /// Name the agent run that opened each window an agent opened for its person, by tab, as the
+    /// workspace's shared desk says: the window's bar names the agent, and opens the run in History.
+    /// Whether that changed anything.
+    pub fn set_opened_by(
+        &self,
+        opened_by: std::collections::BTreeMap<u64, tilo_desktop_model::ownership::OpenedBy>,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.opened_by == opened_by {
+            return false;
+        }
+        shared.opened_by = opened_by;
+        shared.changed();
+        true
+    }
+}
+
 impl DesktopSurface {
+    /// Bring the agent run `run` up in History, which opens or comes forward for it: what pressing
+    /// the agent's mark in a window's bar does.
+    pub(super) fn open_run(&self, run: String) {
+        let mut shared = self.shared.borrow_mut();
+        let open = crate::navigation::resolve_open(&shared.tree, super::ACTIVITY_APP);
+        shared.activity_focus = Some((
+            crate::navigation::ActivityView::Explore,
+            crate::activity::ActivityDeepLink {
+                group_id: Some(run),
+                ..crate::activity::ActivityDeepLink::default()
+            },
+        ));
+        shared.queue.push(open);
+        shared.changed();
+    }
+
     /// Show every window's declared slots in its bar, hand each app what the person did with them,
     /// and close the tabs whose app asked to. Returns whether the desktop shows something new or an
     /// app has something to hear.
@@ -219,12 +326,24 @@ impl DesktopSurface {
         changed |= sync.changed;
         changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();
+        self.publish_bar_typing();
         let events = self.window_slots.take_outbox();
         if !events.is_empty() {
             self.shared.borrow_mut().bars.events.extend(events);
             changed = true;
         }
         changed
+    }
+
+    /// Say whether a field in a window's bar takes what is typed, for the desk to hold the
+    /// keyboard while it does ([`DesktopHandle::wants_keyboard`]).
+    pub(super) fn publish_bar_typing(&self) {
+        let typing = self
+            .rows
+            .values()
+            .flat_map(|row| row.groups.iter())
+            .any(WindowGroup::takes_typing);
+        self.shared.borrow_mut().bars.typing = typing;
     }
 
     /// Name each window by what it shows: the bar's location label, a note's title or a folder's
@@ -343,17 +462,28 @@ impl DesktopSurface {
     /// Run what the apps in processes of their own asked of their bars' own controls: edit the
     /// location, open the search. Only the tab its window shows edits or searches.
     fn ask_bar_changes(&mut self) -> bool {
-        let (edits, searches) = {
+        let (edits, searches, renames) = {
             let mut shared = self.shared.borrow_mut();
             (
                 std::mem::take(&mut shared.bars.edits),
                 std::mem::take(&mut shared.bars.searches),
+                std::mem::take(&mut shared.bars.renames),
             )
         };
         let mut changed = false;
         for tab in edits {
             if let Some(group) = active_group(&mut self.rows, tab) {
                 changed |= group.edit_location();
+            }
+        }
+        for tab in renames {
+            if let Some(group) = self
+                .rows
+                .values_mut()
+                .flat_map(|row| row.groups.iter_mut())
+                .find(|group| group.tabs().iter().any(|shown| shown.id == tab))
+            {
+                changed |= group.begin_tab_rename(tab, &crate::i18n::t("window-tab-name"));
             }
         }
         for (tab, opening) in searches {

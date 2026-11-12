@@ -23,12 +23,16 @@ d-3g3duquj = Einträge
 d-l7s2czjp = Kommentieren
     .doc = Sagt etwas zu der Ressource, aus der der Kommentar gemacht wird: der Thread unter einer Aufgabe, einer Notiz oder einer Mail sagt es mit `.made_from(r)`, sodass der Kommentar festhält, worum es geht.
     .did = kommentierte
+    .w-write-a-comment-first = Schreib zuerst einen Kommentar
 
 d-iae4o5k3 = Bearbeiten
     .doc = Ändert, was ein Kommentar sagt.
+    .w-only-its-author-can-edit-a = Nur wer ihn geschrieben hat, kann einen Kommentar bearbeiten
+    .w-write-a-comment-first = Schreib zuerst einen Kommentar
 
 d-l3wyj42h = Löschen
     .doc = Löscht einen Kommentar.
+    .w-only-its-author-can-delete-a = Nur wer ihn geschrieben hat, kann einen Kommentar löschen
 
 d-vzn4frig = Kommentiert
 
@@ -38,7 +42,7 @@ d-kflwfuct = Gelöscht
 
 d-upy33rnt = Thread
     .w-discussion = Diskussion
-    .w-comment-on-this = { $noun } kommentieren
+    .w-add-a-comment = Kommentar hinzufügen
     .w-send = Senden
 
 d-nsv2jvpu = Geschrieben

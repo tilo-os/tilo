@@ -20,6 +20,8 @@
 //! is a [`WorkspaceNotice::PreAdmitted`] the owner sees, and a report of the
 //! workspace through its door is a [`WorkspaceNotice::Reported`].
 
+mod entering;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -33,7 +35,6 @@ use tilo_relay_protocol::directory::{
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice, WorkspaceRole};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
-use web_time::SystemTime;
 
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, Workspaces};
@@ -52,6 +53,10 @@ pub(crate) const DOOR_LABEL: &str = "the public directory";
 pub enum DoorRefusal {
     /// The person may not join now; `Display` says why.
     Refused(String),
+    /// The workspace's people banned the person.
+    Banned,
+    /// The person was removed from the workspace within the day.
+    Removed,
     /// The door admits only people invited or pre-admitted, and this person
     /// holds neither: their page asks them to be invited.
     InvitationOnly,
@@ -67,12 +72,41 @@ impl DoorRefusal {
     fn refused(reason: impl Into<String>) -> Self {
         Self::Refused(reason.into())
     }
+
+    /// The refusal as the door answers it, naming the wait list `door` keeps
+    /// for a workspace taking people by invitation.
+    #[must_use]
+    pub fn answer_with(
+        &self,
+        door: Option<&tilo_relay_protocol::directory::DoorWaitList>,
+    ) -> tilo_relay_protocol::directory::DoorRefused {
+        self.answer().with_wait_list(door)
+    }
+
+    /// The refusal as the door answers it.
+    #[must_use]
+    pub fn answer(&self) -> tilo_relay_protocol::directory::DoorRefused {
+        use tilo_relay_protocol::directory::DoorRefusalCode;
+        tilo_relay_protocol::directory::DoorRefused {
+            code: match self {
+                Self::Refused(_) => DoorRefusalCode::Refused,
+                Self::Banned => DoorRefusalCode::Banned,
+                Self::Removed => DoorRefusalCode::Removed,
+                Self::InvitationOnly => DoorRefusalCode::InvitationOnly,
+                Self::Full { .. } => DoorRefusalCode::Full,
+            },
+            error: self.to_string(),
+            ..Default::default()
+        }
+    }
 }
 
 impl std::fmt::Display for DoorRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(reason) => f.write_str(reason),
+            Self::Banned => f.write_str("you were banned from this workspace"),
+            Self::Removed => f.write_str("you were removed from this workspace within the day"),
             Self::InvitationOnly => f.write_str("this workspace is joined by invitation"),
             Self::Full { retry_after_secs } => write!(
                 f,
@@ -99,6 +133,10 @@ pub(super) struct Listings {
     /// being handed one. The host's operator sets it; it is not a listing's
     /// field, so what a stored listing holds never changes.
     invitation_only: std::sync::Mutex<BTreeSet<String>>,
+    /// The people the host's operator declares owners or moderators of each
+    /// workspace: an invitation-only door lets them in as it lets in someone
+    /// invited, since nobody else could invite the first of them.
+    declared: std::sync::Mutex<BTreeMap<String, BTreeSet<[u8; 32]>>>,
     /// When a member last wrote to each workspace, Unix milliseconds, since this
     /// relay started: the directory's activity hint.
     active: std::sync::Mutex<BTreeMap<String, u64>>,
@@ -121,6 +159,7 @@ impl Listings {
             path,
             stored: std::sync::Mutex::new(stored),
             invitation_only: std::sync::Mutex::default(),
+            declared: std::sync::Mutex::default(),
             active: std::sync::Mutex::default(),
             changes: tokio::sync::broadcast::channel(16).0,
         }
@@ -128,7 +167,7 @@ impl Listings {
 
     /// Whether `workspace`'s door admits only people invited or
     /// pre-admitted.
-    fn invites_only(&self, workspace: &str) -> bool {
+    pub(super) fn invites_only(&self, workspace: &str) -> bool {
         self.invitation_only.lock_recover().contains(workspace)
     }
 
@@ -143,12 +182,29 @@ impl Listings {
         }
     }
 
+    /// Whether the host's operator declares `user` an owner or moderator of
+    /// `workspace`.
+    fn declared(&self, workspace: &str, user: &[u8; 32]) -> bool {
+        self.declared
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|people| people.contains(user))
+    }
+
     fn get(&self, workspace: &str) -> Option<Listing> {
         self.stored
             .lock_recover()
             .workspaces
             .get(workspace)
             .cloned()
+    }
+
+    /// Whether `workspace` is public: listed in the directory.
+    pub(super) fn is_public(&self, workspace: &str) -> bool {
+        self.stored
+            .lock_recover()
+            .workspaces
+            .contains_key(workspace)
     }
 
     fn listed(&self) -> Vec<(String, Listing)> {
@@ -216,6 +272,20 @@ fn faces(
     (faces, count)
 }
 
+/// The part an invitation hands a member who holds `role`, so that redeeming
+/// it leaves them as they are. The owner holds the workspace whatever an
+/// invitation names: none is theirs.
+const fn invited_part(role: tilo_action_policy::Role) -> Option<WorkspaceRole> {
+    use tilo_action_policy::Role;
+    match role {
+        Role::Viewer => Some(WorkspaceRole::Viewer),
+        Role::Commenter => Some(WorkspaceRole::Commenter),
+        Role::Editor => Some(WorkspaceRole::Editor),
+        Role::Moderator => Some(WorkspaceRole::Moderator),
+        Role::Owner => None,
+    }
+}
+
 fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
     let mut key = [0; 32];
     hex::decode_to_slice(hex_key, &mut key)
@@ -224,6 +294,33 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 }
 
 impl Workspaces {
+    /// Have `workspace`'s host send its records to devices when they open
+    /// them (`when_opened`), as a public workspace does, or replay them to
+    /// every device again. A public workspace is one anyone may walk into:
+    /// what a newcomer waits for is its governance and its shared desktop,
+    /// not every record its crowd ever wrote.
+    async fn load_records_when_opened(&self, workspace: &str, when_opened: bool) {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return;
+        };
+        let workspace_id = governed.lock().await.workspace_id();
+        let hosted = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        if let Some(hosted) = hosted {
+            hosted
+                .lock()
+                .await
+                .store
+                .set_records_when_opened(when_opened);
+        }
+    }
+
     /// Make `workspace` public with `listing`, as `device` asks: the workspace's
     /// governance must let its person change the workspace's settings.
     pub async fn publish(
@@ -249,6 +346,7 @@ impl Workspaces {
             .listings
             .set(workspace, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
+        self.load_records_when_opened(workspace, true).await;
         tracing::info!(%workspace, role = ?listing.default_role, "workspace made public");
         Ok(listing)
     }
@@ -278,6 +376,7 @@ impl Workspaces {
             .listings
             .set(workspace, None)
             .map_err(CollaborationError::new)?;
+        self.load_records_when_opened(workspace, false).await;
         tracing::info!(%workspace, "workspace no longer public");
         Ok(())
     }
@@ -311,11 +410,44 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The people the host's operator declares owners or moderators of
+    /// `workspace`, as it declares them now: its door lets them in even when it
+    /// takes people by invitation, and the operator gives them their part once
+    /// they are in. Settled at every start and whenever the declaration
+    /// changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings.
+    pub async fn admit_declared(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        people: BTreeSet<[u8; 32]>,
+    ) -> Result<(), CollaborationError> {
+        {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                WorkspaceOp::Govern(governance::SETTINGS),
+                tilo_clock::unix_now_ns(),
+            )?;
+        }
+        self.inner
+            .listings
+            .declared
+            .lock_recover()
+            .insert(workspace.to_owned(), people);
+        Ok(())
+    }
+
     /// Whether `user` holds an invitation this workspace issued and has not
     /// spent: one from a member, or the one its door hands a person it lets
     /// in. Either is bound to them, so an invitation-only door still knows
     /// whom it let in when they come back to redeem it.
-    async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
+    pub(super) async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
         let Ok(state) = self.workspace(workspace).await else {
             return false;
         };
@@ -326,6 +458,24 @@ impl Workspaces {
             .pending(now)
             .iter()
             .any(|invitation| invitation.recipient_user_public_key == Some(user))
+    }
+
+    /// The role `user` holds in `workspace` as one of its members now: `None`
+    /// for someone it does not have in it, a person it removed, and one it
+    /// banned.
+    pub(super) async fn member_role(
+        &self,
+        workspace: &str,
+        user: [u8; 32],
+    ) -> Option<tilo_action_policy::Role> {
+        let state = self.workspace(workspace).await.ok()?;
+        let state = state.lock().await;
+        state
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .ok()?
+            .policy
+            .active_role(&hex::encode(user))
     }
 
     pub fn listing(&self, workspace: &str) -> Option<Listing> {
@@ -381,7 +531,7 @@ impl Workspaces {
         workspace: &str,
         online: &BTreeSet<[u8; 32]>,
     ) -> Result<(Vec<Face>, u32, u32), CollaborationError> {
-        let summary = self.workspace(workspace).await?.lock().await.summary();
+        let summary = self.summary(workspace).await?;
         let (here, here_count) = faces(&summary.members, online);
         let members = summary
             .members
@@ -396,10 +546,9 @@ impl Workspaces {
     pub async fn directory(&self, online: &BTreeSet<[u8; 32]>) -> Vec<DirectoryEntry> {
         let mut entries = Vec::new();
         for (workspace, listing) in self.inner.listings.listed() {
-            let Ok(governed) = self.workspace(&workspace).await else {
+            let Ok(summary) = self.summary(&workspace).await else {
                 continue;
             };
-            let summary = governed.lock().await.summary();
             let (here, here_count) = faces(&summary.members, online);
             let members = summary
                 .members
@@ -433,6 +582,12 @@ impl Workspaces {
     /// [`PendingInvitation::recipient_user_public_key`]. Everyone else is
     /// turned away with the door's own words.
     ///
+    /// Someone the workspace has in it is let in at the part they hold there,
+    /// never the listing's default: their device's redemption writes the
+    /// invitation's part as theirs, and a door that handed them another would
+    /// change it. A device of theirs that enters on its session is admitted as
+    /// theirs before it would ask this door at all.
+    ///
     /// For a person an invitation still names, the door answers with that
     /// invitation, and records a grant for it at once so the page that made
     /// the join redeems it the way every page redeems a door's answer: its
@@ -450,18 +605,25 @@ impl Workspaces {
             .ok_or_else(|| DoorRefusal::refused("that workspace is not public"))?;
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
+        let member = self.member_role(workspace, user).await;
         // An invitation-only door refuses a stranger who holds no
-        // invitation of their own, and says so: the person's page offers
-        // them the way to be invited (the site's wait list) instead of a
-        // link in as a guest.
-        if self.inner.listings.invites_only(workspace) && !self.invited(workspace, user, now).await
+        // invitation of their own and whom the operator did not declare, and
+        // says so: the person's page offers them the way to be invited (the
+        // site's wait list) instead of a link in as a guest.
+        if self.inner.listings.invites_only(workspace)
+            && member.is_none()
+            && !self.inner.listings.declared(workspace, &user)
+            && !self.invited(workspace, user, now).await
         {
             return Err(DoorRefusal::InvitationOnly);
         }
+        let role = member
+            .and_then(invited_part)
+            .unwrap_or(listing.default_role);
         let token = hex::encode(rand::random::<[u8; 32]>());
-        let grant = self.door_grant(workspace, listing.default_role, now, &token)?;
+        let grant = self.door_grant(workspace, role, now, &token)?;
         let issued = self
-            .admit_governed(workspace, join, listing.default_role, user, now, grant)
+            .admit_governed(workspace, join, role, user, now, grant)
             .await?;
         self.written(workspace, true).await.map_err(refused)?;
         Ok((issued, token))
@@ -493,13 +655,13 @@ impl Workspaces {
         Ok(grant)
     }
 
-    /// The invitation `workspace`'s door answers `join` with, its grant
-    /// recorded for the token the door hands out.
+    /// The invitation `workspace`'s door answers `join` with, at `role`, its
+    /// grant recorded for the token the door hands out.
     async fn admit_governed(
         &self,
         workspace: &str,
         join: &DoorJoin,
-        default_role: WorkspaceRole,
+        role: WorkspaceRole,
         user: [u8; 32],
         now: u64,
         grant: PreAdmission,
@@ -510,16 +672,14 @@ impl Workspaces {
             let mut governed = governed.lock().await;
             let policy = governed
                 .peer()
-                .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
+                .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
-                return Err(DoorRefusal::refused("you were banned from this workspace"));
+                return Err(DoorRefusal::Banned);
             }
             if governed.door.refuses(user, now) {
-                return Err(DoorRefusal::refused(
-                    "you were removed from this workspace within the day",
-                ));
+                return Err(DoorRefusal::Removed);
             }
             // A person an invitation of the workspace's own names is handed
             // that invitation, not a new one: the inviter decided its role and
@@ -568,7 +728,7 @@ impl Workspaces {
                     &host,
                     IssueInvitationRequest {
                         request_id: rand::random(),
-                        role: super::pages::member_role(default_role),
+                        role: super::pages::member_role(role),
                         recipient_user_public_key: Some(user),
                         invitee_name: tilo_user_identity::display_name(&join.display_name)
                             .ok()
@@ -720,16 +880,13 @@ mod door_tests {
         clippy::significant_drop_tightening,
         reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
     )]
-    use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,
     };
     use tilo_peer_state::join::MemberRole;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
-    use tilo_relay_protocol::workspaces::{
-        JoinReply, JoinStep, PreAdmission, WorkspaceRole, join_proof_digest,
-    };
+    use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
@@ -798,12 +955,12 @@ mod door_tests {
         workspaces: &Workspaces,
         workspace: &str,
     ) -> (Result<JoinReply, String>, DeviceCert) {
-        let (key, cert) = guest_device();
+        let (_, cert) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(cert.user_public_key),
             display_name: "Cy".into(),
         };
-        let reply = walk_in_as(workspaces, workspace, &join, &key, &cert).await;
+        let reply = walk_in_as(workspaces, workspace, &join, &cert).await;
         (reply, cert)
     }
 
@@ -811,14 +968,13 @@ mod door_tests {
         workspaces: &Workspaces,
         workspace: &str,
         join: &DoorJoin,
-        key: &ed25519_dalek::SigningKey,
         cert: &DeviceCert,
     ) -> Result<JoinReply, String> {
         let (issued, token) = workspaces
             .admit_listed(workspace, join)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(redeem(workspaces, issued.signed_invitation, token, key, cert).await)
+        Ok(redeem(workspaces, issued.signed_invitation, token, cert).await)
     }
 
     /// Redeem `invitation` with the door's `token`, as the person's device.
@@ -826,27 +982,16 @@ mod door_tests {
         workspaces: &Workspaces,
         invitation: Vec<u8>,
         token: String,
-        key: &ed25519_dalek::SigningKey,
         cert: &DeviceCert,
     ) -> JoinReply {
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation,
-                device_cert: cert.clone(),
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
         workspaces
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: "Cy".into(),
-                token: token.into_bytes(),
-            })
+            .admit_proven(
+                invitation,
+                cert.clone(),
+                rand::random(),
+                "Cy",
+                Some(token.as_bytes()),
+            )
             .await
     }
 
@@ -896,7 +1041,7 @@ mod door_tests {
             ),
         ];
         for (what, forge) in forgeries {
-            let (guest_key, guest) = guest_device();
+            let (_, guest) = guest_device();
             let join = DoorJoin {
                 user_public_key: hex::encode(guest.user_public_key),
                 display_name: "Mallory".into(),
@@ -910,14 +1055,7 @@ mod door_tests {
                 .await
                 .admissions
                 .tamper(issued.invite_id, forge);
-            let reply = redeem(
-                workspaces,
-                issued.signed_invitation,
-                token,
-                &guest_key,
-                &guest,
-            )
-            .await;
+            let reply = redeem(workspaces, issued.signed_invitation, token, &guest).await;
             assert!(
                 !matches!(reply, JoinReply::Admitted { .. }),
                 "{what} admitted someone: {reply:?}"
@@ -931,13 +1069,13 @@ mod door_tests {
             );
         }
 
-        let (guest_key, guest) = guest_device();
+        let (_, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
             Ok(JoinReply::Admitted { .. })
         ));
         relay.shutdown().await;
@@ -1021,7 +1159,7 @@ mod door_tests {
     async fn writes_in_chat(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) -> bool {
         const CHAT: &str = "so.tilo.chat";
         let state = workspaces.workspace(workspace).await.unwrap();
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let member = state
             .lock()
             .await
@@ -1145,7 +1283,7 @@ mod door_tests {
             )
             .await
             .unwrap();
-        let (guest_key, guest) = guest_device();
+        let (_, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
@@ -1156,7 +1294,7 @@ mod door_tests {
                 .any(|member| member.user_public_key == guest.user_public_key && !member.removed)
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
@@ -1174,7 +1312,7 @@ mod door_tests {
 
         assert!(
             matches!(
-                walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+                walk_in_as(workspaces, &workspace, &join, &guest).await,
                 Ok(JoinReply::Admitted {
                     role: WorkspaceRole::Editor,
                     ..
@@ -1208,13 +1346,13 @@ mod door_tests {
             )
             .await
             .unwrap();
-        let (guest_key, guest) = guest_device();
+        let (_, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
@@ -1232,10 +1370,7 @@ mod door_tests {
             .admit_listed(&workspace, &join)
             .await
             .unwrap_err();
-        assert_eq!(
-            refused,
-            DoorRefusal::Refused("you were removed from this workspace within the day".into())
-        );
+        assert_eq!(refused, DoorRefusal::Removed);
         assert!(
             workspaces
                 .removed_within_the_day(&workspace, guest.user_public_key)
@@ -1328,7 +1463,7 @@ mod door_tests {
                 .admit_listed(&workspace, &join)
                 .await
                 .unwrap_err(),
-            DoorRefusal::Refused("you were removed from this workspace within the day".into())
+            DoorRefusal::Removed
         );
         relay.shutdown().await;
     }
@@ -1452,13 +1587,13 @@ mod door_tests {
             )
             .await
             .unwrap();
-        let (guest_key, guest) = guest_device();
+        let (_, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
         assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+            walk_in_as(workspaces, &workspace, &join, &guest).await,
             Ok(JoinReply::Admitted { .. })
         ));
         assert!(
@@ -1540,7 +1675,7 @@ mod door_tests {
         );
 
         // A person a member invited is let in.
-        let (invited_key, invited) = guest_device();
+        let (_, invited) = guest_device();
         workspaces
             .pre_admit(
                 &owner,
@@ -1557,15 +1692,9 @@ mod door_tests {
             user_public_key: hex::encode(invited.user_public_key),
             display_name: "Ada".into(),
         };
-        let reply = walk_in_as(
-            workspaces,
-            &workspace,
-            &invited_join,
-            &invited_key,
-            &invited,
-        )
-        .await
-        .unwrap();
+        let reply = walk_in_as(workspaces, &workspace, &invited_join, &invited)
+            .await
+            .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
 
         // Open again, the same workspace hands a stranger in.
@@ -1573,15 +1702,78 @@ mod door_tests {
             .list_invitation_only(&workspace, &owner, false)
             .await
             .unwrap();
-        let (open_key, open) = guest_device();
+        let (_, open) = guest_device();
         let open_join = DoorJoin {
             user_public_key: hex::encode(open.user_public_key),
             display_name: "Di".into(),
         };
-        let reply = walk_in_as(workspaces, &workspace, &open_join, &open_key, &open)
+        let reply = walk_in_as(workspaces, &workspace, &open_join, &open)
             .await
             .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
         relay.shutdown().await;
+    }
+
+    /// Someone the host's operator declares an owner or moderator comes in
+    /// through an invitation-only door with no invitation: the first owner of
+    /// a workspace nobody is in yet has no one to invite them.
+    #[tokio::test]
+    async fn an_invitation_only_door_admits_whom_the_operator_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Coffee and tea".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+
+        // Someone the operator declares an owner is no stranger: the door
+        // lets them in with no invitation, and refuses them again once the
+        // declaration no longer names them.
+        let (_, declared) = guest_device();
+        let declared_join = DoorJoin {
+            user_public_key: hex::encode(declared.user_public_key),
+            display_name: "Ed".into(),
+        };
+        let people = std::collections::BTreeSet::from([declared.user_public_key]);
+        workspaces
+            .admit_declared(&workspace, &owner, people)
+            .await
+            .unwrap();
+        let reply = walk_in_as(workspaces, &workspace, &declared_join, &declared)
+            .await
+            .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+        let (_, undeclared) = guest_device();
+        workspaces
+            .admit_declared(&workspace, &owner, std::collections::BTreeSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            workspaces
+                .admit_listed(
+                    &workspace,
+                    &DoorJoin {
+                        user_public_key: hex::encode(undeclared.user_public_key),
+                        display_name: "Fa".into(),
+                    }
+                )
+                .await
+                .map(|_| ()),
+            Err(DoorRefusal::InvitationOnly)
+        );
     }
 }

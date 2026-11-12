@@ -124,29 +124,29 @@ fn refused(answer: &Json) -> String {
 #[test]
 fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
     let w = world();
-    let out = printed(&w.run(r"grep(/\bChen\b/, in: notes).count_by(.doc)"));
+    let out = printed(&w.run(r"grep(/\blemons?\b/, in: notes).count_by(.doc)"));
     let lines: Vec<&str> = out.lines().collect();
     assert!(
         lines[0]
-            .starts_with(r"grep /\bChen\b/: 2 matches in 2 of 14 resources searched (notes 14)"),
+            .starts_with(r"grep /\blemons?\b/: 2 matches in 2 of 8 resources searched (notes 8)"),
         "counts first: {out}"
     );
     assert!(
         lines[1].starts_with("@notes.Note:"),
         "a reference first: {out}"
     );
-    assert!(out.contains("\"Standup, Monday\"  1"), "{out}");
-    assert!(out.contains("\"Standup, Thursday\"  1"), "{out}");
+    assert!(out.contains("\"Groceries\"  1"), "{out}");
+    assert!(out.contains("\"Lentil soup\"  1"), "{out}");
 }
 
 #[test]
 fn grep_reads_several_apps_and_each_match_says_where_it_is() {
     let w = world();
-    let out = printed(&w.run(r"grep(/(?i)release/, in: notes + board)"));
-    assert!(out.contains("(notes 14, board "), "{out}");
+    let out = printed(&w.run(r"grep(/(?i)importer/, in: notes + board)"));
+    assert!(out.contains("(notes 8, board "), "{out}");
     assert!(
-        out.lines()
-            .any(|l| l.starts_with("@notes.Note:") && l.contains(" ¶1: Release candidate cut.")),
+        out.lines().any(|l| l.starts_with("@notes.Note:")
+            && l.contains("body ¶1: The importer handles tables now.")),
         "a match is its resource, its paragraph and the text: {out}"
     );
     assert!(out.lines().any(|l| l.starts_with("@board.")), "{out}");
@@ -196,18 +196,18 @@ fn grep_knows_block_kinds_groups_times_and_writers() {
 fn a_grep_result_feeds_actions_in_the_same_program() {
     let w = world();
     let answer = w.run(
-        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.new_task(tasks.tasks, title: m.group(1)))",
+        r"grep(/^Oat milk, (.*)/, in: notes).each(m -> tasks.new_task(tasks.tasks, title: m.group(1)))",
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 1, "{answer:#}");
     let titles = printed(&w.run("tasks.tasks.items.map(.title)"));
-    assert_eq!(titles, "left. Chen is out of office.");
+    assert_eq!(titles, "eggs, two lemons.");
 }
 
 #[test]
 fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let w = world();
-    let words = printed(&w.run(r#"find("standup chen")"#));
+    let words = printed(&w.run(r#"find("lemon")"#));
     assert_eq!(words.lines().count(), 2, "{words}");
     assert!(
         words.lines().all(|l| l.starts_with("@notes.Note:")),
@@ -216,10 +216,10 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
 
     // Typed, chained by key paths.
     let pinned = printed(&w.run("find(Note, pinned: true).sort_by(.title).map(.title)"));
-    assert_eq!(pinned, "Groceries\nQ3 plan\nRunning plan");
+    assert_eq!(pinned, "Lentil soup\nQ3 plan");
     let grouped =
-        printed(&w.run(r#"find("standup").of(Note).group(.pinned).map(g -> g.items.len())"#));
-    assert_eq!(grouped, "5", "one group: no standup is pinned");
+        printed(&w.run(r"find(Note, pinned: false).group(.pinned).map(g -> g.items.len())"));
+    assert_eq!(grouped, "6", "one group: none of them is pinned");
     let taken = printed(&w.run(r"find(Note, pinned: false).take(2).len()"));
     assert_eq!(taken, "2");
 }
@@ -229,15 +229,12 @@ fn single_is_one_result_or_an_error_listing_the_candidates() {
     let w = world();
     let one = printed(&w.run(r#"find("groceries").single()"#));
     assert!(one.contains("\"Groceries\""), "{one}");
-    let several = refused(&w.run(r#"find("standup").single()"#));
+    let several = refused(&w.run(r#"find("lemon").single()"#));
     assert!(
-        several.contains("single: 5 match, not one; say which:"),
+        several.contains("single: 2 match, not one; say which:"),
         "{several}"
     );
-    assert!(
-        several.contains("Standup, Wednesday"),
-        "the candidates: {several}"
-    );
+    assert!(several.contains("Lentil soup"), "the candidates: {several}");
 }
 
 #[test]
@@ -273,13 +270,13 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
     assert_eq!(matching.lines().count(), 1 + 5, "{matching}");
 
     // A resource of an app this host does not hold reads through its own host.
-    let foreign = printed(&w.run(r"read(grep(/Chen is out/, in: notes).single().doc)"));
+    let foreign = printed(&w.run(r"read(grep(/sync bug/, in: notes).single().doc)"));
     assert!(
-        foreign.contains("\"Standup, Thursday\"  Note: 2 paragraphs"),
+        foreign.contains("\"Monday\"  Note: 2 paragraphs"),
         "{foreign}"
     );
     assert!(
-        foreign.contains(" ¶1  Two blockers left. Chen is out of office."),
+        foreign.contains("body ¶1  Ada is on the sync bug."),
         "{foreign}"
     );
     assert!(foreign.contains(" .pinned  false"), "{foreign}");
@@ -372,26 +369,26 @@ fn a_session_of_the_agents_doc_examples() {
     let w = world();
     let entries = [
         r#"journal.write(journal.entries, "Launch", "> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist")"#,
-        r"grep(/\bChen\b/, in: notes + chat).count_by(.doc)",
+        r"grep(/\blemons?\b/, in: notes + chat).count_by(.doc)",
         r"grep(/\bTide\b/, in: journal, not: .quote)",
         r"grep(/(?i)release/).count_by(.written_by)",
         r"grep(/Tide/, in: journal, mentions: me).len()",
-        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.todos, title: t.group(1)))",
-        "print(tasks.todos.items, fields: [.title, .done])",
-        r#"find("standup chen")"#,
-        r#"find("standup").take(2)"#,
-        r#"find("standup").single()"#,
+        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.new_task(tasks.tasks, title: t.group(1)))",
+        "print(tasks.tasks.items, fields: [.title, .done])",
+        r#"find("lemon")"#,
+        r#"find("lemon").take(2)"#,
+        r#"find("lemon").single()"#,
         r#"find("groceries").single()"#,
-        "find(Todo, done: false).sort_by(.title).map(.title)",
-        r"read(grep(/Chen is out/, in: notes).single().doc, matching: /Chen/)",
+        "find(Task, done: false).sort_by(.title).map(.title)",
+        r"read(grep(/sync bug/, in: notes).single().doc, matching: /sync/)",
         "describe(notes)",
-        "describe(Todo)",
+        "describe(Task)",
         "describe(tasks.new_task)",
-        "describe(Todo.done)",
-        "let list = tasks.todos\ndescribe(list)",
-        "find(Todo, completed: true)",
+        "describe(Task.done)",
+        "let list = tasks.tasks\ndescribe(list)",
+        "find(Task, completed: true)",
         "grep(/x/, in: docs)",
-        "tasks.todos.items.cout_by(.done)",
+        "tasks.tasks.items.cout_by(.done)",
         "grep(/x/, not: .quotes)",
     ];
     let mut transcript = String::new();
@@ -423,9 +420,12 @@ fn a_session_of_the_agents_doc_examples() {
         }
     }
     println!("{transcript}");
-    assert!(transcript.contains("grep /\\bChen\\b/: "), "{transcript}");
     assert!(
-        transcript.contains("single: 5 match, not one"),
+        transcript.contains("grep /\\blemons?\\b/: "),
+        "{transcript}"
+    );
+    assert!(
+        transcript.contains("single: 2 match, not one"),
         "{transcript}"
     );
 }

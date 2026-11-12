@@ -9,6 +9,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod commit;
 mod desktop;
 mod frames;
 mod i18n;
@@ -20,18 +21,17 @@ mod widget;
 pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
-pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
-pub use tilo_session_core::door::{Doors, Look, Published, Shared, Shot, through_door};
-pub use tilolang_tilo::runtime::foreign::ViewFailure;
+pub use shell_part::{SessionLink, ShellPart, ShellWork};
 pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
 
-use tilo_compositor::{
+use tilo_session_core::surface::{
     BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
-    HostTextInput, KeyModifiers, SurfaceHost,
+    HostTextInput, SurfaceHost,
 };
+
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use ui::device_local_door::SharedDoor;
@@ -40,10 +40,14 @@ use winit::event::{
     DeviceId, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
     TouchPhase, WindowEvent,
 };
-use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+use winit::keyboard::{ModifiersState, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use frames::Frames;
+
+/// The door a hosted surface publishes through: every host's, so a surface app is reached the
+/// same on each.
+pub(crate) use tilo_session_core::door::{Look, Published, through_door};
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -56,30 +60,7 @@ const BTN_EXTRA: u32 = 0x114;
 
 /// The rectangle an app is shown on, in the compositor's logical layout,
 /// and the output scale it is drawn at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placement {
-    /// Top-left corner, logical pixels.
-    pub origin: (i32, i32),
-    /// Size, logical pixels.
-    pub size: (u32, u32),
-    /// Physical pixels per logical pixel.
-    pub scale: f64,
-}
-
-impl Placement {
-    fn physical_size(self) -> (u32, u32) {
-        let scale = |side: u32| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a surface side on a screen, scaled by a small positive factor"
-            )]
-            let physical = (f64::from(side) * self.scale).round().max(1.0) as u32;
-            physical
-        };
-        (scale(self.size.0), scale(self.size.1))
-    }
-}
+pub use tilo_session_core::surface::Placement;
 
 /// The surface the app is drawn on, as the toolkit asks it.
 struct Surface {
@@ -129,8 +110,6 @@ pub struct AppHost {
     damage: SurfaceDamage,
     /// The app asked for another frame when it drew the last.
     wants: bool,
-    /// Keys come here rather than to the focused window.
-    keyboard: bool,
     /// The modifiers the app last heard of.
     modifiers: ModifiersState,
     /// The app's actions for this device: what it publishes, and what the
@@ -170,7 +149,6 @@ impl AppHost {
             scene: vello::Scene::new(),
             damage: SurfaceDamage::default(),
             wants: true,
-            keyboard: false,
             modifiers: ModifiersState::empty(),
             door: SharedDoor::default(),
             backdrops: Vec::new(),
@@ -243,19 +221,6 @@ impl AppHost {
             self.full = true;
         }
         self.placement = placement;
-    }
-
-    /// Take keys from the focused window (`true`, an open launcher or
-    /// menu) or leave them to it.
-    pub fn set_wants_keyboard(&mut self, wants: bool) {
-        if self.keyboard && !wants && !self.modifiers.is_empty() {
-            // The app must not think a modifier is still held.
-            self.modifiers = ModifiersState::empty();
-            self.input(WindowEvent::ModifiersChanged(Modifiers::from(
-                self.modifiers,
-            )));
-        }
-        self.keyboard = wants;
     }
 
     /// A logical point of the desktop in the app's physical pixels.
@@ -396,6 +361,7 @@ impl SurfaceHost for AppHost {
             location: self.placement.origin,
             size,
             frame: self.frames.frame(),
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
         }]
     }
 
@@ -415,7 +381,7 @@ impl SurfaceHost for AppHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.covers(px, py)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -450,12 +416,8 @@ impl SurfaceHost for AppHost {
         });
     }
 
-    fn wants_keyboard(&self) -> bool {
-        self.keyboard
-    }
-
     fn key(&mut self, key: &HostKey) {
-        let modifiers = modifiers_state(key.modifiers);
+        let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
@@ -647,15 +609,6 @@ pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
     }
 }
 
-pub(crate) fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
-    let mut state = ModifiersState::empty();
-    state.set(ModifiersState::SHIFT, modifiers.shift);
-    state.set(ModifiersState::CONTROL, modifiers.ctrl);
-    state.set(ModifiersState::ALT, modifiers.alt);
-    state.set(ModifiersState::SUPER, modifiers.logo);
-    state
-}
-
 /// The toolkit's key event for a key the compositor's keymap resolved.
 pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
     let text = key
@@ -663,8 +616,14 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         .then_some(key.text.as_deref())
         .flatten()
         .map(SmolStr::new);
-    let (logical_key, location) = chord_for(key);
-    let (key_without_modifiers, _) = key_for(key.unmodified_keysym, None);
+    let under_chord = key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo;
+    let (logical_key, location) = ui::keys::chord(
+        key.keysym,
+        key.text.as_deref(),
+        key.latin_keysym,
+        under_chord,
+    );
+    let (key_without_modifiers, _) = ui::keys::from_keysym(key.unmodified_keysym, None);
     let state = if key.pressed {
         ElementState::Pressed
     } else {
@@ -700,86 +659,9 @@ pub(crate) fn ime_event(event: HostIme) -> Ime {
     }
 }
 
-/// The key a hosted surface got, as the toolkit names it, with the
-/// modifiers held: what a shortcut table matches against.
-#[must_use]
-pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
-    (
-        chord_for(key).0,
-        Modifiers::from(modifiers_state(key.modifiers)),
-    )
-}
-
-/// The key `key` is to what matches shortcuts against it: under Ctrl, Alt or
-/// Super a letter outside the Latin script is named by the Latin character
-/// the same key types on a layout that has one, so Ctrl+C copies and Super+L
-/// locks whichever layout is typing. A Latin letter with a diacritic stays as
-/// typed: it is a shortcut of its own on the layouts that have it.
-fn chord_for(key: &HostKey) -> (Key, KeyLocation) {
-    let (logical, location) = key_for(key.keysym, key.text.as_deref());
-    if !(key.modifiers.ctrl || key.modifiers.alt || key.modifiers.logo) {
-        return (logical, location);
-    }
-    let Key::Character(typed) = &logical else {
-        return (logical, location);
-    };
-    if !typed.chars().any(ui::latin_chord::is_non_latin_letter) {
-        return (logical, location);
-    }
-    (key_for(key.latin_keysym, None).0, location)
-}
-
-/// The key `keysym` is: a named key when winit names it, else the text it
-/// types, else the character of the keysym itself.
-fn key_for(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
-    let (key, location) = winit::platform::scancode::keysym_to_key(keysym);
-    if !matches!(key, Key::Unidentified(_)) {
-        return (key, location);
-    }
-    match text {
-        Some(text) => (Key::Character(SmolStr::new(text)), location),
-        None => match char::from_u32(keysym).filter(|c| !c.is_control()) {
-            Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
-            None => (key, location),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Key, KeyModifiers, chord_for, dropped_paths};
-    use tilo_compositor::HostKey;
-
-    fn held(keysym: char, latin: char, ctrl: bool) -> HostKey {
-        HostKey {
-            keycode: 46,
-            pressed: true,
-            repeat: false,
-            keysym: u32::from(keysym),
-            unmodified_keysym: u32::from(keysym),
-            latin_keysym: u32::from(latin),
-            text: None,
-            modifiers: KeyModifiers {
-                ctrl,
-                ..KeyModifiers::default()
-            },
-        }
-    }
-
-    #[test]
-    fn a_chord_types_named_by_the_latin_key_on_a_cyrillic_layout() {
-        let (logical, _) = chord_for(&held('с', 'c', true));
-        assert_eq!(logical, Key::Character("c".into()));
-        // The letter itself, with no chord modifier, stays Cyrillic.
-        let (typed, _) = chord_for(&held('с', 'c', false));
-        assert_eq!(typed, Key::Character("с".into()));
-    }
-
-    #[test]
-    fn a_diacritic_on_a_latin_layout_stays_as_typed_in_a_chord() {
-        let (logical, _) = chord_for(&held('ü', 'u', true));
-        assert_eq!(logical, Key::Character("ü".into()));
-    }
+    use super::dropped_paths;
 
     #[test]
     fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {

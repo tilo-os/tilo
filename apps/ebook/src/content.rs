@@ -153,8 +153,8 @@ pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String
 /// parsed and kept where the library finds it again.
 pub struct HandedBook {
     pub book: Book,
-    /// The bytes' full content hash when a content store now holds them.
-    pub content: Option<String>,
+    /// The bytes, as a content store now holds them.
+    pub content: Option<ui::tilo_resource::Bytes>,
     /// How many bytes the book is.
     pub size: u64,
 }
@@ -169,7 +169,7 @@ pub fn open_handed_book(
     let mut book = parse_epub(bytes, 0, "").map_err(|error| error.to_string())?;
     book.cover_tint = tint_for(&book.id);
     let content = store
-        .map(|store| store.put(bytes))
+        .map(|store| ui::tilo_resource::Bytes::keep(store, bytes))
         .transpose()
         .map_err(|error| format!("the book could not be kept: {error}"))?;
     Ok(HandedBook {
@@ -202,7 +202,7 @@ pub fn place_chosen_book(
     let handed = HandedBook {
         book,
         content: store
-            .map(|store| store.put(bytes))
+            .map(|store| ui::tilo_resource::Bytes::keep(store, bytes))
             .transpose()
             .map_err(|error| format!("the book could not be kept: {error}"))?,
         size: byte_count(bytes),
@@ -214,10 +214,9 @@ pub fn place_chosen_book(
 pub fn placed(mut handed: HandedBook) -> Placed {
     handed.book.cover_tint = tint_for(&handed.book.id);
     let entry = handed_book_entry(&handed);
-    let path = handed
-        .content
-        .as_deref()
-        .map_or_else(|| PathBuf::from(BUNDLED_PATH), content_path);
+    let path = entry
+        .content_hash()
+        .map_or_else(|| PathBuf::from(BUNDLED_PATH), |hash| content_path(&hash));
     Placed {
         book: handed.book,
         entry,
@@ -237,11 +236,7 @@ pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
         author: handed.book.author.clone(),
         subject: handed.book.subject.clone(),
         added: unix_now_ms(),
-        content: handed
-            .content
-            .as_deref()
-            .and_then(|hash| LibraryEntry::stored(hash, handed.size))
-            .unwrap_or_default(),
+        content: handed.content.clone().unwrap_or_default(),
         index: ui::tilo_resource::Bytes::Empty,
     }
 }
@@ -249,8 +244,7 @@ pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
 /// A recorded book whose bytes a content store holds, verified against both
 /// the hash the row names and the row's content id.
 fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Option<LoadedBook> {
-    let hash = entry.content_hash()?;
-    let bytes = store.read(&hash)?;
+    let bytes = entry.content.read(store)?;
     let mut book = parse_epub(&bytes, 0, "EPUB").ok()?;
     if book.id != entry.id {
         tracing::warn!(expected = %entry.id, actual = %book.id, "ebook: refused content whose id does not match its library row");
@@ -259,7 +253,7 @@ fn content_book(entry: &LibraryEntry, store: &tilo_content::ContentStore) -> Opt
     book.cover_tint = tint_for(&book.id);
     Some(LoadedBook {
         book,
-        path: content_path(&hash),
+        path: content_path(&entry.content_hash()?),
     })
 }
 
@@ -993,7 +987,13 @@ mod tests {
         let store = tilo_content::ContentStore::memory();
         let handed = open_handed_book(&bytes, Some(&store)).unwrap();
         let hash = tilo_content::hash_bytes(&bytes);
-        assert_eq!(handed.content.as_deref(), Some(hash.as_str()));
+        assert_eq!(
+            handed
+                .content
+                .as_ref()
+                .and_then(ui::tilo_resource::Bytes::reference),
+            Some(hash.clone())
+        );
         assert_eq!(store.read(&hash).as_deref(), Some(bytes.as_slice()));
 
         let mut doc = Library::new();

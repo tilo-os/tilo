@@ -14,9 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::blobs::{BlobRef, ReadOutcome};
 use crate::directory_types::{
-    DirectoryFilesystemStats, DirectoryRows, DirectoryStat, DirectoryStreamPage,
-    HistoryReadObservation, JobPoll, PendingReplacementObservation, RecoveryPage,
-    ReplacementObservation,
+    DirectoryFilesystemStats, DirectoryRows, DirectoryStat, DirectoryStreamPage, JobPoll,
+    RecoveryPage,
 };
 use crate::{DirEntry, Metadata, OpenMode};
 
@@ -131,39 +130,16 @@ pub enum FsRequest {
         recovery: [u8; 16],
         name: Vec<u8>,
     },
-    PrepareReplace {
-        temporary: Vec<u8>,
-        temporary_expected: [u64; 2],
-        victim: Vec<u8>,
-        victim_expected: [u64; 2],
-    },
+    /// Retired: the retained source named its replacements itself. Kept at its place so an app
+    /// from an older build is answered "unexpected directory request", not read as another call.
+    RetiredPrepareReplace,
     SyncDirectory,
-    RetireCreated {
-        name: Vec<u8>,
-        expected: [u64; 2],
-    },
-    SetCreatedPermissions {
-        name: Vec<u8>,
-        expected: [u64; 2],
-        mode: u32,
-    },
-    RenameReplace {
-        name: Vec<u8>,
-        new_name: Vec<u8>,
-    },
-    AtomicSave {
-        temporary: Vec<u8>,
-        expected: [u64; 2],
-        target: Vec<u8>,
-    },
-    HistoryReadSubject {
-        name: Vec<u8>,
-    },
-    HistoryQuery {
-        name: Vec<u8>,
-        expected: [u64; 2],
-        query: Vec<u8>,
-    },
+    RetiredRetireCreated,
+    RetiredSetCreatedPermissions,
+    RetiredRenameReplace,
+    RetiredAtomicSave,
+    RetiredHistoryReadSubject,
+    RetiredHistoryQuery,
     // MetadataPin
     PinStat,
     PinCheckScope,
@@ -171,50 +147,36 @@ pub enum FsRequest {
     JobPoll,
     JobCancel,
     JobCheckScope,
-    JobPinReplacement,
-    JobCreatedTemporary,
+    RetiredJobPinReplacement,
+    RetiredJobCreatedTemporary,
     // ReplacementPin
-    ReplacementCommit {
-        receipt: Vec<u8>,
-    },
-    ReplacementObserve,
-    ReplacementCheck,
+    RetiredReplacementCommit,
+    RetiredReplacementObserve,
+    RetiredReplacementCheck,
     // DirectoryCursor
     CursorPage {
         expected_sequence: u64,
     },
     // PendingReplacement
-    PendingObserve,
-    PendingStart {
-        receipt: Vec<u8>,
-    },
-    PendingCancel,
-    PendingCheckScope,
-    PendingArm {
-        challenge: [u8; 32],
-    },
-    PendingCommittedPin,
-    PendingRetireHandoff {
-        ticket: [u8; 16],
-    },
+    RetiredPendingObserve,
+    RetiredPendingStart,
+    RetiredPendingCancel,
+    RetiredPendingCheckScope,
+    RetiredPendingArm,
+    RetiredPendingCommittedPin,
+    RetiredPendingRetireHandoff,
     // CreatedTemporary
-    TemporaryCheckScope,
-    TemporaryRetire,
-    TemporaryPrepareReplace,
-    TemporarySetPermissions {
-        mode: u32,
-    },
-    TemporaryPrepareAtomicSave,
+    RetiredTemporaryCheckScope,
+    RetiredTemporaryRetire,
+    RetiredTemporaryPrepareReplace,
+    RetiredTemporarySetPermissions,
+    RetiredTemporaryPrepareAtomicSave,
     // HistoryReadSubject
-    SubjectObserve,
-    SubjectCheckScope,
-    SubjectCheck,
-    SubjectArm {
-        challenge: [u8; 32],
-    },
-    SubjectRetireHandoff {
-        ticket: [u8; 16],
-    },
+    RetiredSubjectObserve,
+    RetiredSubjectCheckScope,
+    RetiredSubjectCheck,
+    RetiredSubjectArm,
+    RetiredSubjectRetireHandoff,
     // SessionBlobs
     SessionScope {
         workspace: String,
@@ -286,10 +248,12 @@ pub enum FsReply {
     FilesystemStats(Option<DirectoryFilesystemStats>),
     Recoveries(Option<RecoveryPage>),
     Poll(Option<JobPoll>),
-    ReplacementObservation(ReplacementObservation),
-    PendingObservation(PendingReplacementObservation),
-    HistoryObservation(HistoryReadObservation),
-    CommittedPin(Option<CommittedPin>),
+    /// Retired with the retained source's replacement lane; the bytes a reply carries are read only
+    /// by the build that asked for them. Kept at their places so no other reply moves.
+    RetiredReplacementObservation,
+    RetiredPendingObservation,
+    RetiredHistoryObservation,
+    RetiredCommittedPin,
     Ticket(Vec<u8>),
     OpenedFile(Option<OpenedFile>),
     Scope(u64),
@@ -309,10 +273,4 @@ pub struct OpenedFile {
     pub handle: u64,
     pub device: u64,
     pub inode: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommittedPin {
-    pub pin: u64,
-    pub job: u64,
 }

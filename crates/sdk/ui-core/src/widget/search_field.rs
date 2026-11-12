@@ -17,6 +17,7 @@
 //! Composes the toolkit's own [`TextInput`] so caret, selection, IME, and
 //! CRDT binding are shared.
 
+use crate::i18n::widget_text;
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 
@@ -34,6 +35,7 @@ use crate::search::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::capability::capability_mut;
 use crate::widget::text::centered_text_top;
 use crate::widget::{ControlSize, TaffyTreeExt};
@@ -216,7 +218,8 @@ impl SearchField {
     /// query to the platform search of this app, and the count slot is
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
-        let mut field = Self::new().with_placeholder("Filter");
+        let mut field =
+            Self::new().with_placeholder(&crate::i18n::widget_format("search-field-filter", &[]));
         field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
@@ -233,7 +236,7 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
-                .with_placeholder("Search"),
+                .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
             leading: Icon::Search,
             clearable: true,
             cleared: false,
@@ -336,6 +339,13 @@ impl SearchField {
         self.input.set_placeholder(hint);
     }
 
+    /// The words the field shows while it holds nothing, which a step that
+    /// repurposes it reads out as what it asks for.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     /// Give the input the placeholder elided to the room it has, so a long
     /// one ends in an ellipsis instead of running under the trailing slot.
     fn fit_placeholder(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
@@ -345,7 +355,7 @@ impl SearchField {
             reason = "a field's width in logical pixels is far inside f32's range"
         )]
         let fitted = text_renderer.elide_to_width_style(
-            &crate::i18n!(&self.placeholder),
+            &widget_text(&self.placeholder),
             room as f32,
             &theme.text(TextRole::Body),
         );
@@ -394,6 +404,33 @@ impl SearchField {
     #[must_use]
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+
+    /// What names this field and what its description adds, for a surface that
+    /// draws the field itself and builds its own accessible node: the field
+    /// named as the search field it is, and what the query covers — the empty
+    /// field's words, the token narrowing it, the count it found.
+    #[must_use]
+    pub fn query_name_and_description(&self) -> (String, Option<String>) {
+        let name = if self.escalation.is_some() {
+            crate::i18n::widget_format("search-field-filter-name", &[])
+        } else {
+            crate::i18n::widget_format("search-field-name", &[])
+        };
+        let mut description = Vec::new();
+        if !self.placeholder.is_empty() {
+            description.push(widget_text(&self.placeholder));
+        }
+        if let Some(token) = &self.scope_token {
+            description.push(token.clone());
+        }
+        if let Some(count) = self.count {
+            description.push(count.label());
+        }
+        (
+            name,
+            (!description.is_empty()).then(|| description.join(", ")),
+        )
     }
 
     /// What the field holds, which decides its keyboard and how it reads
@@ -874,7 +911,7 @@ impl Widget for SearchField {
         }
         self.fit_placeholder(text_renderer, theme);
         self.input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
 
         self.draw_trailing_slot(scene, transform, text_renderer, theme);
         if self.clear_visible() {
@@ -1032,26 +1069,10 @@ impl Widget for SearchField {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        let mut node = self
-            .input
-            .accessibility()?
-            .with_name(if self.escalation.is_some() {
-                "Filter"
-            } else {
-                "Search"
-            });
-        let mut description = Vec::new();
-        if !self.placeholder.is_empty() {
-            description.push(crate::i18n!(&self.placeholder));
-        }
-        if let Some(token) = &self.scope_token {
-            description.push(token.clone());
-        }
-        if let Some(count) = self.count {
-            description.push(count.label());
-        }
-        if !description.is_empty() {
-            node = node.with_description(description.join(", "));
+        let (name, description) = self.query_name_and_description();
+        let mut node = self.input.accessibility()?.with_name(name);
+        if let Some(description) = description {
+            node = node.with_description(description);
         }
         Some(node)
     }
@@ -1207,9 +1228,9 @@ impl Widget for Filtered {
         presence: &PresenceCtx,
     ) {
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

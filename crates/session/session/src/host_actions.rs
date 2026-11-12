@@ -10,8 +10,8 @@
 //! picture, and whether search may offer it before anything is typed.
 
 use tilo_desktop::desktop_host::{
-    JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT,
-    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    BRANCH_WORKSPACE, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK,
+    SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
@@ -69,6 +69,14 @@ pub fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, can_repor
             HostActionSource::Workspace,
         )
     }];
+    // Branching is looked for by name: the workspace the person is in, copied into one of their own.
+    actions.push(offer(
+        BRANCH_WORKSPACE,
+        "session-host-branch-workspace",
+        Some("session-host-branch-workspace-description"),
+        Icon::Copy,
+        HostActionSource::Workspace,
+    ));
     if can_join {
         actions.push(HostAction {
             unasked: true,

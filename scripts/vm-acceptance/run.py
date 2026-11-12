@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (agent, agents_e2e, apps, basics, clock,  # noqa: E402,F401
                                daily_apps, input_devices, provenance, resources, search, secrets, startup, ui,
-                               window)
+                               window, ws_branch_e2e)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -122,8 +122,11 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
 # The coding agents' end-to-end scenario (checks/agents_e2e.py), in its order: each check needs
 # the ones before it. It runs only when named (`--only agents-e2e`, the e2e-agents check), in
 # no shard of vm-acceptance and in no run of every check.
-E2E_ORDER = ["E01", "E02", "E03", "E08", "E04", "E05", "E06", "E07"]
-EXPLICIT_AREAS = {"agents-e2e"}
+E2E_ORDER = ["E01", "E02", "E03", "E08", "E09", "E04", "E05", "E06", "E07"]
+# A workspace set up once and branched (checks/ws_branch_e2e.py), in its order, run only when
+# named (`--only ws-branch-e2e`, the e2e-ws-branch check), as the agents' scenario is.
+WSB_ORDER = ["WB01", "WB02", "WB03", "WB04", "WB05", "WB06"]
+EXPLICIT_AREAS = {"agents-e2e", "ws-branch-e2e"}
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -604,7 +607,7 @@ def main() -> int:
             ctx.facts["locale_de:why"] = "the German pass was not requested (--locales)"
         by_id = {c.id: c for c in core.REGISTRY}
         german = de
-        main_ids = [i for i in ORDER + E2E_ORDER + list(DE_PASS)
+        main_ids = [i for i in ORDER + E2E_ORDER + WSB_ORDER + list(DE_PASS)
                     if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
             core.keep_awake(ctx)

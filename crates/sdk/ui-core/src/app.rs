@@ -47,8 +47,6 @@ mod handoff;
 mod held_answers;
 mod host_commands;
 
-#[cfg(test)]
-mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -757,7 +755,7 @@ impl AppConstructionInputs {
                     None
                 }
             },
-            your_colour: App::stored_your_colour,
+            your_colour: crate::local_identity::own_colour,
             high_contrast: || crate::host::environment().accessibility.high_contrast,
             reduce_motion: || crate::host::environment().accessibility.reduce_motion,
             text_scale: || {
@@ -1048,15 +1046,17 @@ impl App {
     }
 
     fn initial_presence_context() -> PresenceCtx {
-        // Own identity, in preference order: the handle announced on `Hello`,
-        // then the fallback app id. Anything else is somebody else and gets
-        // painted.
+        // Own identity: this person's id. Anything else is somebody else and
+        // gets painted.
         let mut context = PresenceCtx::empty();
-        context.set_own_identity(
-            crate::collaboration::presence_handle_env()
-                .into_iter()
-                .chain(std::iter::once(crate::collaboration::local_user_id().0)),
-        );
+        let own = crate::collaboration::local_user_id().0;
+        context.set_own_identity(std::iter::once(own.clone()));
+        // The colour they chose, where they chose one: their own face, caret
+        // and byline wear it here from the window's first frame, as the member
+        // list says it to every other app.
+        if let Some(hue) = crate::local_identity::own_colour() {
+            context.set_presence_hue(crate::permissions::UserId(own), hue);
+        }
         context
     }
 
@@ -1126,6 +1126,12 @@ impl App {
         {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
+        // The tree was just synced against the record, which is the state
+        // pass a window owes before it first shows: nothing is pending until
+        // the model moves from here (or init_layout places focus), so a
+        // window whose frame lays the new tree out leaves no pass behind for
+        // an idle window to run.
+        self.needs_sync = false;
         self.init_layout();
         tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
@@ -1315,7 +1321,7 @@ impl App {
 
     fn close_wake_scope(&mut self) {
         // Nothing lands for a closing window: what it held is answered.
-        self.send_held_answers();
+        self.send_held_answers(true);
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
@@ -1822,13 +1828,6 @@ impl App {
             return false;
         };
         self.apply_appearance_intent(intent)
-    }
-
-    /// The person's stored colour (`identity.colour`) in the settings
-    /// document this process reads, if they chose one. The shell's
-    /// appearance message replaces it with the colour it resolved.
-    fn stored_your_colour() -> Option<crate::tokens::PresenceHue> {
-        crate::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
     }
 
     /// Where and for whom this window is shown, as the shell said it over
@@ -2614,12 +2613,13 @@ impl App {
             }
             // The tree this rebuild made is the one a control asked focus in.
             requested = self.apply_focus_request();
+            crate::host_core::KeyHost::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
-        // was built with; asked once per build, not per frame.
+        // was built with; asked once per build, not per frame. The size it
+        // wants follows its layout, and is asked after each layout pass.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
-        self.window.preferred_size = self.root_widget.preferred_window_size();
         requested
     }
 
@@ -2638,6 +2638,12 @@ impl App {
     /// part over whatever is behind.
     #[cfg(feature = "native")]
     fn reconcile_minimum_size(&mut self, window: &Window) {
+        // A window that wants a size of its own may want another at every frame: a panel whose
+        // height follows its page moves there on a spring.
+        if self.window.preferred_size.is_some() {
+            self.window.preferred_size =
+                crate::widget::preferred_window_size(self.root_widget.as_ref());
+        }
         if self.window.preferred_size != self.window.preferred_size_stated {
             self.window.preferred_size_stated = self.window.preferred_size;
             let size = self
@@ -2671,6 +2677,26 @@ impl App {
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
         self.window.title = Some(title.into());
         self
+    }
+
+    /// Name the window by what it shows, for the desktop to name it by too: the page, the record,
+    /// the place its content says it is ([`crate::component_lifecycle::WindowTitle`]), and the
+    /// title this window states where its content says nothing. The desktop reads the window's
+    /// title, so a tab, the switcher and assistive technology all say what the window shows.
+    /// Returns whether the window was retitled.
+    #[cfg(feature = "native")]
+    pub(crate) fn refresh_window_title(&mut self, window: &Window) -> bool {
+        let shown = crate::component_lifecycle::window_title(self.root_widget.as_ref())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned);
+        let title = shown.unwrap_or_else(|| resolve_window_title(self.window.title.as_deref()));
+        if self.window.shown_title.as_deref() == Some(title.as_str()) {
+            return false;
+        }
+        window.set_title(&title);
+        self.window.shown_title = Some(title);
+        true
     }
 
     /// Set the stable Wayland application id announced by this window.
@@ -3004,6 +3030,12 @@ mod manual_composition_tests;
 mod number_input_layout_tests;
 
 #[cfg(test)]
+#[path = "app/committed_document_tests.rs"]
+mod committed_document_tests;
+#[cfg(test)]
+#[path = "app/context_menu_input_tests.rs"]
+mod context_menu_input_tests;
+#[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 #[cfg(test)]
@@ -3021,10 +3053,6 @@ mod committed_document;
 
 #[path = "app/document_routes.rs"]
 mod document_routes;
-
-#[cfg(feature = "broker-transport")]
-#[path = "app/record_routes.rs"]
-pub mod record_routes;
 
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
@@ -3465,6 +3493,12 @@ pub(crate) mod ordinary_confirmation_tests {
         )
     }
     pub(crate) fn layout(app: &mut App) {
+        // The passes a frame runs before it lays out, as the window's runner
+        // runs them: model notifications drained, the tree synced. A frame
+        // that drew the window has taken the state passes it owed, so the
+        // window it leaves behind owes none of its own.
+        app.update_native_model();
+        app.sync_model(false);
         // Match native redraw: capture the pending structural change before
         // rebuilding clears it; unchanged trees must use the normal fast path.
         app.layout.structure_dirty |= app.layout.root_node.is_none()
@@ -4174,13 +4208,15 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_native_immediate_and_text_use_original_representation() {
         use tilo_actions::*;
+        // The step that collects the argument is named by the prompt it shows.
+        const PROMPT: &str = "Enter original text";
         for text in [false, true] {
             let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
             let mut spec = if text {
                 ActionSpec::prompted_operation(
                     "run",
                     "Run fixture",
-                    "Enter original text",
+                    PROMPT,
                     "Original",
                     OperationKind::Effect,
                     "fixture.control",
@@ -4213,7 +4249,7 @@ pub(crate) mod ordinary_confirmation_tests {
             );
             layout(&mut app);
             if text {
-                let named_action_target = named(&mut app, "Search");
+                let named_action_target = named(&mut app, PROMPT);
                 app.dispatch_a11y_action(
                     named_action_target,
                     &crate::a11y::Action::SetValue("not-a-value-field".into()),

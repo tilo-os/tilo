@@ -252,3 +252,73 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     member_session.close().await;
     relay.shutdown().await;
 }
+
+/// What a record of the workspace names, in any version of it, stays in the
+/// workspace's content on its host; what nothing names any more goes, once
+/// its writer had time to name it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
+    let alice = TestUser::fresh("Fixture governor");
+    let host = alice.enrol("collecting-host", DeviceCapabilities::host());
+    let laptop = alice.enrol("collecting-laptop", DeviceCapabilities::primary());
+    let scratch = tempfile::tempdir().unwrap();
+    let relay = start(scratch.path(), &alice, &host).await;
+    let room = create_and_enter(&relay, &laptop, "Collected content").await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    assert!(
+        workspaces
+            .settle_app_authorship(
+                &room.workspace,
+                &host.cert,
+                &std::collections::BTreeSet::from([OPENED.to_owned()]),
+                &std::collections::BTreeSet::new(),
+            )
+            .await
+            .unwrap()
+    );
+    let stores = relay.content();
+    let store = stores.get(&room.workspace).unwrap();
+    let earlier = store.put(b"the picture the note showed first").unwrap();
+    let current = store.put(b"the picture it shows now").unwrap();
+    let dropped = store.put(b"an upload no record ever named").unwrap();
+
+    // The note named one picture, then another: both versions are the
+    // record's history.
+    let governor = workspaces.serving_certificate().clone();
+    for picture in [earlier.clone(), format!("tilo.content:{current}")] {
+        workspaces
+            .author_room_record(&room.workspace, &governor, (OPENED, ""), |doc| {
+                doc.put(ROOT, "picture", picture.as_str())
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap();
+    }
+
+    let collected = tilo_relay::content::collection::collect(
+        &workspaces,
+        &stores,
+        &room.workspace,
+        SystemTime::UNIX_EPOCH,
+    )
+    .await
+    .expect("every record of the workspace reads whole");
+    assert!(
+        collected.hashes.is_empty(),
+        "content written within the grace is kept, named or not"
+    );
+
+    let later = SystemTime::now() + std::time::Duration::from_secs(60);
+    let collected =
+        tilo_relay::content::collection::collect(&workspaces, &stores, &room.workspace, later)
+            .await
+            .expect("every record of the workspace reads whole");
+    assert_eq!(collected.hashes, std::slice::from_ref(&dropped));
+    assert!(
+        store.has(&earlier),
+        "a version the note can go back to keeps its picture"
+    );
+    assert!(store.has(&current), "the picture the note shows stays");
+    assert!(!store.has(&dropped), "content nothing names is let go of");
+    relay.shutdown().await;
+}

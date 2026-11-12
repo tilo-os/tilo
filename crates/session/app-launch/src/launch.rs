@@ -3,7 +3,7 @@
 //! The desktop surface hands a [`crate::TileSource`] one string per launch:
 //! a Tilo package id, `host:<desktop-id>`, `window:<n>`, or an app opening a
 //! record or content. The vocabulary is shared with what the surface and the
-//! desk already build ([`tilo_desktop_surface::session::record_launch`]); this
+//! desk already build ([`tilo_desktop_search::record_launch`]); this
 //! module reads it back so a session can tell what it is being asked to start
 //! before it starts anything.
 
@@ -42,8 +42,16 @@ pub enum Launch {
     },
     /// A window the compositor is already adopting: no process starts.
     Window { id: u64 },
-    /// A Tilo app opening the record it keeps under `record`.
-    Record { app: String, record: String },
+    /// A Tilo app opening the record it keeps under `record`, in a window
+    /// opened for whoever works that record rather than for the person
+    /// (`visitor`): it browses as any visitor would, on a fresh profile of
+    /// its own and without their sign-ins, so what an agent does to the page
+    /// takes no authority over their accounts.
+    Record {
+        app: String,
+        record: String,
+        visitor: bool,
+    },
     /// A Tilo app opening content, by content address hash.
     Content { app: String, hash: String },
     /// The notice a crashed app leaves behind: the app it names, nothing to
@@ -74,6 +82,7 @@ impl Launch {
             return (!app.is_empty() && !record.is_empty()).then(|| Self::Record {
                 app: app.to_owned(),
                 record: record.to_owned(),
+                visitor: false,
             });
         }
         if let Some(rest) = launch.strip_prefix(CONTENT_PREFIX) {
@@ -144,7 +153,7 @@ impl Launch {
             Self::Package { app, .. } => app.clone(),
             Self::Host { desktop_id, .. } => format!("{HOST_PREFIX}{desktop_id}"),
             Self::Window { id } => format!("{WINDOW_PREFIX}{id}"),
-            Self::Record { app, record } => format!("{RECORD_PREFIX}{app}:{record}"),
+            Self::Record { app, record, .. } => format!("{RECORD_PREFIX}{app}:{record}"),
             Self::Content { app, hash } => format!("{CONTENT_PREFIX}{app}:{hash}"),
             Self::Crashed { app } => format!("{CRASHED_PREFIX}{app}"),
         }
@@ -182,7 +191,8 @@ mod tests {
             Launch::parse("record:so.tilo.sheets:budget"),
             Some(Launch::Record {
                 app: "so.tilo.sheets".into(),
-                record: "budget".into()
+                record: "budget".into(),
+                visitor: false
             })
         );
         assert_eq!(

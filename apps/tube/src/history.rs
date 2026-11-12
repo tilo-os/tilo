@@ -6,9 +6,7 @@
 //! it. Each video is kept once, at the time it was last watched, so two
 //! devices watching at once merge by video.
 //!
-//! The record's type and verbs are `tube-model`'s, which the session's
-//! document host runs as the app's module; this module is the app's side of
-//! them.
+//! The record's type and verbs are `tube-model`'s; this module is the app's side of them.
 
 pub use tube_model::{MAX_HISTORY_ENTRIES, RESUME_TOLERANCE_MS, WatchHistory};
 

@@ -13,8 +13,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
 

@@ -170,7 +170,6 @@ impl Fixture {
                         self.native.key.verifying_key().to_bytes(),
                     ),
                     message,
-                    Some(&self.native.key),
                     now,
                 )
                 .unwrap();

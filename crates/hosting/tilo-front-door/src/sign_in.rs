@@ -7,7 +7,8 @@
 //!
 //! ```text
 //! <web_entry>/sign-in?audience=<issuer>&challenge=<hex>&return=<issuer>/sign-in&pending=<id>
-//!     &client=<name>&grant_key=<hex>&grant_scope=<all|workspace>&grant_expires=<unix ms>
+//!     &client=<name>&grant_key=<hex>&grant_scope=<all|workspace>&grant_expires=<unix ms|never>
+//!     [&grant_kind=server_key]
 //! ```
 //!
 //! and the page there, once the person agrees, posts a form back to

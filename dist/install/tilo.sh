@@ -2,11 +2,14 @@
 # Install the `tilo` command, as `curl -fsSL https://tilo.sh | sh` runs it.
 #
 # It needs no root: the command goes to ~/.local/bin (or $TILO_INSTALL_DIR).
-# It installs only a release Tilo signed: the release's SHA256SUMS must carry
-# a signature by Tilo's release key (the key below, `keys/cosign.pub` in the
-# Tilo repository: AWS KMS `alias/tilo-release-signing`, ECDSA P-256 over
-# SHA-256), checked with openssl, and the archive for this machine must match
-# its line there. Anything else stops the install before a file is written.
+# The archive for this machine must match its line in the release's
+# SHA256SUMS, fetched over HTTPS from the same site, checked with sha256sum or
+# shasum, which every Linux and macOS has. Where openssl is installed, the
+# SHA256SUMS must also carry a signature by Tilo's release key (the key below,
+# `keys/cosign.pub` in the Tilo repository: AWS KMS `alias/tilo-release-signing`,
+# ECDSA P-256 over SHA-256); stock systems such as Fedora come without it, so
+# its absence does not stop the install, only a signature that fails does.
+# Anything that fails stops the install before a file is written.
 #
 # Where releases come from ($TILO_RELEASES, for a mirror; tools/ci/publish/cli-release.sh
 # makes and publishes them with each release tag, and tilo.sh serves them):
@@ -29,7 +32,6 @@ main() {
   need() { command -v "$1" >/dev/null 2>&1 || fail "this install needs $1, which this computer doesn't have"; }
   need uname
   need tar
-  need openssl
   if command -v curl >/dev/null 2>&1; then
     fetch() { curl -fsSL --proto '=https,file' --tlsv1.2 -o "$2" "$1"; }
   elif command -v wget >/dev/null 2>&1; then
@@ -39,8 +41,10 @@ main() {
   fi
   if command -v sha256sum >/dev/null 2>&1; then
     digest() { sha256sum "$1" | cut -d' ' -f1; }
-  else
+  elif command -v shasum >/dev/null 2>&1; then
     digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+  else
+    fail "this install needs sha256sum or shasum"
   fi
 
   case $(uname -s) in
@@ -72,13 +76,15 @@ KEY
   base=$releases/$version
   say "Getting Tilo ($version) for $os $arch…"
   fetch "$base/SHA256SUMS" "$work/SHA256SUMS" || fail "could not get $base/SHA256SUMS"
-  fetch "$base/SHA256SUMS.sig" "$work/SHA256SUMS.sig" || fail "could not get the release's signature"
-  openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS" >/dev/null 2>&1 \
-    || fail "the release's signature does not verify against Tilo's release key; nothing was installed"
+  if command -v openssl >/dev/null 2>&1; then
+    fetch "$base/SHA256SUMS.sig" "$work/SHA256SUMS.sig" || fail "could not get the release's signature"
+    openssl dgst -sha256 -verify "$work/release.pub" -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS" >/dev/null 2>&1 \
+      || fail "the release's signature does not verify against Tilo's release key; nothing was installed"
+  fi
   expected=$(awk -v name="$archive" '$2 == name || $2 == "*" name { print $1; exit }' "$work/SHA256SUMS")
   [ -n "$expected" ] || fail "this release has no $archive"
   fetch "$base/$archive" "$work/$archive" || fail "could not get $archive"
-  [ "$(digest "$work/$archive")" = "$expected" ] || fail "$archive does not match the signed release; nothing was installed"
+  [ "$(digest "$work/$archive")" = "$expected" ] || fail "$archive does not match the release's SHA256SUMS; nothing was installed"
 
   mkdir "$work/unpacked"
   tar -xzf "$work/$archive" -C "$work/unpacked" tilo || fail "$archive holds no tilo"

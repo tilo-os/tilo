@@ -113,11 +113,15 @@ struct EnumOptions {
     operation: String,
     /// The app its typed references name their effects by.
     app: Option<String>,
+    /// The directory of the catalogue its labels are keys of (`catalogue =
+    /// "tests/locales"`), relative to the crate: `locales` by default.
+    catalogue: Option<String>,
 }
 
 fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
     let mut app = None;
+    let mut catalogue = None;
     for attr in input
         .attrs
         .iter()
@@ -130,8 +134,13 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             } else if meta.path.is_ident("app") {
                 app = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("catalogue") {
+                catalogue = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"` or `app = \"...\"`"))
+                Err(meta.error(
+                    "expected `operation = \"...\"`, `app = \"...\"` or `catalogue = \"dir\"`",
+                ))
             }
         })?;
     }
@@ -141,7 +150,11 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
     })?;
-    Ok(EnumOptions { operation, app })
+    Ok(EnumOptions {
+        operation,
+        app,
+        catalogue,
+    })
 }
 
 #[derive(Default)]
@@ -161,6 +174,10 @@ struct VariantOptions {
     job: bool,
     cancellable: bool,
     returns: bool,
+    /// `returns = Type`: the type of the value it answers with
+    /// ([`JsonSchema`](tilo_resource::JsonSchema)), from which its return
+    /// schema and its kind are published.
+    returns_type: Option<syn::Path>,
     content: bool,
     destructive: bool,
     privileged: bool,
@@ -282,6 +299,9 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.cancellable = true;
             } else if meta.path.is_ident("returns") {
                 options.returns = true;
+                if meta.input.peek(syn::Token![=]) {
+                    options.returns_type = Some(meta.value()?.parse::<syn::Path>()?);
+                }
             } else if meta.path.is_ident("content") {
                 options.content = true;
             } else if meta.path.is_ident("destructive") {
@@ -333,7 +353,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
+                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
@@ -370,7 +390,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let EnumOptions { operation, app } = enum_options(input)?;
+    let EnumOptions {
+        operation,
+        app,
+        catalogue,
+    } = enum_options(input)?;
+    let catalogue =
+        crate::words::Catalogue::read(catalogue.as_deref().unwrap_or(crate::words::LOCALES));
     let any_arguments = data
         .variants
         .iter()
@@ -387,12 +413,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let ident = &variant.ident;
         let id = snake_case(&ident.to_string()).replace('_', "-");
         let docs = doc_lines(&variant.attrs);
-        let label = options.label.clone().unwrap_or_else(|| {
-            docs.first()
-                .map(|line| line.trim_end_matches('.').to_owned())
-                .filter(|line| !line.is_empty())
-                .unwrap_or_else(|| humanize(&snake_case(&ident.to_string())))
-        });
+        let written = docs
+            .first()
+            .map(|line| line.trim_end_matches('.').to_owned())
+            .filter(|line| !line.is_empty())
+            .unwrap_or_else(|| humanize(&snake_case(&ident.to_string())));
+        let (label_word, label) = catalogue.declared(
+            &krate,
+            variant.span(),
+            options.label.as_deref(),
+            &crate::words::key(&operation, &id),
+            &written,
+        )?;
         let description = docs
             .iter()
             .filter(|line| !line.is_empty())
@@ -518,6 +550,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(#krate::effect::Answers::Value)
         } else {
             quote!(#krate::effect::Answers::Nothing)
+        };
+        let result = if let Some(ty) = &options.returns_type {
+            quote!(::core::option::Option::Some(#krate::effect::EffectResult {
+                schema: <#ty as #krate::JsonSchema>::json_schema,
+                ty: ::core::option::Option::Some(<#ty as #krate::JsonSchema>::field_type),
+            }))
+        } else {
+            quote!(::core::option::Option::None)
         };
         let risk = match (options.destructive, options.privileged, options.sensitive) {
             (true, false, false) => quote!(Destructive),
@@ -695,12 +735,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         decls.push(quote! {
             #krate::effect::EffectRow {
                 id: #id,
-                label: #label,
+                label: #label_word,
                 keywords: &[#(#keywords),*],
                 icon: #icon,
                 description: #description,
                 params: #params_fn,
                 param_types: #param_types_fn,
+                result: #result,
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
@@ -861,6 +902,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 match self {
                     #(#ids)*
                 }
+            }
+
+            fn rows() -> ::std::vec::Vec<#krate::effect::EffectRow> {
+                <[_]>::to_vec(Self::__effect_rows())
             }
 
             #phrase

@@ -5,106 +5,431 @@ use super::{
     AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
     PeerPublicationMut, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
 };
-use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
+use collab_types::signer::DeviceSigner;
+use collab_types::{
+    ContentRetention, EncryptionMetadata, SealedCompaction, SealedCompactionSegment,
+};
 
 type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
-/// A key holder sealing a compaction's snapshot under the channel's current
-/// epoch, with checkpoint retention.
+/// A key holder sealing a record's content under the channel's current epoch:
+/// a compaction's snapshot with checkpoint retention, a write with delta retention.
 pub type SealCheckpoint<'a> =
     dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
-/// A key holder sealing a write to a record under the channel's current
-/// epoch, with delta retention.
-pub type SealDelta<'a> = SealCheckpoint<'a>;
 
 /// Writes a sealed history must hold before it is compacted to make workspace in
 /// a full exact admission index: fewer would fold little for the work.
 pub(super) const PRESSED_HISTORY: usize = 64;
 
-impl PeerPublicationMut<'_> {
-    /// Compact `record`'s sealed history as the key holder of its channel
-    /// and supersede it here, returning the compaction to publish.
+impl<'peer> PeerPublication<'peer> {
+    /// Draft the compaction of `record`'s sealed history as the key holder of
+    /// its channel, for `author` to sign and
+    /// [`PeerPublicationMut::admit_sealed_compaction`] to admit.
     ///
     /// `open` opens any write of the history, under any epoch whose key is
     /// held, and a previous compaction through
     /// [`collab_types::sealed_ciphertext`]. Every write is opened, decoded
     /// and merged over the record's cleartext base into one document; one
     /// that does not open, decode or merge completely aborts the whole
-    /// compaction. `seal` seals that document's snapshot under the channel's
-    /// current epoch with [`ContentRetention::Checkpoint`] retention. The
-    /// compaction is signed by `key` and admitted here through the same
-    /// checks every keyless replica applies, so `key` must be a device the
-    /// record admits as a writer of it (or the workspace's governor, compacting
-    /// by its `compact` governance action).
-    pub fn compact_sealed_history(
+    /// compaction. `rebuilt` replaces that document when the record's key
+    /// holder rebuilt it from a history that does not merge whole: one writer
+    /// wrote a sequence twice, so no merge holds both changes, and the operator
+    /// repairing the record carried what the change left out wrote into it.
+    /// Nothing checks that `rebuilt` holds what the writes did: that is the
+    /// repair's to answer for. `seal` seals the document's snapshot under the
+    /// channel's current epoch with [`ContentRetention::Checkpoint`] retention.
+    /// The compaction replaces exactly the writes it covers, and its admission
+    /// applies the checks every keyless replica applies, so `author` must be a
+    /// device the record admits as a writer of it (or the workspace's governor,
+    /// compacting by its `compact` governance action).
+    ///
+    /// # Errors
+    ///
+    /// The history does not merge, `rebuilt` does not load, or the seal is not
+    /// a checkpoint of the record's channel that opens to the document.
+    pub fn draft_sealed_compaction(
         self,
-        app: &str,
-        record: &str,
+        (app, record): (&str, &str),
+        rebuilt: Option<Vec<u8>>,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        author: [u8; 32],
         now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        let document = self
-            .peer
-            .core
-            .documents
-            .get(&route)
-            .ok_or("sealed compaction of a record this state does not hold")?;
-        if document.sealed.is_empty() {
-            return Err("the record holds no sealed history to compact".into());
-        }
-        let merged = merge_sealed(document, open)?;
-        let snapshot = DocumentMutation::Snapshot(merged).encode().map_err(err)?;
-        let (metadata, ciphertext) = seal(&snapshot)?;
-        if metadata.retention() != Some(ContentRetention::Checkpoint)
-            || metadata.channel
-                != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
-        {
-            return Err("a sealed compaction is a checkpoint for the record's channel".into());
-        }
-        let payload = SealedCompaction::new(&document.sealed.to_vec(), ciphertext)
-            .map_err(err)?
-            .encode()
-            .map_err(err)?;
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    ) -> Result<Vec<SignedOp>, String> {
+        let document = self.document((app, record))?;
         let seq = document
             .channel
             .last_seq_per_author
-            .get(&author)
+            .get(&Ed25519PublicKey::from_bytes(author))
             .copied()
             .unwrap_or(0)
             .checked_add(1)
             .ok_or("sequence exhausted")?;
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            payload,
-            collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
-            author,
-            collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
-            OpKind::Compaction,
+        self.draft(
+            (app, record),
+            document,
+            rebuilt,
+            open,
+            seal,
+            (author, seq),
             now,
-            seq,
-            metadata,
-        );
-        collab_types::sign_op(&mut op, key).map_err(err)?;
+        )
+    }
+
+    /// Draft the compaction of `history`, the record's history as its host holds it, under
+    /// `seq`, the place this device's custody keeps for it: as
+    /// [`Self::draft_sealed_compaction`] drafts the history this replica holds.
+    ///
+    /// # Errors
+    /// As [`Self::draft_sealed_compaction`].
+    pub fn draft_sealed_compaction_of(
+        self,
+        (app, record): (&str, &str),
+        history: Vec<SignedOp>,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut SealCheckpoint<'_>,
+        (author, seq): ([u8; 32], u64),
+        now: SystemTime,
+    ) -> Result<Vec<SignedOp>, String> {
+        let mut document = self.document((app, record))?.clone();
+        document.sealed = history.into();
+        self.draft(
+            (app, record),
+            &document,
+            None,
+            open,
+            seal,
+            (author, seq),
+            now,
+        )
+    }
+
+    /// The sealed history this replica holds of `record` of `app`, in order.
+    #[must_use]
+    pub fn sealed_history(self, app: &str, record: &str) -> Vec<SignedOp> {
+        self.document((app, record))
+            .map(|document| document.sealed.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Whether the sealed history of `record` of `app` holds `write` as itself.
+    #[must_use]
+    pub fn holds_sealed(self, app: &str, record: &str, write: &SignedOp) -> bool {
+        self.document((app, record)).is_ok_and(|document| {
+            document
+                .sealed
+                .iter()
+                .any(|held| held.signature == write.signature)
+        })
+    }
+
+    /// Check `compaction` as a write of `record` of `app` from its author: signed by it, for
+    /// this record, and granted to it.
+    ///
+    /// # Errors
+    /// It is no compaction of this record, or its author may not write it.
+    pub fn check_sealed_compaction(
+        self,
+        (app, record): (&str, &str),
+        compaction: &SignedOp,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if compaction.kind != OpKind::Compaction {
+            return Err("a sealed compaction is a compaction write".into());
+        }
+        SealedCompaction::parse(compaction).map_err(err)?;
+        collab_types::validate_whole_document_payload_route(
+            app,
+            &self.peer.core.workspace,
+            record,
+            compaction,
+        )
+        .map_err(err)?;
+        collab_types::verify_op(compaction).map_err(err)?;
+        self.peer
+            .authorize_document(compaction.author.as_bytes(), app, record, compaction, now)?
+            .ok_or("the compaction's app surface is not here")?;
+        Ok(())
+    }
+
+    fn document(
+        self,
+        (app, record): (&str, &str),
+    ) -> Result<&'peer super::backend::StoredDocument, String> {
+        self.peer
+            .core
+            .documents
+            .get(&Route {
+                app: app.into(),
+                record: record.into(),
+            })
+            .ok_or_else(|| "sealed compaction of a record this state does not hold".into())
+    }
+
+    fn draft(
+        self,
+        (app, record): (&str, &str),
+        document: &super::Document,
+        rebuilt: Option<Vec<u8>>,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut SealCheckpoint<'_>,
+        (author, seq): ([u8; 32], u64),
+        now: SystemTime,
+    ) -> Result<Vec<SignedOp>, String> {
+        let rebuilt = match rebuilt {
+            Some(rebuilt) => rebuilt,
+            None => merge_sealed(document, open)?,
+        };
+        AutoCommit::load(&rebuilt).map_err(err)?;
+        if document.sealed.is_empty() {
+            return Err("the record holds no sealed history to compact".into());
+        }
+        let snapshot = DocumentMutation::Snapshot(rebuilt);
+        // A snapshot larger than one op goes as a segmented transfer: the
+        // compaction carries its first segment and names the rest.
+        let channel = collab_types::document_channel_id(app, &self.peer.core.workspace, record);
+        let mut sealed = Vec::new();
+        for (index, frame) in snapshot.encode_frames().map_err(err)?.iter().enumerate() {
+            let (metadata, ciphertext) = seal(frame)?;
+            let retention = if index == 0 {
+                ContentRetention::Checkpoint
+            } else {
+                ContentRetention::Delta
+            };
+            if metadata.retention() != Some(retention) || metadata.channel != channel {
+                return Err("a sealed compaction is a checkpoint for the record's channel".into());
+            }
+            sealed.push((metadata, ciphertext));
+        }
+        let mut sealed = sealed.into_iter();
+        let (metadata, first) = sealed.next().ok_or("a snapshot encodes to no frame")?;
+        let segments = sealed
+            .map(|(metadata, ciphertext)| {
+                SealedCompactionSegment::new(ciphertext)
+                    .encode()
+                    .map(|payload| (metadata, payload))
+                    .map_err(err)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let payloads: Vec<Vec<u8>> = segments
+            .iter()
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        let payload = SealedCompaction::new(&document.sealed.to_vec(), first)
+            .map_err(err)?
+            .segmented(&payloads)
+            .encode()
+            .map_err(err)?;
+        let op = |payload, metadata| {
+            SignedOp::new_unsigned_with_encryption(
+                payload,
+                collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
+                Ed25519PublicKey::from_bytes(author),
+                collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
+                OpKind::Compaction,
+                now,
+                seq,
+                metadata,
+            )
+        };
+        let ops: Vec<SignedOp> = std::iter::once(op(payload, metadata))
+            .chain(
+                segments
+                    .into_iter()
+                    .map(|(metadata, payload)| op(payload, metadata)),
+            )
+            .collect();
         // Keyless replicas cannot tell an unreadable compaction from a good
         // one, so only one that opens to the merged record leaves here.
-        if open(&op)? != snapshot {
+        if opened_whole(&ops, open)?.as_ref() != Some(&snapshot) {
             return Err("the sealed compaction does not open to the merged record".into());
         }
+        Ok(ops)
+    }
+}
+
+/// What `ops`, a compaction and the segments it names, open to with `open`:
+/// `None` while a segment is missing.
+fn opened_whole(
+    ops: &[SignedOp],
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+) -> Result<Option<DocumentMutation>, String> {
+    let mut transfers = crate::document_frame::Transfers::default();
+    let mut whole = None;
+    for op in ops {
+        whole = transfers.take(*op.author.as_bytes(), &open(op)?)?;
+    }
+    Ok(whole)
+}
+
+impl PeerPublicationMut<'_> {
+    /// Admit `ops`, a compaction of `record` drafted by
+    /// [`PeerPublication::draft_sealed_compaction`] and its segments, each
+    /// signed by its author, superseding the history it covers here, and
+    /// answer them as the messages to publish, the compaction first. On an
+    /// error nothing changes.
+    pub fn admit_sealed_compaction(
+        self,
+        app: &str,
+        record: &str,
+        ops: Vec<SignedOp>,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut ops = ops.into_iter();
+        let op = ops
+            .next()
+            .ok_or("a sealed compaction is at least one write")?;
+        if op.kind != OpKind::Compaction {
+            return Err("a sealed compaction is a compaction write".into());
+        }
+        let segments: Vec<SignedOp> = ops.collect();
         let mut candidate = self.peer.clone();
+        for segment in &segments {
+            candidate.gather_compaction_piece((app, record), segment.clone())?;
+        }
+        // The compaction completes what its segments began.
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
         *self.peer = candidate;
-        Ok(NeighbourMsg::AppDocument {
-            peer: peer_handle(author.as_bytes()),
-            app_id: app.into(),
-            cluster_id: self.peer.core.workspace.clone(),
-            record_id: record.into(),
-            envelope: Box::new(op),
-        })
+        Ok(std::iter::once(op)
+            .chain(segments)
+            .map(|op| NeighbourMsg::AppDocument {
+                peer: peer_handle(op.author.as_bytes()),
+                app_id: app.into(),
+                cluster_id: self.peer.core.workspace.clone(),
+                record_id: record.into(),
+                envelope: Box::new(op),
+            })
+            .collect())
+    }
+
+    /// Gather `piece`, a piece of a compaction of `record` of `app` that spans
+    /// several ops ([`collab_types::is_compaction_piece`]), and answer the
+    /// compaction once all of its pieces are here: [`Self::take_sealed_compaction`]
+    /// takes it with them.
+    ///
+    /// # Errors
+    /// It is no piece of a compaction of this record.
+    pub fn gather_sealed_piece(
+        self,
+        (app, record): (&str, &str),
+        piece: SignedOp,
+    ) -> Result<Option<SignedOp>, String> {
+        if !collab_types::is_compaction_piece(&piece) {
+            return Err("not a piece of a sealed compaction".into());
+        }
+        self.peer.gather_compaction_piece((app, record), piece)
+    }
+}
+
+impl PeerPublicationMut<'_> {
+    /// Take `compaction`, which the record's host holds first in its history, as this record's
+    /// own history: the compaction, then every write here it does not cover, nor `folded`
+    /// picks (the writes an earlier compaction of the host's folded). A compaction of
+    /// this device's own that the host does not hold yet goes, and the writes after it stay.
+    /// Its caller decides that the compaction holds everything the history it replaces does
+    /// (one of this device's own, drafted against what the host acknowledged, or a host's that
+    /// covers every write this record folded); it is checked as a write of its author first.
+    ///
+    /// # Errors
+    /// The compaction is no write of its author to this record, or its evidence does not fit
+    /// the record's; this peer is unchanged then.
+    pub fn take_sealed_compaction(
+        self,
+        (app, record): (&str, &str),
+        compaction: &SignedOp,
+        folded: &dyn Fn(&SignedOp) -> bool,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        self.peer
+            .publication()
+            .check_sealed_compaction((app, record), compaction, now)?;
+        let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let mut candidate = self.peer.clone();
+        candidate
+            .publication_mut()
+            .record_sealed_compaction(app, record, compaction)?;
+        let segments = candidate.compaction_segments(&route, compaction)?;
+        let gathered = !segments.is_empty();
+        let document = candidate
+            .core
+            .documents
+            .get_mut(&route)
+            .ok_or("sealed compaction of a record this state does not hold")?;
+        let history: super::backend::SealedLog = std::iter::once(compaction.clone())
+            .chain(segments)
+            .chain(
+                document
+                    .sealed
+                    .iter()
+                    .filter(|write| {
+                        write.kind != OpKind::Compaction && !wrapper.covers(write) && !folded(write)
+                    })
+                    .cloned(),
+            )
+            .collect::<Vec<_>>()
+            .into();
+        if !history.within_bounds() {
+            return Err("the record's history exceeds its bound".into());
+        }
+        document.sealed = history;
+        let floors = &mut document.channel.last_seq_per_author;
+        for (author, seq) in wrapper
+            .covers
+            .iter()
+            .chain([(compaction.author, compaction.seq)].iter())
+        {
+            let floor = floors.entry(*author).or_default();
+            *floor = (*floor).max(*seq);
+        }
+        if candidate.core.admission_v5 {
+            candidate
+                .core
+                .exact_admissions
+                .cover(
+                    (&candidate.core.workspace, app, record),
+                    covered(compaction)?,
+                )
+                .map_err(err)?;
+        }
+        if gathered {
+            candidate.forget_gathered(&route);
+        }
+        *self.peer = candidate;
+        Ok(())
+    }
+
+    /// Make `compaction` the evidence of its author's sequence in `record` of `app`: one this
+    /// device drafted again for its host takes the place of the compaction it drafted there
+    /// first.
+    ///
+    /// # Errors
+    /// The record's evidence cannot take it.
+    pub fn record_sealed_compaction(
+        self,
+        app: &str,
+        record: &str,
+        compaction: &SignedOp,
+    ) -> Result<(), String> {
+        if !self.peer.core.admission_v5 {
+            return Ok(());
+        }
+        let core = &mut self.peer.core;
+        let admission =
+            crate::admission::DocumentAdmission::from_op(&core.workspace, app, record, compaction)
+                .map_err(err)?;
+        match core.exact_admissions.get(&admission.key) {
+            Some(id) if id == &admission.operation_id => return Ok(()),
+            Some(_) => core
+                .exact_admissions
+                .withdraw(&admission.key)
+                .map_err(err)?,
+            None if core.exact_admissions.covers(&admission.key) => return Ok(()),
+            None => {}
+        }
+        core.exact_admissions.insert(&admission).map_err(err)
     }
 }
 
@@ -122,14 +447,22 @@ pub(super) fn merge_sealed(
     // whole record into the isolate each time.
     let mut history = Vec::new();
     let mut writes = Vec::new();
+    // A write too large for one op, a compaction's snapshot among them, is
+    // read once all of its segments are.
+    let mut transfers = crate::document_frame::Transfers::default();
     for (index, write) in document.sealed.iter().enumerate() {
-        let mutation = DocumentMutation::decode(&open(write)?).map_err(err)?;
+        let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
+            continue;
+        };
         match &mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
                 history.extend_from_slice(bytes);
             }
         }
         writes.push((index, mutation));
+    }
+    if !transfers.is_empty() {
+        return Err("a segmented write of the sealed history is incomplete".into());
     }
     let base = (*document.doc).clone();
     let mut merged = base.clone();
@@ -390,9 +723,11 @@ pub(super) fn open_sealed(
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
+    let mut transfers = crate::document_frame::Transfers::default();
     for (index, write) in sealed.iter().enumerate() {
-        match open(write).and_then(|plain| DocumentMutation::decode(&plain).map_err(err)) {
-            Ok(mutation) => writes.push((index, mutation)),
+        match open(write).and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
+            Ok(Some(mutation)) => writes.push((index, mutation)),
+            Ok(None) => {}
             Err(why) => unmerged.push((index, UnmergedReason::Unreadable(why))),
         }
     }
@@ -418,7 +753,68 @@ pub(super) fn open_sealed(
     })
 }
 
+/// Everything a record's history holds, each write opened on its own and
+/// nothing merged ([`PeerPublication::opened_history`]): what an operator
+/// repairing a record that does not read whole reads it from.
+#[derive(Clone, Debug)]
+pub struct OpenedHistory {
+    /// The record's cleartext base, saved: the whole record for one written in
+    /// the clear.
+    pub base: Vec<u8>,
+    /// The record's sealed writes, in history order.
+    pub writes: Vec<OpenedWrite>,
+}
+
+/// One write of a sealed history, opened.
+#[derive(Clone, Debug)]
+pub struct OpenedWrite {
+    pub author: [u8; 32],
+    pub seq: u64,
+    /// What it writes, or why it does not open.
+    pub mutation: Result<DocumentMutation, String>,
+}
+
 impl PeerPublication<'_> {
+    /// The cleartext base of `record` of `app` and every write of its sealed
+    /// history opened with `open`, none merged: `None` for a record this state
+    /// does not hold. A record written in the clear has no writes.
+    pub fn opened_history(
+        self,
+        app: &str,
+        record: &str,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Option<OpenedHistory> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let document = self.peer.core.documents.get(&route)?;
+        let writes = if document.encryption_required {
+            // A write in segments is one write, read where its last segment is.
+            let mut transfers = crate::document_frame::Transfers::default();
+            document
+                .sealed
+                .iter()
+                .filter_map(|write| {
+                    let mutation = open(write)
+                        .and_then(|plain| transfers.take(*write.author.as_bytes(), &plain))
+                        .transpose()?;
+                    Some(OpenedWrite {
+                        author: *write.author.as_bytes(),
+                        seq: write.seq,
+                        mutation,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(OpenedHistory {
+            base: document.doc.saved(),
+            writes,
+        })
+    }
+
     /// `record` of `app` as its channel's key holder reads it: the cleartext
     /// base with every sealed write `open` opens merged over it, and the
     /// writes it leaves out (see [`OpenedRecord`]). A record that is not
@@ -473,8 +869,8 @@ impl PeerPublicationMut<'_> {
         app: &str,
         record: &str,
         changes: Vec<u8>,
-        seal: &mut SealDelta<'_>,
-        key: &SigningKey,
+        seal: &mut SealCheckpoint<'_>,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -507,7 +903,7 @@ impl PeerPublicationMut<'_> {
         record: &str,
         document: Vec<u8>,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish_sealed(
@@ -526,65 +922,19 @@ impl PeerPublicationMut<'_> {
         record: &str,
         mutation: &DocumentMutation,
         seal: &mut SealCheckpoint<'_>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        // A change needs the record it changes; a checkpoint is the whole
-        // record, so it is all a route it founds needs.
-        let retention = match mutation {
-            DocumentMutation::Incremental(_) => ContentRetention::Delta,
-            DocumentMutation::Snapshot(_) => ContentRetention::Checkpoint,
-        };
-        let document = self.peer.core.documents.get(&route);
-        if document.is_none() && retention == ContentRetention::Delta {
-            return Err("sealed write to a record this state does not hold".into());
-        }
-        // Readers without the key decide a sealed write by the claims of
-        // its changes, as a member's page names them: each naming the units
-        // its action may write by the surface the op names.
-        let surface = self.peer.signed_surface(app);
-        let claims = self.peer.surfaces.with_footprints(
-            &collab_types::Record {
-                room: &self.peer.core.workspace,
-                app,
-                record,
-            },
-            document
-                .and_then(|held| super::record_kind(&*held.doc))
-                .as_deref(),
-            surface.as_ref(),
-            collab_types::mutation_claims(mutation, collab_types::record_unit).map_err(err)?,
-        );
         let plaintext = mutation.encode().map_err(err)?;
-        let (metadata, ciphertext) = seal(&plaintext)?;
-        if metadata.retention() != Some(retention)
-            || metadata.channel
-                != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
-        {
-            return Err("a sealed write is a delta or a checkpoint of the record's channel".into());
-        }
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-        let seq = document
-            .and_then(|held| held.channel.last_seq_per_author.get(&author).copied())
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            ciphertext,
-            collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
-            author,
-            collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
-            OpKind::Change,
+        let mut op = self.peer.draft_write(
+            (app, record),
+            &plaintext,
+            Some(seal),
+            key.device_public_key(),
+            0,
             now,
-            seq,
-            metadata,
-        )
-        .with_claims(claims)
-        .with_surface(surface);
+        )?;
+        let author = op.author;
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
@@ -615,8 +965,8 @@ impl PeerPublicationMut<'_> {
         delegate: &SigningKey,
         (app, record): (&str, &str),
         changes: Vec<u8>,
-        seal: &mut SealDelta<'_>,
-        key: &SigningKey,
+        seal: &mut SealCheckpoint<'_>,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();
@@ -643,10 +993,7 @@ impl PeerPublication<'_> {
             .core
             .documents
             .iter()
-            .filter(|(_, document)| {
-                document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
-                    || document.sealed.bytes() >= super::MAX_SEALED_BYTES / 4 * 3
-            })
+            .filter(|(_, document)| document.sealed.due())
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect();
         // Every sealed write leaves exact admission evidence until a
@@ -661,8 +1008,8 @@ impl PeerPublication<'_> {
                     .core
                     .documents
                     .iter()
-                    .filter(|(_, document)| document.sealed.len() >= PRESSED_HISTORY)
-                    .max_by_key(|(_, document)| document.sealed.len())
+                    .filter(|(_, document)| document.sealed.writes().0 >= PRESSED_HISTORY)
+                    .max_by_key(|(_, document)| document.sealed.writes().0)
                     .map(|(route, _)| (route.app.clone(), route.record.clone())),
             );
         }
@@ -729,6 +1076,7 @@ pub(super) fn supersede(
     history: &[SignedOp],
     floors: &Floors,
     compaction: &SignedOp,
+    segments: Vec<SignedOp>,
 ) -> Result<Vec<SignedOp>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
     if history.is_empty() {
@@ -739,7 +1087,9 @@ pub(super) fn supersede(
         // the governance's coverage holds the floors that says it reached and
         // none of its writes; there is nothing of it to hide from, and the
         // compaction is how the store hands it over.
-        return Ok(vec![compaction.clone()]);
+        return Ok(std::iter::once(compaction.clone())
+            .chain(segments)
+            .collect());
     }
     let (superseded, kept): (Vec<&SignedOp>, Vec<&SignedOp>) =
         history.iter().partition(|write| wrapper.covers(write));
@@ -767,14 +1117,18 @@ pub(super) fn supersede(
     {
         return Err("sealed compaction is sealed under a stale epoch".into());
     }
-    Ok(std::iter::once(compaction).chain(kept).cloned().collect())
+    Ok(std::iter::once(compaction.clone())
+        .chain(segments)
+        .chain(kept.into_iter().cloned())
+        .collect())
 }
 
 /// Re-validate a stored history's compaction: only ever its first entry,
 /// covering nothing beyond the record's floors and none of the later writes.
 pub(super) fn check_stored(history: &[SignedOp], floors: &Floors) -> Result<(), String> {
+    let segments = super::compaction_set::held_segments(history)?;
     for (index, op) in history.iter().enumerate() {
-        if op.kind != OpKind::Compaction {
+        if op.kind != OpKind::Compaction || (1..=segments).contains(&index) {
             continue;
         }
         if index != 0 {
@@ -784,7 +1138,11 @@ pub(super) fn check_stored(history: &[SignedOp], floors: &Floors) -> Result<(), 
         if covers_beyond(&wrapper, floors) {
             return Err("stored sealed compaction is ahead of the record's watermark".into());
         }
-        if history.iter().skip(1).any(|write| wrapper.covers(write)) {
+        if history
+            .iter()
+            .skip(segments.saturating_add(1))
+            .any(|write| wrapper.covers(write))
+        {
             return Err("stored sealed compaction covers a later write".into());
         }
     }

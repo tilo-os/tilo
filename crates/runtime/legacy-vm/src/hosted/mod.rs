@@ -1,11 +1,12 @@
-//! Hosted VMs: one Linux VM per hosted workspace environment, metered per
-//! second.
+//! Hosted VMs: one VM per hosted workspace, which runs its Linux programs
+//! and its Browser.
 //!
 //! On a host that serves other people's workspaces, the Linux programs a
-//! workspace's shell runs (tier 3: `cargo`, `npm`, `python`, …) run in a VM
-//! of the workspace's own, never in a job sharing the host's kernel. The
-//! shell's own commands, Tilo actions and the browser need no VM and are not
-//! billed as VM time.
+//! workspace's shell runs (tier 3: `cargo`, `npm`, `python`, …) and the web
+//! pages its Browser shows run in a VM of the workspace's own, never in a
+//! job sharing the host's kernel. The shell's own commands and Tilo actions
+//! need no VM. Its time is billed from the first Linux action until it
+//! sleeps; Browser's page actions are counted instead.
 //!
 //! A hosted VM is the legacy VM's sibling: the same guest agent and
 //! protocol over vsock ([`legacy_agent_protocol`]), the same
@@ -19,9 +20,15 @@
 //! - once no command has run for the idle limit, it is snapshotted to disk
 //!   and its process ends; the next command restores it;
 //! - every VM has a [`size`] and a persistent disk of that size;
+//! - the same VM holds the workspace's Browser ([`browser`]): a headless
+//!   session the first browser action starts in it, which needs no card;
 //! - [`meter`] records each run and each held snapshot, per second, in the
 //!   account's ledger, and [`plan`] refuses what the account's plan does not
 //!   cover, in words an agent can act on;
+//! - [`memory`] is what a wake is admitted by: what the kernel measures each
+//!   VM's process at, not the size it was configured at, with the host's own
+//!   reserve kept free and the guests' balloons asked for memory back under
+//!   pressure;
 //! - one service per host ([`service`]) owns every VM and answers ush over a
 //!   Unix socket ([`control`]).
 //!
@@ -60,11 +67,13 @@
     reason = "errors are typed enums whose variants document themselves"
 )]
 
+pub mod browser;
 pub mod control;
 pub mod files;
 pub mod firecracker;
 pub mod guest;
 pub mod jail;
+pub mod memory;
 pub mod meter;
 pub mod network;
 pub mod placement;

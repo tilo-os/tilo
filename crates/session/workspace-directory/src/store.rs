@@ -17,15 +17,15 @@ use crate::{Listed, home_listing, listings_of};
 /// wakes the caller's loop to take it in.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// A workspace this person was let into: the name it was listed under, and
-/// what its door granted — the workspace itself and the invitation this
-/// device enrolls into it with.
+/// A workspace this person chose to join: the name it was listed under, and
+/// the workspace itself with the way this device comes into it — its door,
+/// or an invitation it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
     /// The name the workspace goes by: the one it was listed under, else one
     /// of the sheet's.
     pub name: String,
-    /// What the door granted, which is the workspace joined.
+    /// The workspace joined, and how this device comes into it.
     pub granted: Granted,
     /// The community site whose home this is, when nobody at the directory
     /// asked for the join: the person's community joins on its own as their
@@ -55,16 +55,15 @@ enum Ask {
         community: Option<url::Url>,
         site: Option<String>,
     },
-    /// Ask `door` to admit `person`, and verify what it answers.
+    /// Enter the workspace `door` lets people into.
     Join {
         key: String,
         name: String,
         door: url::Url,
-        person: Person,
     },
-    /// Join the home workspace of the community `site` as `person`, with
-    /// nobody at the directory asking for it.
-    Community { site: url::Url, person: Person },
+    /// Join the home workspace of the community `site`, with nobody at the
+    /// directory asking for it.
+    Community { site: url::Url },
     /// Join what the person pasted: a sealed link, an invitation's text, a
     /// site, or a workspace link.
     Take { text: String, person: Person },
@@ -219,8 +218,9 @@ impl Store {
         }
     }
 
-    /// Join `listing`, which the sheet knows as `key`: ask its door to admit
-    /// `person`, off the caller's loop. One join at a time.
+    /// Join `listing`, which the sheet knows as `key`, as `person`: the
+    /// caller enters it through its door on the session it opens with the
+    /// door's host. One join at a time.
     ///
     /// # Errors
     /// Why no door was asked: the listing lets people in by invitation only,
@@ -261,13 +261,12 @@ impl Store {
             name = %listing.entry.name.trim(),
             door = %door,
             person = %hex::encode(person.user),
-            "join: asking the door"
+            "join: entering through the door"
         );
         if let Err(error) = asks.send(Ask::Join {
             key: key.to_owned(),
             name: listing.entry.name.clone(),
             door,
-            person: person.clone(),
         }) {
             *self.joining.borrow_mut() = None;
             tracing::info!(
@@ -301,11 +300,8 @@ impl Store {
             person = %hex::encode(person.user),
             "join: asking the community site's home door"
         );
-        asks.send(Ask::Community {
-            site: site.clone(),
-            person: person.clone(),
-        })
-        .map_err(|error| format!("the community site was not asked: {error}"))
+        asks.send(Ask::Community { site: site.clone() })
+            .map_err(|error| format!("the community site was not asked: {error}"))
     }
 
     /// The listing `key` names, while it is listed.
@@ -682,9 +678,9 @@ impl Store {
         }
     }
 
-    /// A join the task answered with an invitation: keep the name it is
-    /// listed by for the slot made once the host admits this device, and hand
-    /// it to the caller.
+    /// A join the task settled the way in for: keep the name it is listed by
+    /// for the slot made once the host admits this device, and hand it to the
+    /// caller.
     fn granted(&self, key: &str, name: &str, granted: Granted, community: Option<&str>) {
         self.failures.borrow_mut().remove(key);
         self.names
@@ -762,22 +758,14 @@ async fn work(
     while let Some(ask) = asks.recv().await {
         let answer = match ask {
             Ask::Read { community, site } => Answer::Read(read(&client, community, site).await),
-            Ask::Join {
+            Ask::Join { key, name, door } => Answer::Joined {
                 key,
                 name,
-                door,
-                person,
-            } => Answer::Joined {
-                key,
-                name,
-                granted: match &client {
-                    Ok(client) => client::join(client, &door, &person).await,
-                    Err(error) => Err(format!("no network to join over: {error}")),
-                },
+                granted: client::through_door(&door),
             },
-            Ask::Community { site, person } => Answer::Community {
+            Ask::Community { site } => Answer::Community {
                 joined: match &client {
-                    Ok(client) => client::join_home(client, &site, &person).await,
+                    Ok(client) => client::join_home(client, &site).await,
                     Err(error) => Err(format!("no network to join over: {error}")),
                 },
                 site: site.to_string(),
@@ -800,25 +788,10 @@ async fn work(
                 invite,
                 result: match &client {
                     Err(error) => Err(format!("no network to leave it over: {error}")),
-                    Ok(client) => match tilo_workspace_join::sealed::seal(&invitation) {
-                        Ok(sealed) => {
-                            let link = client::leave(
-                                client,
-                                &site,
-                                host.as_deref(),
-                                &sealed,
-                                expires_at_ns,
-                            )
-                            .await;
-                            link.map(|link| Shelved {
-                                link,
-                                site,
-                                handle: sealed.handle,
-                                delete: sealed.delete,
-                            })
-                        }
-                        Err(error) => Err(error),
-                    },
+                    Ok(client) => {
+                        client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
+                            .await
+                    }
                 },
             },
             Ask::Unshelve {

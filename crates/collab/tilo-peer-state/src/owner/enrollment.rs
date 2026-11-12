@@ -69,7 +69,7 @@ pub(crate) fn restore(
         }
     }
     let peer = StatePeer::restore(
-        &record.peer,
+        &record.peer.to_vec(),
         &workspace.to_string(),
         record.workspace_host.clone(),
         vec![record.device.clone()],
@@ -357,7 +357,7 @@ impl NativeWorkspaceOwner {
         next: &NativeAuthorityStorage,
         required: Option<WorkspaceId>,
     ) -> Result<(), String> {
-        self.0.publish(next, Change::Pending, &mut || {
+        self.0.publish(next, Change::Pending, true, &mut || {
             *self.0.authority.write() = next.clone();
             if let Some(workspace) = required {
                 self.0.current.write().required.insert(workspace);
@@ -442,7 +442,7 @@ impl NativeWorkspaceOwner {
             }),
             vouched: None,
             host_hint: None,
-            peer: peer.durable()?,
+            peer: peer.durable_parts()?.into(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),
@@ -458,99 +458,6 @@ impl NativeWorkspaceOwner {
             NativeCommittedView::new(peer, record),
             Some(&pending),
         )
-    }
-    /// Admit and durably commit a document write signed by this device,
-    /// with its outgoing custody, before any receipt.
-    ///
-    /// # Sequence contract
-    /// The envelope is signed before this owner turn starts, so its sequence
-    /// must come from [`collab_types::next_unordered_document_sequence`] (as
-    /// every SDK document signer does). A dense `floor + 1` read through
-    /// [`Self::with_current`] races another local write, which then makes it
-    /// stale. A caller that needs the dense sequence prepares it inside the
-    /// turn with [`Self::commit_document_with_current`].
-    pub fn commit_document(
-        &self,
-        request: crate::owner_commit::OwnerCommitRequest,
-        now: SystemTime,
-    ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
-        let workspace =
-            WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
-        self.commit_document_with_current(workspace, |_| Ok(request), now)
-    }
-
-    /// Prepare a signed local document mutation from the current committed
-    /// workspace and admit it in the same owner turn. This keeps its sequence and
-    /// document basis current when other publications race the caller.
-    pub fn commit_document_with_current(
-        &self,
-        workspace: WorkspaceId,
-        prepare: impl FnOnce(
-            &crate::owner::NativeCommittedView,
-        ) -> Result<crate::owner_commit::OwnerCommitRequest, String>,
-        now: SystemTime,
-    ) -> Result<crate::owner_commit::OwnerCommitReceipt, String> {
-        use crate::owner_commit::{CommitOperation, OwnerCommitReceipt};
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        let request = prepare(&candidate)?;
-        if WorkspaceId::parse(&request.workspace) != Some(workspace) {
-            return Err(
-                "prepared native document workspace differs from selected workspace".into(),
-            );
-        }
-        let outgoing = publication::prepare(&request)?;
-        let binding = request.binding()?;
-        let CommitOperation::Document {
-            app,
-            record: document,
-            envelope,
-        } = request.operation
-        else {
-            return Err("unsupported native owner commit family".into());
-        };
-        let device = candidate.device().device_public_key;
-        if envelope.author.as_bytes() != &device {
-            return Err("native local publication signer differs from selected device".into());
-        }
-        let live = candidate.replica().lock();
-        let admitted = live
-            .lookup_exact_local_document(&app, &document, &envelope, now)
-            .map_err(|e| e.to_string())?
-            .is_some();
-        drop(live);
-        if admitted {
-            if candidate.record.device != candidate.record.workspace_host
-                && !publication::has_exact(&candidate.record, &outgoing)?
-                && !publication::retry_covered(
-                    &candidate.replica().lock(),
-                    &candidate.record,
-                    &outgoing,
-                )?
-            {
-                return Err("exact local admission has no retained publication custody".into());
-            }
-            return Ok(OwnerCommitReceipt {
-                binding,
-                generation: candidate.generation(),
-                aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-            });
-        }
-        let (receipt, stored) = candidate.change(|live, stored| {
-            live.admit_new_local_document(&app, &document, *envelope, now)?;
-            publication::append_local(stored, outgoing)?;
-            stored.generation = stored
-                .generation
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            Ok(OwnerCommitReceipt {
-                binding: binding.clone(),
-                generation: stored.generation,
-                aggregate_hash: *blake3::hash(&live.durable()?).as_bytes(),
-            })
-        })?;
-        self.publish_record(workspace, &candidate, stored, None)?;
-        Ok(receipt)
     }
 }
 /// Admit the workspace's governance from `bootstrap` into `peer`, in the order

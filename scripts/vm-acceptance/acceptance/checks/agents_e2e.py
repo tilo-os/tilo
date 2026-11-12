@@ -31,12 +31,12 @@ from pathlib import Path
 from .. import core
 from ..action_jobs import PendingJob
 from ..core import CheckFailed, Unobservable, check, expect
+from ..sheets import ALLOW_ALWAYS, ALLOW_ONCE, SHEET_S, answer_sheet, no_sheet, portal_dialog
 from ..vm import VmError, wait_until
 
 AREA = "agents-e2e"
 TERMINAL = "so.tilo.terminal"
 NOTES = "so.tilo.notes"
-SHEET = "so.tilo.portal-sheet"
 DESK = "session:desk"
 AGENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_agent.sh"
 # Where in each workspace's tree (the environments' `~`) the agents keep their transcripts.
@@ -46,12 +46,9 @@ CLIENT = "claude-code"
 PROTOCOL = "2025-06-18"
 # The two workspaces, and the environment made in each.
 WORKSPACES = (("Studio", "Studio dev"), ("Garden", "Garden site"))
-# The sheet's choices for an agent's admission (session questions.rs `admitted`).
-ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS = 0, 1, 2
 # How long a step may take: an environment's first shell (the runtime's guest set up), the
-# sheet appearing after an initialize, a reply after a request.
+# sheet appearing after an initialize (`SHEET_S`, in `../sheets.py`), a reply after a request.
 SHELL_S = 120
-SHEET_S = 60
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
@@ -175,7 +172,8 @@ class Terminal:
 
     def run(self, command: str) -> None:
         """Type `command` at the environment's shell (Tilo's own, `ush-sh`) and press Enter."""
-        self.call("run", {"command": command, "confirm": True})
+        # The first command in a new environment waits for its guest to be set up.
+        self.call("run", {"command": command, "confirm": True}, timeout=SHELL_S)
 
     def bash(self, script: str) -> None:
         """Run `script` in the guest's bash: what a person's script or an agent's tools run."""
@@ -211,7 +209,8 @@ def open_terminal(ctx, name: str, workspace: dict) -> Terminal:
 
     new = wait_until(fresh, 60, interval=0.5)
     if new is None:
-        raise CheckFailed(f"{name}: the Terminal opened published no session of its own")
+        raise CheckFailed(f"{name}: the Terminal opened published no session of its own "
+                          f"(journal: {journal(ctx, 'terminal')})")
     terminal = Terminal(ctx, next(iter(new)), name, workspace)
     info = wait_until(lambda: (i if (i := terminal.inspect()).get("lifecycle") == "open" else None),
                       SHELL_S, interval=1.0)
@@ -405,75 +404,6 @@ def tool_answering(ctx, agent: Agent, name: str, arguments: dict, what: str) -> 
 
 
 # -- the sheet -------------------------------------------------------------------------------
-
-
-# The sheet's choices for an admission, as the person reads them (sheets en-US.ftl).
-CHOICE_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session", ALLOW_ALWAYS: "Always allow"}
-# What the sheet's controls are called, in any question it asks.
-SHEET_WORDS = ("Allow", "Deny", "Always allow")
-
-
-def sheet_targets(ctx) -> list[dict]:
-    """The controls the person can press on the sheet up now (`list-targets`, the desk's
-    named controls, as an assistive technology reads them), or [] when no sheet is up."""
-    try:
-        targets = ctx.vm.targets()
-    except VmError:
-        return []
-    names = [t for t in targets if any(w.lower() in str(t.get("name", "")).lower() for w in SHEET_WORDS)]
-    return targets if names else []
-
-
-def portal_dialog(ctx) -> dict | None:
-    """The question on the sheet, as far as the desk shows it: its controls."""
-    targets = sheet_targets(ctx)
-    return {"targets": [t.get("name") for t in targets]} if targets else None
-
-
-def sheet_rows(ctx) -> list[dict]:
-    try:
-        return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == SHEET]
-    except VmError:
-        return []
-
-
-def press(ctx, name: str) -> None:
-    reply = ctx.vm.raw({"op": "click_named", "name": name})
-    if isinstance(reply, dict) and reply.get("err"):
-        raise CheckFailed(f"pressing {name!r} on the sheet was refused: {reply}")
-
-
-def answer_sheet(ctx, choice: int, what: str) -> dict:
-    """Answer the question up on the sheet with `choice`, as the person does: press the
-    choice, then the sheet's Allow if it asks for one. What the sheet showed."""
-    dialog = wait_until(lambda: portal_dialog(ctx), SHEET_S, interval=0.5)
-    if dialog is None:
-        raise CheckFailed(f"{what}: the person was never asked (no question on the sheet within {SHEET_S} s)")
-    targets = sheet_targets(ctx)
-    ctx.write(f"sheet-{what}.json", json.dumps({"targets": targets, "rows": sheet_rows(ctx)}, indent=1))
-    ctx.shot(f"sheet-{what}")
-    label = CHOICE_LABELS[choice]
-    chosen = [t["name"] for t in targets if label.lower() in str(t.get("name", "")).lower()]
-    if not chosen:
-        raise Unobservable(f"{what}: the sheet shows no control {label!r}: {[t.get('name') for t in targets]}")
-    press(ctx, chosen[0])
-    # A sheet whose choices are highlighted first answers on its Allow.
-    gone = wait_until(lambda: portal_dialog(ctx) is None or None, 3, interval=0.3)
-    if gone is None:
-        confirm = [t["name"] for t in sheet_targets(ctx)
-                   if str(t.get("name", "")).strip().lower() in ("allow", "confirm", "continue")]
-        if confirm:
-            press(ctx, confirm[0])
-    if wait_until(lambda: portal_dialog(ctx) is None or None, 15, interval=0.5) is None:
-        raise CheckFailed(f"{what}: the question stayed up after the person answered it "
-                          f"({[t.get('name') for t in sheet_targets(ctx)]})")
-    dialog["chosen"] = chosen[0]
-    return dialog
-
-
-def no_sheet(ctx, seconds: float) -> dict | None:
-    """The question that came up within `seconds`, or None."""
-    return wait_until(lambda: portal_dialog(ctx), seconds, interval=0.5)
 
 
 def seated(ctx) -> list[dict]:
@@ -684,58 +614,154 @@ def own_workspace(ctx, res):
         raise CheckFailed("; ".join(problems))
 
 
-# Why an agent at a desktop's door changes nothing in a workspace of this device today: its
-# invocations reach the broker as a delegate of the person, and a native workspace admits an
-# agent's action only through a task run (task_run_host), which the door does not start.
-NO_TASK_RUN = ("native task agent requires authenticated task action admission",
-               "action_evidence_unavailable: original caller missing")
+def journal(ctx, word: str, lines: int = 25) -> str:
+    """The session journal's last `lines` lines naming `word`, kept beside the report too: what the
+    box said about it when a check needs it."""
+    try:
+        out = ctx.vm.run("logs", ctx.vm.slot, timeout=90, check=False)
+    except VmError as exc:
+        return f"no journal: {exc}"
+    text = out if isinstance(out, str) else str(out)
+    plain = re.sub(r"\x1b\[[0-9;]*m|\\x1b\[[0-9;]*m", "", text)
+    hits = [line for line in plain.splitlines() if word.lower() in line.lower()]
+    ctx.write(f"journal-{word}.txt", "\n".join(hits))
+    # The report's files are not kept for a failed run: the log carries them.
+    print(f"--- journal lines naming {word} ---", flush=True)
+    for line in hits[-150:]:
+        print(line[:600], flush=True)
+    return " | ".join(line[-220:] for line in hits[-lines:])
 
 
-@check("E08", AREA, "An agent's change lands in its own workspace, not the other's, and is attributed to its id")
+def settled(agent: Agent, reply: dict, within: float = 90.0) -> dict:
+    """`reply`, or, where it says the action is still `pending <id>`, what `tilo_status` answers
+    for it once it settled: the outcome the agent reads back, as an agent waiting on it does."""
+    deadline = time.monotonic() + within
+    while True:
+        pending = re.match(r"pending ([0-9a-f-]{36})", text_of(reply))
+        if pending is None or time.monotonic() > deadline:
+            return reply
+        time.sleep(2)
+        reply = agent.tool("tilo_status", {"invocation_id": pending.group(1)})
+
+
+def closed_app(agent: Agent, opened=()) -> str | None:
+    """An app installed in the agent's workspace that is not running there, as its `tilo_ls` lists
+    the apps (`name  Label  installed`): the one the other agent opened in its own workspace when
+    it is one, else the plainest; None when every one runs."""
+    listed = text_of(agent.tool("tilo_ls", {}))
+    closed = [line.split()[0] for line in listed.splitlines()[1:]
+              if line.split() and line.rstrip().endswith("  installed")]
+    for plain in (*[o for o in opened if o], "sheets", "calculator", "calendar", "contacts", "mail"):
+        if plain in closed:
+            return plain
+    return closed[0] if closed else None
+
+
+@check("E08", AREA, "An agent's change lands in its own workspace, not the other's: its open of an "
+                    "app answers ok, and the note it makes there is found there and not from the other")
 def own_change(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
     envs = (one, two)
     titles = {e["name"]: f"E2E {e['name']} agent note {scene['run']}" for e in envs}
-    files = {e["name"]: f"e2e-{e['name'].lower()}-{scene['run']}.txt" for e in envs}
     for e in envs:
         agent = agents[e["name"]]
-        made, asked_note = tool_answering(
+        # Opening an app that is not running yet is a host action of the agent's run (the
+        # workspace launching it): its answer is what the agent reads back, and it must say how
+        # the open went, not only put up a window. A running app's `#open` is its own action.
+        # The same app in both workspaces: each workspace's open starts an instance of its own.
+        closed = closed_app(agent, opened=[o.get("opened_app") for o in envs if o is not e])
+        if closed is None:
+            raise Unobservable(f"{e['name']}: the agent's workspace lists no installed app that is "
+                               "not running, to open")
+        opened, _ = tool_answering(ctx, agent, "tilo_do", {"path": f"{closed}#open", "wait_ms": 30000},
+                                   f"{e['name']}-open")
+        opened = settled(agent, opened)
+        e["opened_app"] = closed
+        made, asked = tool_answering(
             ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
             f"{e['name']}-new-note")
-        wrote, asked_file = tool_answering(
-            ctx, agent, "tilo_do",
-            {"path": "terminal#run", "args": {"command": f"echo {agent.name} > {files[e['name']]}; pwd"}},
-            f"{e['name']}-file")
-        e["new_note"], e["new_file"], e["asked_for_change"] = made, wrote, [asked_note, asked_file]
+        e["opened"], e["new_note"], e["asked_for_note"] = opened, made, asked
         agent.keep()
+    res.metrics["opened"] = {e["name"]: text_of(e["opened"])[:300] for e in envs}
     res.metrics["new_note"] = {e["name"]: text_of(e["new_note"])[:300] for e in envs}
-    res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
-    refused = [text_of(e[k]) for e in envs for k in ("new_note", "new_file") if is_error(e[k]) is not False]
-    if refused and all(any(reason in said for reason in NO_TASK_RUN) for said in refused):
-        raise core.ExpectedFailure(
-            "the door's agents change nothing in a native workspace: their actions are refused without "
-            f"a task run ({refused[0][:160]}); the agent door starts none (task_run_host)")
     problems = []
     for e, other in ((one, two), (two, one)):
         agent = agents[e["name"]]
+        if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
+            # Where the box says the app's instances publish, by workspace.
+            print(f"--- {e['opened_app']} rows ---", flush=True)
+            for row in ctx.vm.actions(e["opened_app"], programmatic=True)[:40]:
+                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                                                          "resource", "operation")}), flush=True)
+            problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
+                            f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
         if is_error(e["new_note"]) is not False:
             problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
-        else:
-            found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
-                               lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
-            if not finds(found, titles[e["name"]]):
-                problems.append(f"{e['name']}: the agent does not find its own note")
-            if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
-                problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
+            continue
+        found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
+                           lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)
+        if not finds(found, titles[e["name"]]):
+            problems.append(f"{e['name']}: the agent does not find its own note")
+        if finds(agents[other["name"]].tool("tilo_find", {"query": titles[e["name"]]}), titles[e["name"]]):
+            problems.append(f"{other['name']}'s agent finds {e['name']}'s note")
+    if problems:
+        raise CheckFailed("; ".join(problems))
+
+
+@check("E09", AREA, "An agent's change that asks first is put to the person, and with their answer "
+                    "lands in its own workspace's files, not the other's")
+def asked_change(ctx, res):
+    scene = _scene(ctx)
+    agents = _need(scene, "agents", "E02")
+    one, two = scene["envs"]
+    envs = (one, two)
+    files = {e["name"]: f"e2e-{e['name'].lower()}-{scene['run']}.txt" for e in envs}
+    for e in envs:
+        agent = agents[e["name"]]
+        wrote, asked = tool_answering(
+            ctx, agent, "tilo_do",
+            {"path": "terminal#run", "args": {"command": f"echo {agent.name} > {files[e['name']]}; pwd"}},
+            f"{e['name']}-file")
+        e["new_file"], e["asked_for_file"] = wrote, asked
+        agent.keep()
+    res.metrics["new_file"] = {e["name"]: text_of(e["new_file"])[:300] for e in envs}
+    res.metrics["asked"] = {e["name"]: e["asked_for_file"] for e in envs}
+    problems = []
+    for e, other in ((one, two), (two, one)):
+        # The person was asked on the desk's sheet, which offers the step once, for the agent
+        # from now on, or not at all.
+        shown = [str(name) for dialog in e["asked_for_file"] for name in dialog.get("targets") or []]
+        if not e["asked_for_file"]:
+            problems.append(f"{e['name']}: terminal#run was not put to the person on the sheet")
+        elif not any("always allow" in name.lower() for name in shown) or \
+                not any(name.strip().lower() == "deny" for name in shown):
+            problems.append(f"{e['name']}: the sheet offers no Always allow and Deny: {shown}")
         if is_error(e["new_file"]) is not False:
-            problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
-        else:
-            if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
-                problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
-            if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
-                problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
+            # What the agent sees of Terminal, so a refusal says what it was refused against.
+            seen = text_of(agents[e["name"]].tool("tilo_ls", {"path": "terminal"}))
+            agent = agents[e["name"]]
+            for name, args in (("tilo_ls", {}), ("tilo_ls", {"path": "terminal", "kind": "actions"}),
+                               ("tilo_find", {"query": "run a command", "app": "terminal"})):
+                print(f"--- {e['name']}: the agent's {name} {args} ---", flush=True)
+                print(text_of(agent.tool(name, args))[:3000], flush=True)
+            rows = terminal_rows(ctx)
+            if rows:
+                print(f"--- one Terminal row whole ---\n{json.dumps(rows[0])[:3000]}", flush=True)
+            print(f"--- {e['name']}: the person's Terminal rows ---", flush=True)
+            for row in terminal_rows(ctx)[:20]:
+                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                                                          "resource", "parent_resource", "operation")}),
+                      flush=True)
+            journal(ctx, "agent door")
+            problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
+                            f"(tilo_ls terminal: {seen[:500]!r})")
+            continue
+        if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
+            problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
+        if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
+            problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
     if problems:
         raise CheckFailed("; ".join(problems))
 

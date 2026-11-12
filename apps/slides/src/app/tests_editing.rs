@@ -1055,3 +1055,44 @@ fn right_click_or_a_held_finger_opens_the_words_menu() {
         assert!(italic, "the held word is italic: {:?}", words.rich_blocks());
     }
 }
+
+/// An agent edits a text box's words through the box's own resource: the
+/// window publishes them at their own address, and an action there applies
+/// as the deck's field edit.
+#[test]
+fn an_agent_edits_a_text_boxes_words_through_their_own_resource() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SlidesShell>::new().unwrap();
+    let deck = crate::deck::mirror(&app.state());
+    let slide = &deck.slides[0];
+    let element = slide
+        .elements
+        .iter()
+        .find(|element| element.kind == crate::model::ElementKind::Text)
+        .expect("the starter slide has a text box")
+        .id
+        .clone();
+    let (slide_id, element_id) = (slide.id.clone(), element.clone());
+    app.with_widget(move |app: &mut SlidesApp| {
+        app.mode = Mode::Edit;
+        app.sel = Some(element);
+    })
+    .unwrap();
+    app.harness().relayout();
+    app.invoke_child::<tilo_document::RichText>(
+        &actions::text_resource_id(&slide_id, &element_id),
+        ui::tilo_resource::Invoke::apply(&tilo_document::RichTextAction::ReplaceBody {
+            markdown: "Priced".into(),
+        })
+        .unwrap(),
+    )
+    .expect("the words are published at their own address");
+    let deck = crate::deck::mirror(&app.state());
+    let words = deck.slides[0]
+        .elements
+        .iter()
+        .find(|element| element.id == element_id)
+        .expect("the box")
+        .text
+        .clone();
+    assert_eq!(words, "Priced");
+}

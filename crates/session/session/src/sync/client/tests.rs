@@ -1,8 +1,9 @@
 use super::*;
 use collab_types::PeerPresencePayload;
-use collab_types::presence::{DESKTOP_APP, Payload, PresenceKey};
+use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
+use tilo_session_client::{InCall, presence::now_ms, topic_of};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// The workspace the tests' only workspace is.
@@ -17,7 +18,7 @@ fn device(seed: u8) -> EndpointId {
 }
 
 fn topic(workspace: &str) -> WorkspaceId {
-    super::topic_of(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
+    topic_of(ModelWorkspaceId::parse(workspace).expect("a workspace id"))
 }
 
 /// A desktop showing one workspace, in `workspace` .
@@ -63,7 +64,7 @@ fn list_of(
     );
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     directory
-        .add_workspace_with_topic(super::topic_of(workspace), &workspace.to_string(), "Desk")
+        .add_workspace_with_topic(topic_of(workspace), &workspace.to_string(), "Desk")
         .expect("a listed workspace");
     let update = directory
         .signed_snapshot(signing, tilo_clock::unix_now_ns())
@@ -196,16 +197,7 @@ fn hello(from: u8, user: u8, device_label: &str) -> Event {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *from.as_bytes(),
         device_label: device_label.to_owned(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
-        },
+        capabilities: DeviceCapabilities::nothing(),
         issued_at_ns: 0,
         expires_at_ns: None,
         signature: [0; 64],
@@ -245,9 +237,10 @@ fn a_transport_another_host_brings_carries_the_same_words() {
     let (_landed, enrolled) = std::sync::mpsc::channel();
     let sync = Client::over(
         Transport {
-            outgoing,
+            outgoing: Arc::new(outgoing),
             arrived,
             enrolled,
+            saying: None,
         },
         Device {
             publisher,
@@ -292,7 +285,7 @@ fn a_device_of_the_person_coming_up_owes_it_the_list() {
         !sync.sibling_arrived(),
         "no device of the person said anything yet"
     );
-    sync.keep_personal(&Event::Sibling {
+    sync.hear(Event::Sibling {
         peer: device(0x11),
         certs: Vec::new(),
         revocations: Vec::new(),
@@ -312,16 +305,16 @@ fn a_list_is_kept_only_from_the_device_that_said_it() {
     let (phone, _) = certified(0x04, 0x12, "Phone");
     let by_laptop = list_of(&laptop, &laptop_key, WORKSPACE);
 
-    let kept = author_of(&[phone.clone(), laptop.clone()], &by_laptop)
+    let kept = tilo_session_client::client::author_of(&[phone.clone(), laptop.clone()], &by_laptop)
         .expect("the laptop's own list is the laptop's");
     assert_eq!(kept.device_public_key, laptop.device_public_key);
 
     // Someone else's device, and a list the laptop's session carried but another device signed:
     // neither says the laptop said it.
     let (stranger, _) = certified(0x55, 0x13, "Stranger");
-    assert!(author_of(&[stranger], &by_laptop).is_none());
-    assert!(author_of(&[phone], &by_laptop).is_none());
-    assert!(author_of(&[], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[stranger], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[phone], &by_laptop).is_none());
+    assert!(tilo_session_client::client::author_of(&[], &by_laptop).is_none());
 }
 
 #[test]
@@ -623,8 +616,8 @@ fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
         label: "Quinten".into(),
         ..OwnPresence::default()
     };
-    let (mut sync, _said) = Client::offline(device(0xf0), own);
-    sync.reachability = reachability.clone();
+    let (sync, _said) = Client::offline(device(0xf0), own);
+    sync.hold_relays_with(reachability.clone());
     sync.follow_desktop(&desk(WORKSPACE));
 
     // Nobody else in the workspace this desktop shows: it names no relay,
@@ -674,6 +667,7 @@ fn only_the_workspace_in_front_lists_people() {
             id: elsewhere.to_owned(),
         },
         payload: Payload::Arrived,
+        on_behalf: None,
     };
     sync.heard_presence(WORKSPACE, device(3), &foreign);
     assert_eq!(
@@ -693,6 +687,7 @@ fn another_apps_presence_is_not_the_desktops() {
             id: WORKSPACE.to_owned(),
         },
         payload: Payload::Arrived,
+        on_behalf: None,
     };
     sync.heard_presence(WORKSPACE, device(1), &notes);
     assert!(
@@ -734,8 +729,8 @@ fn another_device_of_this_person_is_this_person() {
 }
 
 /// No window of the desk shows a record.
-fn no_records() -> std::collections::BTreeMap<u64, String> {
-    std::collections::BTreeMap::new()
+fn no_records() -> crate::continuations::Continuations {
+    crate::continuations::Continuations::default()
 }
 
 /// The tile `tab` stands at on the desk of these tests.
@@ -898,7 +893,7 @@ fn waving_says_a_new_wave_each_time() {
         .collect();
     assert_eq!(waves, vec![(1, target.clone()), (2, target)]);
     assert_eq!(
-        sync.own_member().wave.map(|wave| wave.seq),
+        sync.own_here().wave.map(|wave| wave.seq),
         Some(2),
         "this person's row reads their last wave as sent"
     );
@@ -919,6 +914,28 @@ fn a_configured_host_is_read_as_an_id_or_an_address() {
     assert_eq!(host_addr(&json).map(|addr| addr.id), Some(host));
     assert!(host_addr("").is_none());
     assert!(host_addr("not an address").is_none());
+}
+
+/// This device's endpoint holds back the relays its person chose, and a session that takes part as
+/// nobody relays nowhere.
+#[test]
+fn this_devices_endpoint_holds_back_the_relays_its_person_chose() {
+    let (cert, key) = certified(1, 2, "here");
+    let identity = HostIdentity::kept(cert, key);
+    let own = tilo_endpoint_reachability::EndpointRelays::for_choice(
+        &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
+    );
+    let held = endpoint_for(Some(&identity), &own)
+        .expect("an endpoint to bind")
+        .1;
+    assert_eq!(held.urls::<Vec<_>>(), own.relays.urls::<Vec<_>>());
+    let nobody = endpoint_for(None, &own)
+        .expect("a loopback endpoint to bind")
+        .1;
+    assert!(
+        nobody.is_empty(),
+        "a session that takes part as nobody relays nowhere"
+    );
 }
 
 #[test]
@@ -975,7 +992,10 @@ fn changing_what_this_person_says_is_said_again() {
 
     let stated = OwnPresence {
         label: "Quinten".to_owned(),
-        status: Some("Wiring the plane".to_owned()),
+        status: Some(tilo_live::presence::Status {
+            text: "Wiring the plane".to_owned(),
+            automatic: false,
+        }),
         ..OwnPresence::default()
     };
     assert!(sync.set_own(stated.clone()));
@@ -1015,7 +1035,7 @@ fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
         "no device of the person said where a workspace is reached yet"
     );
     let (cert, hint) = host_hint(0x04, 0x21, "one address");
-    sync.keep_personal(&Event::SiblingMsg {
+    sync.hear(Event::SiblingMsg {
         peer: device(0x11),
         msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x04),
@@ -1040,7 +1060,7 @@ fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
     let (sync, _said) = session("Desk", Some(0x04));
     let sync = sync.taking_part_as(&person(0x04));
     let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
-    sync.keep_personal(&Event::SiblingMsg {
+    sync.hear(Event::SiblingMsg {
         peer: device(0x12),
         msg: Box::new(NeighbourMsg::PersonalHosts {
             user_public_key: root(0x05),
@@ -1082,7 +1102,7 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
             reaction: None,
         })
     };
-    let at = presence::Point {
+    let at = tilo_live::presence::Point {
         tab: 3,
         x: 12.5,
         y: 34.5,
@@ -1110,4 +1130,351 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
     // Their pointer leaves the tile: that is said.
     assert!(sync.set_where(None, Some(shell(3))));
     assert!(!sync.take_said().is_empty());
+}
+
+/// A page names the host it was admitted by as its workspace's host itself, and its session can
+/// tell no host of its own: following its workspaces again keeps the run that host speaks for, so
+/// the agent stays in the bar rather than leaving on every pass until its next keep-alive.
+#[test]
+fn a_run_the_page_host_speaks_for_stays_while_the_page_follows_its_workspaces() {
+    let publisher = device(0x33);
+    let (outgoing, _said) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing: Arc::new(outgoing),
+            arrived,
+            enrolled,
+            saying: None,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x05)),
+            name: "Page".to_owned(),
+        },
+        OwnPresence::default(),
+    );
+    let showing = [(topic(WORKSPACE), WORKSPACE.to_owned())];
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    let host = device(0x40);
+    sync.set_workspace_host(WORKSPACE, Some(*host.as_bytes()));
+    let run = Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1");
+    sync.heard_presence(WORKSPACE, host, &run);
+    assert_eq!(sync.members(WORKSPACE).len(), 1, "the run is here");
+
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    assert_eq!(
+        sync.members(WORKSPACE).len(),
+        1,
+        "following the same workspaces again keeps the run the host speaks for"
+    );
+}
+
+/// A host that names the workspaces it shows itself — a page's mounts, each showing one — takes
+/// part in each of them, says its word in the one in front, and keeps a schedule of its own for
+/// each: what one of them owes is pumped without the other hearing it.
+#[test]
+fn a_host_that_names_its_workspaces_says_and_pumps_each_of_them() {
+    let publisher = device(0x32);
+    let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing: Arc::new(outgoing),
+            arrived,
+            enrolled,
+            saying: None,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x05)),
+            name: "Page".to_owned(),
+        },
+        OwnPresence {
+            label: "Quinten".to_owned(),
+            ..OwnPresence::default()
+        },
+    );
+    let showing = [
+        (topic(WORKSPACE), WORKSPACE.to_owned()),
+        (topic(OTHER_WORKSPACE), OTHER_WORKSPACE.to_owned()),
+    ];
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    let commands = sent(&mut said);
+    for workspace in [WORKSPACE, OTHER_WORKSPACE] {
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, Cmd::Join(ws) if *ws == topic(workspace))),
+            "the host takes part in every workspace it shows"
+        );
+    }
+    let word = sync.take_said();
+    for workspace in [WORKSPACE, OTHER_WORKSPACE] {
+        assert!(
+            word.iter().any(
+                |frame| frame.cluster == workspace && matches!(frame.payload, Payload::Arrived)
+            ),
+            "a workspace this host joins hears it arrive there: {word:?}"
+        );
+    }
+    // What changes after the join is said in the workspace in front alone.
+    assert!(sync.set_own(OwnPresence {
+        label: "Quinn".to_owned(),
+        ..OwnPresence::default()
+    }));
+    let changed = sync.take_said();
+    assert!(!changed.is_empty());
+    assert!(
+        changed.iter().all(|frame| frame.cluster == WORKSPACE),
+        "the front workspace hears what changed: {changed:?}"
+    );
+
+    // Each of the two keeps a schedule of its own, whether or not it is in front: what one owes
+    // waits on that one's clock, and the other's is untouched.
+    assert!(sync.next_due_in(WORKSPACE).is_some());
+    assert!(sync.next_due_in(OTHER_WORKSPACE).is_some());
+    assert!(
+        !sync.due_in(OTHER_WORKSPACE),
+        "nothing is owed before the rate ceiling passes"
+    );
+    assert!(sync.take_said().is_empty());
+
+    // A workspace this host no longer shows hears this device leave it.
+    sync.follow_workspaces(
+        &[(topic(WORKSPACE), WORKSPACE.to_owned())],
+        Some(topic(WORKSPACE)),
+    );
+    let left = sync.take_said();
+    assert!(
+        left.iter().any(|frame| frame.cluster == OTHER_WORKSPACE
+            && matches!(frame.payload, Payload::Left)),
+        "the workspace this host stopped showing hears it leave: {left:?}"
+    );
+}
+
+/// A page and a native desk in one workspace, with an MCP agent of the desk's person acting there:
+/// each publishes its own presence on the workspace's live plane and reads everyone else's from
+/// it, and both list the agent as the same one row, in its colour, with what it is doing, and
+/// each other's lines as their devices said them.
+#[test]
+fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
+    use tilo_desktop::collaborators::LineSource::{Observed, Written};
+
+    let (page_device, desk_device, agent_device) = (0xa0, 0xd0, 0xc0);
+    let (page, _page_said) = Client::offline(device(page_device), saying("Ada", 2, None));
+    let (native, _desk_said) = Client::offline(device(desk_device), saying("Quinten", 1, None));
+    for client in [&page, &native] {
+        client.follow_desktop(&desk(WORKSPACE));
+        client.take_said();
+    }
+    // Ada says what she is doing in her own words; Quinten's desk reads his line off his steps.
+    page.set_own(saying("Ada", 2, Some(("Reviewing the launch plan", false))));
+    native.set_own(saying(
+        "Quinten",
+        1,
+        Some(("Editing ‘Plan’ in Notes", true)),
+    ));
+
+    // Every device's certificate, then every frame, reaches the others over the plane.
+    page.hear(hello(desk_device, 1, "Framework"));
+    page.hear(hello(agent_device, 1, "build-box"));
+    native.hear(hello(page_device, 2, "Browser"));
+    native.hear(hello(agent_device, 1, "build-box"));
+    for frame in page.take_said() {
+        native.heard_presence(WORKSPACE, device(page_device), &frame);
+    }
+    for frame in native.take_said() {
+        page.heard_presence(WORKSPACE, device(desk_device), &frame);
+    }
+    for frame in &mcp_agent_frames(agent_device) {
+        page.heard_presence(WORKSPACE, device(agent_device), frame);
+        native.heard_presence(WORKSPACE, device(agent_device), frame);
+    }
+
+    let (on_page, on_desk) = (roster_rows(&page), roster_rows(&native));
+    let agents = |rows: &[RosterRow]| -> Vec<RosterRow> {
+        rows.iter().filter(|row| row.1).cloned().collect()
+    };
+    assert_eq!(
+        agents(&on_page),
+        vec![(
+            "Claude Code".to_owned(),
+            true,
+            Some(("Looking at the apps".to_owned(), Written)),
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+        )],
+        "one row for the agent, in its client's colour, with its activity line: {on_page:?}"
+    );
+    assert_eq!(
+        agents(&on_page),
+        agents(&on_desk),
+        "the same row everywhere"
+    );
+    let line_of = |rows: &[RosterRow], name: &str| rows.iter().find(|row| row.0 == name)?.2.clone();
+    assert_eq!(
+        line_of(&on_page, "Quinten"),
+        Some(("Editing ‘Plan’ in Notes".to_owned(), Observed)),
+        "the page reads the desk's line as read off his steps: {on_page:?}"
+    );
+    assert_eq!(
+        line_of(&on_desk, "Ada"),
+        Some(("Reviewing the launch plan".to_owned(), Written)),
+        "the desk reads the page's line as her own words: {on_desk:?}"
+    );
+    assert_eq!(
+        on_page.len(),
+        2,
+        "Quinten and his agent, never Ada: {on_page:?}"
+    );
+    assert_eq!(
+        on_desk.len(),
+        2,
+        "Ada and Quinten's agent, its own row and never one of his devices: {on_desk:?}"
+    );
+}
+
+/// A browser joins a workspace a desk and another page are in, then closes without a word, as a
+/// tab killed with its browser does: the others stop listing it within a few seconds, on their own
+/// clocks, while everyone still connected stays.
+#[test]
+fn a_browser_that_closes_without_a_word_leaves_who_is_here_within_seconds() {
+    let (gone, other, native) = (0xa0, 0xb0, 0xd0);
+    let clients = [
+        (
+            gone,
+            Client::offline(device(gone), saying("Ada", 2, None)).0,
+        ),
+        (
+            other,
+            Client::offline(device(other), saying("Grace", 3, None)).0,
+        ),
+        (
+            native,
+            Client::offline(device(native), saying("Quinten", 1, None)).0,
+        ),
+    ];
+    for (own, client) in &clients {
+        client.follow_desktop(&desk(WORKSPACE));
+        for (seed, user, label) in [
+            (gone, 2, "Browser"),
+            (other, 3, "Laptop"),
+            (native, 1, "Desk"),
+        ] {
+            if seed != *own {
+                client.hear(hello(seed, user, label));
+            }
+        }
+    }
+    // Everyone's word reaches everyone else over the plane, each time anyone says one.
+    let carry = |clients: &[(u8, Client)]| {
+        for (from, speaker) in clients {
+            speaker.follow();
+            for frame in speaker.take_said() {
+                for (to, listener) in clients {
+                    if to != from {
+                        listener.heard_presence(WORKSPACE, device(*from), &frame);
+                    }
+                }
+            }
+        }
+    };
+    carry(&clients);
+    let names = |client: &Client| -> Vec<String> {
+        let mut names: Vec<String> = roster_rows(client).into_iter().map(|row| row.0).collect();
+        names.sort();
+        names
+    };
+    let [_, (_, grace), (_, quinten)] = &clients;
+    assert_eq!(names(quinten), ["Ada", "Grace"], "the browser is here");
+    assert_eq!(names(grace), ["Ada", "Quinten"], "the browser is here");
+
+    // The browser closes: nothing more of it reaches anyone, and nobody said it left.
+    let closed = std::time::Instant::now();
+    let still = &clients[1..];
+    let bound = std::time::Duration::from_secs_f64(tilo_live::presence::SILENT_MS / 1_000.0 + 2.0);
+    loop {
+        carry(still);
+        if names(quinten) == ["Grace"] && names(grace) == ["Quinten"] {
+            break;
+        }
+        assert!(
+            closed.elapsed() < bound,
+            "the closed browser is still listed after {:?}: desk {:?}, page {:?}",
+            closed.elapsed(),
+            names(quinten),
+            names(grace),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// What person `user`, called `label`, says of themselves: `status` their line and whether their
+/// device read it off their steps.
+fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
+    OwnPresence {
+        label: label.to_owned(),
+        user: Some(person(user)),
+        status: status.map(|(text, automatic)| tilo_live::presence::Status {
+            text: text.to_owned(),
+            automatic,
+        }),
+        ..OwnPresence::default()
+    }
+}
+
+/// One row of who is here as a roster lists it: name, whether an agent, its line and who wrote
+/// it, and its colour.
+type RosterRow = (
+    String,
+    bool,
+    Option<(String, tilo_desktop::collaborators::LineSource)>,
+    (u8, u8, u8),
+);
+
+/// Who is here, as `client`'s roster lists them.
+fn roster_rows(client: &Client) -> Vec<RosterRow> {
+    client
+        .people(&desk(WORKSPACE), &no_records(), &|_: &str| None)
+        .into_iter()
+        .map(|person| {
+            let line = person.status.map(|line| (line.text, line.source));
+            (person.label, person.agent, line, person.rgb)
+        })
+        .collect()
+}
+
+/// What the agent `tilo mcp` serves for person 1 says of itself on the plane, from `device`, the
+/// way every agent does: a shell that is an agent, with the line it works on.
+fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
+    let mut agent =
+        tilo_live::presence::Board::new(WORKSPACE.to_owned(), *device(device_seed).as_bytes());
+    agent.say(&tilo_live::presence::Own {
+        label: "Claude Code".to_owned(),
+        user: Some(person(1)),
+        shell: Some(Box::new(collab_types::presence::ShellPresence {
+            seq: 1,
+            sent_at_ms: 0,
+            label: "Claude Code".to_owned(),
+            agent: true,
+            colour: "#d97757".to_owned(),
+            activity: Some("Looking at the apps".to_owned()),
+            place: None,
+            size: [0, 0],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        })),
+        ..tilo_live::presence::Own::default()
+    });
+    agent
+        .flush(0.0)
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .collect()
 }

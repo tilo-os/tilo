@@ -6,9 +6,13 @@ label = "Print Centre"
 version = 1
 fields = [
   { path = "two_sided", type = "bool" },
-  { path = "scan_resolution", type = "u16" },
-  { path = "scan_color", type = "Atom" },
-  { path = "scan_source", type = "Atom" },
-  { path = "ocr_language", type = "Atom" },
+  { path = "scan_resolution", type = "int" },
+  { path = "scan_color", type = "text" },
+  { path = "scan_source", type = "text" },
+  { path = "ocr_language", type = "text" },
 ]
+
+[[resources.verbs]]
+id = "refresh"
+kind = "read"
 

@@ -1,6 +1,7 @@
 //! The agent surface against a Notes shaped like the live one: a notebook
 //! whose pages are resources, each page's body published beside it under a
 //! bound id that only the app's own key reads (`notes.notebook/page/<id>/body`).
+use super::render::skip_answered;
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
@@ -78,6 +79,14 @@ struct Notes {
     /// The rows the app's directory answers instead of the ones it would list, when a test
     /// publishes them under kinds of its own (`tl.so.tilo.lang.notes.Note`).
     published_kinds: Arc<Mutex<Option<Vec<CatalogueRow>>>>,
+    /// The steps each note's `history` verb answers, newest last.
+    history: Arc<Mutex<Vec<Value>>>,
+    /// Who is in the workspace, as this host's roster names them; `None` for
+    /// a host that reads no roster.
+    here: Arc<Mutex<Option<Vec<tilo_actions::remote::Here>>>>,
+    /// Whether this host puts a note's deletion to the person before it runs,
+    /// as a workspace whose grants ask does.
+    asks: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -90,6 +99,9 @@ enum Installed {
     /// Notes to open; Sheets offered only to close, as the workspace offers
     /// an app that runs before its directory is published for browsing.
     SheetsOnlyCloses,
+    /// Notes, and Sheets listed by a name of its own, as Files lists
+    /// `file-explorer`.
+    SheetsNamedSpreadsheets,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -120,7 +132,49 @@ impl Notes {
             unpublished: false,
             archive_twice: Arc::default(),
             published_kinds: Arc::default(),
+            history: Arc::default(),
+            here: Arc::new(Mutex::new(Some(vec![tilo_actions::remote::Here {
+                who: "person:ada".into(),
+                name: "Ada".into(),
+                kind: "person".into(),
+            }]))),
+            asks: Arc::default(),
         }
+    }
+
+    /// The same host, putting a note's deletion to the person first.
+    fn asking(self) -> Self {
+        *self.asks.lock().unwrap() = true;
+        self
+    }
+
+    /// One new step in every note's history: `entry` as the history verb
+    /// answers it.
+    fn changed(&self, entry: Value) {
+        self.history.lock().unwrap().push(entry);
+    }
+
+    /// Who is in the workspace now.
+    fn people(&self, here: Option<Vec<tilo_actions::remote::Here>>) {
+        *self.here.lock().unwrap() = here;
+    }
+
+    /// What each of this session's invocations carried as its context: the
+    /// undo step, and the run it was attributed to.
+    fn contexts(&self) -> Vec<(Option<tilo_actions::ActionId>, Option<String>, String)> {
+        self.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|request| {
+                let context = request.context.as_ref()?;
+                Some((
+                    context.gesture,
+                    context.group.as_ref().map(|group| group.label.clone()),
+                    request.target.address.action.clone(),
+                ))
+            })
+            .collect()
     }
 
     /// As [`Notes::new`], with a newer instance beside it that lists as
@@ -182,6 +236,7 @@ impl Notes {
                 ("rename", "Rename note", vec![text("title", true)], Document),
                 ("delete", "Delete note", Vec::new(), Document),
                 ("read", "Read", Vec::new(), View),
+                ("history", "History", Vec::new(), View),
             ] {
                 rows.push(self.row(
                     &key,
@@ -426,6 +481,9 @@ impl Notes {
                     }
                     vec![open(APP, "Notes"), sheets]
                 }
+                Installed::SheetsNamedSpreadsheets => {
+                    vec![open(APP, "Notes"), open("so.tilo.sheets", "Spreadsheets")]
+                }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
         }
@@ -511,6 +569,14 @@ impl Notes {
                 "notes.page",
                 label,
                 Some(("slow", "Slow thing", Vec::new(), Effect)),
+                false,
+            ));
+            rows.push(self.row(
+                page,
+                page,
+                "notes.page",
+                label,
+                Some(("history", "History", Vec::new(), View)),
                 false,
             ));
         }
@@ -819,6 +885,10 @@ impl ActionHost for Notes {
         }
     }
 
+    fn here(&self, _caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.here.lock().unwrap().clone()
+    }
+
     fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
         Some(std::sync::Arc::new(self.clone()))
     }
@@ -832,9 +902,16 @@ impl ActionHost for Notes {
         let known = self
             .rows(&request.target.provider)
             .iter()
-            .any(|row| row.resource.id == request.target.address.resource);
+            .any(|row| row.resource.id == request.target.address.resource)
+            // An app takes its steps back on its own package resource.
+            || request.target.address.resource == format!("tl:{APP}");
         if !known || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        // What the workspace's grants put to the person first: nothing runs
+        // until they allow it.
+        if *self.asks.lock().unwrap() && request.target.address.action == "delete" {
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
         if request.target.provider == WORKSPACE {
             *self.running.lock().unwrap() = true;
@@ -888,6 +965,8 @@ impl ActionHost for Notes {
         let long = *self.long.lock().unwrap();
         let update = match action.as_str() {
             "slow" => InvocationUpdate::Accepted { invocation: *id },
+            // The workspace's start of Notes names the instance it started.
+            "start" => succeeded(Some(json!({"peer_id": 1}))),
             "rename" if !arguments.contains_key("title") => {
                 failed("invalid_arguments", "argument `title` is required")
             }
@@ -912,6 +991,9 @@ impl ActionHost for Notes {
                 Some(other) => failed("not_found", &format!("no note `{other}`")),
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
+            "history" => succeeded(Some(json!({
+                "history": self.history.lock().unwrap().clone(),
+            }))),
             _ => succeeded(None),
         };
         Some(InvocationState::new(*id, update))
@@ -997,6 +1079,7 @@ where
     H: ActionHost + Clone + Send + Sync + 'static,
 {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
+        .with_agent_run("mcp:test", "MCP agent")
 }
 
 #[test]
@@ -1027,7 +1110,7 @@ fn a_path_is_app_names_and_an_action() {
 }
 
 #[test]
-fn an_agent_is_offered_six_small_tools_and_no_classic_ones() {
+fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
         let reply = agent(&host)
@@ -1045,13 +1128,15 @@ fn an_agent_is_offered_six_small_tools_and_no_classic_ones() {
                 "tilo_ls",
                 "tilo_read",
                 "tilo_do",
+                "tilo_link",
                 "tilo_find",
                 "tilo",
+                "tilo_watch",
                 "tilo_status"
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
-        assert!(size < 3_500, "the tool list is {size} bytes");
+        assert!(size < 4_500, "the tool list is {size} bytes");
         let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
@@ -1079,6 +1164,27 @@ fn the_apps_are_listed_by_name_running_first() {
             text,
             "apps\nnotes  Notes  running\nsheets  Sheets  installed"
         );
+    });
+}
+
+/// A host busy with the person's changes ran nothing: a typed call is told
+/// `rate_limited` with the wait the host said, so the caller asks again then.
+#[test]
+fn a_busy_host_answers_rate_limited_with_its_wait() {
+    run(async {
+        let busy = Notes::new(true);
+        *busy.unreachable.lock().unwrap() = Some(format!(
+            "backpressure: {}",
+            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
+        ));
+        let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+        assert!(failed, "{typed}");
+        assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
+        assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
+        // Anything else the host is short of stays a plain failure.
+        *busy.unreachable.lock().unwrap() = Some("offline: the device left".into());
+        let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+        assert_eq!(typed["error"]["code"], "failed", "{typed}");
     });
 }
 
@@ -1188,6 +1294,33 @@ fn an_app_offered_only_to_close_is_still_the_agents_to_open() {
         );
         let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
         assert!(!text.contains("may not open"), "{text}");
+        assert!(
+            host.invoked()
+                .iter()
+                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+            "the workspace was asked to open Sheets: {text}"
+        );
+    });
+}
+
+/// An app is named by the name the listing shows it by, not only by its id:
+/// `spreadsheets` is the app listed as `sheets  Spreadsheets`.
+#[test]
+fn an_app_is_named_by_the_name_it_is_listed_by() {
+    let host = Notes::new(true).installed(Installed::SheetsNamedSpreadsheets);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
+        assert!(
+            !failed && text.contains("installed but not running"),
+            "{text}"
+        );
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_do",
+            json!({"path": "Spreadsheets#open"}),
+        )
+        .await;
+        assert!(!failed, "{text}");
         assert!(
             host.invoked()
                 .iter()
@@ -1546,6 +1679,76 @@ fn the_calls_of_one_task_step_share_its_undo_step_and_each_other_call_has_its_ow
     });
 }
 
+/// The actions a listing writes, as the names an agent would call: one line
+/// each, `#name(params?)  What it does`.
+fn listed_actions(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|line| line.strip_prefix('#'))
+        .map(|rest| rest.split(['(', ' ']).next().unwrap_or(rest).to_string())
+        .collect()
+}
+
+/// The resources a listing names under `app`, as the paths it writes them by:
+/// `Todo/  notes.page` is `notes/Todo`.
+fn listed_paths(listing: &str, app: &str) -> Vec<String> {
+    listing
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.starts_with('#') && !line.starts_with(&format!("{app}  (")))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|name| format!("{app}/{}", name.trim_end_matches('/')))
+        .collect()
+}
+
+/// An agent reads a listing and then runs what it read: every action a
+/// listing writes must run by the path that listing names, with no argument
+/// where the listing asks for none. What a listing offers and what the door
+/// admits are one answer, not two.
+#[test]
+fn what_a_listing_offers_is_what_its_path_invokes() {
+    let host = Notes::new(true).live();
+    run(async {
+        let server = agent(&host);
+        let (app, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+        assert!(!failed, "{app}");
+        let mut tried = 0;
+        for path in std::iter::once("notes".to_owned()).chain(listed_paths(&app, "notes")) {
+            let (listing, failed) =
+                tool(&server, "tilo_ls", json!({"path": path, "kind": "actions"})).await;
+            assert!(!failed, "{path}: {listing}");
+            for action in listed_actions(&listing) {
+                // The point here is the path, not the arguments: an action
+                // that needs one is asked for its arguments by the door, and
+                // that answer is not this test's.
+                let signature = listing
+                    .lines()
+                    .find(|line| line.starts_with(&format!("#{action}(")))
+                    .unwrap_or("");
+                let inside = signature
+                    .split_once('(')
+                    .and_then(|(_, rest)| rest.split_once(')'))
+                    .map_or("", |(inside, _)| inside);
+                if inside
+                    .split(',')
+                    .map(str::trim)
+                    .any(|param| !param.is_empty() && !param.ends_with('?'))
+                {
+                    continue;
+                }
+                let at = format!("{path}#{action}");
+                let (text, failed) = tool(&server, "tilo_do", json!({"path": at})).await;
+                assert!(
+                    !failed,
+                    "the listing names {at}, which that same path refuses: {text}"
+                );
+                tried += 1;
+            }
+        }
+        assert!(tried >= 2, "the listing named no action to try in\n{app}");
+    });
+}
+
 #[test]
 fn a_newer_instance_with_nothing_published_does_not_hide_the_app() {
     let host = Notes::with_unpublished_instance();
@@ -1719,6 +1922,27 @@ fn an_installed_app_is_started_by_its_path_and_then_listed() {
             "{text}"
         );
         assert!(text.contains("Todo/  notes.page"), "{text}");
+        // One of the app's own actions, or `#start`, starts it first without
+        // a window: the workspace is asked to start it, never to open it.
+        for (path, said) in [
+            ("notes#read", "Groceries"),
+            ("notes#start", "ok: notes is running"),
+        ] {
+            let host = Notes::new(false);
+            let (text, failed) = tool(&agent(&host), "tilo_do", json!({ "path": path })).await;
+            assert!(!failed && text.contains(said), "{text}");
+            let asked = host.invoked.lock().unwrap().clone();
+            let target = &asked[0].target;
+            assert_eq!(
+                (target.provider.as_str(), target.address.action.as_str()),
+                (WORKSPACE, "start")
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|request| request.target.address.action != "open")
+            );
+        }
         // Not the app's own action on an app that is not running.
         let host = Notes::new(false);
         let (text, failed) = tool(
@@ -2404,5 +2628,371 @@ fn a_name_read_off_a_listing_walks_back_to_its_resource() {
         let (read, failed) = tool(&server, "tilo_read", json!({"path": path})).await;
         assert!(!failed, "{path} reads: {read}");
         assert!(read.starts_with("# Todo\n"), "the note's own body: {read}");
+    });
+}
+
+/// A tool call that asks for typed answers, with `meta` merged into
+/// `so.tilo.mcp`: its `structuredContent`, and whether it is an error.
+async fn typed<H: ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    name: &str,
+    arguments: Value,
+    meta: Value,
+) -> (Value, bool) {
+    let reply = server
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments,
+                "_meta":{"so.tilo.mcp":{"structured":true,"run":meta}}}}))
+        .await
+        .unwrap();
+    let result = &reply["result"];
+    let structured = result["structuredContent"].clone();
+    assert!(
+        structured.is_object(),
+        "{name} answered no typed value: {reply}"
+    );
+    assert_eq!(
+        result["content"][0]["text"].as_str(),
+        Some(structured.to_string().as_str()),
+        "the text beside it is the same answer"
+    );
+    (structured, result["isError"].as_bool().unwrap_or_default())
+}
+
+/// The same, for a call that names no run.
+async fn answer<H: ActionHost + Send + Sync + 'static>(
+    server: &McpServer<H>,
+    name: &str,
+    arguments: Value,
+) -> (Value, bool) {
+    let reply = server
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments,
+                "_meta":{"so.tilo.mcp":{"structured":true}}}}))
+        .await
+        .unwrap();
+    let result = &reply["result"];
+    let structured = result["structuredContent"].clone();
+    assert!(
+        structured.is_object(),
+        "{name} answered no typed value: {reply}"
+    );
+    (structured, result["isError"].as_bool().unwrap_or_default())
+}
+
+/// Every agent tool answers typed when its call asks, and the text a model
+/// reads is the same as before.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one test walks every tool's typed answer in one place, so a missing one is caught"
+)]
+fn every_agent_tool_answers_typed_when_its_call_asks() {
+    let host = Notes::new(true);
+    run(async {
+        // A listing: what it is, its own actions, and a row per resource.
+        let (apps, failed) = answer(&agent(&host), "tilo_ls", json!({})).await;
+        assert!(!failed, "{apps}");
+        assert_eq!(
+            (apps["path"].as_str(), apps["kind"].as_str()),
+            (Some("apps"), Some("apps"))
+        );
+        assert_eq!(apps["rows"][0]["name"], "notes");
+        assert_eq!(apps["rows"][0]["kind"], "app");
+        assert_eq!(apps["rows"][0]["state"], "running");
+        assert_eq!(apps["rows"][0]["has_children"], true);
+
+        let (listing, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes"})).await;
+        assert!(!failed, "{listing}");
+        assert_eq!(listing["path"], "notes");
+        let rows = listing["rows"].as_array().unwrap();
+        let todo = rows
+            .iter()
+            .find(|row| row["name"] == "Todo")
+            .expect("the note is a row");
+        assert_eq!(todo["path"], "notes/Todo");
+        assert_eq!(todo["kind"], "notes.page");
+        assert_eq!(todo["has_children"], true);
+        // One resource's own actions, with what each takes.
+        let (note, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes/Todo"})).await;
+        assert!(!failed, "{note}");
+        let rename = note["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "rename")
+            .unwrap_or_else(|| panic!("the note's rename is an action: {note}"));
+        assert_eq!(rename["label"], "Rename note");
+        assert_eq!(rename["params"][0]["name"], "title");
+        assert_eq!(rename["kind"], "undoable");
+
+        // A read is its typed answer ([`ResourceRead`]).
+        let (note, failed) = answer(&agent(&host), "tilo_read", json!({"path":"notes/Todo"})).await;
+        assert!(!failed, "{note}");
+        assert_eq!(note["fields"]["title"], "Todo");
+
+        // An action: what it ran, its id, and what it answered.
+        let (ran, failed) = answer(
+            &agent(&host),
+            "tilo_do",
+            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
+        )
+        .await;
+        assert!(!failed, "{ran}");
+        assert_eq!(ran["status"], "ok");
+        assert_eq!(ran["path"], "notes/Todo/body#append-paragraph");
+        assert_eq!(ran["result"], json!({"block":"b9","note":null}));
+        let id = ran["invocation_id"]
+            .as_str()
+            .expect("the call names its invocation");
+
+        // Its status answers the same shape.
+        let (status, failed) =
+            answer(&agent(&host), "tilo_status", json!({"invocation_id": id})).await;
+        assert!(!failed, "{status}");
+        assert_eq!(status["status"], "ok");
+        assert_eq!(status["invocation_id"], id);
+
+        // A refusal: the app's code, its message, and what would work.
+        let (refused, failed) = answer(
+            &agent(&host),
+            "tilo_do",
+            json!({"path":"notes/Todo#rename","args":{}}),
+        )
+        .await;
+        assert!(failed, "{refused}");
+        assert_eq!(refused["status"], "failed");
+        assert_eq!(refused["error"]["code"], "invalid_arguments");
+        assert!(
+            refused["error"]["next_steps"][0]
+                .as_str()
+                .is_some_and(|step| step.contains("tilo_ls notes/Todo")),
+            "{refused}"
+        );
+        assert_eq!(refused["action"]["id"], "rename");
+
+        // Several actions: one step each, in order.
+        let (batch, failed) = answer(
+            &agent(&host),
+            "tilo_do",
+            json!({"calls":[
+                {"path":"notes/Todo/body#append-paragraph","args":{"text":"a"}},
+                {"path":"notes/Todo/body#append-paragraph","args":{"text":"b"}},
+            ]}),
+        )
+        .await;
+        assert!(!failed, "{batch}");
+        assert_eq!(batch["status"], "ok");
+        assert_eq!(batch["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            batch["steps"][1]["result"],
+            json!({"block":"b9","note":null})
+        );
+        assert!(batch["steps"][0]["invocation_id"].is_string());
+
+        // A search: hits by the paths the other tools take.
+        let (found, failed) = answer(&agent(&host), "tilo_find", json!({"query":"todo"})).await;
+        assert!(!failed, "{found}");
+        assert_eq!(found["query"], "todo");
+        assert!(
+            found["hits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|hit| hit["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("/Todo"))),
+            "{found}"
+        );
+
+        // A program: what it printed and the steps of the task's history.
+        let (program, failed) =
+            answer(&agent(&host), "tilo", json!({"program":"history task"})).await;
+        assert!(!failed, "{program}");
+        assert_eq!(program["status"], "ok");
+        assert!(program["steps"].is_array(), "{program}");
+    });
+}
+
+/// A group of calls naming one run is one undo step, attributed to the run's
+/// name, and `undo task` takes it back.
+#[test]
+fn a_run_groups_its_calls_into_one_undo_step() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host);
+        for text in ["a", "b"] {
+            let (ran, failed) = typed(
+                &server,
+                "tilo_do",
+                json!({"path":"notes/Todo/body#append-paragraph","args":{"text":text}}),
+                json!({"id":"fill-jane","title":"Fill Jane's application"}),
+            )
+            .await;
+            assert!(!failed, "{ran}");
+        }
+        // A call of another run is another step.
+        let (ran, failed) = typed(
+            &server,
+            "tilo_do",
+            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"c"}}),
+            json!({"id":"other"}),
+        )
+        .await;
+        assert!(!failed, "{ran}");
+
+        let contexts = host.contexts();
+        let steps: Vec<_> = contexts
+            .iter()
+            .filter(|(_, _, action)| action == "append-paragraph")
+            .collect();
+        assert_eq!(steps.len(), 3, "{contexts:?}");
+        assert!(steps[0].0.is_some(), "a call joins an undo step");
+        assert_eq!(steps[0].0, steps[1].0, "one run is one step");
+        assert_ne!(steps[0].0, steps[2].0, "another run is another step");
+        assert_eq!(
+            steps[0].1.as_deref(),
+            Some("Fill Jane's application"),
+            "the run is named as its caller named it"
+        );
+
+        // `undo task` takes the run back, in the app it changed.
+        let (undone, failed) = answer(&server, "tilo", json!({"program":"history task"})).await;
+        assert!(!failed, "{undone}");
+        assert!(
+            undone["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| step["program"] == "run \"Fill Jane's application\""
+                    && step["apps"][0] == "so.tilo.notes"),
+            "{undone}"
+        );
+        let (taken, failed) = answer(&server, "tilo", json!({"program":"undo task"})).await;
+        assert!(!failed, "{taken}");
+        let undone = host
+            .invoked()
+            .into_iter()
+            .filter(|(resource, action, arguments)| {
+                resource == "tl:so.tilo.notes"
+                    && action == "undo"
+                    && arguments == &json!({"steps": 1})
+            })
+            .count();
+        assert_eq!(undone, 2, "each run's step is taken back once, in the app");
+    });
+}
+
+/// A watch tells what happened since its cursor: a change to a resource and
+/// who made it, a run that finished, and who is in the workspace.
+#[test]
+fn a_watch_answers_changes_runs_and_presence() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host);
+        let (start, failed) = answer(&server, "tilo_watch", json!({"wait_ms": 50})).await;
+        assert!(!failed, "{start}");
+        assert_eq!(
+            start["events"],
+            json!([]),
+            "a watch with no cursor starts now"
+        );
+        let cursor = start["cursor"].as_str().unwrap().to_owned();
+
+        host.changed(json!({
+            "change": "c1a2",
+            "sentence": "added \"Buy milk\"",
+            "by": "Ada",
+            "time_ms": 1_730_000_000_000_i64,
+        }));
+        host.people(Some(vec![
+            tilo_actions::remote::Here {
+                who: "person:ada".into(),
+                name: "Ada".into(),
+                kind: "person".into(),
+            },
+            tilo_actions::remote::Here {
+                who: "agent:claude".into(),
+                name: "Claude Code".into(),
+                kind: "agent".into(),
+            },
+        ]));
+        let (ran, failed) = answer(
+            &server,
+            "tilo_do",
+            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
+        )
+        .await;
+        assert!(!failed, "{ran}");
+
+        let (watched, failed) = answer(
+            &server,
+            "tilo_watch",
+            json!({"path":"notes/Todo","cursor":cursor,"wait_ms":50}),
+        )
+        .await;
+        assert!(!failed, "{watched}");
+        let events = watched["events"].as_array().unwrap();
+        let change = events
+            .iter()
+            .find(|event| event["kind"] == "change")
+            .expect("the change is told");
+        assert_eq!(change["path"], "notes/Todo");
+        assert_eq!(change["change"], "c1a2");
+        assert_eq!(change["sentence"], "added \"Buy milk\"");
+        assert_eq!(change["by"], "Ada");
+        let run = events
+            .iter()
+            .find(|event| event["kind"] == "run")
+            .unwrap_or_else(|| panic!("the run is told: {watched}"));
+        assert_eq!(run["invocation_id"], ran["invocation_id"]);
+        assert_eq!(run["path"], "notes/Todo/body#append-paragraph");
+        assert_eq!(run["phase"], "succeeded");
+        assert_eq!(run["run"], "MCP agent");
+        let here = events
+            .iter()
+            .find(|event| event["kind"] == "presence")
+            .expect("who is here is told");
+        assert!(
+            here["here"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|member| member["name"] == "Claude Code" && member["kind"] == "agent"),
+            "{here}"
+        );
+        // Everything it told is told once.
+        let (again, failed) = answer(
+            &server,
+            "tilo_watch",
+            json!({"path":"notes/Todo","cursor":watched["cursor"].as_str().unwrap(),"wait_ms":50}),
+        )
+        .await;
+        assert!(!failed, "{again}");
+        assert_eq!(again["events"], json!([]), "{again}");
+    });
+}
+
+/// An action the person must allow: a typed call answers `pending` with the
+/// ask rather than holding the caller, and the text a model reads is what it
+/// was.
+#[test]
+fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
+    let host = Notes::new(true).asking();
+    run(async {
+        let server = agent(&host);
+        let (asked, failed) = answer(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+        assert!(!failed, "pending is not an error: {asked}");
+        assert_eq!(asked["status"], "pending");
+        let id = asked["invocation_id"]
+            .as_str()
+            .expect("the call names its invocation");
+        assert_eq!(asked["ask"]["invocation_id"], id);
+        assert_eq!(asked["path"], "notes/Todo#delete");
+
+        // A model still reads the refusal's words.
+        let (text, failed) = tool(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+        assert!(failed, "{text}");
+        assert!(text.contains("requires confirmation"), "{text}");
     });
 }

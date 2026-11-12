@@ -81,7 +81,7 @@ class PublishedPointers(unittest.TestCase):
             (bin_dir / "curl").write_text("#!/bin/sh\ncat >/dev/null\nprintf 201\n")
             (bin_dir / "curl").chmod(0o755)
             out = Path(temp) / "payload.json"
-            environ = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", T_REF="stable",
+            environ = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", T_REF="tag:v1.2.3",
                            T_COMMIT=COMMIT, REGISTRY_TOKEN="fixture", TMPDIR=temp)
             result = subprocess.run(["bash", str(tree / "dist/ci/publish-desktop-payload.sh"), str(out)],
                                     env=environ, capture_output=True, text=True, timeout=HANG_BOUND)

@@ -85,21 +85,27 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
 pub enum PdfEffect {
     /// Previous page
     #[effect(view)]
+    #[effect(label = "pdf-bar-previous-page")]
     PreviousPage,
     /// Next page
     #[effect(view)]
+    #[effect(label = "pdf-bar-next-page")]
     NextPage,
     /// Zoom in
     #[effect(view)]
+    #[effect(label = "pdf-bar-zoom-in")]
     ZoomIn,
     /// Zoom out
     #[effect(view)]
+    #[effect(label = "pdf-bar-zoom-out")]
     ZoomOut,
     /// Fit page
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-fit-page")]
     FitPage,
     /// Fit width
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-fit-width")]
     FitWidth,
     /// Toggle sidebar
     #[effect(view)]
@@ -125,15 +131,18 @@ pub enum PdfEffect {
     ///
     /// The colour the next mark takes; a selected mark takes it too.
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-bar-marker-colour")]
     SetMarkerColour {
         #[param("yellow, green, pink, blue or purple")]
         colour: HighlightColor,
     },
     /// Mark text as highlight
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-tool-highlight")]
     MarkHighlight,
     /// Mark text as underline
     #[effect(view, idempotent)]
+    #[effect(label = "pdf-annotation-underline")]
     MarkUnderline,
     /// Mark text as strike-through
     #[effect(view, idempotent)]
@@ -170,7 +179,7 @@ pub enum PdfEffect {
     /// pages at a time: read on from the `next` an answer gives. Reads the
     /// PDF the record pinned, so a record opened from content reads with no
     /// file. Changes nothing.
-    #[effect(kind = "read", returns, idempotent)]
+    #[effect(kind = "read", returns = crate::model::PdfText, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
         from_page: Option<usize>,
@@ -184,7 +193,7 @@ pub enum PdfEffect {
     /// a field edit sets, the path that edit takes (`form_values/<name>`),
     /// its choices or the value a checkbox exports, the page it is on, and
     /// whether it is read-only or required. Changes nothing.
-    #[effect(kind = "read", returns, idempotent)]
+    #[effect(kind = "read", returns = crate::model::FormFields, idempotent)]
     ReadFormFields,
     /// Look at a page
     ///
@@ -236,6 +245,7 @@ pub enum PdfEffect {
     ///
     /// Opens a PDF on its own markup record, in this window.
     #[effect(job, cancellable, destructive)]
+    #[effect(label = "pdf-empty-open")]
     OpenPdf {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,
@@ -259,6 +269,7 @@ pub enum PdfEffect {
     },
     /// Save annotated PDF
     #[effect(job, cancellable, destructive)]
+    #[effect(label = "pdf-bar-save")]
     SaveAs {
         #[param("Absolute path; omit to use the system picker")]
         path: Option<tilo_resource::AbsolutePath>,

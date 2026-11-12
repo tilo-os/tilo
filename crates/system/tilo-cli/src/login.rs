@@ -26,19 +26,20 @@ use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_browser_peer::login::{self as peer_login, Door, SignIn};
-use tilo_browser_peer::pairing_link::PairingLink;
-use tilo_browser_peer::{HttpClient, HttpFuture, PeerHandle};
-use tilo_relay_protocol::login_code::{self, Claim, Claimed, Report, Resolve, Resolved, Step};
+use tilo_relay_client::CertifyError;
+use tilo_relay_client::HttpClient;
+use tilo_relay_client::https::{self, Origin};
+use tilo_relay_client::login::{PairingLink, SignIn, door_at, sign_in};
+use tilo_relay_client::login_code;
+use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
 use tilo_relay_protocol::web::API_PREFIX;
+use tilo_session_client::device::Device as Entered;
 
-use crate::agent::{self, Agent, Registered, Tool};
+use crate::agent::{self, Agent, Tool};
 
-/// The longest body read from a host or a site.
-const MAX_BODY: usize = 4 * 1024 * 1024;
 /// The site `tilo login` resolves codes at, unless `--site` or
 /// [`SITE_ENV`] names another.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
@@ -201,78 +202,76 @@ pub fn load(dir: &std::path::Path) -> Result<Option<(SigningKey, Device)>> {
     Ok(Some((SigningKey::from_bytes(&bytes), device)))
 }
 
+/// What a login leaves behind for a later `tilo agent check`: the tab that
+/// followed it, so the agent's own confirmation reaches that tab.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    /// The tab's report, as its host knows it.
+    pub report: String,
+    /// The host that tab asks.
+    pub host_origin: String,
+    /// Whether that tab was told Tilo's tools are added.
+    #[serde(default)]
+    pub tools_added: bool,
+    /// Whether this computer entered the workspace, and the tab was not told
+    /// yet: then the agent's confirmation is what tells it, and the screen
+    /// leaves only once the tools are in.
+    #[serde(default)]
+    pub entered: bool,
+}
+
+/// Keep `pending` beside this computer's device key.
+fn store_pending(dir: &Path, pending: &Pending) -> Result<()> {
+    let _ = std::fs::remove_file(dir.join("login.json"));
+    std::fs::write(dir.join("login.json"), serde_json::to_vec_pretty(pending)?)?;
+    Ok(())
+}
+
+/// The login this computer last made, when it left a tab following it.
+fn load_pending(dir: &Path) -> Option<Pending> {
+    serde_json::from_slice(&std::fs::read(dir.join("login.json")).ok()?).ok()
+}
+
+/// Tell the tab that followed this computer's login that its agent has
+/// Tilo's tools, and that this computer is in the workspace: the steps that
+/// tab shows only because the server was found in the agent's own
+/// configuration and answered.
+///
+/// `tilo agent check` calls this after confirming; `tilo login` calls it
+/// itself when its own check passed. A tab that has moved on is not told
+/// anything twice, and nothing is said about it.
+pub(crate) fn report_tools_added() {
+    let Ok(dir) = device_dir() else { return };
+    let Some(mut pending) = load_pending(&dir) else {
+        return;
+    };
+    if pending.tools_added {
+        return;
+    }
+    let Ok(runtime) = runtime() else { return };
+    let entered = pending.entered;
+    runtime.block_on(async {
+        let host = Origin::new(&http(), &pending.host_origin);
+        let reporter = Reporter {
+            host: &host,
+            report: pending.report.clone(),
+            agent: agent::detect_here().name,
+        };
+        reporter.quiet_step(Step::ToolsAdded).await;
+        // What the screen leaves for: said here for an agent that added the
+        // server itself, so the tools are confirmed before it goes.
+        if entered {
+            reporter.quiet_step(Step::Entered).await;
+        }
+    });
+    pending.tools_added = true;
+    pending.entered = false;
+    let _ = store_pending(&dir, &pending);
+}
+
 /// Whether this computer logged in (`tilo login`).
 pub fn logged_in() -> bool {
     device_dir().is_ok_and(|dir| dir.join("key").exists())
-}
-
-/// HTTPS to one origin, as a host's and a site's routes take it.
-struct Web {
-    client: tilo_net::Client,
-    origin: String,
-}
-
-impl Web {
-    fn new(origin: &str) -> Self {
-        Self {
-            client: http(),
-            origin: origin.trim_end_matches('/').to_owned(),
-        }
-    }
-
-    async fn get(&self, path: &str) -> Result<(u16, Vec<u8>)> {
-        let response = self
-            .client
-            .get(format!("{}{path}", self.origin))
-            .send()
-            .await?;
-        let status = response.status().as_u16();
-        Ok((status, response.bytes_limited(MAX_BODY).await?.to_vec()))
-    }
-}
-
-impl HttpClient for Web {
-    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
-        let url = format!("{}{path}", self.origin);
-        Box::pin(async move {
-            let response = self
-                .client
-                .post(url)
-                .header("content-type", "application/octet-stream")
-                .body(body)
-                .send()
-                .await
-                .map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let body = response
-                .bytes_limited(MAX_BODY)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok((status, body.to_vec()))
-        })
-    }
-}
-
-/// The site's door to the workspace the code names, as its `entry.json`
-/// says (`home.admission`), when it names one for that host.
-async fn door_of(site: &str, host_origin: &str) -> Option<(Web, String)> {
-    let (status, body) = Web::new(site).get("/entry.json").await.ok()?;
-    if status != 200 {
-        return None;
-    }
-    let entry: Value = serde_json::from_slice(&body).ok()?;
-    let home = entry.get("home")?;
-    let home_host = home.pointer("/host/origin")?.as_str()?;
-    if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
-        return None;
-    }
-    let admission = tilo_net::Url::parse(home.get("admission")?.as_str()?).ok()?;
-    if admission.scheme() != "https" {
-        return None;
-    }
-    let origin = admission.origin().ascii_serialization();
-    let path = format!("{}join", admission.path());
-    Some((Web::new(&origin), path))
 }
 
 /// This computer's name, as a device label says it.
@@ -298,7 +297,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Enter the workspace `device` names, as that device.
-pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHandle, u64)> {
+pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered> {
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
@@ -307,36 +306,24 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<(PeerHa
         device.user
     ))
     .map_err(|error| anyhow!(error))?;
-    let host_web = Web::new(&device.host_origin);
-    let info = tilo_browser_peer::host_info(&host_web).await?;
-    let address = info
+    let host_web = Origin::new(&http(), &device.host_origin);
+    let info = https::host_info(&host_web).await?;
+    let host = info
         .address
+        .as_ref()
+        .map(tilo_relay_client::Host::published)
         .context("the workspace's host takes no device connections")?;
-    let endpoint = match address
-        .relay_url
-        .as_deref()
-        .and_then(|url| url.parse().ok())
-    {
-        Some(relay) => address.endpoint_addr.with_relay_url(relay),
-        None => address.endpoint_addr,
-    };
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host: tilo_browser_peer::Host::at(endpoint),
+        host,
         cert,
         host_cert,
     };
-    let door = door_of(&device.site, &device.host_origin).await;
-    let door = door.as_ref().map(|(client, path)| Door {
-        client,
-        path: path.clone(),
-    });
-    let peer = peer_login::enter(&host_web, door.as_ref(), &signed, Arc::new(key.clone())).await?;
-    let workspace_id = tilo_relay_protocol::room_workspace_id(&device.workspace)?;
-    Ok((peer, workspace_id))
+    let door = door_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
+    Ok(Entered::enter(door.as_ref(), &signed, Arc::new(key.clone())).await?)
 }
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
@@ -356,12 +343,12 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
 }
 
 /// The site's home host, as its `entry.json` names it (`home.host.origin`).
-async fn home_host(site: &Web) -> Result<String> {
-    let unreachable = || format!("{} names no Tilo host to log in at", site.origin);
+async fn home_host(site: &Origin) -> Result<String> {
+    let unreachable = || format!("{} names no Tilo host to log in at", site.name());
     let (status, body) = site
         .get("/entry.json")
         .await
-        .with_context(|| format!("{} was not reached", site.origin))?;
+        .map_err(|error| anyhow!("{} was not reached: {error}", site.name()))?;
     if status != 200 {
         bail!("{} (HTTP {status})", unreachable());
     }
@@ -377,42 +364,20 @@ async fn home_host(site: &Web) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// POST `body` as JSON to `route` below the host's API.
-async fn post_json(
-    host: &dyn HttpClient,
-    route: &str,
-    body: &(impl Serialize + Sync),
-) -> Result<(u16, Vec<u8>)> {
-    host.post(&format!("{API_PREFIX}{route}"), serde_json::to_vec(body)?)
-        .await
-        .map_err(|error| anyhow!("the host was not reached: {error}"))
-}
-
 /// What the code names, spending it.
 async fn resolve(host: &dyn HttpClient, code: &str) -> Result<Resolved> {
-    let (status, body) = post_json(
-        host,
-        login_code::RESOLVE_ROUTE,
-        &Resolve {
-            code: code.to_owned(),
-        },
-    )
-    .await?;
-    match status {
-        200 => serde_json::from_slice(&body).context("the host answered something else"),
-        404 => bail!(
-            "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
+    login_code::resolve(host, code)
+        .await
+        .map_err(|refusal| match refusal.code() {
+            "unknown" => anyhow!(
+                "the code {code} is unknown, used or expired: a code works once, for 10 minutes. \
              Ask the person to copy the prompt from their Tilo tab again."
-        ),
-        429 => bail!("too many wrong codes from here: wait a minute, then check the code"),
-        other => bail!(
-            "the host refused the code (HTTP {other}): {}",
-            String::from_utf8_lossy(&body)
-                .chars()
-                .take(200)
-                .collect::<String>()
-        ),
-    }
+            ),
+            "too-many" => {
+                anyhow!("too many wrong codes from here: wait a minute, then check the code")
+            }
+            _ => anyhow!("the host refused the code: {refusal}"),
+        })
 }
 
 /// Tells the tab what this computer did with its code.
@@ -427,6 +392,12 @@ impl Reporter<'_> {
         self.send(step, None).await;
     }
 
+    /// The same, saying nothing when it does not reach the tab: a step a tab
+    /// that has moved on is never told.
+    async fn quiet_step(&self, step: Step) {
+        let _ = login_code::report(self.host, &self.report(step, None)).await;
+    }
+
     /// The tab shows `detail`, one sentence, as what failed.
     async fn failed(&self, detail: &str) {
         let sentence = detail.lines().next().unwrap_or(detail);
@@ -434,24 +405,18 @@ impl Reporter<'_> {
             .await;
     }
 
-    async fn send(&self, step: Step, detail: Option<String>) {
-        let report = Report {
+    fn report(&self, step: Step, detail: Option<String>) -> Report {
+        Report {
             report: self.report.clone(),
             step,
-            agent: Some(
-                self.agent
-                    .chars()
-                    .take(login_code::MAX_AGENT_CHARS)
-                    .collect(),
-            ),
+            agent: Some(self.agent.chars().take(protocol::MAX_AGENT_CHARS).collect()),
             detail,
-        };
-        match post_json(self.host, login_code::STEP_ROUTE, &report).await {
-            Ok((200 | 204, _)) => {}
-            Ok((status, _)) => {
-                eprintln!("The person's tab was not told this step (HTTP {status}).");
-            }
-            Err(error) => eprintln!("The person's tab was not told this step: {error:#}"),
+        }
+    }
+
+    async fn send(&self, step: Step, detail: Option<String>) {
+        if let Err(refusal) = login_code::report(self.host, &self.report(step, detail)).await {
+            eprintln!("The person's tab was not told this step: {refusal}");
         }
     }
 }
@@ -468,32 +433,15 @@ async fn claim(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos(),
     )?;
-    let signature = key.sign(&login_code::claim_message(report, signed_at_ns));
-    let (status, body) = post_json(
-        host,
-        login_code::CLAIM_ROUTE,
-        &Claim {
-            report: report.to_owned(),
-            cert: device.cert.clone(),
-            signed_at_ns,
-            signature: hex::encode(signature.to_bytes()),
-        },
-    )
-    .await?;
-    match status {
-        200 => serde_json::from_slice(&body).context("the host answered something else"),
-        403 => bail!(
-            "this host signs nobody in for the person this computer is a device of: \
-             sign in on the host where you set Tilo up"
-        ),
-        other => bail!(
-            "the host refused the claim (HTTP {other}): {}",
-            String::from_utf8_lossy(&body)
-                .chars()
-                .take(200)
-                .collect::<String>()
-        ),
-    }
+    login_code::claim(host, report, device.cert.clone(), key, signed_at_ns)
+        .await
+        .map_err(|refusal| match refusal.code() {
+            "not-a-device" => anyhow!(
+                "this host signs nobody in for the person this computer is a device of: \
+                 sign in on the host where you set Tilo up"
+            ),
+            _ => anyhow!("the host refused the claim: {refusal}"),
+        })
 }
 
 /// The name the host lists `workspace` under, when it lists it.
@@ -517,31 +465,128 @@ async fn workspace_name(host: &dyn HttpClient, workspace: &str) -> Option<String
 /// What became of Tilo's tools for the agent.
 #[derive(Debug, PartialEq, Eq)]
 enum Tools {
-    /// `tool` has them, from its next start on.
+    /// `tool` has them, in its own configuration, and they answer.
     Added(Tool),
-    /// The agent adds them itself.
+    /// The agent adds them itself, where `tilo login` could not: what it
+    /// prints says how.
     Yours,
 }
 
-/// What `tilo login` prints last: what the agent does next.
-fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
-    let first = match tools {
-        Tools::Added(tool) => format!(
-            "1. Your Tilo tools load only after a restart: tell the person to restart you \
-             (in {}: {}).",
-            agent.name,
-            tool.restart()
-        ),
-        Tools::Yours => format!(
-            "1. Add Tilo's tools to yourself: the stdio MCP server named tilo, with the command \
-             {} mcp",
-            tilo.display()
-        ),
-    };
-    format!(
-        "Next:\n{first}\n2. Then call the tilo_ls tool, and tell the person what you can do \
-         in Tilo: {WHAT_TILO_DOES}."
+/// How the person starts `tool` again with the conversation kept, since it
+/// reads its servers only as it starts.
+pub(crate) fn restart_of(tool: Tool) -> String {
+    tool.restart().map_or_else(
+        || format!("{} rereads its MCP servers as it runs.", tool.title()),
+        |restart| format!("Restart it with this conversation kept: {restart}."),
     )
+}
+
+/// What the agent does once Tilo's tools are in: the one visible thing that
+/// tells the person, in their own tab, that it is there.
+pub(crate) fn first_act(agent: &Agent) -> String {
+    format!(
+        "Call the tilo_ls tool — that first call is what enters the person's workspace — then do \
+         one visible thing so they see you working: \
+         tilo_do with {{\"path\": \"notes#open\"}}, then tilo_do with \
+         {{\"path\": \"notes#new-note\", \"args\": {{\"title\": \"Hello from {}\"}}}}. Their tab \
+         shows the note as you write it.",
+        agent.name
+    )
+}
+
+/// What `tilo login` prints last: what the agent does next, in order.
+fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
+    let checks = format!(
+        "Run `{} agent check`: it says whether Tilo's server is in you, and answers.",
+        tilo.display()
+    );
+    // The tool's own words for starting again, when Tilo knows the tool but
+    // could not write its configuration.
+    let restart_of_tool = match tools {
+        Tools::Yours => agent.tool.and_then(Tool::restart),
+        Tools::Added(_) => None,
+    };
+    let mut steps: Vec<String> = Vec::new();
+    match tools {
+        Tools::Added(tool) => {
+            if let Some(restart) = tool.restart() {
+                steps.push(format!(
+                    "Ask the person to restart {} with this conversation kept ({restart}): your \
+                     Tilo tools load when it starts, and this conversation is still here after.",
+                    agent.name
+                ));
+            }
+            steps.push(checks);
+        }
+        Tools::Yours => {
+            steps.push(format!(
+                "Add Tilo's MCP server to yourself, as the server tilo: the stdio server {} with \
+                 the argument mcp, or the streamable HTTP server {}. Put it where your own MCP \
+                 configuration keeps servers, beside the ones already there, with your own \
+                 tooling.",
+                tilo.display(),
+                agent::MCP_URL
+            ));
+            steps.push(format!(
+                "{checks} If your configuration is a file, `{} agent check --config <its path>` \
+                 has Tilo read it.",
+                tilo.display()
+            ));
+            steps.push(restart_of_tool.map_or_else(
+                || {
+                    "If your tools load only when you start, ask the person to restart you with \
+                     this conversation kept."
+                        .to_owned()
+                },
+                |restart| {
+                    format!(
+                        "If your tools load only when you start, ask the person to restart you \
+                         with this conversation kept ({restart})."
+                    )
+                },
+            ));
+        }
+    }
+    if let Tools::Added(tool) = tools
+        && let Some(approval) = tool.approval()
+    {
+        steps.push(format!(
+            "Let the server's tools run: {approval}, the way {} keeps servers it may use.",
+            agent.name
+        ));
+    }
+    // An editor runs other agents' prompts in its own terminal: the one
+    // reading this may be another of them, and adds the server itself.
+    if let Tools::Added(tool) = tools
+        && tool.hosts_agents()
+    {
+        steps.push(format!(
+            "If Tilo's tools are not in you — Tilo added them to {}'s configuration, and another \
+             agent may be the one the person's prompt reached — add them to yourself the same \
+             way: the server tilo, the stdio server {} with the argument mcp, or the streamable \
+             HTTP server {}.",
+            tool.title(),
+            tilo.display(),
+            agent::MCP_URL
+        ));
+    }
+    steps.push(format!(
+        "Call the tilo_ls tool — that first call is what enters the person's workspace — and tell \
+         them what you can do in Tilo: {WHAT_TILO_DOES}."
+    ));
+    steps.push(format!(
+        "Then do one visible thing so they see you working: tilo_do with \
+         {{\"path\": \"notes#open\"}}, then tilo_do with \
+         {{\"path\": \"notes#new-note\", \"args\": {{\"title\": \"Hello from {}\"}}}}. Their tab \
+         shows the note as you write it.",
+        agent.name
+    ));
+    let numbered: Vec<String> = steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{}. {step}", index.saturating_add(1)))
+        .collect();
+    format!("Next, in order:\n{}", numbered.join("\n"))
 }
 
 /// Add Tilo's tools to `agent`, saying what became of them.
@@ -549,24 +594,38 @@ fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
     let Some(tool) = agent.tool else {
         return Tools::Yours;
     };
-    match agent::register(tool, tilo, runner) {
-        Registered::Added | Registered::Already => {
-            println!("Added Tilo's tools to {}: the MCP server tilo.", agent.name);
+    if let agent::Registered::Failed(said) = agent::register(tool, tilo, runner) {
+        println!(
+            "Adding Tilo's tools to {} failed: {}",
+            agent.name,
+            said.lines().next().unwrap_or_default()
+        );
+    }
+    // What the tool's own configuration holds is what counts: a command
+    // saying it worked is not the same as the server being there, and
+    // answering.
+    match agent::verify(tool, runner) {
+        agent::Configured::Yes {
+            place, answered, ..
+        } => {
+            println!(
+                "Added Tilo's tools to {}: the MCP server {} in {place}, answering as {}.",
+                agent.name,
+                agent::SERVER,
+                answered.name
+            );
             Tools::Added(tool)
         }
-        Registered::Missing => {
+        agent::Configured::No { place } => {
             println!(
-                "{}'s own command is not on this PATH, so Tilo's tools are not added to it.",
-                agent.name
+                "Tilo's tools are not in {} yet: {place} holds no server {}.",
+                agent.name,
+                agent::SERVER
             );
             Tools::Yours
         }
-        Registered::Failed(said) => {
-            println!(
-                "Adding Tilo's tools to {} failed: {}",
-                agent.name,
-                said.lines().next().unwrap_or_default()
-            );
+        agent::Configured::Unknown { why } => {
+            println!("Tilo could not confirm its tools in {}: {why}.", agent.name);
             Tools::Yours
         }
     }
@@ -574,7 +633,7 @@ fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
 
 /// `tilo login <code> [--agent NAME] [--site ORIGIN]`.
 pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<ExitCode> {
-    let Some(code) = login_code::normalize_code(code) else {
+    let Some(code) = protocol::normalize_code(code) else {
         bail!(
             "{} is not a login code; one looks like K7Q-MX2P. Ask the person to copy the prompt \
              from their Tilo tab again.",
@@ -588,8 +647,8 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
     let site = site_origin(site)?;
     let runtime = runtime()?;
     runtime.block_on(async {
-        let host_origin = home_host(&Web::new(&site)).await?;
-        let host = Web::new(&host_origin);
+        let host_origin = home_host(&Origin::new(&http(), &site)).await?;
+        let host = Origin::new(&http(), &host_origin);
         let resolved = resolve(&host, &code).await?;
         let reporter = Reporter {
             host: &host,
@@ -623,15 +682,15 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let label = label(&agent.name, &hostname());
     let dir = device_dir()?;
     let key = SigningKey::from_bytes(&rand::random());
-    let host_web = Web::new(&link.host_origin);
+    let host_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
-    let signed = peer_login::sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
+    let signed = sign_in(&host_web, &link, &agent.name, &label, &key, |_| {})
         .await
         .map_err(|error| match error {
-            tilo_browser_peer::CertifyError::Expired => anyhow!(
+            CertifyError::Expired => anyhow!(
                 "the tab did not approve this computer in time: it approves only while it is open"
             ),
-            tilo_browser_peer::CertifyError::Denied(reason) if reason.contains("declined") => {
+            CertifyError::Denied(reason) if reason.contains("declined") => {
                 anyhow!("the tab declined this computer")
             }
             other => anyhow!("logging in failed: {other}"),
@@ -639,6 +698,15 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let mut device = Device::of(&signed)?;
     device.workspace_name = workspace_name(&host_web, &device.workspace).await;
     store(&dir, &key, &device)?;
+    // The tab follows this login; what the agent confirms afterwards is told
+    // to it through what is kept here.
+    let mut pending = Pending {
+        report: reporter.report.clone(),
+        host_origin: device.host_origin.clone(),
+        tools_added: false,
+        entered: false,
+    };
+    store_pending(&dir, &pending)?;
     reporter.step(Step::LoggedIn).await;
     let days = signed.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(signed.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
@@ -649,9 +717,13 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     );
     let tilo = std::env::current_exe().context("finding this program")?;
     let tools = add_tools(agent, &tilo, &agent::System);
-    if matches!(tools, Tools::Added(_)) {
+    if let Tools::Added(tool) = &tools {
+        pending.tools_added = true;
+        store_pending(&dir, &pending)?;
         reporter.step(Step::ToolsAdded).await;
-        reporter.step(Step::Restart).await;
+        if tool.restart().is_some() {
+            reporter.step(Step::Restart).await;
+        }
     }
     let place = device.workspace_name.as_ref().map_or_else(
         || format!("the person's workspace on {}", host_of(&device.host_origin)),
@@ -663,10 +735,18 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
         },
     );
     match connect(&key, &device).await {
-        Ok((peer, _)) => {
-            reporter.step(Step::Entered).await;
+        Ok(entered) => {
             println!("Entered {place}: their tab shows you there.");
-            peer.close();
+            entered.close();
+            // An agent that adds Tilo's tools itself confirms them first: the
+            // tab leaves only once they are in, and the agent's own check
+            // tells it that they are.
+            if matches!(tools, Tools::Added(_)) {
+                reporter.step(Step::Entered).await;
+            } else {
+                pending.entered = true;
+                store_pending(&dir, &pending)?;
+            }
         }
         Err(error) => {
             reporter
@@ -691,8 +771,9 @@ async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCod
              not; on a new account, choose \"Set up with your agent\" in Tilo instead"
         );
     };
+    // The host tells the tab it approved, as it approves: that step is
+    // never this computer's to report.
     claim(host, &reporter.report, &key, &device).await?;
-    reporter.step(Step::Approved).await;
     println!("Approved: your tab is signing in as you.");
     Ok(ExitCode::SUCCESS)
 }
@@ -753,6 +834,20 @@ mod tests {
     }
 
     #[test]
+    fn a_login_leaves_the_tab_for_the_agent_to_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = Pending {
+            report: "aa".into(),
+            host_origin: "https://eu1.tilo.sh".into(),
+            tools_added: true,
+            entered: false,
+        };
+        store_pending(dir.path(), &pending).unwrap();
+        assert_eq!(load_pending(dir.path()), Some(pending));
+        assert_eq!(load_pending(&dir.path().join("none")), None);
+    }
+
+    #[test]
     fn a_label_names_the_agent_and_the_computer_within_bounds() {
         assert_eq!(
             label("Claude Code", "build-box"),
@@ -785,7 +880,7 @@ mod tests {
     }
 
     impl HttpClient for FakeHost {
-        fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        fn post(&self, path: &str, body: Vec<u8>) -> tilo_relay_client::https::HttpFuture<'_> {
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let route = path.strip_prefix(API_PREFIX).unwrap_or(path).to_owned();
             let (status, answer) = (self.answer)(&route, &body);
@@ -797,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_resolves_at_its_host_and_every_step_reaches_the_tab() {
         let host = FakeHost::new(|route, _| match route {
-            login_code::RESOLVE_ROUTE => (
+            protocol::RESOLVE_ROUTE => (
                 200,
                 json!({"link": "https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", "report": "aa"}),
             ),
@@ -820,7 +915,7 @@ mod tests {
         assert_eq!(
             sent[0],
             (
-                login_code::RESOLVE_ROUTE.to_owned(),
+                protocol::RESOLVE_ROUTE.to_owned(),
                 json!({"code": "K7Q-MX2P"})
             )
         );
@@ -828,15 +923,15 @@ mod tests {
             sent[1..],
             [
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "resolved", "agent": "Claude Code"})
                 ),
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "logged-in", "agent": "Claude Code"})
                 ),
                 (
-                    login_code::STEP_ROUTE.to_owned(),
+                    protocol::STEP_ROUTE.to_owned(),
                     json!({"report": "aa", "step": "failed", "agent": "Claude Code",
                            "detail": "Entering the workspace failed: offline."})
                 ),
@@ -859,12 +954,12 @@ mod tests {
         let key = SigningKey::from_bytes(&[9; 32]);
         let public = key.verifying_key();
         let host = FakeHost::new(move |route, body| {
-            assert_eq!(route, login_code::CLAIM_ROUTE);
-            let claim: Claim = serde_json::from_value(body.clone()).unwrap();
+            assert_eq!(route, protocol::CLAIM_ROUTE);
+            let claim: protocol::Claim = serde_json::from_value(body.clone()).unwrap();
             let signature = ed25519_dalek::Signature::from_bytes(
                 &hex::decode(&claim.signature).unwrap().try_into().unwrap(),
             );
-            let message = login_code::claim_message(&claim.report, claim.signed_at_ns);
+            let message = protocol::claim_message(&claim.report, claim.signed_at_ns);
             if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
                 (200, json!({"expires_at_ms": 5}))
             } else {
@@ -899,29 +994,83 @@ mod tests {
         assert_eq!(workspace_name(&host, "other").await, None);
     }
 
+    /// A tool's own servers load only as it starts: the agent asks the person
+    /// to restart it, and says what it does after.
     #[test]
     fn the_agent_is_told_what_to_do_next_in_its_own_terms() {
         let tilo = Path::new("/home/me/.local/bin/tilo");
         let claude = agent::named("claude");
+        let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo);
+        let steps: Vec<&str> = next.lines().collect();
+        assert_eq!(steps[0], "Next, in order:");
         assert_eq!(
-            next_steps(&claude, &Tools::Added(Tool::Claude), tilo),
-            "Next:\n1. Your Tilo tools load only after a restart: tell the person to restart you \
-             (in Claude Code: /exit, then `claude --continue`).\n2. Then call the tilo_ls \
-             tool, and tell the person what you can do in Tilo: you are in their Tilo workspace \
-             as them, where they see you by name with what you do: tilo_ls lists its apps and \
-             documents, tilo_read reads one, tilo_do runs their actions, and tilo_do with path \
-             terminal#run runs a shell command there, all of which History keeps as your run."
+            steps[1],
+            "1. Ask the person to restart Claude Code with this conversation kept (/exit, then \
+             `claude --continue`): your Tilo tools load when it starts, and this conversation is \
+             still here after."
+        );
+        assert_eq!(
+            steps[2],
+            "2. Run `/home/me/.local/bin/tilo agent check`: it says whether Tilo's server is in \
+             you, and answers."
+        );
+        assert!(steps[3].starts_with("3. Call the tilo_ls tool"), "{next}");
+        assert!(
+            steps[4].contains("\"path\": \"notes#open\"")
+                && steps[4].contains("\"title\": \"Hello from Claude Code\""),
+            "the agent does one thing the person sees: {next}"
+        );
+    }
+
+    /// A tool whose servers are there as it runs is not asked to restart; one
+    /// Tilo could not write for is told to add the server itself.
+    #[test]
+    fn an_agent_that_reads_its_servers_while_it_runs_is_not_told_to_restart() {
+        let tilo = Path::new("/home/me/.local/bin/tilo");
+        let cursor = agent::named("cursor");
+        let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo);
+        assert!(!next.contains("restart"), "{next}");
+        // Cursor holds a server's tools back until it is told to let it run.
+        assert!(next.contains("run `agent mcp enable tilo`"), "{next}");
+        // An editor's terminal runs other agents too: this one is told how to
+        // add the server itself if the prompt reached it instead.
+        assert!(
+            next.contains("another agent may be the one the person's prompt reached"),
+            "{next}"
+        );
+        assert!(next.contains("https://mcp.tilo.sh"), "{next}");
+        // Claude Code is not such an editor: nothing hedges its steps.
+        assert!(
+            !next_steps(&agent::named("claude"), &Tools::Added(Tool::Claude), tilo)
+                .contains("another agent may be the one"),
+            "only an editor's steps say another agent may be reading them"
+        );
+        assert!(
+            next.contains("1. Run `/home/me/.local/bin/tilo agent check`"),
+            "{next}"
         );
         let other = agent::named("Your agent");
         let next = next_steps(&other, &Tools::Yours, tilo);
         assert!(
-            next.starts_with(
-                "Next:\n1. Add Tilo's tools to yourself: the stdio MCP server named tilo, with \
-                 the command /home/me/.local/bin/tilo mcp\n2. Then call the tilo_ls tool"
+            next.contains(
+                "1. Add Tilo's MCP server to yourself, as the server tilo: the stdio server \
+                 /home/me/.local/bin/tilo with the argument mcp, or the streamable HTTP server \
+                 https://mcp.tilo.sh"
             ),
             "{next}"
         );
-        assert!(!next.contains("restart"), "{next}");
+        assert!(next.contains("agent check --config"), "{next}");
+        assert!(next.contains("Call the tilo_ls tool"), "{next}");
+    }
+
+    /// What the agent's own check says once the server is in: the one visible
+    /// thing it does for the person.
+    #[test]
+    fn the_check_tells_the_agent_what_it_does_first() {
+        let said = first_act(&agent::named("codex"));
+        assert!(said.starts_with("Call the tilo_ls tool"), "{said}");
+        assert!(said.contains("notes#new-note"), "{said}");
+        assert!(said.contains("Hello from Codex"), "{said}");
     }
 
     #[test]
@@ -937,7 +1086,7 @@ mod tests {
     #[test]
     fn a_login_code_reads_however_it_is_typed() {
         assert_eq!(
-            login_code::normalize_code("k7q mx2p").as_deref(),
+            protocol::normalize_code("k7q mx2p").as_deref(),
             Some("K7Q-MX2P")
         );
         assert!(login("https://tilo.sh/#/@eu1.tilo.sh/w/x?pair=ab", None, None).is_err());

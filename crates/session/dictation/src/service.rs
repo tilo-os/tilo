@@ -33,7 +33,11 @@ pub const DICTATION_KIND: &str = "so.tilo.dictation.session";
 /// The `dictation:session` resource, with the actions a person can take on it.
 #[must_use]
 pub fn dictation_resource() -> ResourceSpec {
-    offer::<DictationAction>(ResourceSpec::new(DICTATION, DICTATION_KIND, "Dictation"))
+    offer::<DictationAction>(ResourceSpec::new(
+        DICTATION,
+        DICTATION_KIND,
+        crate::i18n::name(DICTATION_KIND, "Dictation"),
+    ))
 }
 
 /// What the session was asked of dictation: by the person's key, by the

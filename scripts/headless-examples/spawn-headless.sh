@@ -4,9 +4,10 @@
 # Usage:
 #   ./scripts/headless-examples/spawn-headless.sh [SOCKET]
 #
-# SOCKET defaults to $XDG_RUNTIME_DIR/tilo-session/test-control.sock, the
-# path tilo-control uses when nothing else is named. Never /tmp: another
-# account could bind a shared name first and receive every command.
+# SOCKET defaults to the session's own runtime directory,
+# `$RUNTIME/tilo-session/test-control.sock`, where tilo-control looks when
+# nothing else is named. Never /tmp: another account could bind a shared name
+# first and receive every command.
 #
 # Environment:
 #   TILO_HEADLESS_TIMEOUT  seconds to wait for the socket (default 60; a
@@ -27,14 +28,20 @@
 #     of the desktop you are running it beside, nor talks to the machine's
 #     filesystem daemon. A profile that resolves to your real config is
 #     refused.
+#   - Asks the session launcher (`dist/dev/nested-session.sh --print-runtime`)
+#     where its runtime directory goes, so the rule that picks a short private
+#     one lives in one place.
 #   - Removes a stale socket at the chosen path, but refuses one a live
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
-#   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
+#   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless, and
+#     XDG_CURRENT_DESKTOP so a session spawned from a Tilo desktop does not
+#     take that login's name and export its own display to the user manager
+#     and D-Bus activation.
 #   - Runs ./target/debug/tilo-session (or $TILO_HEADLESS_BINARY) --backend headless.
-#   - Prints "PROFILE <dir>" to stderr and "READY <socket>" to stdout once
-#     usable; exits non-zero on timeout (the compositor's logs go to
-#     stderr so callers can grep them).
+#   - Prints "PROFILE <dir>" and "RUNTIME <dir>" to stderr and "READY <socket>"
+#     to stdout once usable; exits non-zero on timeout (the compositor's logs
+#     go to stderr so callers can grep them).
 #
 # Lifetime:
 #   The compositor stays alive until killed. Either run this in the
@@ -46,10 +53,14 @@
 
 set -euo pipefail
 
-SOCKET="${1:-${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; pass a socket path in a private directory}/tilo-session/test-control.sock}"
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+session_launcher=$script_dir/../../dist/dev/nested-session.sh
+SOCKET="${1:-}"
+
 # Linux sockaddr_un.sun_path holds 108 bytes including the terminating NUL.
 # Reject an unusable address before provisioning a profile or booting a server.
-python3 - "$SOCKET" <<'EOF'
+refuse_long_socket() {
+    python3 - "$1" <<'EOF'
 import os
 import sys
 
@@ -62,6 +73,10 @@ if size > 107:
     )
     sys.exit(1)
 EOF
+}
+
+[ -z "$SOCKET" ] || refuse_long_socket "$SOCKET"
+
 BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/tilo-session}"
 TIMEOUT="${TILO_HEADLESS_TIMEOUT:-60}"
 
@@ -93,7 +108,7 @@ case "$REAL_CONFIG/" in
         exit 1
         ;;
 esac
-mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,run,system/run,system/fs-cache,system/peer-cache}
+mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,system/run,system/fs-cache,system/peer-cache}
 chmod 700 -- "$PROFILE"
 REAL_HOME="$(realpath -m -- "$HOME")"
 if [ "$(realpath -m -- "$PROFILE/home")" = "$REAL_HOME" ]; then
@@ -101,6 +116,26 @@ if [ "$(realpath -m -- "$PROFILE/home")" = "$REAL_HOME" ]; then
     exit 1
 fi
 echo "PROFILE $PROFILE" >&2
+
+# The runtime directory the compositor's sockets live in: the session launcher
+# picks it (a login's XDG_RUNTIME_DIR, the user's /run/user seat, or a short
+# directory of its own), and prints it, so no second copy of that rule can
+# disagree with the launcher's. A socket path must fit the kernel's limit.
+[ -f "$session_launcher" ] || {
+    echo "FAIL: no session launcher at $session_launcher" >&2
+    exit 1
+}
+RUNTIME="$(bash "$session_launcher" --print-runtime --state "$PROFILE/state")" || {
+    echo "FAIL: the session launcher could not name a runtime directory" >&2
+    exit 1
+}
+[ -n "$RUNTIME" ] || { echo "FAIL: the session launcher named no runtime directory" >&2; exit 1; }
+mkdir -p -m 700 -- "$RUNTIME"
+echo "RUNTIME $RUNTIME" >&2
+if [ -z "$SOCKET" ]; then
+    SOCKET="$RUNTIME/tilo-session/test-control.sock"
+    refuse_long_socket "$SOCKET"
+fi
 
 if [ -S "$SOCKET" ]; then
     if python3 - "$SOCKET" <<'EOF'; then
@@ -127,6 +162,9 @@ cleanup() {
         wait "$COMP_PID" 2>/dev/null || true
     fi
     [ ! -S "$SOCKET" ] || rm -f -- "$SOCKET"
+    # The runtime directory the launcher named for this profile's state is
+    # this run's, like the profile it belongs to.
+    rm -rf -- "$RUNTIME" 2>/dev/null || true
     [ "$KEEP_PROFILE" = 1 ] || rm -rf -- "$PROFILE"
 }
 trap cleanup EXIT
@@ -139,11 +177,11 @@ TILO_TEST_CONTROL="$SOCKET" \
     XDG_DATA_HOME="$PROFILE/data" \
     XDG_STATE_HOME="$PROFILE/state" \
     XDG_CACHE_HOME="$PROFILE/cache" \
-    XDG_RUNTIME_DIR="$PROFILE/run" \
+    XDG_RUNTIME_DIR="$RUNTIME" \
     TILO_IDENTITY_ROOT="$PROFILE/identity" \
     TILO_AUTHORITY_SOCKET_DIR="$PROFILE/system/run" \
     TILO_FS_CONTENT_PEER_CACHE_DIR="$PROFILE/system/peer-cache" \
-    env -u DISPLAY -u WAYLAND_DISPLAY \
+    env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_CURRENT_DESKTOP \
     "$BINARY" --backend headless &
 COMP_PID=$!
 

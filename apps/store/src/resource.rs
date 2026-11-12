@@ -102,6 +102,7 @@ pub enum StoreEffect {
     /// The app then appears nowhere in the Store or in search, and cannot be
     /// opened or installed from them. Only you can unblock it.
     #[effect(idempotent)]
+    #[effect(label = "store-block-button")]
     BlockApp {
         #[param("App identity (for example com.example.Game)")]
         app: String,
@@ -172,6 +173,7 @@ pub enum StoreEffect {
     },
     /// Install reviewed package.
     #[effect(job)]
+    #[effect(label = "store-package-install")]
     InstallImportedPackage {
         #[param("Previously reviewed app identity")]
         app: String,
@@ -210,12 +212,14 @@ pub enum StoreEffect {
     ///
     /// A Tilo app is fetched when it is not on this device yet.
     #[effect(job, returns)]
+    #[effect(label = "store-action-open")]
     OpenApp {
         #[param("App identity")]
         app: String,
     },
     /// Update.
     #[effect(job)]
+    #[effect(label = "store-action-update")]
     Update {
         #[param("App identity")]
         app: String,
@@ -228,30 +232,35 @@ pub enum StoreEffect {
     },
     /// Allow cleanup.
     #[effect(job)]
+    #[effect(label = "store-action-release")]
     Unpin {
         #[param("App identity")]
         app: String,
     },
     /// Install.
     #[effect(job)]
+    #[effect(label = "store-action-install")]
     FlatpakInstall {
         #[param("App identity")]
         app: String,
     },
     /// Update.
     #[effect(job)]
+    #[effect(label = "store-action-update")]
     FlatpakUpdate {
         #[param("App identity")]
         app: String,
     },
     /// Open.
     #[effect(job)]
+    #[effect(label = "store-action-open")]
     FlatpakOpen {
         #[param("App identity")]
         app: String,
     },
     /// Flatpak unavailable.
     #[effect(job)]
+    #[effect(label = "store-flatpak-unavailable")]
     FlatpakSetup {
         #[param("App identity")]
         app: String,
@@ -278,12 +287,14 @@ pub enum StoreEffect {
     },
     /// Enable source.
     #[effect(job)]
+    #[effect(label = "store-remote-enable")]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
     /// Disable source.
     #[effect(job)]
+    #[effect(label = "store-remote-disable")]
     DisableRemote {
         #[param("Account repository identity")]
         remote: String,
@@ -317,6 +328,7 @@ pub enum StoreEffect {
     ///
     /// Fetches the verified status of the app's moderation case.
     #[effect(job)]
+    #[effect(label = "store-report-refresh")]
     RefreshStatus {
         #[param("App identity of the report")]
         app: String,
@@ -325,6 +337,7 @@ pub enum StoreEffect {
     ///
     /// Appeals the app's moderation case, with its note as the reason.
     #[effect(job, sensitive)]
+    #[effect(label = "store-report-appeal")]
     Appeal {
         #[param("App identity of the report")]
         app: String,
@@ -333,6 +346,7 @@ pub enum StoreEffect {
     },
     /// Export evidence envelope.
     #[effect(job)]
+    #[effect(label = "store-report-export")]
     ExportEvidence {
         #[param("App identity of the report")]
         app: String,
@@ -451,7 +465,7 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
-ui::embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// Framework app.
 pub struct StoreShell;
@@ -469,7 +483,7 @@ impl ResourceApp for StoreShell {
     const ARGUMENTS: usize = 1;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
-        Some(&STORE_CATALOG)
+        Some(&CATALOG)
     }
 
     fn view(cx: &mut ViewCx<Reports>) -> Element {
@@ -1539,9 +1553,9 @@ mod tests {
     ) {
         let selected = ui::i18n::I18nManager::current_locale();
         let pseudo = ui::i18n::I18nManager::pseudo_locale();
-        let expected = ui::i18n!("store-catalogue-refreshed").as_str().to_owned();
+        let expected = CATALOG.t("store-catalogue-refreshed").as_str().to_owned();
         ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-        assert_ne!(ui::i18n!("store-catalogue-refreshed").as_str(), expected);
+        assert_ne!(CATALOG.t("store-catalogue-refreshed").as_str(), expected);
         let invocation = app
             .start_effect_on(
                 remote,
@@ -1988,7 +2002,7 @@ mod tests {
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 1);
         settle_catalogue_worker(&mut app);
-        assert_eq!(status_line(&mut app), ui::i18n!("store-app-installed"));
+        assert_eq!(status_line(&mut app), CATALOG.t("store-app-installed"));
         app.with_surface::<StoreApp, _>(|surface| {
             let state = surface.state();
             let item = state
@@ -2018,7 +2032,7 @@ mod tests {
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(
             status_line(&mut app),
-            ui::i18n!("store-catalogue-refreshed")
+            CATALOG.t("store-catalogue-refreshed")
         );
         drop(app);
         service.shutdown().unwrap();
@@ -2037,7 +2051,7 @@ mod tests {
         assert_valid_unit_job_completion(app, invocation, contract);
         assert_eq!(
             app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
-            Some(ui::i18n!("store-launch-opened").as_str().to_owned())
+            Some(CATALOG.t("store-launch-opened").as_str().to_owned())
         );
     }
 
@@ -2080,7 +2094,7 @@ mod tests {
         let previous = status_line(app);
         ui::i18n::I18nManager::set_locale("fr");
         ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-        let expected = STORE_CATALOG.t_args(
+        let expected = CATALOG.t_args(
             "store-remote-results",
             &[
                 ("name", ui::i18n::ArgValue::Text("Example tools".into())),
@@ -2126,7 +2140,7 @@ mod tests {
         app.with_surface::<StoreApp, _>(|surface| {
             let snapshot = surface.state().inspect_catalogue(None).unwrap();
             assert!(snapshot["imported_package"].is_null());
-            assert_eq!(snapshot["error"], ui::i18n!("store-package-offer-required"));
+            assert_eq!(snapshot["error"], CATALOG.t("store-package-offer-required"));
         })
         .unwrap();
         let root = find(&app.harness().resources(), Reports::KIND).unwrap();
@@ -2160,7 +2174,7 @@ mod tests {
         app.with_surface::<StoreApp, _>(|surface| {
             let snapshot = surface.state().inspect_catalogue(None).unwrap();
             assert!(snapshot["imported_package"].is_null());
-            assert_eq!(snapshot["error"], ui::i18n!("store-package-size-refused"));
+            assert_eq!(snapshot["error"], CATALOG.t("store-package-size-refused"));
         })
         .unwrap();
     }

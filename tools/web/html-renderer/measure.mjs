@@ -2,7 +2,7 @@
 // canvas and a plain-DOM page: transfer size, time to first frame, typing and
 // scrolling latency, memory, and screenshots at phone and desktop widths.
 //
-// usage: node tools/web/html-renderer/measure.mjs BUNDLE_DIR OUT_DIR [--rounds N]
+// usage: node tools/web/html-renderer/measure.mjs BUNDLE_DIR OUT_DIR [--rounds N] [--quick|--select|--phone|--wheel]
 import {mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {brotliCompressSync, gzipSync, constants as z} from 'node:zlib';
@@ -12,6 +12,8 @@ import {decode, diff} from './png.mjs';
 const bundle = resolve(process.argv[2]);
 const out = resolve(process.argv[3]);
 const rounds = Number(process.argv[process.argv.indexOf('--rounds') + 1]) || 1;
+// --quick, --select, --phone and --wheel (or QUICK=1 and so on) run one part.
+const part = name => Boolean(process.env[name.toUpperCase()]) || process.argv.includes(`--${name}`);
 mkdirSync(out, {recursive: true});
 const gpuArgs = process.platform === 'linux'
   ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
@@ -118,7 +120,7 @@ const FRAMES = `(() => {
   window.renderMarks.domFrames = [];
   const pct = (values, p) => { if (!values.length) return null; const s = [...values].sort((a, b) => a - b); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10; };
   const column = k => frames.map(f => f[k]);
-  return JSON.stringify({frames: frames.length, writesP50: pct(column(0), 0.5), writesMax: pct(column(0), 1), createdP50: pct(column(1), 0.5), createdMax: pct(column(1), 1), presentMsP50: pct(column(2), 0.5), presentMsMax: pct(column(2), 1)});
+  return JSON.stringify({frames: frames.length, writesP50: pct(column(0), 0.5), writesMax: pct(column(0), 1), createdP50: pct(column(1), 0.5), createdMax: pct(column(1), 1), presentMsP50: pct(column(2), 0.5), presentMsMax: pct(column(2), 1), layoutMsP50: pct(column(3), 0.5), layoutMsP90: pct(column(3), 0.9), layoutMsMax: pct(column(3), 1), encodeMsP50: pct(column(4), 0.5), encodeMsMax: pct(column(4), 1), drawsP50: pct(column(5), 0.5), textsP50: pct(column(6), 0.5)});
 })()`;
 // Where the semantic elements live: inside the painted widget they describe
 // (one tree), or in the mirror's own layer; and whether any painted text is
@@ -128,6 +130,13 @@ const ACCESSIBILITY = `JSON.stringify({
   mirrored: document.querySelectorAll('[data-tilo-semantic]').length - document.querySelectorAll('.tilo-dom [data-tilo-semantic]').length,
   paintedTexts: document.querySelectorAll('.tilo-dom span:not([data-tilo-semantic])').length,
   paintedTextsExposed: [...document.querySelectorAll('.tilo-dom span:not([data-tilo-semantic])')].filter(s => !s.closest('[aria-hidden="true"]')).length,
+  // Semantic nodes that name the key their widget drew under, and how many
+  // of those keys the page holds an element for.
+  ...(() => { const keys = []; const walk = n => { if (!n) return; if (n.semantics && n.paint_key) keys.push(n.paint_key); for (const c of n.children ?? []) walk(c); };
+    walk(window.mount.state()?.semantics?.root);
+    const ops = window.__tiloDom?.stats.ops ? JSON.parse(window.__tiloDom.stats.ops) : [];
+    const drawn = new Set(ops.filter(op => op[0] === 'k').map(op => op[1]));
+    return {semanticWithKey: keys.length, semanticKeyDrawn: keys.filter(k => drawn.has(k)).length, keysDrawn: drawn.size}; })(),
 })`;
 
 // Each input's latency: from its event to the first painted change after it.
@@ -158,7 +167,7 @@ async function run({page, render, width, height, dark = false, shot, interact = 
     const url = `${server.url}/${page}${render ? `?render=${render}${render === 'gpu' ? `&theme=${dark ? 'dark' : 'light'}` : ''}` : ''}`;
     await tab.navigate(url);
     await tab.waitFor('!!window.renderMarks', {timeout: 60000});
-    if (page === 'notes.html') {
+    if (page === 'app.html') {
       const first = await tab.waitFor('window.renderMarks.presented[0]', {timeout: 90000});
       result.firstFrameMs = Math.round(first);
       // Let startup settle: fonts, the notebook's first sync.
@@ -175,12 +184,20 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       await sleep(1500);
       const item = await tab.evaluate(FIND('Field notes'));
       result.seedItem = item;
+      // Every input event the tap that opens the note raises, in order: on
+      // the canvas (what the runtime hears) and on the page.
+      await tab.evaluate(`(() => { const log = window.__tapEvents = []; const canvas = document.querySelector('canvas');
+        for (const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','click','dblclick','touchstart','touchend','contextmenu','focusin']) {
+          addEventListener(type, e => log.push([type, e.isTrusted ? 'page' : 'synthetic', e.target?.localName, e.pointerType ?? '']), {capture: true});
+          canvas?.addEventListener(type, e => { if (!e.isTrusted) log.push([type, 'canvas', e.pointerType ?? '']); });
+        } return true; })()`);
       if (item) {
         for (const type of ['mousePressed', 'mouseReleased']) {
           await tab.send('Input.dispatchMouseEvent', {type, x: item[0], y: item[1], button: 'left', clickCount: 1});
         }
         await sleep(1500);
       }
+      result.tapEvents = await tab.evaluate('JSON.stringify(window.__tapEvents ?? [])').then(JSON.parse);
       result.dom = await tab.evaluate('JSON.stringify(window.renderMarks.dom?.meta ?? null)').then(JSON.parse);
       result.domElements = await tab.evaluate('document.querySelectorAll(".tilo-dom *").length');
       result.domTexts = await tab.evaluate('document.querySelectorAll(".tilo-dom span").length');
@@ -218,6 +235,10 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       result.typing = {n: typed.keydown.length, p50: pct(typed.keydown, 0.5), p90: pct(typed.keydown, 0.9), max: pct(typed.keydown, 1)};
       if (render === 'dom') result.typingFrames = await tab.evaluate(FRAMES).then(JSON.parse);
       result.typingChanged = {p50: pct(typed.keydownChanged, 0.5), p90: pct(typed.keydownChanged, 0.9)};
+      // Where a key's time goes: from the event to the frame that answers it
+      // being handed over, and from there to the browser's next paint.
+      const behind = (later, earlier) => ({p50: pct(later, 0.5) - pct(earlier, 0.5), p90: pct(later, 0.9) - pct(earlier, 0.9)});
+      result.typingBreakdown = {toPresent: result.typingChanged, toPaint: behind(typed.keydown, typed.keydownChanged)};
       if (shot) writeFileSync(join(out, shot.replace('.png', '-typed.png')), await tab.screenshot());
       for (let i = 0; i < 30 * rounds; i++) {
         await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: target.x, y: target.y, deltaX: 0, deltaY: i % 20 < 10 ? 120 : -120});
@@ -236,20 +257,69 @@ async function run({page, render, width, height, dark = false, shot, interact = 
         // The browser's own selection over the real text: the canvas lets
         // the pointer through, and a drag selects as on any page.
         await tab.evaluate('window.__tiloDom.selectText(true)');
-        const spans = await tab.evaluate(`JSON.stringify([...document.querySelectorAll('.tilo-dom span')].filter(s => /Paragraph/.test(s.textContent)).slice(1, 3).map(s => { const r = s.getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.right]; }))`).then(JSON.parse);
+        await tab.evaluate(`(() => { const log = window.__selectLog = []; document.addEventListener('selectionchange', () => log.push(['change', String(getSelection()).length, getSelection().anchorNode?.parentElement?.localName ?? getSelection().anchorNode?.localName ?? null, performance.now() | 0])); for (const t of ['mousedown','mouseup','focusin','focusout']) addEventListener(t, e => log.push([t, e.target?.localName, e.defaultPrevented, performance.now() | 0]), {capture: true});
+          // What changes in the layer while the person drags: a node a
+          // selection ends in that is moved or rewritten takes it with it.
+          const mutations = window.__selectMutations = [];
+          const name = n => n ? (n.localName ?? n.nodeName) + (n.dataset?.tiloSemantic ? '[semantic]' : '') + (n.tiloForeign ? '[foreign]' : '') : '';
+          // Whoever moves the page's selection or focus while the person drags.
+          for (const [proto, methods] of [[Selection.prototype, ['collapse', 'removeAllRanges', 'addRange', 'setBaseAndExtent', 'empty', 'collapseToEnd', 'collapseToStart', 'selectAllChildren']], [HTMLElement.prototype, ['focus', 'blur']], [HTMLTextAreaElement.prototype, ['setSelectionRange', 'select']]]) {
+            for (const method of methods) { const original = proto[method]; proto[method] = function (...args) { if (mutations.length < 60) mutations.push(['call', method, name(this), (new Error().stack ?? '').split(String.fromCharCode(10)).slice(2, 5).join(' < ').slice(0, 300)]); return original.apply(this, args); }; }
+          }
+          new MutationObserver(list => { for (const m of list) if (mutations.length < 60) mutations.push([m.type, name(m.target), m.attributeName ?? '', name(m.addedNodes[0]), name(m.removedNodes[0]), (m.addedNodes[0] ?? m.removedNodes[0])?.textContent?.slice(0, 24) ?? '', m.nextSibling ? name(m.nextSibling) : '-', (m.addedNodes[0] ?? m.removedNodes[0])?.style?.cssText?.slice(0, 80) ?? '', performance.now() | 0]); })
+            .observe(document.querySelector('.tilo-dom'), {subtree: true, childList: true, characterData: true, attributes: true});
+          return true; })()`);
+        const spans = await tab.evaluate(`JSON.stringify([...document.querySelectorAll('.tilo-dom span')].filter(s => { if (!/Paragraph/.test(s.textContent)) return false; const r = s.getBoundingClientRect(); return document.elementFromPoint(r.left + 4, r.top + r.height / 2) === s && document.elementFromPoint(r.right - 4, r.top + r.height / 2) === s; }).slice(1, 3).map(s => { const r = s.getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.right]; }))`).then(JSON.parse);
         if (spans.length === 2) {
+          const opsBefore = await tab.evaluate('window.__tiloDom.stats.ops');
           await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: spans[0][0] + 2, y: spans[0][1], button: 'left', clickCount: 1});
           for (let k = 1; k <= 8; k++) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: spans[0][0] + (spans[1][2] - spans[0][0]) * k / 8, y: spans[0][1] + (spans[1][1] - spans[0][1]) * k / 8, button: 'left', buttons: 1});
           await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: spans[1][2] - 2, y: spans[1][1], button: 'left', clickCount: 1});
           await sleep(200);
           result.nativeSelection = await tab.evaluate('getSelection().toString()');
+          result.selectLog = await tab.evaluate('JSON.stringify(window.__selectLog.slice(0, 40))').then(JSON.parse);
+          result.selectMutations = await tab.evaluate('JSON.stringify(window.__selectMutations)').then(JSON.parse);
+          // The widget keys of the frames before and after the press, as a
+          // tree three deep: a key that changed is an element replaced.
+          const tree = ops => { const out = []; const stack = []; for (const op of JSON.parse(ops)) { if (op[0] === 'k') { if (stack.length < 4) out.push(`${'  '.repeat(stack.length)}${op[1]} @${op[2]},${op[3]}`); stack.push(op[1]); } else if (op[0] === 'ke') stack.pop(); } return out; };
+          result.keysBefore = tree(opsBefore);
+          result.keysAfter = tree(await tab.evaluate('window.__tiloDom.stats.ops'));
+          result.selectSpans = spans;
           if (shot) writeFileSync(join(out, shot.replace('.png', '-selected.png')), await tab.screenshot());
         }
         await tab.evaluate('window.__tiloDom.selectText(false)');
+        // The same drag with the layer as the hit target, the editor having
+        // had the keyboard: the selection stays, and the focus with it.
+        await tab.evaluate('getSelection().removeAllRanges()');
+        if (spans.length === 2) {
+          await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: spans[0][0] + 2, y: spans[0][1], button: 'left', clickCount: 1});
+          for (let k = 1; k <= 8; k++) await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: spans[0][0] + (spans[1][2] - spans[0][0]) * k / 8, y: spans[0][1] + (spans[1][1] - spans[0][1]) * k / 8, button: 'left', buttons: 1});
+          await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: spans[1][2] - 2, y: spans[1][1], button: 'left', clickCount: 1});
+          await sleep(400);
+          result.selectionAsTarget = await tab.evaluate('JSON.stringify({text: getSelection().toString(), focus: document.activeElement?.localName})').then(JSON.parse);
+          await tab.evaluate('getSelection().removeAllRanges()');
+        }
         result.accessibility = await tab.evaluate(ACCESSIBILITY).then(JSON.parse);
         result.semanticMirror = await tab.evaluate(`JSON.stringify({textareas: document.querySelectorAll('[data-tilo-semantic] , textarea').length, buttons: document.querySelectorAll('button[data-tilo-semantic]').length, roles: [...new Set([...document.querySelectorAll('[data-tilo-semantic][role]')].map(e => e.getAttribute('role')))]})`).then(JSON.parse);
       }
-      if (page === 'notes.html') result.domAfter = await tab.evaluate('JSON.stringify(window.renderMarks.dom ?? null)').then(JSON.parse);
+      if (render === 'dom' && width < 500) {
+        // A touch drag over the note pans its scroll container natively.
+        await tab.evaluate(`(() => { const pan = window.__pan = {moves: [], scrolls: [], top: () => [...document.querySelectorAll('.tilo-dom div')].filter(d => d.style.overflowY === 'auto').reduce((sum, d) => sum + d.scrollTop, 0)};
+          pan.before = pan.top();
+          addEventListener('touchmove', () => pan.moves.push(performance.now()), {capture: true, passive: true});
+          addEventListener('scroll', () => pan.scrolls.push(performance.now()), {capture: true, passive: true});
+          return true; })()`);
+        const x = width / 2, from = height * 0.7, to = height * 0.35, steps = 12;
+        await tab.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{x, y: from}]});
+        for (let k = 1; k <= steps; k++) {
+          await tab.send('Input.dispatchTouchEvent', {type: 'touchMove', touchPoints: [{x, y: from + (to - from) * k / steps}]});
+          await sleep(16);
+        }
+        await tab.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []});
+        await sleep(600);
+        result.touchPan = await tab.evaluate(`JSON.stringify((() => { const pan = window.__pan; return {moved: pan.top() - pan.before, firstScrollMs: pan.scrolls.length && pan.moves.length ? pan.scrolls[0] - pan.moves[0] : null, scrollEvents: pan.scrolls.length}; })())`).then(JSON.parse);
+      }
+      if (page === 'app.html') result.domAfter = await tab.evaluate('JSON.stringify(window.renderMarks.dom ?? null)').then(JSON.parse);
     }
     const metrics = Object.fromEntries((await tab.send('Performance.getMetrics', {})).result.metrics.map(m => [m.name, m.value]));
     result.jsHeapMB = Math.round(metrics.JSHeapUsedSize / 1048576);
@@ -267,23 +337,49 @@ async function run({page, render, width, height, dark = false, shot, interact = 
 }
 
 const results = [];
-if (process.env.QUICK) {
-  await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
-  results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, shot: 'quick-dom-1280.png', interact: false}));
+if (part('quick')) {
+  await run({page: 'app.html', render: 'dom', width: 1280, height: 800, interact: false});
+  results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800, shot: 'quick-dom-1280.png', interact: false}));
   writeFileSync(join(out, 'quick.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
+// SELECT=1: only the interactive wide HTML run, for selection.
+if (part('select')) {
+  await run({page: 'app.html', render: 'dom', width: 1280, height: 800, interact: false});
+  results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800, shot: 'notes-dom-1280.png'}));
+  writeFileSync(join(out, 'select.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
+// --wheel: only typing and scrolling, HTML against plain DOM, at 1280 px.
+if (part('wheel')) {
+  await run({page: 'app.html', render: 'dom', width: 1280, height: 800, interact: false});
+  results.push(await run({page: 'baseline.html', width: 1280, height: 800}));
+  results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800}));
+  results.push(await run({page: 'baseline.html', width: 1280, height: 800}));
+  results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800}));
+  writeFileSync(join(out, 'wheel.json'), JSON.stringify(results, null, 1));
+  process.exit(0);
+}
+// PHONE=1: only the phone-width pair, HTML and canvas, for a quick look at
+// what a tap does there.
+if (part('phone')) {
+  await run({page: 'app.html', render: 'dom', width: 390, height: 844, interact: false});
+  results.push(await run({page: 'app.html', render: 'dom', width: 390, height: 844, shot: 'notes-dom-390.png', interact: false}));
+  results.push(await run({page: 'app.html', render: 'gpu', width: 390, height: 844, shot: 'notes-gpu-390.png', interact: false}));
+  writeFileSync(join(out, 'phone.json'), JSON.stringify(results, null, 1));
   process.exit(0);
 }
 // The server compresses each file on its first request; a throwaway load
 // keeps that out of the first measured run.
-await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, interact: false});
-results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, shot: 'notes-dom-1280.png'}));
-results.push(await run({page: 'notes.html', render: 'gpu', width: 1280, height: 800, shot: 'notes-gpu-1280.png'}));
+await run({page: 'app.html', render: 'dom', width: 1280, height: 800, interact: false});
+results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800, shot: 'notes-dom-1280.png'}));
+results.push(await run({page: 'app.html', render: 'gpu', width: 1280, height: 800, shot: 'notes-gpu-1280.png'}));
 results.push(await run({page: 'baseline.html', width: 1280, height: 800, shot: 'baseline-1280.png'}));
-results.push(await run({page: 'notes.html', render: 'dom', width: 390, height: 844, shot: 'notes-dom-390.png'}));
-results.push(await run({page: 'notes.html', render: 'gpu', width: 390, height: 844, shot: 'notes-gpu-390.png', interact: false}));
-results.push(await run({page: 'notes.html', render: 'dom', width: 1280, height: 800, dark: true, shot: 'notes-dom-1280-dark.png', interact: false}));
-results.push(await run({page: 'notes.html', render: 'gpu', width: 1280, height: 800, dark: true, shot: 'notes-gpu-1280-dark.png', interact: false}));
-results.push(await run({page: 'notes.html', render: 'dom', width: 390, height: 844, dark: true, shot: 'notes-dom-390-dark.png', interact: false}));
+results.push(await run({page: 'app.html', render: 'dom', width: 390, height: 844, shot: 'notes-dom-390.png'}));
+results.push(await run({page: 'app.html', render: 'gpu', width: 390, height: 844, shot: 'notes-gpu-390.png', interact: false}));
+results.push(await run({page: 'app.html', render: 'dom', width: 1280, height: 800, dark: true, shot: 'notes-dom-1280-dark.png', interact: false}));
+results.push(await run({page: 'app.html', render: 'gpu', width: 1280, height: 800, dark: true, shot: 'notes-gpu-1280-dark.png', interact: false}));
+results.push(await run({page: 'app.html', render: 'dom', width: 390, height: 844, dark: true, shot: 'notes-dom-390-dark.png', interact: false}));
 // HTML against the canvas, frame for frame: the same note, before and after
 // the same keystrokes.
 const parity = {};

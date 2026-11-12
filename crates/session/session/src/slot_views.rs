@@ -1,7 +1,7 @@
 //! The shell's slots whose view is written in tilolang, run in the session's own process.
 //! A slot's view is a program of its own (a surface app) unless the app the person bound is a
 //! tilolang package this machine installed: then the view is the package's, and the session runs it
-//! in an instance of its own ([`tilo_surface_host::slot_view::SlotView`]), over the reading it
+//! in an instance of its own ([`SlotView`]), over the reading it
 //! publishes for the slot. The pointer and the keys reach it while the overlay stack says its
 //! surface is the one over the desk; what it asks goes through the session's door, as any caller's
 //! does.
@@ -12,13 +12,11 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::platform::surfaces::slot_view::{Asked, SlotView, Spec};
 use serde_json::Value;
 use tilo_compositor::Compositor;
 use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_surface_host::slot_view::{Asked, SlotView, Spec};
-
-use crate::panels::Held;
 
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {
@@ -62,7 +60,7 @@ impl SlotViews {
             })
         });
         let host = Rc::new(RefCell::new(SlotView::new(slot, self.scale, focused)));
-        compositor.add_host(Box::new(Held(Rc::clone(&host))));
+        compositor.add_host(host.clone());
         self.hosts.insert(slot, Rc::clone(&host));
         host
     }

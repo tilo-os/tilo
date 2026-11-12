@@ -52,19 +52,20 @@ pub struct SettingsApp {
     keyboard_map_input: ui::KeyboardMapInput,
     area_reads: crate::effects::AreaReads,
     /// The pane shown waits for its area's read.
-    pane_waits: Cell<bool>,
+    pane_waits: ui::LocalState<bool>,
     /// The generation of the content column last built.
     content_built: Cell<u64>,
     /// The language it was built in ([`ui::i18n::I18nManager::revision`]).
-    content_language: Cell<u64>,
+    content_language: ui::LocalState<u64>,
     /// The Keyboard pane was built without its layout list.
-    keyboard_partial: Cell<bool>,
+    keyboard_partial: ui::LocalState<bool>,
     pane_scroll: RefCell<HashMap<Category, ScrollOffset>>,
     /// What the keyboard drawn on the Keyboard pane shows, as the window
     /// last read it; `None` while no keyboard is drawn.
     keyboard_shown: RefCell<Option<serde_json::Value>>,
     /// What the Keyboard pane's add-source picker shows, as the window
     /// last read it; `None` while no picker is drawn.
+    #[cfg(feature = "tilo-os")]
     input_picker_shown: RefCell<Option<serde_json::Value>>,
 }
 
@@ -110,12 +111,13 @@ impl SettingsApp {
             wallpaper_status: ui::LocalState::new(None),
             areas: crate::area::Areas::default(),
             keyboard_map_input: ui::KeyboardMapInput::default(),
-            pane_waits: Cell::new(false),
+            pane_waits: ui::LocalState::new(false),
             content_built: Cell::new(0),
-            content_language: Cell::new(ui::i18n::I18nManager::revision()),
-            keyboard_partial: Cell::new(false),
+            content_language: ui::LocalState::new(ui::i18n::I18nManager::revision()),
+            keyboard_partial: ui::LocalState::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
+            #[cfg(feature = "tilo-os")]
             input_picker_shown: RefCell::new(None),
         };
         app.areas = crate::area::Areas::of(&app.area_context());
@@ -155,7 +157,9 @@ impl SettingsApp {
             ));
         }
         self.storage = cx.storage().clone();
-        self.devices = cx.mode().is_live() && !cfg!(test);
+        // Without the device panes (`tilo-os`, off on the web) there is no
+        // hardware or OS service of this device to reach.
+        self.devices = cx.mode().is_live() && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
         }
@@ -298,6 +302,7 @@ impl SettingsApp {
 
     /// Where the person's accounts and their secrets are kept for this
     /// window.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn account_root(&self) -> &crate::accounts::AccountRoot {
         &self.account_root
     }
@@ -360,7 +365,7 @@ impl SettingsApp {
         &self.area_reads
     }
 
-    pub(crate) fn pane_waits(&self) -> &Cell<bool> {
+    pub(crate) fn pane_waits(&self) -> &ui::LocalState<bool> {
         &self.pane_waits
     }
 
@@ -370,7 +375,7 @@ impl SettingsApp {
     }
 
     /// The language the content column last built was built in.
-    pub(crate) fn content_language(&self) -> &Cell<u64> {
+    pub(crate) fn content_language(&self) -> &ui::LocalState<u64> {
         &self.content_language
     }
 
@@ -381,7 +386,7 @@ impl SettingsApp {
         self.pane_waits.get() || self.areas.iter().any(crate::area::PaneArea::first_read)
     }
 
-    pub(crate) fn keyboard_partial(&self) -> &Cell<bool> {
+    pub(crate) fn keyboard_partial(&self) -> &ui::LocalState<bool> {
         &self.keyboard_partial
     }
 
@@ -422,17 +427,20 @@ impl SettingsApp {
     }
 
     /// The window read the keyboard it draws: `shown`, or none drawn.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn keyboard_drawn(&self, shown: Option<serde_json::Value>) {
         *self.keyboard_shown.borrow_mut() = shown;
     }
 
     /// What the Keyboard pane's add-source picker shows; `None` while none
     /// is drawn.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker(&self) -> Option<serde_json::Value> {
         self.input_picker_shown.borrow().clone()
     }
 
     /// The window read the add-source picker it draws: `shown`, or none.
+    #[cfg(feature = "tilo-os")]
     pub(crate) fn input_picker_drawn(&self, shown: Option<serde_json::Value>) {
         *self.input_picker_shown.borrow_mut() = shown;
     }

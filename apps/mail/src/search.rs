@@ -18,7 +18,9 @@ pub const MAIL_KIND: &str = "Mail";
 pub const FOLDER_KIND: &str = "Mail folders";
 
 /// Shown for a message whose subject is blank.
-const NO_SUBJECT: &str = "(no subject)";
+fn no_subject() -> String {
+    crate::i18n::no_subject()
+}
 
 /// The lucide name of a folder's icon ([`Folder::icon`]).
 fn folder_icon(folder: Folder) -> &'static str {
@@ -36,7 +38,7 @@ fn folder_icon(folder: Folder) -> &'static str {
 /// Every system folder, and the custom folders `custom` names (id, name).
 pub fn folder_entries(custom: &[(String, String)]) -> Vec<SearchEntry> {
     let system = Folder::ALL.into_iter().map(|folder| {
-        SearchEntry::new(folder.title(), "")
+        SearchEntry::new(crate::i18n::t(folder.message()), "")
             .anchored(crate::resource::folder_resource(folder.as_key()))
             .grouped(FOLDER_KIND)
             .subtitled("Mail folder")
@@ -111,7 +113,7 @@ fn recipients(message: &Message) -> String {
 
 fn message_entry(message: &Message) -> SearchEntry {
     let title = if message.subject.trim().is_empty() {
-        NO_SUBJECT.to_owned()
+        no_subject()
     } else {
         message.subject.clone()
     };

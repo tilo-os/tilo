@@ -6,17 +6,24 @@
 //! one, through the action door, so neither the fleet file nor any secret
 //! enters this process; the answers never enter widget or Automerge state.
 
-use ui::tilo_actions::remote::identity_admin::{self, FleetDevice};
+use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
+/// One of the person's devices, as the host listed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DeviceView {
+pub struct DeviceView {
     pub label: String,
     pub key: [u8; 32],
     pub fingerprint: String,
     pub current: bool,
     pub revoked: bool,
     pub can_host: bool,
+    /// A device of the person's, or a key acting for them (an agent's grant,
+    /// a script's key).
+    pub kind: KeyKind,
+    /// The browser profile it is a tab of, by the profile's id: a browser
+    /// keeps a key per open tab, and the pane shows them as one entry.
+    pub browser: Option<String>,
 }
 
 /// Ask the host for the devices trusted under the workspace's identity.
@@ -70,6 +77,8 @@ pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String>
                 current: device.current,
                 revoked: device.revoked,
                 can_host: device.can_host,
+                kind: device.kind,
+                browser: device.browser,
             })
         })
         .collect()

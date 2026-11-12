@@ -163,6 +163,11 @@ calendar-quick-field = What to add
 calendar-quick-add = Add
 calendar-quick-cancel = Cancel
 
+## The title of the sheet that edits an event or a task
+
+calendar-event-detail-title = Event
+calendar-task-detail-title = Task
+
 ## The keys this window answers to
 
 calendar-help-title = Keyboard shortcuts
@@ -182,3 +187,117 @@ calendar-help-quick-add = Add an event in one line
 calendar-help-delete = Delete the selected item
 calendar-help-close = Close the editor or card
 calendar-help-shortcuts = This list of keys
+
+## What the window is called and what its fields ask for
+
+calendar-title = Calendar
+calendar-a11y-syncing = Synchronizing calendars
+calendar-a11y-editor = Event editor. Changes save automatically.
+calendar-quick-example = Lunch with Sam friday 1pm
+calendar-invite-placeholder = Invite by email
+calendar-location-placeholder = Add location
+
+## Window and accessibility copy
+calendar-a11y-task-due = Task due date
+
+## The editor sheet's answer
+calendar-done = Done
+
+## What a control reads out
+calendar-a11y-today = Go to today
+calendar-a11y-previous = Previous period
+calendar-a11y-next = Next period
+calendar-a11y-new-event = New event
+calendar-a11y-new-task = New task
+calendar-a11y-retry-sync = Retry calendar synchronisation
+calendar-a11y-sync = Sync calendars
+calendar-a11y-export = Export calendar
+calendar-a11y-import = Import calendar
+calendar-a11y-open-day = Open { $day }
+calendar-a11y-discard-draft = Discard new event
+calendar-a11y-delete-task = Delete task
+calendar-a11y-all-day = All-day event
+calendar-a11y-event-title = Edit event title
+calendar-a11y-event-location = Edit event location
+calendar-a11y-event-invite = Invite attendee by email
+calendar-a11y-start-date = Choose event start date
+calendar-a11y-end-date = Choose event end date
+calendar-a11y-start-time = Choose event start time
+calendar-a11y-end-time = Choose event end time
+calendar-a11y-choose-task-due = Choose task due date
+calendar-a11y-dismiss-picker = Dismiss task picker
+calendar-a11y-due-previous-month = Previous due-date month
+calendar-a11y-due-next-month = Next due-date month
+calendar-a11y-clear-due = Clear task due date
+calendar-a11y-set-due = Set task due date to { $day }
+calendar-a11y-move-event-to = Move event to { $day }
+calendar-a11y-show-tasks-in = Show tasks in { $list }
+calendar-a11y-show-calendar = Show calendar { $calendar }
+calendar-a11y-account-calendars = { $account } calendars
+calendar-a11y-open-event = Open event { $title }
+calendar-a11y-open-task = Open task { $title }
+calendar-a11y-toggle-task = { $done ->
+    [true] Reopen task { $title }
+   *[false] Mark task { $title } complete
+}
+calendar-a11y-delete-event = Delete event
+
+## What the editor's dropdowns are called
+calendar-editor-calendar = Calendar
+calendar-editor-repeat = Repeat
+calendar-editor-alert = Alert
+calendar-editor-time-zone = Time zone
+calendar-editor-priority = Priority
+
+## The window bar's slots
+calendar-views = View
+calendar-previous-month = Previous month
+calendar-next-month = Next month
+calendar-sync-again = Sync again
+calendar-open-settings = Open Settings
+
+## The event form's notes hint
+calendar-notes-placeholder = Add notes
+
+## A new event's empty fields
+calendar-title-placeholder = New event
+
+## Actions
+
+calendar-effects-sync = Sync calendars
+calendar-effects-export-ics = Export ICS
+calendar-effects-export-ics-content = Export ICS content
+calendar-effects-import-ics = Import ICS
+calendar-effects-contact-attendees = Invite from Contacts
+calendar-effects-prepare-in-mail = Prepare invitation in Mail
+calendar-effects-set-color = Set calendar colour
+calendar-effects-read-calendar = Read calendar
+calendar-effects-set-visibility = Show or hide a calendar
+calendar-effects-show-view = Show calendar view
+calendar-effects-show-all-calendars = Show all calendars
+calendar-effects-show-month = Show month
+calendar-effects-show-week = Show week
+calendar-effects-show-day = Show day
+calendar-effects-show-agenda = Show agenda
+calendar-effects-show-tasks = Show tasks
+calendar-effects-start-event = New event
+calendar-effects-start-task = New task
+calendar-effects-open = Open
+calendar-calendar = Calendar
+calendar-calendar-new-event = New event
+calendar-calendar-new-task = New task
+calendar-calendar-new-project = New task project
+calendar-calendar-delete-event = Delete event
+calendar-calendar-reschedule = Reschedule
+calendar-calendar-set-start = Set start
+calendar-calendar-move-to-calendar = Move to calendar
+calendar-calendar-invite = Invite
+calendar-calendar-delete-task = Delete task
+calendar-calendar-delete-project = Delete project
+calendar-calendar-import-items = Import calendar items
+calendar-calendar-adopt-remote-event = Adopt the server's event
+calendar-calendar-adopt-remote-task = Adopt the server's task
+calendar-calendar-drop-remote-item = Remove what the server removed
+calendar-calendar-server-applied = Record uploaded changes
+calendar-calendar-server-removed = Record a deletion on the server
+calendar-calendar-pulled = Record fetched changes

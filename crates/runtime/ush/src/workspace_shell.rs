@@ -21,13 +21,22 @@
 //! output and error, in the order written), up to [`MAX_OUTPUT`], with how it
 //! ended and, when the host refused it a VM, the host's typed refusal: the
 //! words ush already gives an agent, and the steps that let it through.
+//!
+//! A command that runs for minutes is not silent while it does: a caller
+//! that passes [`Seen`] is shown what it printed so far, each time that
+//! grew. [`Stopping`] is the other way: it ends the command as the person's
+//! Ctrl+C does, in the shell (a loop, a `sleep`, the next command of a
+//! script), and in the VM (the running program is killed), and the run comes
+//! back [`cancelled`](ShellRun::cancelled).
 
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
+use tilo_actions::remote::environment_runs::RunOutput;
 use tilo_actions::remote::host_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
@@ -58,6 +67,9 @@ pub struct ShellRun {
     pub output: Vec<u8>,
     /// It printed more than [`MAX_OUTPUT`].
     pub truncated: bool,
+    /// It was stopped before it ended: a person's Ctrl+C, or an agent's
+    /// cancel of the run it asked for.
+    pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
     /// Why the host would not run a program it needed, typed.
@@ -73,6 +85,9 @@ pub struct WorkspaceShells {
     files_of: Option<Box<FilesOf>>,
     /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
+    /// The hosted-VM service the workspaces' Browser starts on, when it is
+    /// not the one the environment names.
+    browsers: Option<PathBuf>,
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
 
@@ -88,10 +103,19 @@ pub struct Payer {
 
 /// What a caller is shown of a command while it runs: everything it printed
 /// so far, each time that grew.
-pub type Seen<'a> = &'a (dyn Fn(&[u8]) + Sync);
+pub type Seen<'a> = &'a (dyn Fn(&RunOutput) + Sync);
+
+/// Whether the caller asked the command to stop: a person's Ctrl+C, or an
+/// agent's cancel. Looked at between the command's own steps, so a loop, a
+/// wait or a running program ends within a fraction of a second.
+pub type Stopping<'a> = &'a (dyn Fn() -> bool + Sync);
 
 /// How often a running command's output is looked at for [`Seen`].
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often [`Stopping`] is looked at: often enough that a cancel feels
+/// immediate, seldom enough to cost nothing.
+const STOP_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// One session's shell, which its runs take turns in.
 type Shared = Arc<Mutex<Session>>;
@@ -102,6 +126,9 @@ struct Session {
     captured: ush_shell::io::Captured,
     notices: ush_shell::io::Captured,
     refused: Arc<Mutex<Option<Refusal>>>,
+    /// Whether the caller asked the command now running to stop: what the
+    /// shell reads as the person's Ctrl+C.
+    stopped: Arc<AtomicBool>,
 }
 
 impl WorkspaceShells {
@@ -113,6 +140,7 @@ impl WorkspaceShells {
             state: state.into(),
             files_of: None,
             vms,
+            browsers: None,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -141,6 +169,33 @@ impl WorkspaceShells {
         self.vms.is_some()
     }
 
+    /// The same shells, whose workspaces' Browser starts on the hosted-VM
+    /// service at `socket` (the one the environment names, unless a host
+    /// names it another way).
+    #[must_use]
+    pub fn with_browsers_on(mut self, socket: Option<PathBuf>) -> Self {
+        self.browsers = socket;
+        self
+    }
+
+    /// Where this host's hosted-VM service listens, when it runs one: the
+    /// workspaces' VMs, which run their programs and their Browser, are its.
+    #[must_use]
+    pub fn hosted_socket(&self) -> Option<PathBuf> {
+        self.browsers
+            .clone()
+            .or_else(|| self.vms.as_ref().map(|target| target.socket.clone()))
+    }
+
+    /// The size the workspaces' VMs run at.
+    #[must_use]
+    pub fn hosted_size(&self) -> legacy_vm::hosted::size::VmSize {
+        self.vms
+            .as_ref()
+            .map(|target| target.size)
+            .unwrap_or_default()
+    }
+
     /// The directory `workspace`'s shells work in: its files on this host.
     #[must_use]
     pub fn files(&self, workspace: &str) -> PathBuf {
@@ -164,13 +219,13 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
     ) -> io::Result<ShellRun> {
-        self.run_for(workspace, session, command, agent, None, None)
+        self.run_for(workspace, session, command, agent, None, None, None)
     }
 
     /// [`Self::run`], its VM paid for by `payer` rather than this host's
     /// own account when given (the first run of a workspace's session
-    /// decides it), and `seen` shown what the command printed so far while
-    /// it runs.
+    /// decides it), ended when `stopping` says so, and `seen` shown what the
+    /// command printed so far while it runs.
     ///
     /// # Errors
     ///
@@ -182,11 +237,12 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
         payer: Option<&Payer>,
+        stopping: Option<Stopping<'_>>,
         seen: Option<Seen<'_>>,
     ) -> io::Result<ShellRun> {
         let shell = self.session(workspace, session, payer)?;
         let mut session = shell.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(session.run(command, agent, seen))
+        Ok(session.run(command, agent, stopping, seen))
     }
 
     fn session(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Shared> {
@@ -244,11 +300,14 @@ impl WorkspaceShells {
             None => Arc::new(NoPrograms),
         };
         let (notices_out, notices) = Output::buffer();
+        let stopped = Arc::new(AtomicBool::new(false));
         let host = TiloHost::new(
             environment,
             Arc::new(NativeFiles),
             programs,
-            Arc::new(HostPlace),
+            Arc::new(HostPlace {
+                stopped: Arc::clone(&stopped),
+            }),
             notices_out,
         );
         let (output, captured) = Output::buffer();
@@ -269,14 +328,22 @@ impl WorkspaceShells {
             captured,
             notices,
             refused,
+            stopped,
         })
     }
 }
 
 impl Session {
-    fn run(&mut self, command: &str, agent: bool, seen: Option<Seen<'_>>) -> ShellRun {
+    fn run(
+        &mut self,
+        command: &str,
+        agent: bool,
+        stopping: Option<Stopping<'_>>,
+        seen: Option<Seen<'_>>,
+    ) -> ShellRun {
         let cwd = self.shell.cwd().to_string_lossy().into_owned();
         *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.stopped.store(false, Ordering::SeqCst);
         self.shell.set_stdio(Stdio {
             stdin: ush_shell::Input::null(),
             stdout: self.output.clone(),
@@ -289,31 +356,14 @@ impl Session {
             id: format!("{started_ms:x}"),
             label: command.to_owned(),
         }));
-        let exit = match seen {
-            Some(seen) => {
-                let printed = self.captured.clone();
-                let done = std::sync::atomic::AtomicBool::new(false);
-                std::thread::scope(|scope| {
-                    scope.spawn(|| {
-                        let mut shown = 0;
-                        while !done.load(std::sync::atomic::Ordering::Acquire) {
-                            std::thread::sleep(SEEN_EVERY);
-                            let now = printed.peek();
-                            if now.len() != shown {
-                                shown = now.len();
-                                seen(&now);
-                            }
-                        }
-                    });
-                    let exit = self.shell.run_script(command);
-                    done.store(true, std::sync::atomic::Ordering::Release);
-                    exit
-                })
-            }
-            None => self.shell.run_script(command),
+        let exit = if stopping.is_none() && seen.is_none() {
+            self.shell.run_script(command)
+        } else {
+            self.run_watched(command, stopping, seen)
         };
         self.shell.set_run(None);
         let ended_ms = now_ms();
+        let cancelled = self.stopped.swap(false, Ordering::SeqCst);
         let mut output = self.captured.take();
         output.extend(self.notices.take());
         let truncated = output.len() > MAX_OUTPUT;
@@ -324,6 +374,7 @@ impl Session {
             exit,
             output,
             truncated,
+            cancelled,
             started_ms,
             ended_ms,
             refusal: self
@@ -332,6 +383,45 @@ impl Session {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take(),
         }
+    }
+
+    /// [`Self::run_script`](Shell::run_script), with `stopped` kept up to
+    /// date from `stopping` while it runs and `seen` shown the output as it
+    /// grows.
+    fn run_watched(
+        &mut self,
+        command: &str,
+        stopping: Option<Stopping<'_>>,
+        seen: Option<Seen<'_>>,
+    ) -> i32 {
+        let stopped = Arc::clone(&self.stopped);
+        let printed = self.captured.clone();
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut shown = 0;
+                let mut shown_at = std::time::Instant::now();
+                while !done.load(Ordering::Acquire) {
+                    std::thread::sleep(STOP_EVERY);
+                    if stopping.is_some_and(|stopping| stopping()) {
+                        stopped.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(seen) = seen
+                        && shown_at.elapsed() >= SEEN_EVERY
+                    {
+                        let now = printed.peek();
+                        if now.len() != shown {
+                            shown = now.len();
+                            shown_at = std::time::Instant::now();
+                            seen(&RunOutput::of(&now));
+                        }
+                    }
+                }
+            });
+            let exit = self.shell.run_script(command);
+            done.store(true, Ordering::Release);
+            exit
+        })
     }
 }
 
@@ -382,10 +472,21 @@ impl Environment for Files {
     }
 }
 
-/// What the host offers the shell besides files and programs: its clock.
-struct HostPlace;
+/// What the host offers the shell besides files and programs: its clock,
+/// and whether the person asked the command to stop.
+struct HostPlace {
+    stopped: Arc<AtomicBool>,
+}
 
 impl Place for HostPlace {
+    fn interrupted(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    fn clear_interrupt(&self) {
+        self.stopped.store(false, Ordering::SeqCst);
+    }
+
     fn now(&self) -> i64 {
         i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX)
     }
@@ -395,7 +496,16 @@ impl Place for HostPlace {
     }
 
     fn sleep(&self, millis: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(millis));
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(millis))
+            .unwrap_or_else(std::time::Instant::now);
+        while !self.interrupted() {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            std::thread::sleep(left.min(STOP_EVERY));
+        }
     }
 
     fn hostname(&self) -> String {

@@ -39,7 +39,7 @@ use ui::models::{
 /// not a provider credential. The service enforces its audience and grants.
 /// A mount the host supplies none to is lent the page's own model service
 /// ([`page_models`]).
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ModelConfig {
     endpoint: String,
@@ -193,8 +193,8 @@ impl ProviderKeys for PageKeys {
 /// administration client, with the request and response codecs they carry.
 ///
 /// They are linked in, unless the `deferred-model-clients` feature leaves
-/// them to the bundling crate: the browser desktop hands over a loader
-/// ([`defer_model_clients`]) that fetches them as their own module when a
+/// them to the bundling crate: the browser desktop fetches them
+/// ([`MODEL_CLIENTS`]) as their own module when a
 /// window first asks a model or opens provider settings, so the start module
 /// does not carry them.
 #[derive(Clone, Copy)]
@@ -219,9 +219,6 @@ type MakeModels =
 
 /// Opens the provider administration client for a base URL and a token.
 type MakeAdministration = fn(&str, String) -> Result<Arc<dyn ProviderAdmin>, String>;
-
-/// Hands over [`ModelClients`], for [`install_model_clients`].
-pub type MakeModelClients = fn() -> ModelClients;
 
 /// The model service's clients over the page's `fetch`.
 #[must_use]
@@ -266,46 +263,17 @@ pub fn builtin_model_clients() -> ModelClients {
     }
 }
 
-#[cfg(feature = "deferred-model-clients")]
-static MODEL_CLIENTS: ui::deferred::Deferred<ModelClients> = ui::deferred::Deferred::new();
-
-/// Fetch the model service's clients with `load` the first time a window
-/// uses them, instead of linking them in (the `deferred-model-clients`
-/// feature). `load` starts the fetch and then calls [`install_model_clients`]
-/// or [`model_clients_load_failed`].
-#[cfg(feature = "deferred-model-clients")]
-pub fn defer_model_clients(load: fn()) {
-    MODEL_CLIENTS.defer(load);
+ui::lazy_code! {
+    /// The model service's clients, fetched the first time a window uses
+    /// them where the bundle defers them (`deferred-model-clients`).
+    pub static MODEL_CLIENTS: ModelClients = builtin_model_clients, feature = "deferred-model-clients";
 }
 
-/// The model service's clients arrived.
-#[cfg(feature = "deferred-model-clients")]
-pub fn install_model_clients(make: MakeModelClients) {
-    MODEL_CLIENTS.install(make());
-}
-
-/// Fetching the model service's clients failed: the requests waiting for
-/// them fail, and the next one fetches again.
-#[cfg(feature = "deferred-model-clients")]
-pub fn model_clients_load_failed() {
-    MODEL_CLIENTS.load_failed();
-}
-
-#[cfg(feature = "deferred-model-clients")]
 async fn model_clients() -> Result<ModelClients, ModelError> {
     MODEL_CLIENTS
         .wait()
         .await
         .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))
-}
-
-#[cfg(not(feature = "deferred-model-clients"))]
-#[expect(
-    clippy::unused_async,
-    reason = "the deferred-model-clients build waits for the clients here"
-)]
-async fn model_clients() -> Result<ModelClients, ModelError> {
-    Ok(builtin_model_clients())
 }
 
 /// A mount's models, connected on the first request.
@@ -426,27 +394,21 @@ impl ProviderAdmin for LazyAdministration {
     }
 }
 
-/// Only the exact registered control panel may borrow administration: the
-/// page runs Model Providers, never Settings (a Tilo OS app).
-pub(crate) fn provider_admin_app(app_id: &str) -> bool {
-    app_id == "so.tilo.model-providers"
-}
-
-/// Match trusted application metadata, not an arbitrary tab's label or requested alias.
+/// Lend administration to the window only when it is the exact registered
+/// control panel, matched by trusted application metadata, never a tab's
+/// label or requested alias: the page runs Model Providers, never Settings (a
+/// Tilo OS app).
 pub(crate) fn provide_provider_admin(
     context: &mut ui::application::HostContext,
     handle: ui::models::ProviderAdministration,
-) -> Result<(), String> {
-    if handle.is_available() && !provider_admin_app(context.app_id()) {
-        return Err(
-            "provider administration is only available to Settings or Model Providers".into(),
-        );
+) {
+    if context.app_id() == "so.tilo.model-providers" {
+        context.provide_provider_admin(handle);
     }
-    context.provide_provider_admin(handle);
-    Ok(())
 }
 
 use tilo_desktop_surface::{AppInbox, AppNotifier};
+use tilo_session::platform::notice::Toolkit;
 
 thread_local! {
     static NOTIFIER: RefCell<Option<Arc<AppNotifier>>> = const { RefCell::new(None) };
@@ -470,6 +432,17 @@ pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
     });
 }
 
+thread_local! {
+    static NOTICES: std::cell::OnceCell<Rc<Toolkit>> = const { std::cell::OnceCell::new() };
+}
+
+/// What the session's roles tell the person on this page: one for the page, so the place of a
+/// notice they choose is reported once.
+pub(crate) fn notices() -> Rc<Toolkit> {
+    let made = || Rc::new(Toolkit::new(ui::host::current().notifications, ""));
+    NOTICES.with(|notices| Rc::clone(notices.get_or_init(made)))
+}
+
 /// A desktop's inbox of applications' notifications.
 pub fn notification_inbox() -> Option<AppInbox> {
     NOTIFIER.with_borrow(|notifier| notifier.as_ref().map(|notifier| notifier.inbox()))
@@ -480,6 +453,12 @@ pub fn notification_inbox() -> Option<AppInbox> {
 pub fn set_hidden(hidden: bool) {
     let forward = hidden && notification_permission().as_deref() == Some("granted");
     BACKGROUND.with(|background| background.store(forward, Ordering::Release));
+}
+
+/// Whether notifications go to the browser's now: the page is out of view
+/// and the person allows them.
+pub(crate) fn notifies_browser() -> bool {
+    BACKGROUND.with(|background| background.load(Ordering::Acquire))
 }
 
 /// `Notification.permission`, where the page has the API.

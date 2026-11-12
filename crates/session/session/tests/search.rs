@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -102,18 +100,18 @@ fn session_over(
     content: Option<Arc<AppContentIndex>>,
 ) -> Session {
     crate::common::headless(Options {
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: "so.tilo.sheets".into(),
+                title: "Sheets".into(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }),
         search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-                applications: vec![AppEntry {
-                    id: "so.tilo.sheets".into(),
-                    title: "Sheets".into(),
-                    category: None,
-                    description: None,
-                }],
-                ..AppLists::default()
-            }))),
             indexes: content.map(|content| {
-                std::sync::Arc::new(tilo_session::mount::indexes::SessionIndexes::new(
+                std::sync::Arc::new(tilo_session::platform::indexes::SessionIndexes::new(
                     content, None,
                 )) as std::sync::Arc<dyn tilo_session::platform::indexes::Indexes>
             }),
@@ -126,9 +124,63 @@ fn session_over(
     })
 }
 
+/// Settings' pages are the session's own search source, so every desktop a session runs finds
+/// them — the web page's, which offers the pages its own Settings has. "dark mode" is the Theme
+/// setting on the Appearance page, and Enter opens Settings at it.
+#[test]
+fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = session(Rc::clone(&host));
+    session.step(Duration::from_millis(1)).unwrap();
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("workspace")
+    });
+    // The tour's own query: a person typing "settings" finds where the settings are.
+    search_for(&mut session, "settings");
+    assert!(
+        rows(&session).iter().any(|row| row.kind == SEARCH_ROW_KIND),
+        "settings finds its pages: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
+    search_for(&mut session, "dark mode");
+    let theme = row(&session, "Theme").unwrap_or_else(|| {
+        panic!(
+            "dark mode is the Appearance page's theme: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    invoke(
+        &mut session,
+        theme.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    let (target, arguments) = host.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(
+            &workspace,
+            SETTINGS_APP,
+            "settings.setting:appearance.style",
+            "open"
+        )
+    );
+    assert_eq!(arguments["anchor"], "settings.setting:appearance.style");
+}
+
 /// Run frames until `done` holds.
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the test asked for", |session| {
+    crate::common::wait_for(session, "what the test asked for", |session| {
         done(session).then_some(())
     });
 }
@@ -550,6 +602,49 @@ fn a_welcome_card_does_what_its_published_action_does() {
     });
 }
 
+/// The apps whose windows the desk holds, by the app each window is of.
+fn desk_apps(session: &Session) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .collect()
+    })
+}
+
+/// A card that opens an app opens the app whose name it carries: pressing Tasks puts Tasks on the
+/// desk, the app that holds the workspace's tasks, not another app's screen that happens to list
+/// to-dos. Each card gets a desk of its own, because the launchpad stands only while no window does.
+#[test]
+fn an_app_card_opens_the_app_it_names() {
+    for (verb, app) in [
+        ("chat", "so.tilo.chat"),
+        ("notes", "so.tilo.notes"),
+        ("tasks", "so.tilo.tasks"),
+    ] {
+        let _settled = ui::motion::testing::settled();
+        let mut session = session(Rc::new(Host::default()));
+        session.step(Duration::from_millis(1)).expect("step");
+        invoke(
+            &mut session,
+            &launchpad_card_id(verb),
+            "launchpad",
+            serde_json::json!({}),
+        );
+        until(&mut session, |session| {
+            desk_apps(session).iter().any(|shown| shown == app)
+        });
+        assert_eq!(
+            desk_apps(&session),
+            [app.to_owned()],
+            "the {verb} card opens {app} and nothing else"
+        );
+    }
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
@@ -760,7 +855,7 @@ fn search_settled(search: &ResourceSpec) -> bool {
 /// Step until the open search is over: it names `query` when one is given,
 /// and is no longer filling in.
 fn await_search(session: &mut Session, query: Option<&str>) {
-    let over = common::wait_maybe(session, |session| {
+    let over = crate::common::wait_maybe(session, |session| {
         open_search(session)
             .is_some_and(|search| {
                 search_settled(&search) && query.is_none_or(|query| search.label == query)
@@ -1381,10 +1476,7 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 /// person's `Notes` — with `host` taking the launches.
 fn host_session(host: Rc<Host>) -> Session {
     let mut session = crate::common::headless(Options {
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(host_app_lists()))),
-            ..SearchOptions::default()
-        },
+        lists: Lists::fixed(host_app_lists()),
         apps: Some(host as Rc<dyn AppActions>),
         collab: false,
         ..Options::default()
@@ -1574,7 +1666,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let handed = home.home().join("handed");
     let launcher = tilo_test_env::stand_in(
@@ -1584,24 +1676,21 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     .expect("a launcher");
     let mut environment = SessionEnvironment::from_process();
     environment.wayland_socket = Some(home.runtime().join("wayland-7"));
-    let apps = Rc::new(tilo_session::mount::apps::Apps::with_launcher(
+    let apps = Rc::new(tilo_session::apps::Apps::with_launcher(
         environment,
         None,
         Some(launcher.path().to_owned()),
     ));
     let mut session = crate::common::headless(Options {
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-                applications: vec![AppEntry {
-                    id: "so.tilo.lang.notes".into(),
-                    title: "Notebook".into(),
-                    category: None,
-                    description: None,
-                }],
-                ..AppLists::default()
-            }))),
-            ..SearchOptions::default()
-        },
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: "so.tilo.lang.notes".into(),
+                title: "Notebook".into(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
         collab: false,
@@ -1626,7 +1715,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    let started = common::wait_maybe_past(&mut session, Duration::from_secs(2), |_| {
+    let started = crate::common::wait_maybe_past(&mut session, Duration::from_secs(2), |_| {
         std::fs::read_to_string(&handed)
             .is_ok_and(|said| said.contains("started"))
             .then_some(())
@@ -1650,5 +1739,113 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
         }),
         "no refusal stands on the row after choosing it: {:?}",
         labels(&session)
+    );
+}
+
+/// A session with the apps a development session seeds, which keep Chat's records: the
+/// conversations and the agents a workspace keeps. Its desk's search reads the agents each
+/// workspace keeps, which the pass hands it before a search opens.
+fn session_with_agents() -> Session {
+    let mut session = crate::common::headless(Options {
+        person: crate::common::PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(crate::common::seeded_apps())],
+        ..Options::default()
+    });
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    session
+}
+
+/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
+fn sent(session: &mut Session, n: usize) -> serde_json::Value {
+    until(session, |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.get(n).cloned())
+            .is_some()
+    });
+    session
+        .read("session:send-to")
+        .and_then(|sent| sent.as_array()?.get(n).cloned())
+        .expect("the send is read")
+}
+
+/// A request typed into search is the person's send of those words to the workspace's agent — one
+/// where they keep none yet, named as the workspace names its agent — through the session's one
+/// send (`session:send-to#send`), and search closes behind the row.
+#[test]
+fn a_request_typed_into_search_is_sent_to_the_workspaces_agent() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_agents();
+    let request = "book a table for two";
+    let row = find_row(
+        &mut session,
+        request,
+        "Send to Assistant: book a table for two",
+    );
+    assert!(
+        row.presentation.is_none(),
+        "the row says who takes the request, and nothing else"
+    );
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    let first = sent(&mut session, 0);
+    assert_eq!(first["text"], request, "{first}");
+    assert_eq!(
+        first["to"],
+        serde_json::json!([{"kind": "new-agent", "name": "Assistant"}]),
+        "the person kept no agent yet: {first}"
+    );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
+}
+
+/// The agent the first request made is the one every later request goes to: the workspace's record
+/// names it as the person's, so asking again continues that conversation rather than making a
+/// second agent.
+#[test]
+fn a_second_request_goes_to_the_agent_the_first_made() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_agents();
+    let row = find_row(&mut session, "book a table for two", "Send to Assistant");
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    sent(&mut session, 0);
+    // The agent the send made is the workspace's to keep once the pass has read its record, as a
+    // person's next search is opened long after.
+    for _ in 0..10 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+
+    let row = find_row(&mut session, "and move it to Friday", "Send to Assistant");
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    let second = sent(&mut session, 1);
+    assert_eq!(second["text"], "and move it to Friday", "{second}");
+    let to = &second["to"][0];
+    assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
+    assert_eq!(to["name"], "Assistant", "{second}");
+    assert!(
+        to["id"].as_str().is_some_and(|id| !id.is_empty()),
+        "named by its id: {second}"
     );
 }

@@ -1,7 +1,7 @@
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Change, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
@@ -12,7 +12,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Option<Result<bool, String>> {
         match command {
@@ -76,7 +76,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         change: &Change,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let person = |person: &str| -> Result<[u8; 32], String> {
@@ -157,7 +157,7 @@ impl StatePeer {
         share: &str,
         node: &TreePath,
         access: tilo_action_policy::share::ShareAccess,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -188,7 +188,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         share: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -213,7 +213,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -272,7 +272,7 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         command.validate()?;
@@ -295,10 +295,10 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
-        if key.verifying_key().to_bytes() != caller.device_public_key
+        if key.device_public_key() != caller.device_public_key
             && self
                 .peer
-                .certificate(&key.verifying_key().to_bytes(), now)
+                .certificate(&key.device_public_key(), now)
                 .map_err(|error| error.to_string())?
                 .user_public_key
                 != caller.user_public_key
@@ -346,7 +346,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         command: &WorkspaceMembershipCommand,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.workspace()

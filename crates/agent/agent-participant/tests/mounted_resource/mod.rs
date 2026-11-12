@@ -1,8 +1,9 @@
 use super::{
-    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, common,
-    enrol, record_provider, start_browser,
+    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, enrol,
+    record_provider, start_browser,
 };
 use tilo_agent_participant::ReplicaActor;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -147,7 +148,7 @@ pub async fn run() {
             .prepare_application(
                 &workspace.workspace,
                 &host.cert,
-                &common::catalogue(),
+                &crate::common::catalogue(),
                 "so.tilo.chat",
                 "",
             )
@@ -157,7 +158,7 @@ pub async fn run() {
             .author_application(
                 &workspace.workspace,
                 &host.cert,
-                &common::catalogue(),
+                &crate::common::catalogue(),
                 "so.tilo.chat",
                 "",
                 |doc| Ok(doc.clone()),
@@ -176,7 +177,7 @@ pub async fn run() {
     } else {
         "Fixture owner".to_string()
     };
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         &source_author,
@@ -185,14 +186,14 @@ pub async fn run() {
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, &source_author, "general", None);
-    common::add_channel(
+    crate::common::add_channel(&mut doc, &source_author, "general", None);
+    crate::common::add_channel(
         &mut doc,
         &source_author,
         "Lounge",
         Some(chat::model::ChannelKind::Voice),
     );
-    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
+    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -235,7 +236,7 @@ pub async fn run() {
         Box::pin(workspaces.author_application(
             &workspace.workspace,
             &host.cert,
-            &common::catalogue(),
+            &crate::common::catalogue(),
             "so.tilo.chat",
             "",
             |doc| {
@@ -250,14 +251,14 @@ pub async fn run() {
     } else {
         native
             .peer
-            .publish(route.clone(), &source.take_mutation().unwrap())
+            .write(route.clone(), &source.take_mutation().unwrap().unwrap())
             .unwrap();
     }
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         assert_eq!(changed, part, "every message is in the first part");
         native
             .peer
-            .publish(messages_route.clone(), &mutation)
+            .write(messages_route.clone(), &mutation)
             .unwrap();
     }
     if voice_journey {
@@ -302,12 +303,13 @@ pub async fn run() {
         }
     })
     .await;
-    let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
+    let voice_channel = crate::common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
-        use tilo_browser_peer::{PeerEvent, VoiceEvent};
+        use tilo_session_client::Event;
+        use tilo_session_client::VoiceEvent;
         native
             .peer
-            .voice_call(
+            .send(Cmd::VoiceCall(
                 native.workspace,
                 [40; 16],
                 tilo_relay_protocol::voice::CallOperation::Start {
@@ -319,12 +321,12 @@ pub async fn run() {
                         subscribe: true,
                     },
                 },
-            )
+            ))
             .unwrap();
         tilo_test_env::within("the governor answers the mounted Chat call", async {
             loop {
                 for event in native.events.drain() {
-                    if let PeerEvent::Voice(VoiceEvent::CallResult {
+                    if let Event::Voice(VoiceEvent::CallResult {
                         request, result, ..
                     }) = event
                         && request == [40; 16]
@@ -412,14 +414,14 @@ pub async fn run() {
                     &serde_json::json!({"channel": channel.id,
                         "text": "Native fixture while browser disconnected"}),
                 );
-                if let Some(mutation) = source.take_mutation() {
-                    native.peer.publish(route.clone(), &mutation).unwrap();
+                if let Some(mutation) = source.take_mutation().unwrap() {
+                    native.peer.write(route.clone(), &mutation).unwrap();
                 }
-                for (changed, mutation) in source.take_record_mutations() {
+                for (changed, mutation) in source.take_record_mutations().unwrap() {
                     assert_eq!(changed, part, "the post is in the first part");
                     native
                         .peer
-                        .publish(messages_route.clone(), &mutation)
+                        .write(messages_route.clone(), &mutation)
                         .unwrap();
                 }
                 let durable = native.peer.barrier().unwrap();
@@ -430,10 +432,10 @@ pub async fn run() {
                                 result.unwrap();
                                 break;
                             }
-                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            Err(tilo_session_client::TryRecvError::Empty) => {
                                 tokio::time::sleep(Duration::from_millis(20)).await;
                             }
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Err(tilo_session_client::TryRecvError::Disconnected) => {
                                 panic!("native durability barrier closed before acknowledgement");
                             }
                         }

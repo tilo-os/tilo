@@ -3,14 +3,22 @@
 //! A person shares a window with the workspace they are in (`share`): the session
 //! captures it through the compositor's own read-back, where capture protection
 //! blanks a secret window, encodes it on a thread of its own, and publishes its
-//! start, frames and end to exactly the members that asked to view it
-//! ([`SurfaceViewRequest`]). The stream ends when the person stops the share or the
-//! window closes.
-//! A member views a window another device shares by asking for it (`watch`); what
-//! comes back is decoded into that tab's tile here ([`PeerRead`]). Another member's
+//! pictures on the workspace's live plane, one sealed track per window
+//! (`window/<tab>/high`, [`Track::Window`]). The plane is the demand: a window is
+//! captured and encoded only while a member's desk shows it, and a member that
+//! starts showing it is sent a keyframe. The share ends when the person stops it
+//! or the window closes, and the workspace's governance stops naming it.
+//! A member views a window another device shares by asking the plane for its
+//! track; the keyframe's header says the codec, size and colour, and what comes
+//! is decoded into that tab's tile here ([`PeerRead`]). Its viewer also says it
+//! views the window ([`SurfaceViewRequest`]) and sends its input back, as
+//! control messages to the hosting device alone: directly, or through the
+//! workspace's host where that device takes no connection. Another member's
 //! input reaches the window through a seat of its own ([`Compositor::open_seat`]),
 //! only while the person allows it, and the compositor's firewall refuses every
-//! member's input after the cut chord or while the session is locked.
+//! member's input after the cut chord or while the session is locked. A session
+//! that exists to be seen (a hosted environment nobody sits at) lets every member
+//! the workspace lets edit control what it shares.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -34,6 +42,7 @@ use tilo_actions::{
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
+
 use tilo_desktop::chrome::ActiveExposure;
 use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
 use tilo_desktop_model::{
@@ -41,10 +50,13 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::{DesktopHandle, PeerStreamStart};
+use tilo_live::live::Track;
+use tilo_live::plane::Plane;
+use tilo_live::video::{Layer, VideoObject};
 use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
 use tilo_window_share::config::FlatpakShareConfig;
-use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
 use tilo_window_share::streaming::InputEvent as SharedInput;
 
 use crate::sync::{Client, ReceivedSurface};
@@ -68,6 +80,9 @@ const TAB_GONE: &str = "the window is no longer shown here";
 const LEFT_WORKSPACE: &str = "this device left the workspace";
 /// Why a shared window's tile went: its sender ended the stream.
 const SENDER_STOPPED: &str = "the sender stopped sharing it";
+/// Why a shared window's tile was made anew: its sender started its stream over at another size or
+/// in another codec.
+const RESTARTED: &str = "its picture changed size";
 
 /// What the person asks of the shares, as the resource's actions spell it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,11 +114,13 @@ struct Hosted {
     window: String,
     app_id: String,
     workspace: String,
-    /// The workspace's topic the stream goes out on.
-    ws: WorkspaceId,
     share: Arc<SharedFlatpakSession>,
-    /// The viewers the stream's start went to, so a viewer that comes later is sent one of its own.
-    announced: BTreeSet<PeerId>,
+    /// Whether a member's desk shows the window: its track is asked for on the plane, so it is
+    /// captured and encoded.
+    shown: bool,
+    /// Whether every member the workspace lets edit controls the window, without the person
+    /// allowing each: a session that exists to be seen shares its windows so.
+    open: bool,
     /// When its frame was last captured.
     captured_at: Option<Instant>,
     /// What the members it streams to decode: a stream is only encoded in a codec every one of them
@@ -127,8 +144,60 @@ struct Starting {
     controlled: BTreeSet<PeerId>,
 }
 
-/// A member viewing a window of this device: when it last asked, and what it can decode.
+/// A window of this device whose page this session publishes for the members that show it: the
+/// app draws it, so no picture of it is captured or encoded here.
+struct Paged {
+    /// The tab the window stands in on every device of the workspace, and the surface its
+    /// announcement names.
+    tab: TabId,
+    /// The compositor's identifier of the window, as the share named it.
+    window: String,
+    app_id: String,
+    workspace: String,
+    /// The workspace's topic the announcement goes out on.
+    ws: WorkspaceId,
+    /// The window's size, which the announcement carries so a viewer reserves its place before the
+    /// page's first frame.
+    width: u32,
+    height: u32,
+    /// The viewers the announcement went to, and their devices: the ones a page's track is
+    /// published for.
+    announced: BTreeMap<PeerId, EndpointId>,
+}
+
+impl Paged {
+    /// The announcement of this window's page: a stream of its own, its codec the display list.
+    fn stream_start_msg(&self, peer: PeerId) -> NeighbourMsg {
+        NeighbourMsg::SurfaceStreamStart {
+            surface: self.tab,
+            source_peer: peer,
+            app_id: self.app_id.clone(),
+            width: self.width,
+            height: self.height,
+            codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
+            ts: 0,
+            sender_monotonic_ns_at_send: 0,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+            tab: self.tab,
+        }
+    }
+
+    /// The end of it, for a viewer that stops showing the window or a share that ends.
+    fn stream_end_msg(&self, peer: PeerId) -> NeighbourMsg {
+        NeighbourMsg::SurfaceStreamEnd {
+            surface: self.tab,
+            source_peer: peer,
+            ts: 0,
+        }
+    }
+}
+
+/// A member viewing a window of this device: its device, when it last asked, and what it can
+/// decode.
 struct Asked {
+    device: EndpointId,
     at: Instant,
     /// The largest picture its hardware decoders take, by codec: what its stream is encoded for.
     decode: Vec<SurfaceDecodeLimit>,
@@ -138,14 +207,18 @@ struct Asked {
 struct Received {
     /// The tab the window stands in: its tile decodes the stream there.
     tab: TabId,
-    /// The device streaming it, which its viewer's input and keyframe requests go back to.
+    /// The device sharing it, which its viewer's input and keyframe requests go back to.
     host: EndpointId,
     /// The workspace's topic its stream came in on, which those go back over.
     ws: WorkspaceId,
     /// Whether the desk holds the tab its tile stands in yet.
     shown: bool,
-    /// The stream as its sender announced it.
+    /// The stream as its keyframe or its page's announcement says it.
     start: PeerStreamStart,
+    /// Whether the stream is the window's page (a `tilo-paint` display list, announced by its
+    /// host, [`crate::page_track`]) rather than its pictures: this device asks the plane for the
+    /// page's track instead of the window's.
+    page: bool,
 }
 
 /// The state behind the resource: what this session shares, what it watches and what reached it.
@@ -154,6 +227,13 @@ struct Received {
 #[derive(Default)]
 pub(crate) struct WindowShares {
     hosted: BTreeMap<TabId, Hosted>,
+    /// The windows whose page this session publishes for the members showing them: their apps draw
+    /// them, and nothing of them is captured here.
+    pages: BTreeMap<TabId, Paged>,
+    /// The tracks this device shows of other members' windows (their pictures or pages), by
+    /// workspace and the device hosting them: what each plane is asked for, so the ones it stops
+    /// showing are published no longer.
+    shown_tracks: BTreeMap<String, BTreeMap<EndpointId, BTreeSet<Track>>>,
     starting: Vec<Starting>,
     asked: BTreeMap<(TabId, PeerId), Asked>,
     watching: BTreeMap<(String, TabId), Watched>,
@@ -179,6 +259,9 @@ pub(crate) struct WindowShares {
     /// The seat each member controlling a shared window acts at: its own pointer and keyboard in
     /// that window, beside the person's.
     seats: BTreeMap<(PeerId, SurfaceId), tilo_compositor::Seat>,
+    /// Whether this session exists to be seen: a hosted browser environment shares its windows with
+    /// the workspace's members the moment they open, since nobody runs it for itself.
+    share_by_default: bool,
 }
 
 /// A window another member shares, as this session shows it on the desk.
@@ -216,11 +299,17 @@ impl WindowShares {
     /// The shares, with `wake` being what a share's encoder rings when it has a frame for the next
     /// pass, `person` the person whose shares the workspaces' governance carries, and `salt` what
     /// this device mints its tabs under.
-    pub(crate) fn new(wake: Wake, person: String, salt: u16) -> Rc<RefCell<Self>> {
+    pub(crate) fn new(
+        wake: Wake,
+        person: String,
+        salt: u16,
+        share_by_default: bool,
+    ) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             wake: Some(wake),
             person,
             salt,
+            share_by_default,
             ..Self::default()
         }))
     }
@@ -234,7 +323,16 @@ impl WindowShares {
                 exposures.push(ActiveExposure {
                     peer,
                     surface: *tab,
-                    can_control: hosted.controlled.contains(&peer),
+                    can_control: hosted.open || hosted.controlled.contains(&peer),
+                });
+            }
+        }
+        for tab in self.pages.keys() {
+            for peer in self.viewers(*tab) {
+                exposures.push(ActiveExposure {
+                    peer,
+                    surface: *tab,
+                    can_control: false,
                 });
             }
         }
@@ -262,7 +360,7 @@ impl WindowShares {
                     .map(|peer| {
                         json!({
                             "peer": peer,
-                            "can_control": hosted.controlled.contains(&peer),
+                            "can_control": hosted.open || hosted.controlled.contains(&peer),
                         })
                     })
                     .collect();
@@ -279,6 +377,30 @@ impl WindowShares {
                 })
             })
             .collect();
+        let sharing = {
+            let mut sharing = sharing;
+            for (tab, page) in &self.pages {
+                let viewers: Vec<Value> = self
+                    .viewers(*tab)
+                    .into_iter()
+                    .map(|peer| {
+                        json!({
+                            "peer": peer,
+                            "can_control": false,
+                        })
+                    })
+                    .collect();
+                sharing.push(json!({
+                    "tab": tab.to_string(),
+                    "window": page.window,
+                    "app_id": page.app_id,
+                    "room": page.workspace,
+                    "input_allowed": false,
+                    "viewers": viewers,
+                }));
+            }
+            sharing
+        };
         let starting: Vec<Value> = self
             .starting
             .iter()
@@ -342,6 +464,7 @@ impl WindowShares {
         desk: &DesktopHandle,
         displays: &crate::displays::Displays,
         sync: Option<&Client>,
+        pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
         let Some(sync) = sync else {
@@ -349,6 +472,7 @@ impl WindowShares {
             // theirs arrives.
             if !self.commands.is_empty()
                 || !self.hosted.is_empty()
+                || !self.pages.is_empty()
                 || !self.governed.is_empty()
                 || !self.received.is_empty()
             {
@@ -362,15 +486,19 @@ impl WindowShares {
         // and in which codec to encode.
         self.take_received(compositor, desk, sync);
         let tree = desk.read(Clone::clone);
-        self.carry_out(compositor, desk, &tree, sync, now);
+        self.share_environment_windows(compositor, &tree);
+        self.carry_out(compositor, desk, &tree, sync, pages, now);
         self.follow_governance(desk, sync, now);
         // A stream that reached this device before the desk held the tab of its window is decoded
         // there from this pass on.
         self.show_streams(desk);
         land_displays(desk, displays);
-        self.renegotiate(sync);
+        self.renegotiate();
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
+        // What the members' windows this device shows bring: the pictures and pages the planes
+        // sent, and the tracks of a window that left the desk no longer asked for.
+        self.follow_windows(desk, sync);
         self.end_gone(compositor, desk, sync);
         // Last, so what the tiles asked for while this pass decoded them reaches the devices
         // hosting the windows.
@@ -390,7 +518,7 @@ impl WindowShares {
             .values()
             .filter_map(|asked| asked.at.checked_add(VIEW_EXPIRY));
         let frames = self.hosted.values().filter_map(|hosted| {
-            if hosted.share.viewer_ids().is_empty() {
+            if !hosted.shown {
                 return None;
             }
             let rate = hosted.share.rate().max(1);
@@ -408,6 +536,7 @@ impl WindowShares {
         desk: &DesktopHandle,
         tree: &DesktopTree,
         sync: &Client,
+        pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
         let commands = std::mem::take(&mut self.commands);
@@ -446,7 +575,10 @@ impl WindowShares {
                 ShareCommand::Stop { tab } => {
                     self.starting.retain(|start| start.tab != tab);
                     if let Some(hosted) = self.hosted.remove(&tab) {
-                        Self::end(&hosted, sync);
+                        self.end(&hosted, tab, sync);
+                    }
+                    if let Some(page) = self.pages.remove(&tab) {
+                        Self::end_page(&page, sync);
                     }
                     self.retract(desk, tab);
                     self.asked.retain(|(asking, _), _| *asking != tab);
@@ -503,7 +635,7 @@ impl WindowShares {
                 }
             }
         }
-        self.start_waiting(compositor, desk, sync, now);
+        self.start_waiting(compositor, desk, sync, pages, now);
     }
 
     /// Write into the governance of the workspace `workspace` that this person shares the window
@@ -725,6 +857,7 @@ impl WindowShares {
         compositor: &mut Compositor,
         desk: &DesktopHandle,
         sync: &Client,
+        pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
     ) {
         if self.starting.is_empty() {
@@ -735,8 +868,7 @@ impl WindowShares {
             .into_iter()
             .map(|(identifier, _, _)| identifier)
             .collect();
-        let waiting = std::mem::take(&mut self.starting);
-        for mut start in waiting {
+        for mut start in std::mem::take(&mut self.starting) {
             if !shareable.contains(&start.window) {
                 // The window closed before it could be shared: the workspace stops naming it as
                 // shared.
@@ -752,59 +884,73 @@ impl WindowShares {
                 self.starting.push(start);
                 continue;
             };
-            let target = Target::window(start.window.clone());
-            let picture = match compositor.read_back(&target) {
-                Ok(picture) => picture,
-                Err(error) => {
-                    start.waiting_for = error.to_string();
-                    self.starting.push(start);
-                    continue;
-                }
-            };
-            let receivers = self.receivers_for(start.tab);
-            let share = match SharedFlatpakSession::start_negotiated(
-                sync.peer(),
-                start.app_id.clone(),
-                start.tab,
-                picture.width,
-                picture.height,
-                &FlatpakShareConfig::default(),
-                &receivers,
-            ) {
-                Ok(share) => Arc::new(share.with_tab(start.tab)),
-                Err(error) => {
-                    tracing::warn!(
-                        window = %start.window,
-                        %error,
-                        "a window cannot be shared"
-                    );
-                    start.waiting_for = error.to_string();
-                    self.starting.push(start);
-                    continue;
-                }
-            };
-            if let Some(wake) = &self.wake
-                && let Err(error) = share.encode_in_background(Arc::clone(wake))
-            {
-                tracing::warn!(%error, "a share encodes on the session's loop");
+            // A window whose app draws its page hands that page over rather than a picture of it.
+            if pages.borrow().streamed(start.tab, &start.workspace) {
+                self.pages
+                    .insert(start.tab, page_of(compositor, &start, ws));
+                self.changed();
+                continue;
             }
-            share.deposit_captured_rgba(picture.rgba);
-            self.hosted.insert(
-                start.tab,
-                Hosted {
-                    window: start.window,
-                    app_id: start.app_id,
-                    workspace: start.workspace,
-                    ws,
-                    share,
-                    announced: BTreeSet::new(),
-                    captured_at: Some(now),
-                    receivers,
-                    controlled: start.controlled,
-                },
-            );
-            self.changed();
+            match self.begin_share(compositor, sync, &start, now) {
+                Ok(hosted) => {
+                    self.hosted.insert(start.tab, hosted);
+                    self.changed();
+                }
+                Err(waiting_for) => {
+                    start.waiting_for = waiting_for;
+                    self.starting.push(start);
+                }
+            }
         }
+    }
+
+    /// Capture and start the stream of one waiting window, or say why it must keep waiting.
+    fn begin_share(
+        &self,
+        compositor: &mut Compositor,
+        sync: &Client,
+        start: &Starting,
+        now: Instant,
+    ) -> Result<Hosted, String> {
+        let picture = compositor
+            .read_back(&Target::window(start.window.clone()))
+            .map_err(|error| error.to_string())?;
+        let receivers = self.receivers_for(start.tab);
+        let share = SharedFlatpakSession::start_negotiated(
+            sync.peer(),
+            start.app_id.clone(),
+            start.tab,
+            picture.width,
+            picture.height,
+            &FlatpakShareConfig::default(),
+            &receivers,
+        )
+        .map(Arc::new)
+        .inspect_err(|error| {
+            tracing::warn!(
+                window = %start.window,
+                %error,
+                "a window cannot be shared"
+            );
+        })
+        .map_err(|error| error.to_string())?;
+        if let Some(wake) = &self.wake
+            && let Err(error) = share.encode_in_background(Arc::clone(wake))
+        {
+            tracing::warn!(%error, "a share encodes on the session's loop");
+        }
+        share.deposit_captured_rgba(picture.rgba);
+        Ok(Hosted {
+            window: start.window.clone(),
+            app_id: start.app_id.clone(),
+            workspace: start.workspace.clone(),
+            share,
+            shown: false,
+            open: self.share_by_default,
+            captured_at: Some(now),
+            receivers,
+            controlled: start.controlled.clone(),
+        })
     }
 
     /// What the members viewing `tab` decode: a stream is encoded in a codec every one of them
@@ -825,7 +971,7 @@ impl WindowShares {
 
     /// Encode the shares whose viewers' decoders changed again, so their stream stays one every
     /// viewer takes.
-    fn renegotiate(&mut self, sync: &Client) {
+    fn renegotiate(&mut self) {
         if self.renegotiate.is_empty() {
             return;
         }
@@ -840,14 +986,14 @@ impl WindowShares {
             if hosted.receivers == self.receivers_for(tab) {
                 continue;
             }
-            self.restart(sync, tab);
+            self.restart(tab);
         }
     }
 
     /// End the shares whose window closed, and the ones whose workspace this session no longer
     /// takes part in.
     fn end_gone(&mut self, compositor: &mut Compositor, desk: &DesktopHandle, sync: &Client) {
-        if self.hosted.is_empty() {
+        if self.hosted.is_empty() && self.pages.is_empty() {
             return;
         }
         let shareable: Vec<String> = compositor
@@ -864,9 +1010,21 @@ impl WindowShares {
             })
             .map(|(tab, _)| *tab)
             .collect();
-        for tab in gone {
+        // A page's share ends with its window the same way, and its viewers are told so.
+        let poured: Vec<TabId> = self
+            .pages
+            .iter()
+            .filter(|(_, page)| {
+                !shareable.contains(&page.window) || sync.workspace_topic(&page.workspace).is_none()
+            })
+            .map(|(tab, _)| *tab)
+            .collect();
+        for tab in gone.into_iter().chain(poured) {
             if let Some(hosted) = self.hosted.remove(&tab) {
-                Self::end(&hosted, sync);
+                self.end(&hosted, tab, sync);
+            }
+            if let Some(page) = self.pages.remove(&tab) {
+                Self::end_page(&page, sync);
             }
             // The window is gone, or the workspace it was shared with is: it stops naming it.
             self.retract(desk, tab);
@@ -886,10 +1044,18 @@ impl WindowShares {
         let hosted = std::mem::take(&mut self.hosted);
         for (tab, share) in hosted {
             if let Some(sync) = sync {
-                Self::end(&share, sync);
+                self.end(&share, tab, sync);
             }
             self.retract(desk, tab);
         }
+        let pages = std::mem::take(&mut self.pages);
+        for (tab, page) in pages {
+            if let Some(sync) = sync {
+                Self::end_page(&page, sync);
+            }
+            self.retract(desk, tab);
+        }
+        self.shown_tracks.clear();
         self.starting.clear();
         self.asked.clear();
         self.watching.clear();
@@ -921,14 +1087,29 @@ impl WindowShares {
         self.changed();
     }
 
-    /// Send the end of `hosted` 's stream to its viewers, so each drops its view rather than
-    /// waiting on a stream that stopped.
-    fn end(hosted: &Hosted, sync: &Client) {
-        let viewers = hosted.share.viewer_ids();
-        if viewers.is_empty() {
-            return;
+    /// Send the end of `page` 's announcement to the viewers it went to, so each drops the window
+    /// rather than reading a track nothing publishes any more.
+    fn end_page(page: &Paged, sync: &Client) {
+        for device in page.announced.values() {
+            sync.publish_control(page.ws, page.stream_end_msg(sync.peer()), *device);
         }
-        sync.publish_surface(hosted.ws, hosted.share.stream_end_msg(), &viewers);
+    }
+
+    /// Tell the members that said they view `hosted`, the window of `tab`, that its share ended,
+    /// so each lets its tile go rather than waiting on pictures that stopped. A member that shows
+    /// it because the workspace's governance names it learns it from the governance too.
+    fn end(&self, hosted: &Hosted, tab: TabId, sync: &Client) {
+        let Some(ws) = sync.workspace_topic(&hosted.workspace) else {
+            return;
+        };
+        let end = NeighbourMsg::SurfaceStreamEnd {
+            surface: tab,
+            source_peer: sync.peer(),
+            ts: 0,
+        };
+        for ((_, _), asked) in self.asked.iter().filter(|((asking, _), _)| *asking == tab) {
+            sync.publish_control(ws, end.clone(), asked.device);
+        }
     }
 
     /// Take what the plane carried in: a member's ask to view this device's windows, their input,
@@ -949,20 +1130,19 @@ impl WindowShares {
             // from and what its input names are the same member.
             let from = neighbour_wire::peer_handle(publisher.as_bytes());
             match msg {
+                // Who asks and whose input it is is the device that sent it, as its route
+                // authenticated it, whatever the message says of itself.
                 NeighbourMsg::SurfaceViewRequest {
-                    peer,
                     room: workspace,
                     views,
                     decode,
+                    ..
                 } => {
-                    changed |= self.note_views(sync, ws, peer, &workspace, &views, &decode);
+                    changed |=
+                        self.note_views(sync, ws, (from, publisher), &workspace, &views, &decode);
                 }
-                NeighbourMsg::RemoteInput {
-                    peer,
-                    surface,
-                    event,
-                } => {
-                    self.apply_input(compositor, peer, surface, &event);
+                NeighbourMsg::RemoteInput { surface, event, .. } => {
+                    self.apply_input(compositor, from, surface, &event);
                 }
                 NeighbourMsg::SurfaceKeyframeRequest { surface, seq, .. } => {
                     if let Some(hosted) = self.hosted.get(&surface) {
@@ -974,10 +1154,8 @@ impl WindowShares {
                     tab: named,
                     ..
                 } => {
-                    // What only this desktop knows of the stream: who it is to the sender, what the
-                    // desk calls the window, and whose device it comes from. Whether the sender
-                    // lets its viewer type is the sender's own rule, so this device offers its
-                    // pointer and keys and the sender decides whether they land.
+                    // A page's announcement, with what only this desktop knows of it: who it is to
+                    // the sender, what the desk calls the window, and whose device it comes from.
                     let (title, sharer) = desk.read(|tree| tab_title(tree, named));
                     let Some(start) =
                         PeerStreamStart::announced(&msg, sync.peer(), sharer, title, true)
@@ -990,6 +1168,7 @@ impl WindowShares {
                         .received
                         .get(&(from, surface))
                         .is_some_and(|stream| stream.shown);
+                    let page = start.codec == ui::webview::paint::stream::wire::CODEC;
                     self.received.insert(
                         (from, surface),
                         Received {
@@ -998,13 +1177,10 @@ impl WindowShares {
                             ws,
                             shown,
                             start,
+                            page,
                         },
                     );
                     changed = true;
-                }
-                NeighbourMsg::SurfaceFrame { .. } => {
-                    // The tile decodes the unit; nothing else keeps it.
-                    desk.peer_surface_frame(&msg);
                 }
                 NeighbourMsg::SurfaceStreamEnd { surface, .. }
                     if self.received.remove(&(from, surface)).is_some() =>
@@ -1017,6 +1193,198 @@ impl WindowShares {
         }
         if changed {
             self.changed();
+        }
+    }
+
+    /// Show the windows of other members this device shows, and let go of the ones that left the
+    /// desk.
+    ///
+    /// A shared window travels the workspace's live plane, one track per window: its pictures
+    /// (`tilo-video/1`) or, for a window whose app draws its page, its page (`tilo-page/1`,
+    /// announced by its host). This device asks for exactly the tracks of the windows the desk
+    /// holds and watches, and the plane tells the hosting device to publish those, and only those,
+    /// while it does. A picture's keyframe makes or remakes the tile it is decoded in; a page is
+    /// drawn into the tile its announcement made ([`crate::page_track`]).
+    fn follow_windows(&mut self, desk: &DesktopHandle, sync: &Client) {
+        let tree = desk.read(Clone::clone);
+        let wanted = tracks_to_show(&self.received, &self.watching, |tab| shown(&tree, tab));
+        if wanted != self.shown_tracks || !wanted.is_empty() {
+            let planes = crate::calls::planes_of(sync);
+            for (workspace, hosts) in &wanted {
+                let Some(plane) = planes.get(workspace) else {
+                    continue;
+                };
+                for (host, tracks) in hosts {
+                    let tracks: Vec<Track> = tracks.iter().copied().collect();
+                    sync.show_tracks(plane, *host.as_bytes(), &tracks);
+                }
+            }
+            // A device whose windows this session showed and no longer does stops publishing them.
+            for (workspace, hosts) in &self.shown_tracks {
+                let Some(plane) = planes.get(workspace) else {
+                    continue;
+                };
+                for host in hosts.keys() {
+                    if wanted
+                        .get(workspace)
+                        .is_none_or(|showing| !showing.contains_key(host))
+                    {
+                        sync.show_tracks(plane, *host.as_bytes(), &[]);
+                    }
+                }
+            }
+            self.shown_tracks = wanted;
+        }
+        for (workspace, heard) in sync.take_window_objects() {
+            let Ok(from) = EndpointId::from_bytes(&heard.sender) else {
+                continue;
+            };
+            match heard.track {
+                Track::Page(tab) => {
+                    let Some(stream) = self
+                        .received
+                        .values()
+                        .find(|stream| stream.page && stream.tab == tab && stream.host == from)
+                    else {
+                        continue;
+                    };
+                    desk.peer_surface_page(
+                        neighbour_wire::peer_handle(from.as_bytes()),
+                        stream.start.surface,
+                        &heard.body,
+                    );
+                }
+                Track::Window(tab, _) => {
+                    self.picture_heard(desk, sync, &workspace, from, tab, &heard.body);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One picture of the window `tab` the device `from` shares in `workspace` : decoded in its
+    /// tile, which its keyframe makes the first time and again when the stream starts over at
+    /// another size, codec or colour.
+    fn picture_heard(
+        &mut self,
+        desk: &DesktopHandle,
+        sync: &Client,
+        workspace: &str,
+        from: EndpointId,
+        tab: TabId,
+        body: &[u8],
+    ) {
+        if self
+            .watching
+            .get(&(workspace.to_owned(), tab))
+            .is_none_or(|watched| watched.host != from)
+        {
+            return;
+        }
+        // ignored-failure: the plane opened only what its relay validated as a picture
+        let Ok(object) = VideoObject::decode(body) else {
+            return;
+        };
+        let peer = neighbour_wire::peer_handle(from.as_bytes());
+        let key = (peer, tab);
+        if object.keyframe {
+            let start = desk.read(|tree| picture_start(tree, sync.peer(), peer, tab, &object));
+            let Some(start) = start else {
+                tracing::debug!(tab, codec = ?object.codec, "a shared window's codec is not decoded here");
+                return;
+            };
+            let same = self.received.get(&key).is_some_and(|stream| {
+                let held = &stream.start;
+                (held.codec.as_str(), held.width, held.height, held.bit_depth)
+                    == (
+                        start.codec.as_str(),
+                        start.width,
+                        start.height,
+                        start.bit_depth,
+                    )
+            });
+            if !same {
+                let Some(ws) = sync.workspace_topic(workspace) else {
+                    return;
+                };
+                if self
+                    .received
+                    .remove(&key)
+                    .is_some_and(|stream| stream.shown)
+                {
+                    desk.end_peer_surface(peer, tab, RESTARTED);
+                }
+                let shown = desk.show_peer_surface(&start).is_some();
+                self.received.insert(
+                    key,
+                    Received {
+                        tab,
+                        host: from,
+                        ws,
+                        shown,
+                        start,
+                        page: false,
+                    },
+                );
+                self.changed();
+            }
+        }
+        if self.received.contains_key(&key) {
+            desk.peer_surface_picture(peer, tab, object.sequence, &object.payload);
+        }
+    }
+
+    /// Share the windows a session that exists only to be seen runs: a hosted browser environment
+    /// nobody works at shares its windows with the workspace's members the moment they open, since
+    /// the whole point of it is that they watch and drive it.
+    fn share_environment_windows(&mut self, compositor: &Compositor, tree: &DesktopTree) {
+        if !self.share_by_default {
+            return;
+        }
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .map(|held| held.policy.workspace.clone())
+            .find(|workspace| !workspace.is_empty())
+        else {
+            return;
+        };
+        let mut shares = Vec::new();
+        for (identifier, app_id, _) in compositor.shareable_windows() {
+            let Some(app_id) = app_id else {
+                continue;
+            };
+            let Some(tab) = tree
+                .workspaces
+                .iter()
+                .flat_map(|held| held.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign { app_id: tile, .. } if *tile == app_id
+                    )
+                })
+                .map(|tab| tab.id)
+            else {
+                continue;
+            };
+            if self.hosted.contains_key(&tab)
+                || self.pages.contains_key(&tab)
+                || self.starting.iter().any(|start| start.tab == tab)
+            {
+                continue;
+            }
+            shares.push(ShareCommand::Share {
+                window: identifier,
+                tab,
+                app_id,
+                workspace: workspace.clone(),
+            });
+        }
+        for share in shares {
+            self.queue(share);
         }
     }
 
@@ -1084,7 +1452,7 @@ impl WindowShares {
         &mut self,
         sync: &Client,
         ws: WorkspaceId,
-        peer: PeerId,
+        (peer, device): (PeerId, EndpointId),
         workspace: &str,
         views: &[SurfaceView],
         decode: &[SurfaceDecodeLimit],
@@ -1107,11 +1475,12 @@ impl WindowShares {
         let named: HashSet<TabId> = views
             .iter()
             .map(|view| view.tab)
-            .filter(|tab| self.hosted.contains_key(tab))
+            .filter(|tab| self.hosted.contains_key(tab) || self.pages.contains_key(tab))
             .collect();
         for tab in &named {
             if let Some(asked) = self.asked.get_mut(&(*tab, peer)) {
                 asked.at = now;
+                asked.device = device;
                 if asked.decode != decode {
                     asked.decode = decode.to_vec();
                     changed = true;
@@ -1120,6 +1489,7 @@ impl WindowShares {
                 self.asked.insert(
                     (*tab, peer),
                     Asked {
+                        device,
                         at: now,
                         decode: decode.to_vec(),
                     },
@@ -1174,11 +1544,13 @@ impl WindowShares {
         surface: SurfaceId,
         event: &[u8],
     ) {
+        // A viewer's pointer is in the pixels of the pictures it is sent, which a viewer's decoder
+        // may have made smaller than the window.
         let Some((window, size)) = self.hosted.get(&surface).and_then(|hosted| {
-            hosted
-                .controlled
-                .contains(&peer)
-                .then(|| (hosted.window.clone(), hosted.share.dimensions()))
+            (hosted.open || hosted.controlled.contains(&peer)).then(|| {
+                let picture = hosted.share.picture();
+                (hosted.window.clone(), (picture.width, picture.height))
+            })
         }) else {
             return;
         };
@@ -1401,25 +1773,92 @@ impl WindowShares {
         }
     }
 
-    /// Capture the shared windows that are due, and publish what they encoded.
+    /// Announce the windows whose page this session publishes to the members showing them, and tell
+    /// the ones that stopped showing it. Nothing of a page is captured or encoded here: its app
+    /// draws it, and the plane carries it.
+    fn announce_pages(&mut self, sync: &Client) {
+        let tabs: Vec<TabId> = self.pages.keys().copied().collect();
+        for tab in tabs {
+            let viewers: BTreeMap<PeerId, EndpointId> = self
+                .asked
+                .iter()
+                .filter(|((asking, _), _)| *asking == tab)
+                .map(|((_, peer), asked)| (*peer, asked.device))
+                .collect();
+            let Some(page) = self.pages.get(&tab) else {
+                continue;
+            };
+            let ws = page.ws;
+            let start = page.stream_start_msg(sync.peer());
+            let end = page.stream_end_msg(sync.peer());
+            let mut announced = page.announced.clone();
+            let dropped: Vec<(PeerId, EndpointId)> = announced
+                .iter()
+                .map(|(peer, device)| (*peer, *device))
+                .filter(|(peer, _)| !viewers.contains_key(peer))
+                .collect();
+            for (peer, device) in dropped {
+                announced.remove(&peer);
+                sync.publish_control(ws, end.clone(), device);
+            }
+            for (peer, device) in &viewers {
+                if announced.insert(*peer, *device).is_none() {
+                    sync.publish_control(ws, start.clone(), *device);
+                }
+            }
+            if let Some(page) = self.pages.get_mut(&tab) {
+                page.announced = announced;
+            }
+        }
+    }
+
+    /// Capture the shared windows a member's desk shows that are due, and publish what they
+    /// encoded on their workspace's plane. A window nobody shows is neither captured nor encoded,
+    /// and a member that starts showing one starts at a keyframe.
     fn capture(&mut self, compositor: &mut Compositor, sync: &Client, now: Instant) {
+        if !self.pages.is_empty() {
+            self.announce_pages(sync);
+        }
         if self.hosted.is_empty() {
             return;
+        }
+        let planes = crate::calls::planes_of(sync);
+        // The windows each plane's members show, and those a viewer needs a keyframe of: one that
+        // started showing it, or one whose group could not take another picture.
+        let mut wanted = BTreeSet::new();
+        let mut keyframes = BTreeSet::new();
+        for (workspace, plane) in &planes {
+            for tab in plane.wanted_windows() {
+                wanted.insert((workspace.clone(), tab));
+            }
+            for tab in plane.take_window_keyframes() {
+                keyframes.insert((workspace.clone(), tab));
+            }
         }
         let tabs: Vec<TabId> = self.hosted.keys().copied().collect();
         for tab in tabs {
             let Some(hosted) = self.hosted.get_mut(&tab) else {
                 continue;
             };
-            let viewers = hosted.share.viewer_ids();
-            if viewers.is_empty() {
+            let key = (hosted.workspace.clone(), tab);
+            let Some(plane) = planes
+                .get(&hosted.workspace)
+                .filter(|_| wanted.contains(&key))
+            else {
+                hosted.shown = false;
                 continue;
-            }
-            for peer in &viewers {
-                if hosted.announced.insert(*peer) {
-                    sync.publish_surface(hosted.ws, hosted.share.stream_start_msg(), &[*peer]);
+            };
+            if !hosted.shown || keyframes.contains(&key) {
+                // A still window sends its new viewer the keyframe it stands on; otherwise the next
+                // frame is one, captured now.
+                if let Some(standing) = hosted.share.start_reader()
+                    && let Err(error) = send_picture(plane, tab, &hosted.share, standing)
+                {
+                    tracing::warn!(%error, tab, "a shared window's standing keyframe did not go out");
                 }
+                hosted.captured_at = None;
             }
+            hosted.shown = true;
             let rate = hosted.share.rate().max(1);
             let due = hosted.captured_at.is_none_or(|at| {
                 now.duration_since(at) >= Duration::from_secs_f64(1.0 / f64::from(rate))
@@ -1430,7 +1869,7 @@ impl WindowShares {
                     Ok(picture) => {
                         if (picture.width, picture.height) != hosted.share.dimensions() {
                             // The window was resized: its stream restarts at the size it shows now.
-                            self.restart(sync, tab);
+                            self.restart(tab);
                             continue;
                         }
                         hosted.share.deposit_captured_rgba(picture.rgba);
@@ -1443,29 +1882,26 @@ impl WindowShares {
                     }
                 }
             }
-            let frames = hosted.share.pump(now);
-            if frames.is_empty() {
-                continue;
-            }
-            let ws = hosted.ws;
-            let viewers = hosted.share.viewer_ids();
-            for frame in frames {
-                sync.publish_surface(ws, frame.into_neighbour_msg(), &viewers);
+            for frame in hosted.share.pump(now) {
+                let seq = frame.seq;
+                if let Err(error) = send_picture(plane, tab, &hosted.share, frame) {
+                    // The window's group is past what one carries, or the picture past what an
+                    // object does: the next frame starts it over at a keyframe.
+                    // ignored-failure: the keyframe asked for here starts the viewers over
+                    tracing::debug!(%error, tab, "a shared window's picture did not go out");
+                    hosted.share.request_keyframe(seq, now);
+                }
             }
         }
     }
 
-    /// Start `tab` 's share again, at the size its window shows now: its viewers are sent the end
-    /// of the old stream and the start of the new. The restarted share starts on the next pass, as
-    /// any share does.
-    fn restart(&mut self, sync: &Client, tab: TabId) {
+    /// Start `tab` 's share again, at the size its window shows now: its first picture is a keyframe
+    /// of that size, which its viewers' tiles start over at. The restarted share starts on the next
+    /// pass, as any share does.
+    fn restart(&mut self, tab: TabId) {
         let Some(hosted) = self.hosted.remove(&tab) else {
             return;
         };
-        let viewers = hosted.share.viewer_ids();
-        if !viewers.is_empty() {
-            sync.publish_surface(hosted.ws, hosted.share.stream_end_msg(), &viewers);
-        }
         self.starting.push(Starting {
             window: hosted.window,
             tab,
@@ -1476,6 +1912,137 @@ impl WindowShares {
         });
         self.changed();
     }
+}
+
+/// The page of a window whose app draws it: the members showing it read the workspace's live
+/// plane, so no picture of it is captured or encoded here.
+fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged {
+    let (_, _, width, height) = compositor
+        .shareable_window_rect(&start.window)
+        .unwrap_or_default();
+    Paged {
+        tab: start.tab,
+        window: start.window.clone(),
+        app_id: start.app_id.clone(),
+        workspace: start.workspace.clone(),
+        ws,
+        width: width.unsigned_abs(),
+        height: height.unsigned_abs(),
+        announced: BTreeMap::new(),
+    }
+}
+
+/// The tracks this device shows of other members' windows, by workspace and the device hosting
+/// them: of each window the desk holds (`on_desk`) and watches, its page where its host announced
+/// one, and its pictures otherwise. A tab the desk stopped holding, or a watch that ended, takes
+/// its track with it.
+fn tracks_to_show(
+    received: &BTreeMap<(PeerId, SurfaceId), Received>,
+    watching: &BTreeMap<(String, TabId), Watched>,
+    on_desk: impl Fn(TabId) -> bool,
+) -> BTreeMap<String, BTreeMap<EndpointId, BTreeSet<Track>>> {
+    let mut wanted: BTreeMap<String, BTreeMap<EndpointId, BTreeSet<Track>>> = BTreeMap::new();
+    for ((workspace, tab), watched) in watching {
+        if !on_desk(*tab) {
+            continue;
+        }
+        let page = received
+            .values()
+            .any(|stream| stream.page && stream.tab == *tab && stream.host == watched.host);
+        wanted
+            .entry(workspace.clone())
+            .or_default()
+            .entry(watched.host)
+            .or_default()
+            .insert(if page {
+                Track::Page(*tab)
+            } else {
+                Track::Window(*tab, Layer::High)
+            });
+    }
+    wanted
+}
+
+/// Send one encoded picture of the window `tab` on `plane`, as its share describes it.
+fn send_picture(
+    plane: &Plane,
+    tab: TabId,
+    share: &SharedFlatpakSession,
+    frame: EncodedFrame,
+) -> Result<(), tilo_live::plane::PlaneError> {
+    let picture = share.picture();
+    let side = |side: u32| u16::try_from(side).unwrap_or(tilo_live::video::MAX_SIDE);
+    let object = VideoObject {
+        keyframe: frame.keyframe,
+        hdr: picture.colorimetry.is_hdr(),
+        codec: video_codec(picture.codec),
+        layer: Layer::High,
+        sequence: frame.seq,
+        timestamp_us: share.captured_at_us(&frame),
+        width: side(picture.width),
+        height: side(picture.height),
+        payload: frame.nalus,
+    };
+    plane.send_window(tab, &object)
+}
+
+/// The `tilo-video/1` codec of a share's stream.
+const fn video_codec(codec: StreamCodec) -> tilo_live::video::Codec {
+    match codec {
+        StreamCodec::H264 => tilo_live::video::Codec::H264,
+        StreamCodec::HevcMain10 => tilo_live::video::Codec::HevcMain10,
+        StreamCodec::Vp9 => tilo_live::video::Codec::Vp9,
+        StreamCodec::Av1 => tilo_live::video::Codec::Av1,
+    }
+}
+
+/// The stream a shared window's keyframe `object` starts, as the tile in `tab` decodes it: `None`
+/// for a codec no decoder here takes.
+fn picture_start(
+    tree: &DesktopTree,
+    local_peer: PeerId,
+    peer: PeerId,
+    tab: TabId,
+    object: &VideoObject,
+) -> Option<PeerStreamStart> {
+    let codec = match object.codec {
+        tilo_live::video::Codec::H264 => StreamCodec::H264,
+        tilo_live::video::Codec::HevcMain10 => StreamCodec::HevcMain10,
+        tilo_live::video::Codec::Vp9 => StreamCodec::Vp9,
+        tilo_live::video::Codec::Av1 => StreamCodec::Av1,
+        tilo_live::video::Codec::Vp8 => return None,
+    };
+    let (title, sharer) = tab_title(tree, tab);
+    let app_id = hosted_window(tree, tab)
+        .map(|(_, app_id)| app_id)
+        .unwrap_or_default();
+    let colorimetry = if object.hdr {
+        neighbour_wire::colorimetry::Colorimetry::hdr10()
+    } else {
+        neighbour_wire::colorimetry::Colorimetry::sdr_bt709()
+    };
+    Some(PeerStreamStart {
+        surface: tab,
+        peer,
+        local_peer,
+        width: u32::from(object.width),
+        height: u32::from(object.height),
+        codec: codec.wire_label().to_owned(),
+        bit_depth: if object.hdr { 10 } else { 8 },
+        colorimetry: Some(colorimetry),
+        hdr: None,
+        title: if title.trim().is_empty() {
+            app_id.clone()
+        } else {
+            title
+        },
+        app_id,
+        tab,
+        sharer,
+        // Whether the sender lets its viewer type is the sender's own rule, so this device offers
+        // its pointer and keys and the sender decides whether they land.
+        writable: true,
+    })
 }
 
 /// The limits a viewer reported, by codec: codecs this build does not know and codecs without a
@@ -1840,3 +2407,102 @@ fn unwatch_action() -> ActionSpec {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+#[cfg(test)]
+mod window_tracks {
+    use super::*;
+
+    const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+    const TAB: TabId = 0x5EED_0000_0000_0007;
+
+    fn host(seed: u8) -> EndpointId {
+        iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    }
+
+    /// The announcement of a window's page stream, as its host sends it.
+    fn announcement(tab: TabId, codec: &str) -> NeighbourMsg {
+        NeighbourMsg::SurfaceStreamStart {
+            surface: tab,
+            source_peer: neighbour_wire::peer_handle(&[9; 32]),
+            width: 800,
+            height: 600,
+            codec: codec.to_owned(),
+            ts: 0,
+            sender_monotonic_ns_at_send: 0,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+            app_id: "so.tilo.browser".to_owned(),
+            tab,
+        }
+    }
+
+    fn received(tab: TabId, codec: &str, host: EndpointId) -> Received {
+        let msg = announcement(tab, codec);
+        Received {
+            tab,
+            host,
+            ws: tilo_network_actor::workspace_topic_id(
+                tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
+            ),
+            shown: true,
+            start: PeerStreamStart::announced(&msg, 11, "Laptop", "Browser", false)
+                .expect("a stream start"),
+            page: codec == ui::webview::paint::stream::wire::CODEC,
+        }
+    }
+
+    fn watching() -> BTreeMap<(String, TabId), Watched> {
+        let mut watching = BTreeMap::new();
+        watching.insert(
+            (WORKSPACE.to_owned(), TAB),
+            Watched {
+                host: host(5),
+                asked_at: Instant::now(),
+            },
+        );
+        watching
+    }
+
+    #[test]
+    fn a_pages_tab_is_asked_for_while_the_desk_holds_it_and_watched() {
+        let mut streams = BTreeMap::new();
+        streams.insert(
+            (neighbour_wire::peer_handle(&[9; 32]), TAB),
+            received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+        );
+        let wanted = tracks_to_show(&streams, &watching(), |tab| tab == TAB);
+        assert_eq!(
+            wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
+            Some(&BTreeSet::from([Track::Page(TAB)])),
+            "the plane is asked for that window's page"
+        );
+    }
+
+    #[test]
+    fn a_window_the_desk_stops_showing_or_watching_is_no_longer_asked_for() {
+        let mut streams = BTreeMap::new();
+        streams.insert(
+            (neighbour_wire::peer_handle(&[9; 32]), TAB),
+            received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+        );
+        assert!(
+            tracks_to_show(&streams, &watching(), |_| false).is_empty(),
+            "the tab left the desk"
+        );
+        assert!(
+            tracks_to_show(&streams, &BTreeMap::new(), |tab| tab == TAB).is_empty(),
+            "nothing watches that window here"
+        );
+    }
+
+    #[test]
+    fn a_watched_window_without_a_page_is_asked_for_by_its_pictures() {
+        let wanted = tracks_to_show(&BTreeMap::new(), &watching(), |tab| tab == TAB);
+        assert_eq!(
+            wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
+            Some(&BTreeSet::from([Track::Window(TAB, Layer::High)])),
+            "the plane is asked for that window's pictures"
+        );
+    }
+}

@@ -43,6 +43,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     for (kind, view) in [
         (Kind::Overflow, "overflowing"),
         (Kind::Overlap, "overlapping"),
+        // Two words drawn in one place are unreadable however their boxes stand: the view that
+        // lays one over the other breaks in both ways.
+        (Kind::TextOnText, "overlapping"),
         (Kind::ScrollsSideways, "sideways"),
     ] {
         assert!(
@@ -56,7 +59,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
     for finding in &report.findings {
         let expected = match finding.kind {
             Kind::Overflow => "overflowing",
-            Kind::Overlap => "overlapping",
+            // Two words drawn in one place are unreadable however their boxes stand: the view
+            // that lays one over the other breaks in both ways.
+            Kind::Overlap | Kind::TextOnText => "overlapping",
             // A word wider than its column breaks (`clipped` is laid out right), and the chip
             // takes a finger's room on touch (`small_target` is laid out right). A view in
             // this fixture has no scroll view given no room: `a_board_lane_draws_every_card_it_
@@ -104,7 +109,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::DuplicateBarControl
             | Kind::IconOnlyBarAction
             // The fixture's windows compose no shell with a header row of its own under a bar.
+            // None declares the one main thing to do either.
             | Kind::StackedHeaderRows
+            | Kind::UnmarkedBarPrimary
             // No window in this fixture lists items beside a pane that says nothing is chosen.
             | Kind::PlaceholderPane
             // The fixture's windows compose no sidebar over a header naming a place.
@@ -113,8 +120,46 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // row.
             | Kind::NestedScroller
             | Kind::RepeatedRowTitle
+            // No window in this fixture opens an item into its row, so no document stands
+            // beside the rows of the list it opened from.
+            | Kind::ItemShownTwice
             // The fixture's cards each hold what they are given, so none stands empty.
-            | Kind::EmptySurface => "(no view)",
+            | Kind::EmptySurface
+            // No window in this fixture docks a bar at the foot of a page column, and none
+            // lines its edges with a card or a notice, nor stands one against another.
+            | Kind::DockedColumn
+            | Kind::RoundedOnEdge
+            | Kind::CrampedCard
+            // No window in this fixture docks a sidebar beside content it squeezes.
+            | Kind::ContentBesideSidebar
+            // Its lists group no rows under headings of their own.
+            | Kind::HeadingRoom
+            // A list of this fixture groups nothing, so no group of it opens on a row.
+            | Kind::OrphanedRow
+            // The fixture's pages lay no section under a block of their own, and no list stands
+            // beside the page it opens.
+            | Kind::CrowdedHeading
+            | Kind::DetailRowNotChosen
+            // No window in this fixture declares a column header over a column that draws none or
+            // offers an action in its bar and its own row both, no field of it stands one band
+            // tall with its line off that band's middle (a field centres its own line), and no
+            // agent or peer is drawn in it, so no presence tag stands anywhere. No window in it
+            // holds writing either, so no section of a page stands under the writing it holds.
+            | Kind::HeaderOnReveal
+            | Kind::OfferedTwice
+            | Kind::LineOffCentre
+            | Kind::PresenceTag
+            | Kind::UnruledBody
+            // No page of this fixture leads its heading with a control, and none stands on a
+            // phone's screen.
+            // Its trees fold rows on the line those rows' words stand on.
+            | Kind::ChevronOffLine
+            | Kind::IndentedBody
+            // Its lists group no rows under headings of their own, so none heads its rows.
+            | Kind::RepeatedGroupTitle
+            | Kind::HuggingRow
+            // The fixture's rows state no day of their own.
+            | Kind::RepeatedDayFact => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -410,15 +455,21 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 
 /// A window held in the hand shows its list; the row a person taps opens what it holds in
 /// front of the list. The run stages every such screen, named after what it shows — for an app
-/// whose rows open a page over the list (a board's cards) as for one whose window pushes it.
+/// whose rows open a page over the list (a board's cards) as for one whose window pushes it,
+/// and for one whose list stands over what it shows as a drawer its sidebar toggle brings
+/// forward.
 #[test]
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     for (app, shows) in [
-        ("notes", " in front at 390×844"),
-        // The list stands behind what the app opened, and comes back by its Back chip.
-        ("notes", ", then Back pressed at 390×844"),
+        // Notes is a tree and the note it opens: at this width the tree is the window's first
+        // screen and a row of it pushes the note in front, with the way back to the tree.
+        ("notes", ", then a note_editor in front at 390×844"),
+        (
+            "notes",
+            ", then Back pressed, then a note_editor in front at 390×844",
+        ),
         // A board keeps no detail of its own: the card a finger taps is the page that shows.
         ("board", "then a card_page in front at 390×844"),
     ] {
@@ -442,6 +493,55 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
             headers.join("\n")
         );
     }
+}
+
+/// A row's box is a control of its own, named for what it does to the item (`Mark Buy oat milk
+/// and eggs done`): a run presses it by those words, as a person or an agent does, and the row
+/// it belongs to stands where it stood, drawn checked, for the shot.
+#[test]
+fn a_run_presses_a_rows_box_by_its_own_words() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let shots = manifest().join("../../../target/layout-press-shots");
+    let _ = std::fs::remove_dir_all(&shots);
+    std::fs::create_dir_all(&shots).expect("the shots' directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("layout-check")
+        .arg(manifest().join("../../../apps/tl/tasks"))
+        .arg("--allow")
+        .arg(manifest().join("tests/layout_check/allowed"))
+        .args(["--dump", "390x844"])
+        .arg("--shots")
+        .arg(&shots)
+        .args(["--press", "Mark Buy oat milk and eggs done"])
+        .output_locked()
+        .expect("the check runs");
+    let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "the press reaches the box: {}",
+        doc.lines().last().unwrap_or_default()
+    );
+    assert!(
+        doc.lines().any(|line| line.starts_with("== ")
+            && line.contains("then Mark Buy oat milk and eggs done pressed")),
+        "the window as the press leaves it is read:\n{doc}"
+    );
+    let pressed = std::fs::read_dir(&shots)
+        .expect("the shots' directory")
+        .filter_map(std::result::Result::ok)
+        .any(|entry| {
+            let path = entry.path();
+            path.extension().is_some_and(|extension| extension == "png")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains("pressed"))
+        });
+    assert!(
+        pressed,
+        "the window as the press leaves it is shot, in {shots:?}"
+    );
 }
 
 #[test]

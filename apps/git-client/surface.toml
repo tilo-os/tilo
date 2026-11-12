@@ -5,14 +5,143 @@ kind = "git_client.repo"
 label = "Repository"
 version = 1
 fields = [
-  { path = "repository", type = "Atom" },
-  { path = "shared", type = "SharedRepo", readonly = true },
+  { path = "repository", type = "text" },
+  { path = "shared", type = "any", readonly = true },
 ]
 
 [[resources.verbs]]
 id = "record-repository"
 kind = "undoable"
 params = [
-  { name = "shared", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, author_email = { type = "string" }, author_name = { type = "string" }, branches = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, ahead = { type = "integer", maximum = 4294967295, minimum = 0 }, behind = { type = "integer", maximum = 4294967295, minimum = 0 }, is_head = { type = "boolean" }, is_remote = { type = "boolean" }, tip = { type = "string" }, upstream = { type = ["string", "null"] } }, required = ["name", "is_head", "is_remote", "ahead", "behind", "tip"] } }, commits = { type = "array", items = { type = "object", additionalProperties = false, properties = { author_email = { type = "string" }, author_name = { type = "string" }, body = { type = "string" }, files = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, additions = { type = "integer", maximum = 4294967295, minimum = 0 }, area = { oneOf = [{ type = "string", const = "Staged" }, { type = "string", const = "Unstaged" }, { type = "string", const = "Untracked" }] }, deletions = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["Added", "Modified", "Deleted", "Renamed", "Untracked", "Conflicted"] }, old_path = { type = ["string", "null"] } }, required = ["path", "area", "kind", "additions", "deletions"] } }, id = { type = "string" }, lane = { type = "integer", minimum = 0 }, parents = { type = "array", items = { type = "string" } }, refs = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, kind = { type = "string", enum = ["Head", "LocalBranch", "RemoteBranch", "Tag"] } }, required = ["name", "kind"] } }, summary = { type = "string" }, time = { type = "integer" }, when = { type = "string" } }, required = ["id", "summary", "body", "author_name", "author_email", "when", "time", "parents", "refs", "lane", "files"] } }, graph_width = { type = "integer", minimum = 0 }, head = { type = "string" }, remotes = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, url = { type = "string" } }, required = ["name", "url"] } }, stashes = { type = "array", items = { type = "object", additionalProperties = false, properties = { branch = { type = "string" }, index = { type = "integer", minimum = 0 }, message = { type = "string" } }, required = ["index", "message", "branch"] } }, tags = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, message = { type = ["string", "null"] }, target = { type = "string" } }, required = ["name", "target"] } }, workdir = { type = "string" } }, required = ["name", "head", "workdir", "commits", "branches", "tags", "stashes", "remotes", "graph_width", "author_name", "author_email"] } },
+  { name = "shared", type = { named = "SharedRepo" }, required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, author_email = { type = "string" }, author_name = { type = "string" }, branches = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, ahead = { type = "integer", maximum = 4294967295, minimum = 0 }, behind = { type = "integer", maximum = 4294967295, minimum = 0 }, is_head = { type = "boolean" }, is_remote = { type = "boolean" }, tip = { type = "string" }, upstream = { type = ["string", "null"] } }, required = ["name", "is_head", "is_remote", "ahead", "behind", "tip"] } }, commits = { type = "array", items = { type = "object", additionalProperties = false, properties = { author_email = { type = "string" }, author_name = { type = "string" }, body = { type = "string" }, files = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, additions = { type = "integer", maximum = 4294967295, minimum = 0 }, area = { oneOf = [{ type = "string", const = "Staged" }, { type = "string", const = "Unstaged" }, { type = "string", const = "Untracked" }] }, deletions = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["Added", "Modified", "Deleted", "Renamed", "Untracked", "Conflicted"] }, old_path = { type = ["string", "null"] } }, required = ["path", "area", "kind", "additions", "deletions"] } }, id = { type = "string" }, lane = { type = "integer", minimum = 0 }, parents = { type = "array", items = { type = "string" } }, refs = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, kind = { type = "string", enum = ["Head", "LocalBranch", "RemoteBranch", "Tag"] } }, required = ["name", "kind"] } }, summary = { type = "string" }, time = { type = "integer" }, when = { type = "string" } }, required = ["id", "summary", "body", "author_name", "author_email", "when", "time", "parents", "refs", "lane", "files"] } }, graph_width = { type = "integer", minimum = 0 }, head = { type = "string" }, remotes = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, url = { type = "string" } }, required = ["name", "url"] } }, stashes = { type = "array", items = { type = "object", additionalProperties = false, properties = { branch = { type = "string" }, index = { type = "integer", minimum = 0 }, message = { type = "string" } }, required = ["index", "message", "branch"] } }, tags = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, message = { type = ["string", "null"] }, target = { type = "string" } }, required = ["name", "target"] } }, workdir = { type = "string" } }, required = ["name", "head", "workdir", "commits", "branches", "tags", "stashes", "remotes", "graph_width", "author_name", "author_email"] } },
+]
+
+[[resources.verbs]]
+id = "diff-layout"
+kind = "read"
+
+[[resources.verbs]]
+id = "syntax-highlight"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-whitespace"
+kind = "read"
+
+[[resources.verbs]]
+id = "wrap-lines"
+kind = "read"
+
+[[resources.types]]
+name = "Branch"
+fields = [
+  { name = "name", type = "text" },
+  { name = "is_head", type = "bool" },
+  { name = "is_remote", type = "bool" },
+  { name = "upstream", type = { option = "text" } },
+  { name = "ahead", type = "int" },
+  { name = "behind", type = "int" },
+  { name = "tip", type = "text" },
+]
+
+[[resources.types]]
+name = "ChangeArea"
+cases = [
+  { name = "Staged" },
+  { name = "Unstaged" },
+  { name = "Untracked" },
+]
+
+[[resources.types]]
+name = "ChangeKind"
+cases = [
+  { name = "Added" },
+  { name = "Modified" },
+  { name = "Deleted" },
+  { name = "Renamed" },
+  { name = "Untracked" },
+  { name = "Conflicted" },
+]
+
+[[resources.types]]
+name = "Commit"
+fields = [
+  { name = "id", type = "text" },
+  { name = "summary", type = "text" },
+  { name = "body", type = "text" },
+  { name = "author_name", type = "text" },
+  { name = "author_email", type = "text" },
+  { name = "when", type = "text" },
+  { name = "time", type = "int" },
+  { name = "parents", type = { list = "text" } },
+  { name = "refs", type = { list = { named = "RefLabel" } } },
+  { name = "lane", type = "int" },
+  { name = "files", type = { list = { named = "FileChange" } } },
+]
+
+[[resources.types]]
+name = "FileChange"
+fields = [
+  { name = "path", type = "text" },
+  { name = "old_path", type = { option = "text" } },
+  { name = "area", type = { named = "ChangeArea" } },
+  { name = "kind", type = { named = "ChangeKind" } },
+  { name = "additions", type = "int" },
+  { name = "deletions", type = "int" },
+]
+
+[[resources.types]]
+name = "RefKind"
+cases = [
+  { name = "Head" },
+  { name = "LocalBranch" },
+  { name = "RemoteBranch" },
+  { name = "Tag" },
+]
+
+[[resources.types]]
+name = "RefLabel"
+fields = [
+  { name = "name", type = "text" },
+  { name = "kind", type = { named = "RefKind" } },
+]
+
+[[resources.types]]
+name = "Remote"
+fields = [
+  { name = "name", type = "text" },
+  { name = "url", type = "text" },
+]
+
+[[resources.types]]
+name = "SharedRepo"
+fields = [
+  { name = "name", type = "text" },
+  { name = "head", type = "text" },
+  { name = "workdir", type = "text" },
+  { name = "commits", type = { list = { named = "Commit" } } },
+  { name = "branches", type = { list = { named = "Branch" } } },
+  { name = "tags", type = { list = { named = "Tag" } } },
+  { name = "stashes", type = { list = { named = "Stash" } } },
+  { name = "remotes", type = { list = { named = "Remote" } } },
+  { name = "graph_width", type = "int" },
+  { name = "author_name", type = "text" },
+  { name = "author_email", type = "text" },
+]
+
+[[resources.types]]
+name = "Stash"
+fields = [
+  { name = "index", type = "int" },
+  { name = "message", type = "text" },
+  { name = "branch", type = "text" },
+]
+
+[[resources.types]]
+name = "Tag"
+fields = [
+  { name = "name", type = "text" },
+  { name = "target", type = "text" },
+  { name = "message", type = { option = "text" } },
 ]
 

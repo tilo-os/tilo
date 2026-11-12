@@ -125,6 +125,12 @@ pub fn shortcut_run_address(id: &str) -> tilo_actions::ActionAddress {
     tilo_actions::ActionAddress::new(shortcut_resource_id(id), SHORTCUT_RUN_ACTION)
 }
 
+/// Whether `action` of `resource` runs a saved shortcut.
+#[must_use]
+pub fn runs_shortcut(resource: &str, action: &str) -> bool {
+    action == SHORTCUT_RUN_ACTION && shortcut_id_of(resource).is_some()
+}
+
 /// The shortcut id a resource id names, when it names one.
 #[must_use]
 pub fn shortcut_id_of(resource_id: &str) -> Option<&str> {

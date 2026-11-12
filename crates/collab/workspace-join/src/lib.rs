@@ -28,7 +28,7 @@ pub mod sealed;
 pub mod task_delegation;
 
 use base64::Engine as _;
-use ed25519_dalek::{Signer as _, Verifier as _};
+use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
@@ -483,13 +483,14 @@ pub enum JoinTransportResponse {
     OwnerMembershipComplete(OwnerBootstrapV1),
 }
 
-/// Sign an invitation grant, returning its wire bytes.
+/// Sign an invitation grant with the issuer device's `key`, which answers at once
+/// ([`collab_types::signer::sign_now`]), returning its wire bytes.
 pub fn issue_invitation(
     grant: InviteGrant,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<Vec<u8>, String> {
     validate_grant(&grant, 0, false)?;
-    if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
+    if key.device_public_key() != grant.issuer.device_public_key {
         return Err("invitation signer is not the declared issuer device".into());
     }
     let view = InvitationView {
@@ -500,7 +501,8 @@ pub fn issue_invitation(
     let signed = SignedInvitation {
         version: INVITATION_VERSION,
         grant,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     };
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
@@ -509,11 +511,11 @@ pub fn issue_invitation(
 pub fn issue_invitation_from(
     grant: InviteGrant,
     inviter: Inviter,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<Vec<u8>, String> {
     validate_grant(&grant, 0, false)?;
     validate_inviter(&inviter)?;
-    if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
+    if key.device_public_key() != grant.issuer.device_public_key {
         return Err("invitation signer is not the declared issuer device".into());
     }
     let digest = tagged_digest(
@@ -528,7 +530,8 @@ pub fn issue_invitation_from(
         version: INVITATION_WITH_INVITER_VERSION,
         grant,
         inviter,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     };
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
@@ -550,9 +553,9 @@ pub fn sign_transport_hint(
     opaque_json: impl Into<String>,
     host: DeviceCert,
     service_public_key: [u8; 32],
-    host_key: &ed25519_dalek::SigningKey,
+    host_key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<TransportHint, String> {
-    if host_key.verifying_key().to_bytes() != host.device_public_key {
+    if host_key.device_public_key() != host.device_public_key {
         return Err("transport hint signer is not the certified host device".into());
     }
     let kind = kind.into();
@@ -570,7 +573,8 @@ pub fn sign_transport_hint(
         opaque_json,
         host,
         service_public_key,
-        host_signature: host_key.sign(&digest).to_bytes(),
+        host_signature: collab_types::signer::sign_now(host_key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 
@@ -601,6 +605,36 @@ pub fn verify_transport_hint_at(
 ) -> Result<(), String> {
     validate_certificate(&hint.host, revocations, now_ns)?;
     verify_transport_hint(hint)
+}
+
+/// The runs of `signed_invitation`'s bytes that invitations from one issuer
+/// over one host share: the issuer's certificate and the signed transport
+/// details, each as it is encoded there. Read, not verified: a keeper of
+/// many invitations names these runs once, and checks each invitation whole
+/// when it puts it back together. An invitation of an earlier layout, or
+/// one that does not decode, shares nothing.
+#[must_use]
+pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
+    let grant = match postcard::take_from_bytes::<u32>(signed_invitation) {
+        Ok((INVITATION_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitation>(signed_invitation).map(|signed| signed.grant)
+        }
+        Ok((INVITATION_WITH_INVITER_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitationWithInviter>(signed_invitation)
+                .map(|signed| signed.grant)
+        }
+        _ => return Vec::new(),
+    };
+    let Ok(grant) = grant else {
+        return Vec::new();
+    };
+    [
+        postcard::to_stdvec(&grant.issuer),
+        postcard::to_stdvec(&grant.transport),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .collect()
 }
 
 /// The text an invitation is handed over in: its signed bytes as base64.
@@ -658,8 +692,6 @@ pub fn decode_and_verify_invitation(
         _ => return Err("unsupported invitation version".into()),
     };
     validate_decoded(&grant, recipient_user_public_key, revocations, now_ns)?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&grant.issuer.device_public_key)
-        .map_err(|_| "invalid invitation issuer device key".to_string())?;
     let digest = match &inviter {
         None => tagged_digest(
             INVITATION_DOMAIN,
@@ -677,8 +709,22 @@ pub fn decode_and_verify_invitation(
             },
         )?,
     };
-    key.verify(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
-        .map_err(|_| "invitation signature did not verify".to_string())?;
+    // A workspace re-reads every invitation its members redeemed whenever its
+    // governance changes: one that verified before is remembered.
+    tilo_user_identity::verify_remembered(
+        &grant.issuer.device_public_key,
+        &digest,
+        &signature,
+        false,
+    )
+    .map_err(|refused| match refused {
+        tilo_user_identity::RememberedRefusal::Key => {
+            "invalid invitation issuer device key".to_string()
+        }
+        tilo_user_identity::RememberedRefusal::Signature => {
+            "invitation signature did not verify".to_string()
+        }
+    })?;
     Ok(VerifiedJoin {
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
         grant,
@@ -719,15 +765,16 @@ fn validate_decoded(
 /// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_join_proof(
     challenge: JoinChallenge,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<JoinProof, String> {
-    if key.verifying_key().to_bytes() != challenge.device_public_key {
+    if key.device_public_key() != challenge.device_public_key {
         return Err("join proof signer is not the challenged device".into());
     }
     let digest = tagged_digest(JOIN_PROOF_DOMAIN, &challenge)?;
     Ok(JoinProof {
         challenge,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 
@@ -774,6 +821,39 @@ pub fn verify_join_proof(
         join,
         certificate: device_cert.clone(),
         request_id: proof.challenge.request_id,
+    })
+}
+
+/// Verify the redemption of `signed_invitation` by the device `device_cert`
+/// certifies, which already proved it holds its key on the connection that
+/// carries the redemption: a signature over keying material exported from
+/// that connection's TLS session, which its host checked. That proof is fresh
+/// and unique to the connection as a host challenge's answer is to the
+/// challenge, so no challenge is issued: the invitation and the certificate
+/// are checked as [`verify_join_proof`] checks them.
+///
+/// # Errors
+///
+/// The certificate does not verify or is revoked, or the invitation does not
+/// verify for its person.
+pub fn verify_connection_redemption(
+    signed_invitation: &[u8],
+    device_cert: &DeviceCert,
+    request_id: [u8; 32],
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<VerifiedRedemption, String> {
+    validate_certificate(device_cert, revocations, now_ns)?;
+    let join = decode_and_verify_invitation(
+        signed_invitation,
+        Some(device_cert.user_public_key),
+        revocations,
+        now_ns,
+    )?;
+    Ok(VerifiedRedemption {
+        join,
+        certificate: device_cert.clone(),
+        request_id,
     })
 }
 
@@ -828,15 +908,16 @@ pub fn verify_stored_complete(
 /// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_membership_proof(
     challenge: MembershipChallenge,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<MembershipProof, String> {
-    if key.verifying_key().to_bytes() != challenge.device_public_key {
+    if key.device_public_key() != challenge.device_public_key {
         return Err("membership proof signer is not the challenged device".into());
     }
     let digest = tagged_digest(MEMBERSHIP_PROOF_DOMAIN, &challenge)?;
     Ok(MembershipProof {
         challenge,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 

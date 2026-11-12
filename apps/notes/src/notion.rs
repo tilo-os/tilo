@@ -20,6 +20,7 @@
 //! still a note of its own, and the link the export writes where that page
 //! used to sit is left exactly as the export wrote it.
 
+use crate::metadata::CATALOG;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -54,7 +55,7 @@ pub struct ImportedPage {
 /// one note.
 pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
     if bytes.len() > MAX_ARCHIVE_BYTES {
-        return Err(ui::i18n!("notes-notion-too-big"));
+        return Err(CATALOG.t("notes-notion-too-big"));
     }
     let pages = if looks_like_archive(bytes) {
         pages_from_archive(bytes)?
@@ -62,10 +63,10 @@ pub fn pages(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
         pages_from_api_json(bytes)?
     };
     if pages.is_empty() {
-        return Err(ui::i18n!("notes-notion-empty"));
+        return Err(CATALOG.t("notes-notion-empty"));
     }
     if pages.len() > MAX_IMPORTED_PAGES {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::metadata::CATALOG.t_args(
             "notes-notion-too-many-pages",
             &[(
                 "limit",
@@ -111,7 +112,7 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 /// always becomes the same notes.
 fn pages_from_archive(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
     let mut parts = read_zip_parts(bytes, &archive_limits())
-        .map_err(|_| ui::i18n!("notes-notion-archive-invalid"))?;
+        .map_err(|_| CATALOG.t("notes-notion-archive-invalid"))?;
     parts.retain(|(name, _)| !name.starts_with("__MACOSX/"));
     parts.sort_by(|(left, _), (right, _)| left.cmp(right));
     // The names keep the sorted order; the map only serves lookups, since
@@ -234,7 +235,7 @@ fn page_title(name: &str, text: &str) -> String {
         .filter(|heading| !heading.is_empty());
     from_file
         .or(from_body)
-        .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned)
+        .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned)
 }
 
 /// The Markdown of the page stored at `name`, with each picture it shows
@@ -444,12 +445,12 @@ fn is_picture(name: &str) -> bool {
 /// The pages a Notion API `children` listing describes, as Markdown.
 fn pages_from_api_json(bytes: &[u8]) -> Result<Vec<ImportedPage>, String> {
     let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| ui::i18n!("notes-notion-unreadable"))?;
+        serde_json::from_slice(bytes).map_err(|_| CATALOG.t("notes-notion-unreadable"))?;
     // A listing is one page's blocks; an array of listings is several pages.
     let listings: Vec<&Value> = match &value {
         Value::Array(entries) => entries.iter().collect(),
         Value::Object(_) => vec![&value],
-        _ => return Err(ui::i18n!("notes-notion-unreadable")),
+        _ => return Err(CATALOG.t("notes-notion-unreadable")),
     };
     let mut pages = Vec::new();
     for listing in listings {
@@ -496,7 +497,7 @@ fn api_title(listing: &Value, blocks: &[Value]) -> String {
         .or(from_heading)
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| ui::i18n!("notes-imported-untitled"))
+        .unwrap_or_else(|| CATALOG.t("notes-imported-untitled"))
 }
 
 /// Write one API block as Markdown; its children follow it, indented for a

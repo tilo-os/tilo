@@ -327,11 +327,11 @@ pub struct Surface {
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
-/// "Asking from the canvas"): the session posts it as the person into their ask conversation with
-/// the workspace's agent, and answers the resource that conversation is, so the text typed stands
-/// as a place of it. `None` when the session cannot ask — no agent to ask, no workspace to ask in —
-/// and the text then fails to place as it always did.
-pub type Ask = Rc<dyn Fn(&str) -> Option<String>>;
+/// "Asking from the canvas"): the session sends it as the person to the workspace's agent, as a
+/// send-to box sends, and Chat opens the conversation it lands in. `false` when the session cannot
+/// ask — no workspace to ask in, or the send was refused — and the text then fails to place as it
+/// always did.
+pub type Ask = Rc<dyn Fn(&str) -> bool>;
 
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
@@ -350,7 +350,7 @@ pub struct Found<'a> {
     /// The system's search, [`Find`].
     pub find: &'a dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
     /// The ask for text that asks, [`Ask`].
-    pub ask: &'a dyn Fn(&str) -> Option<String>,
+    pub ask: &'a dyn Fn(&str) -> bool,
     /// Whether anyone else's change is still in flight.
     pub busy: Busy,
 }
@@ -753,9 +753,9 @@ impl Arrangement {
     ///
     /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
     /// or text nothing matches — goes to `ask` instead (shell.md §8.1,
-    /// "Asking from the canvas"): what it answers is the resource to place,
-    /// the person's ask conversation, so the text typed stands as a place of
-    /// that conversation, where they typed it, as one arranging step.
+    /// "Asking from the canvas"): it is sent to the workspace's agent, and the
+    /// conversation it lands in is Chat's to open, so nothing is placed here
+    /// and this answers `None`.
     ///
     /// # Errors
     /// Why the place could not be made, or the text found nothing to place
@@ -781,26 +781,11 @@ impl Arrangement {
         // A question is answered even when it happens to match something the search holds: the
         // person asked, so the text they typed is a message to their agent, not a thing to stand
         // (shell.md §8.1).
-        let asked_agent =
-            tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
-        let resource = if asked_agent {
-            ask(text)
-        } else {
-            found_resource
+        let resource = match found_resource {
+            Some(resource) if !tilo_desktop_search::answers::question::asks(text) => resource,
+            _ if ask(text) => return Ok(None),
+            _ => return Err(format!("nothing matches {text:?}")),
         };
-        let Some(resource) = resource else {
-            return Err(format!("nothing matches {text:?}"));
-        };
-        // A text that asks brings the conversation it is with forward rather than standing a second
-        // place of it: the same conversation belongs in one place (shell.md §8.1). Text that finds
-        // a resource places it where the person typed, as it always has — a second place of a note
-        // is the person's to make.
-        if asked_agent && let Some(held) = self.place_of(&resource) {
-            // The ask succeeded: its message is posted whether or not the conversation stood in
-            // front already, so bringing it forward tolerates that (`bring_forward`).
-            self.bring_forward(asked, held, busy)?;
-            return Ok(Some(held));
-        }
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -2170,7 +2155,7 @@ fn placing_actions() -> Vec<ActionSpec> {
     vec![place_action(), place_found_action(), open_action()]
 }
 
-/// `place`: a resource on the canvas, as one of its views, at a point or a float's corner.
+/// Put a resource on the canvas as one of its views.
 fn place_action() -> ActionSpec {
     action(
         "place",
@@ -2252,7 +2237,7 @@ fn place_action() -> ActionSpec {
     )
 }
 
-/// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
+/// Put what a text finds on the canvas, or into a strip as a tab.
 fn place_found_action() -> ActionSpec {
     action(
         "place-found",
@@ -2281,7 +2266,7 @@ fn place_found_action() -> ActionSpec {
     )
 }
 
-/// `open`: a resource opened with its own view, beside what the ask is in.
+/// Open a resource with its own view, beside what the ask is in.
 fn open_action() -> ActionSpec {
     action(
         "open",
@@ -2398,7 +2383,7 @@ pub struct Door {
     /// the canvas places (shell.md §8). Empty where the host has no index to search.
     find: Find,
     /// What the canvas asks of the host when the text it is given is a question, or names
-    /// nothing (shell.md §8.1). `None` where the host has no agent to ask.
+    /// nothing (shell.md §8.1).
     ask: Ask,
 }
 

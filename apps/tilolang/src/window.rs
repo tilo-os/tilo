@@ -35,6 +35,7 @@ use ui::widget::{AppModel, Element, ModelPath, Widget};
 use crate::names::Names;
 use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
 use ui::tilo_resource::profiling::Phase;
+use ui::widget::DrawChild;
 
 /// The two vocabularies the window answers on the door: what an agent asks of the host, and
 /// showing what a search hit names.
@@ -155,6 +156,12 @@ impl Platform for InProcess {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
+    /// change of clocks, as the toolkit's dates read them.
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     /// The day the person's region starts its week on, as the toolkit's dates start it.
     fn week_start(&self) -> i64 {
         i64::from(
@@ -169,6 +176,12 @@ impl Platform for InProcess {
     /// and a notice carry no stored text.
     fn shown(&self, kind: &str, value: &str) -> String {
         tilo_ui_host::date::shown_text(kind, value)
+    }
+
+    /// The clock the person reads: theirs, from Settings, so a time an app writes
+    /// (`a.fetched.clock()`) reads as the clock its window shows.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
@@ -227,6 +240,9 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+    /// How many times the window had published on the door when its controls were last bound
+    /// to what it published ([`crate::resource::published_since`]).
+    bound: u64,
     /// The workspace's record of each person's own state, when the window has it: the view state
     /// they set and what they have seen, so the place they picked is still theirs after a restart
     /// and on their other devices ([`Personal`]).
@@ -284,6 +300,7 @@ impl Window {
             history: VecDeque::new(),
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
+            bound: 0,
             personal: None,
         }
     }
@@ -350,10 +367,15 @@ impl Window {
                 .iter()
                 .map(|slot| (slot.key(), slot.value.clone())),
         );
+        // Everyone's marks, not this person's alone: a conversation shows who read to a line.
         self.instance.set_seen(
-            kept.seen
-                .iter()
-                .map(|seen| (seen.resource.clone(), Some(seen.mark.clone()))),
+            state.seen.iter().map(|seen| {
+                (
+                    seen.person.clone(),
+                    seen.resource.clone(),
+                    Some(seen.mark.clone()),
+                )
+            }),
             &kept
                 .runs
                 .iter()
@@ -583,13 +605,6 @@ impl Window {
     fn current_host(&self) -> Option<Host> {
         self.instance.host()
     }
-
-    /// Close the view after the root's, as Back does.
-    #[cfg(test)]
-    fn close_detail(&mut self) {
-        self.instance.close_detail();
-        self.show_sent();
-    }
 }
 
 /// Where in the package a participant is: the resource their window shows beside the root.
@@ -742,15 +757,33 @@ impl ResourceSurface<Workspace> for Window {
     }
 }
 
+/// The window is named by what it shows: the item it shows as its page, else the page, the record,
+/// the place its composed shell names in its content header. Two windows of the app read apart in
+/// the desktop's tabs, the switcher and assistive technology without either being opened.
+impl ui::component_lifecycle::WindowTitle for Window {
+    fn window_title(&self) -> Option<&str> {
+        self.view.title()
+    }
+}
+
 impl Widget for Window {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::component_lifecycle::WindowTitle
     );
 
     fn needs_redraw(&self) -> bool {
         ui::widget::redraw_or_children(self.dirty, self)
+    }
+
+    /// Whether this window's sync still has work to do on an idle frame: what its instance owes
+    /// — an index the store is deriving or waits for the record of, a change no sync has sent —
+    /// changes what its views show, so the frame that says so syncs and the change is shown then
+    /// (see [`tilolang_tilo::instance::Instance::owes_a_frame`]).
+    fn needs_idle_sync(&self) -> bool {
+        self.instance.owes_a_frame() || ui::widget::Widget::needs_idle_sync(&self.view)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -814,6 +847,12 @@ impl Widget for Window {
             self.instance.update()
         };
         let received = self.view.receive();
+        // A control whose event runs an action the window publishes is bound to it: a press
+        // runs it through the door, and an agent running it is seen there.
+        if let Some((bound, published)) = crate::resource::published_since(self.bound) {
+            self.bound = bound;
+            self.view.bind_published(&published);
+        }
         // What a view asked of the record's history (`undo(v)`, `undo(run)`) and the person's
         // Undo and Redo are the record's own history verbs, as the room path runs them: the
         // door builds each from the published verb and applies it to the record.
@@ -831,12 +870,14 @@ impl Widget for Window {
         changed || received || child
     }
 
-    /// The body's deadlines, and when the time a view read (`today`) next reads differently:
-    /// the window sleeps until then, and the frame then runs again the views that read it.
+    /// The body's deadlines, when the time a view read (`today`) next reads differently, and the
+    /// pause after the last keystroke that lands the change the person is making: the window
+    /// sleeps until then, and the frame then runs what it owed.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let views = self.instance.wakes_in().and_then(|wait| {
-            ui::time::now().checked_add(ui::time::Duration::from_secs(wait.as_secs()))
-        });
+        let views = self
+            .instance
+            .wakes_in()
+            .and_then(|wait| ui::time::now().checked_add(wait));
         [views, self.view.next_wake_deadline()]
             .into_iter()
             .flatten()
@@ -903,7 +944,8 @@ impl Widget for Window {
                 let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;
                 Some((user.id, person.0.clone()))
             }));
-        self.view.draw(scene, transform, text, theme, presence);
+        self.view
+            .draw_child(scene, transform, text, theme, presence);
         if let Some(undrawn) = self.undrawn.take() {
             let at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -5,8 +5,8 @@
 
 use zeroize::Zeroizing;
 
+use crate::platform::fabric::SharedLink;
 use tilo_action_broker::services::WifiContinuityServices;
-use tilo_device_fabric::link::SharedLink;
 
 /// This session's answer to Settings' Wi-Fi continuity commands.
 pub(crate) struct WifiContinuity {

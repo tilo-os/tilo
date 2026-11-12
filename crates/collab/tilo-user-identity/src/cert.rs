@@ -70,7 +70,7 @@ pub const DEVCERT_V4_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v4\0";
 /// so no verifier that predates stand-ins can take one for a device.
 pub const DEVCERT_V5_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v5\0";
 
-/// Signing-domain tag for a certificate a stand-in issued (see
+/// Signing-domain tag for a certificate a stand-in or a grant issued (see
 /// [`DeviceCert::issuer`]). Its preimage binds the stand-in's whole
 /// certificate, signature included, so the certificate cannot be moved to
 /// another issuer; no verifier that predates it takes it, as its binary
@@ -83,6 +83,16 @@ pub const STAND_IN_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 /// The longest an agent's grant certificate may last. A grant is renewed by
 /// the person approving the agent again, so a key that leaks from the
 /// service holding it is bounded by this, not by the service.
+///
+/// A person's server key ([`DeviceCapabilities::server_key`]) is the one
+/// exception: a backend that runs unattended would break silently each time
+/// its key ran out, so it lasts until the person revokes it, or until an
+/// expiry they chose. What bounds a leaked one is revocation, which every
+/// host checks at each handshake and which ends every key it minted, and a
+/// leak is cheap to find and end: its token carries a prefix secret scanners
+/// look for, it is shown once, and the person's keys list shows when it was
+/// last used and which device approved it, with a revoke button beside it.
+/// The keys a server key mints for one workspace stay within this bound.
 pub const MAX_AGENT_GRANT_LIFETIME_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
 
 /// First byte of a foreign device's capabilities in binary encodings. A
@@ -93,7 +103,8 @@ const FOREIGN_BINARY_MARKER: u8 = 2;
 /// First byte of capabilities that grant administration or an agent's grant
 /// in binary encodings, followed by one byte of [`EXTENDED_FOREIGN`] |
 /// [`EXTENDED_ADMINISTER`] | [`EXTENDED_AGENT`] | [`EXTENDED_STAND_IN`] |
-/// [`EXTENDED_ISSUED`], the agent's scope when [`EXTENDED_AGENT`] is set (a
+/// [`EXTENDED_ISSUED`] | [`EXTENDED_SERVER_KEY`], the agent's scope when
+/// [`EXTENDED_AGENT`] is set (a
 /// tag byte, then a workspace's 16 bytes for one workspace), and then the
 /// four flags. Verifiers that predate it refuse the byte, as they refuse
 /// [`FOREIGN_BINARY_MARKER`]; verifiers that predate a bit refuse it too.
@@ -105,6 +116,12 @@ const EXTENDED_STAND_IN: u8 = 8;
 /// Only inside a certificate: its issuer's certificate follows its
 /// signature (see [`DeviceCert::issuer`]).
 const EXTENDED_ISSUED: u8 = 16;
+/// The agent's grant is a person's server key (see
+/// [`DeviceCapabilities::server_key`]).
+const EXTENDED_SERVER_KEY: u8 = 32;
+/// The agent's grant may operate web pages in Browser (see
+/// [`DeviceCapabilities::browser_pages`]).
+const EXTENDED_BROWSER_PAGES: u8 = 64;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 
@@ -282,10 +299,10 @@ pub struct DeviceCapabilities {
     /// a service (the person's hosting provider's agent door, say) holds it
     /// so an agent the person approved acts for them, in the workspaces the
     /// scope names and nowhere else. Such a certificate grants none of the
-    /// flags above, always expires (within [`MAX_AGENT_GRANT_LIFETIME_NS`]),
-    /// governs no workspace, and is revoked like any device. It is signed
-    /// under [`DEVCERT_V4_PREIMAGE_TAG`] and encoded so that verifiers which
-    /// predate this field reject it.
+    /// flags above, expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] unless it
+    /// is a server key ([`Self::server_key`]), governs no workspace, and is
+    /// revoked like any device. It is signed under [`DEVCERT_V4_PREIMAGE_TAG`]
+    /// and encoded so that verifiers which predate this field reject it.
     pub agent: Option<AgentScope>,
 
     /// The key is a person's stand-in approver, held by a host for a person
@@ -297,6 +314,23 @@ pub struct DeviceCapabilities {
     /// takes it. It is signed under [`DEVCERT_V5_PREIMAGE_TAG`] and encoded so
     /// that verifiers which predate this field reject it.
     pub stand_in: bool,
+
+    /// The agent's grant is a server key the person created for their own
+    /// backend, reaching all their workspaces: it lasts until they revoke it,
+    /// or until an expiry they chose (see [`MAX_AGENT_GRANT_LIFETIME_NS`]).
+    /// Only an all-workspaces grant is one; the grant an agent gets through
+    /// a person's consent never is. The marker is part of the signed
+    /// encoding, so a certificate cannot gain or lose it, and verifiers that
+    /// predate it reject it.
+    pub server_key: bool,
+
+    /// The key may operate web pages in Browser: navigate, fill, select,
+    /// click, press, scroll, point and drag on the pages of its workspaces'
+    /// Browser windows without asking the person each time. Submitting a
+    /// page, and every other action Browser holds for the person, still asks
+    /// them. Only an agent's grant carries it, it is part of the signed
+    /// encoding, and verifiers that predate it reject it.
+    pub browser_pages: bool,
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -320,6 +354,10 @@ struct CapabilitiesJson {
     agent: Option<AgentScope>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     stand_in: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    server_key: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    browser_pages: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -334,6 +372,8 @@ impl Serialize for DeviceCapabilities {
                 can_administer_devices: self.can_administer_devices,
                 agent: self.agent,
                 stand_in: self.stand_in,
+                server_key: self.server_key,
+                browser_pages: self.browser_pages,
             }
             .serialize(serializer);
         }
@@ -368,7 +408,9 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(capabilities.can_administer_devices, EXTENDED_ADMINISTER)
         | bit(capabilities.agent.is_some(), EXTENDED_AGENT)
         | bit(capabilities.stand_in, EXTENDED_STAND_IN)
-        | bit(issued, EXTENDED_ISSUED);
+        | bit(issued, EXTENDED_ISSUED)
+        | bit(capabilities.server_key, EXTENDED_SERVER_KEY)
+        | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES);
     let extended_form = extended & !EXTENDED_FOREIGN != 0;
     let len = if extended_form {
         scope.len().saturating_add(6)
@@ -406,6 +448,8 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_administer_devices: json.can_administer_devices,
                 agent: json.agent,
                 stand_in: json.stand_in,
+                server_key: json.server_key,
+                browser_pages: json.browser_pages,
             });
         }
         let BinaryCapabilitiesOf(capabilities, issued) =
@@ -467,7 +511,9 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                     | EXTENDED_ADMINISTER
                     | EXTENDED_AGENT
                     | EXTENDED_STAND_IN
-                    | EXTENDED_ISSUED;
+                    | EXTENDED_ISSUED
+                    | EXTENDED_SERVER_KEY
+                    | EXTENDED_BROWSER_PAGES;
                 if extended & !known != 0 || extended & !EXTENDED_FOREIGN == 0 {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
@@ -523,6 +569,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 can_administer_devices: extended & EXTENDED_ADMINISTER != 0,
                 agent,
                 stand_in: extended & EXTENDED_STAND_IN != 0,
+                server_key: extended & EXTENDED_SERVER_KEY != 0,
+                browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
             },
             extended & EXTENDED_ISSUED != 0,
         ))
@@ -530,6 +578,24 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
 }
 
 impl DeviceCapabilities {
+    /// Capabilities that grant nothing: what an agent device's certificate
+    /// carries, and what the named sets below add to.
+    #[must_use]
+    pub const fn nothing() -> Self {
+        Self {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: false,
+            foreign: false,
+            can_administer_devices: false,
+            agent: None,
+            stand_in: false,
+            server_key: false,
+            browser_pages: false,
+        }
+    }
+
     /// Whether these capabilities grant nothing `held` does not: a renewal
     /// may narrow what a device may do, never widen it. A certificate that
     /// stops being foreign may not become so, and vice versa.
@@ -544,6 +610,8 @@ impl DeviceCapabilities {
             && (self.foreign || !held.foreign)
             && self.agent == held.agent
             && self.stand_in == held.stand_in
+            && self.server_key == held.server_key
+            && within(self.browser_pages, held.browser_pages)
     }
 
     /// The capabilities of an agent's grant reaching `scope`: nothing but
@@ -551,22 +619,40 @@ impl DeviceCapabilities {
     #[must_use]
     pub const fn agent_grant(scope: AgentScope) -> Self {
         Self {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
             agent: Some(scope),
-            stand_in: false,
+            ..Self::nothing()
         }
     }
 
+    /// The capabilities of a person's server key: an agent's grant reaching
+    /// all their workspaces that lasts until revoked (see
+    /// [`Self::server_key`]).
+    #[must_use]
+    pub const fn server_key_grant() -> Self {
+        Self {
+            server_key: true,
+            ..Self::agent_grant(AgentScope::AllWorkspaces)
+        }
+    }
+
+    /// The same capabilities, operating web pages in Browser where `allowed`
+    /// (see [`Self::browser_pages`]): what a person ticking the box on a key
+    /// gives it, and what a key hands the keys it mints.
+    #[must_use]
+    pub const fn with_browser_pages(mut self, allowed: bool) -> Self {
+        self.browser_pages = allowed;
+        self
+    }
+
     /// Whether these are an agent's grant's capabilities that hold: the
-    /// scope, and no other flag. `true` for every certificate that is not a
-    /// grant's.
+    /// scope, and no other flag but being a server key that reaches all
+    /// workspaces. `true` for every certificate that is neither a grant's nor
+    /// a server key's.
     #[must_use]
     pub const fn agent_grant_holds(&self) -> bool {
+        if self.server_key && !matches!(self.agent, Some(AgentScope::AllWorkspaces)) {
+            return false;
+        }
         self.agent.is_none()
             || !(self.can_own_workspaces
                 || self.can_admit_devices
@@ -582,14 +668,8 @@ impl DeviceCapabilities {
     #[must_use]
     pub const fn stand_in_approver() -> Self {
         Self {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
             stand_in: true,
+            ..Self::nothing()
         }
     }
 
@@ -625,12 +705,8 @@ impl DeviceCapabilities {
         Self {
             can_own_workspaces: true,
             can_admit_devices: true,
-            can_act_as_host: false,
             can_read_all_workspaces: true,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
+            ..Self::nothing()
         }
     }
 
@@ -640,13 +716,7 @@ impl DeviceCapabilities {
     pub fn member() -> Self {
         Self {
             can_own_workspaces: true,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
+            ..Self::nothing()
         }
     }
 
@@ -656,14 +726,9 @@ impl DeviceCapabilities {
     /// devices.
     pub fn host() -> Self {
         Self {
-            can_own_workspaces: false,
-            can_admit_devices: false,
             can_act_as_host: true,
             can_read_all_workspaces: true,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
+            ..Self::nothing()
         }
     }
 
@@ -672,14 +737,8 @@ impl DeviceCapabilities {
     /// reads nothing.
     pub fn administrator() -> Self {
         Self {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
             can_administer_devices: true,
-            agent: None,
-            stand_in: false,
+            ..Self::nothing()
         }
     }
 }
@@ -752,9 +811,10 @@ pub struct DeviceCert {
     /// struct via `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`.
     pub signature: [u8; 64],
 
-    /// The root-signed certificate of the person's stand-in approver that
-    /// signed this certificate, or `None` for one the root signed itself
-    /// (every certificate but those a stand-in issued). See the module.
+    /// The root-signed certificate that signed this one, or `None` for one
+    /// the root signed itself: a person's stand-in approver (see the module),
+    /// or an all-workspaces agent's grant that minted a grant for one
+    /// workspace ([`prepare_minted_grant`]).
     /// Encoded only when present, so every other certificate encodes and
     /// signs exactly as before; signed under [`DEVCERT_V6_PREIMAGE_TAG`].
     pub issuer: Option<Box<DeviceCert>>,
@@ -954,8 +1014,8 @@ struct DeviceCertView<'a> {
     expires_at_ns: Option<u64>,
 }
 
-/// Signing view of a certificate a stand-in issued: the view, then the
-/// stand-in's whole certificate.
+/// Signing view of a certificate an issuer signed: the view, then the
+/// issuer's whole certificate.
 #[derive(Serialize)]
 struct IssuedCertView<'a> {
     cert: DeviceCertView<'a>,
@@ -982,7 +1042,7 @@ impl DeviceCert {
     }
 
     /// The key whose signature this certificate carries: its stand-in's
-    /// when a stand-in issued it, else the person's root.
+    /// or grant's when one issued it, else the person's root.
     #[must_use]
     pub fn signer_public_key(&self) -> [u8; 32] {
         self.issuer
@@ -1036,8 +1096,12 @@ pub enum DeviceCertError {
     InvalidValidity,
 
     /// An agent's grant certificate grants more than its scope, or does
-    /// not expire within [`MAX_AGENT_GRANT_LIFETIME_NS`].
-    #[error("an agent's grant certificate must grant only its scope and expire within 90 days")]
+    /// not expire within [`MAX_AGENT_GRANT_LIFETIME_NS`] and is no server key
+    /// reaching all workspaces.
+    #[error(
+        "an agent's grant certificate must grant only its scope and expire within 90 days, \
+         unless it is a server key reaching all workspaces"
+    )]
     InvalidAgentGrant,
 
     /// A stand-in's certificate grants more than being one, does not expire
@@ -1050,10 +1114,11 @@ pub enum DeviceCertError {
     #[error("a stand-in approver is no device")]
     StandInIsNoDevice,
 
-    /// A certificate a stand-in issued exceeds what a stand-in may issue: a
-    /// member for a browser's lifetime, of the stand-in's own person, while
-    /// the stand-in's certificate was valid, by a root-signed stand-in.
-    #[error("a certificate a stand-in issued exceeds what a stand-in may issue")]
+    /// A certificate exceeds what its issuer may issue: a stand-in issues a
+    /// member for a browser's lifetime, an all-workspaces grant issues a grant
+    /// for one workspace that ends no later than it, each of its own person,
+    /// root-signed and valid when it issued.
+    #[error("a certificate exceeds what its issuer may issue")]
     InvalidIssuer,
 
     /// Canonical-encoding failure. Effectively unreachable but
@@ -1063,14 +1128,16 @@ pub enum DeviceCertError {
 }
 
 /// Whether `cert`'s shape holds: an agent's grant grants only its scope and
-/// expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] of its issue.
+/// expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] of its issue, unless it is
+/// a server key, which lasts as long as the person chose.
 fn check_agent_grant(cert: &DeviceCert) -> Result<(), DeviceCertError> {
-    if cert.capabilities.agent.is_none() {
+    if cert.capabilities.agent.is_none() && !cert.capabilities.server_key {
         return Ok(());
     }
-    let bounded = cert.expires_at_ns.is_some_and(|expiry| {
-        expiry.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
-    });
+    let bounded = cert.capabilities.server_key
+        || cert.expires_at_ns.is_some_and(|expiry| {
+            expiry.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
+        });
     if bounded && cert.capabilities.agent_grant_holds() {
         Ok(())
     } else {
@@ -1099,9 +1166,13 @@ fn check_stand_in(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     }
 }
 
-/// Whether a certificate a stand-in issued stays within what one may issue.
-/// The signatures are checked by the caller.
+/// Whether a certificate an issuer signed stays within what that issuer may
+/// issue: a stand-in's members, or a grant's one-workspace grants. The
+/// signatures are checked by the caller.
 fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    if issuer.capabilities.agent.is_some() {
+        return check_minted(cert, issuer);
+    }
     let browser = crate::CertificationPolicy::browser();
     let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
         && issuer
@@ -1121,6 +1192,52 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         && cert.device_public_key != cert.user_public_key
     {
         check_stand_in(issuer)
+    } else {
+        Err(DeviceCertError::InvalidIssuer)
+    }
+}
+
+/// Whether a grant `cert` that the grant `issuer` minted stays within it.
+/// The issuer reaches all of its person's workspaces, is root-signed and was
+/// valid when it minted. `cert` is an agent's grant for one workspace and
+/// nothing else, and ends no later than the issuer; it always expires, even
+/// when its issuer is a server key that does not. Its key is neither the
+/// issuer's nor the root's. A grant can only narrow what it was given, and
+/// the chain is never longer than one step.
+fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
+        && issuer
+            .expires_at_ns
+            .is_none_or(|expiry| cert.issued_at_ns < expiry);
+    let ends_within = cert.expires_at_ns.is_some_and(|minted| {
+        minted > cert.issued_at_ns && issuer.expires_at_ns.is_none_or(|parent| minted <= parent)
+    });
+    let one_workspace = match cert.capabilities.agent {
+        Some(scope @ AgentScope::Workspace(_)) => {
+            cert.capabilities
+                == DeviceCapabilities::agent_grant(scope)
+                    .with_browser_pages(cert.capabilities.browser_pages)
+        }
+        _ => false,
+    };
+    let issuer_reaches_all = issuer.capabilities
+        == DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
+            .with_browser_pages(issuer.capabilities.browser_pages)
+        || issuer.capabilities
+            == DeviceCapabilities::server_key_grant()
+                .with_browser_pages(issuer.capabilities.browser_pages);
+    let pages_within = !cert.capabilities.browser_pages || issuer.capabilities.browser_pages;
+    if issuer_reaches_all
+        && issuer.issuer.is_none()
+        && issuer.user_public_key == cert.user_public_key
+        && issuer_valid_then
+        && ends_within
+        && one_workspace
+        && pages_within
+        && cert.device_public_key != issuer.device_public_key
+        && cert.device_public_key != cert.user_public_key
+    {
+        check_agent_grant(issuer)
     } else {
         Err(DeviceCertError::InvalidIssuer)
     }
@@ -1159,6 +1276,33 @@ pub fn prepare_stand_in_cert(
         expires_at_ns: Some(expires_at_ns),
         signature: [0; 64],
         issuer: None,
+    }
+}
+
+/// The unsigned certificate the all-workspaces grant `issuer` signs to make
+/// `key` a grant reaching only `workspace`, from `issued_at_ns` until
+/// `expires_at_ns`, which may be no later than the issuer's own expiry nor
+/// [`MAX_AGENT_GRANT_LIFETIME_NS`] after `issued_at_ns`.
+/// Sign it with [`sign_device_cert`] and the issuer's key.
+#[must_use]
+pub fn prepare_minted_grant(
+    issuer: &DeviceCert,
+    key: [u8; 32],
+    workspace: [u8; 16],
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key: issuer.user_public_key,
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace))
+            .with_browser_pages(issuer.capabilities.browser_pages),
+        issued_at_ns,
+        expires_at_ns: Some(expires_at_ns),
+        signature: [0; 64],
+        issuer: Some(Box::new(issuer.clone())),
     }
 }
 
@@ -1310,38 +1454,104 @@ fn verify_signed(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     let signer = cert.signer_public_key();
     let digest = device_cert_signing_digest(cert)?;
     // Hosts re-check the same certificates on every request and pump turn.
-    // A signature check is a pure function of (key, signed digest, signature):
-    // an exact triple that verified before verifies again. Only successes are
-    // remembered; every other input takes the full path below.
-    let mut triple = [0u8; 128];
-    triple[..32].copy_from_slice(&signer);
-    triple[32..64].copy_from_slice(&digest);
-    triple[64..].copy_from_slice(&cert.signature);
+    verify_remembered(&signer, &digest, &cert.signature, false).map_err(|error| match error {
+        RememberedRefusal::Key => DeviceCertError::InvalidUserPublicKey,
+        RememberedRefusal::Signature => DeviceCertError::BadSignature,
+    })
+}
+
+/// Why [`verify_remembered`] refused a signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RememberedRefusal {
+    /// The signer's key is not an Ed25519 public key.
+    Key,
+    /// The signature is not the key's over the message.
+    Signature,
+}
+
+/// Check that `signature` is `key`'s Ed25519 signature over `message`
+/// (strictly, as [`ed25519_dalek::VerifyingKey::verify_strict`], when
+/// `strict`).
+///
+/// A signature check is a pure function of the key, what was signed and the
+/// signature: an exact one that verified before verifies again. A workspace's
+/// governance is read again with every change to it, and holds a signature
+/// for every member (their certificate, their invitation, the membership
+/// operations their admission wrote), so checking each anew made one more
+/// admission cost a signature check per member. Only successes are
+/// remembered, by the message itself when it is a digest and by its BLAKE3
+/// hash otherwise; every other input takes the full check.
+///
+/// # Errors
+///
+/// [`RememberedRefusal`] says why the signature does not verify.
+pub fn verify_remembered(
+    key: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 64],
+    strict: bool,
+) -> Result<(), RememberedRefusal> {
+    let mut seen_as = [0u8; 129];
+    seen_as[..32].copy_from_slice(key);
+    match <&[u8; 32]>::try_from(message) {
+        Ok(digest) => seen_as[32..64].copy_from_slice(digest),
+        Err(_) => seen_as[32..64].copy_from_slice(blake3::hash(message).as_bytes()),
+    }
+    seen_as[64..128].copy_from_slice(signature);
+    seen_as[128] = u8::from(strict);
     if verified_signatures()
         .lock()
-        .is_ok_and(|seen| seen.contains(&triple))
+        .is_ok_and(|seen| seen.contains(&seen_as))
     {
         return Ok(());
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&signer)
-        .map_err(|_| DeviceCertError::InvalidUserPublicKey)?;
-    let sig = ed25519_dalek::Signature::from_bytes(&cert.signature);
-    vk.verify(&digest, &sig)
-        .map_err(|_| DeviceCertError::BadSignature)?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(key).map_err(|_| RememberedRefusal::Key)?;
+    let sig = ed25519_dalek::Signature::from_bytes(signature);
+    SIGNATURE_CHECKS.with(|checks| checks.set(checks.get().saturating_add(1)));
+    let verified = if strict {
+        vk.verify_strict(message, &sig)
+    } else {
+        vk.verify(message, &sig)
+    };
+    verified.map_err(|_| RememberedRefusal::Signature)?;
     if let Ok(mut seen) = verified_signatures().lock() {
         if seen.len() >= VERIFIED_SIGNATURE_LIMIT {
             seen.clear();
         }
-        seen.insert(triple);
+        seen.insert(seen_as);
     }
     Ok(())
 }
 
-const VERIFIED_SIGNATURE_LIMIT: usize = 4096;
+thread_local! {
+    static SIGNATURE_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The signatures [`verify_remembered`] checked in full on this thread since
+/// the last call: what a test that a cost does not grow with a workspace
+/// counts.
+#[must_use]
+pub fn take_signature_checks() -> u64 {
+    SIGNATURE_CHECKS.with(|checks| checks.replace(0))
+}
+
+/// Forget every signature [`verify_remembered`] remembers, as a process
+/// that just started holds none: what a test of a newcomer's own work starts
+/// from, where the device that wrote what it reads ran in the same process.
+#[doc(hidden)]
+pub fn forget_verified_signatures() {
+    if let Ok(mut seen) = verified_signatures().lock() {
+        seen.clear();
+    }
+}
+
+/// Room for every signature a workspace of thousands of members holds, so
+/// re-reading its governance finds each one remembered.
+const VERIFIED_SIGNATURE_LIMIT: usize = 65_536;
 
 pub(crate) fn verified_signatures()
--> &'static std::sync::Mutex<std::collections::HashSet<[u8; 128]>> {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 128]>>> =
+-> &'static std::sync::Mutex<std::collections::HashSet<[u8; 129]>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 129]>>> =
         std::sync::OnceLock::new();
     SEEN.get_or_init(Default::default)
 }
@@ -1501,6 +1711,8 @@ mod tests {
                     can_administer_devices: false,
                     agent: None,
                     stand_in: false,
+                    server_key: false,
+                    browser_pages: false,
                 },
                 issued_at_ns: 1_000_000,
                 expires_at_ns: None,
@@ -2152,6 +2364,335 @@ mod tests {
         assert!(postcard::from_bytes::<DeviceCert>(&wire).is_err());
         let json = serde_json::to_string(&chained).unwrap();
         assert!(serde_json::from_str::<DeviceCert>(&json).is_err());
+    }
+
+    /// Root `[1; 32]`'s all-workspaces grant (key `[4; 32]`) from 1 000 ns,
+    /// lasting `lifetime`.
+    fn make_grant(lifetime: u64) -> (ed25519_dalek::SigningKey, DeviceCert) {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Visa backend".to_owned(),
+            capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            issued_at_ns: 1_000,
+            expires_at_ns: Some(lifetime.saturating_add(1_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        (key, cert)
+    }
+
+    /// An all-workspaces grant mints a grant for one workspace that verifies
+    /// as one, under its issuer, and round-trips both encodings.
+    #[test]
+    fn a_grant_mints_a_narrower_grant() {
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane Doe", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert_eq!(minted.signer_public_key(), grant.device_public_key);
+        assert_eq!(
+            minted.capabilities.agent,
+            Some(AgentScope::Workspace([7; 16]))
+        );
+        let wire = postcard::to_allocvec(&minted).unwrap();
+        assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), minted);
+        let json = serde_json::to_string(&minted).unwrap();
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), minted);
+        // The root's own signature does not stand in for the grant's.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        assert_eq!(
+            verify_device_cert(&forced(minted.clone(), &root)),
+            Err(DeviceCertError::BadSignature)
+        );
+    }
+
+    /// A minted grant never reaches more, lasts longer, or chains further
+    /// than its issuer, and only an all-workspaces grant mints.
+    #[test]
+    fn a_minted_grant_stays_within_its_issuer() {
+        let (key, grant) = make_grant(DAY_NS);
+        let refused = |cert: DeviceCert| {
+            assert_eq!(
+                verify_device_cert(&forced(cert.clone(), &key)),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+            let mut signed = cert;
+            assert_eq!(
+                sign_device_cert(&mut signed, &key),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+        };
+        let minted = || prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        // All workspaces again: wider than a mint may be.
+        let mut wide = minted();
+        wide.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        refused(wide);
+        // Anything besides the scope.
+        let mut member = minted();
+        member.capabilities = DeviceCapabilities::member();
+        refused(member);
+        // Past its issuer's expiry.
+        let mut longer = minted();
+        longer.expires_at_ns = Some(1_000 + DAY_NS + 1);
+        refused(longer);
+        // Before its issuer was valid.
+        let mut early = minted();
+        early.issued_at_ns = 500;
+        refused(early);
+        // The issuer's own key.
+        let mut same = minted();
+        same.device_public_key = grant.device_public_key;
+        refused(same);
+        // Another person's grant.
+        let mut other = minted();
+        other.user_public_key = [3; 32];
+        refused(other);
+        // A one-workspace grant mints nothing.
+        let mut narrow = grant.clone();
+        narrow.capabilities = DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]));
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        sign_device_cert(&mut narrow, &root).unwrap();
+        let mut from_narrow =
+            prepare_minted_grant(&narrow, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        assert_eq!(
+            sign_device_cert(&mut from_narrow, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+        // A minted grant mints nothing: the chain does not decode.
+        let mut first = minted();
+        sign_device_cert(&mut first, &key).unwrap();
+        let chained = prepare_minted_grant(&first, [13; 32], [7; 16], "Jane", 2_500, 2_900);
+        let encoded = postcard::to_allocvec(&chained).unwrap();
+        assert!(postcard::from_bytes::<DeviceCert>(&encoded).is_err());
+    }
+
+    /// Revoking a grant refuses every grant it minted, whenever minted.
+    #[test]
+    fn revoking_a_grant_ends_what_it_minted() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let (key, grant) = make_grant(DAY_NS);
+        let mut minted = prepare_minted_grant(&grant, [12; 32], [7; 16], "Jane", 2_000, 9_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        let mut entry = crate::RevocationEntry {
+            user_public_key: grant.user_public_key,
+            revoked_device_public_key: grant.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        assert!(!revocations.refuses(&minted));
+        revocations.insert(entry).unwrap();
+        assert!(revocations.refuses(&grant));
+        assert!(revocations.refuses(&minted));
+        assert!(revocations.refuses_at(&minted, 2_500));
+    }
+
+    /// Root `[1; 32]`'s server key (key `[4; 32]`) from 1 000 ns until
+    /// `expires_at_ns`, signed.
+    fn make_server_key(expires_at_ns: Option<u64>) -> (ed25519_dalek::SigningKey, DeviceCert) {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Visa backend".to_owned(),
+            capabilities: DeviceCapabilities::server_key_grant(),
+            issued_at_ns: 1_000,
+            expires_at_ns,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        (key, cert)
+    }
+
+    /// A server key reaches all workspaces and lasts until revoked, or until
+    /// the expiry its person chose; its marker is in both encodings and under
+    /// its signature, and verifiers that predate it refuse it. A grant
+    /// without the marker still expires within the bound.
+    #[test]
+    fn a_server_key_lasts_until_revoked_or_its_chosen_expiry() {
+        let capabilities = DeviceCapabilities::server_key_grant();
+        assert_eq!(
+            postcard::to_allocvec(&capabilities).unwrap(),
+            [
+                EXTENDED_BINARY_MARKER,
+                EXTENDED_AGENT | 32,
+                SCOPE_ALL,
+                0,
+                0,
+                0,
+                0
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(&capabilities).unwrap(),
+            r#"{"can_own_workspaces":false,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false,"agent":"all","server_key":true}"#
+        );
+        // A bit the decoder does not know is refused, as decoders before the
+        // marker refuse the marker's.
+        assert!(
+            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
+                .is_err()
+        );
+        let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];
+        for expiry in lasting {
+            let (_, key) = make_server_key(expiry);
+            verify_device_cert_at(&key, 1_000 + 5 * MAX_AGENT_GRANT_LIFETIME_NS).unwrap();
+            let bytes = postcard::to_allocvec(&(&key, [9u8; 32])).unwrap();
+            let (back, _): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back, key);
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
+            let json = serde_json::to_string(&key).unwrap();
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), key);
+            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
+            // The marker is signed: the same signature on a plain grant fails.
+            let mut plain = key.clone();
+            plain.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+            plain.expires_at_ns = Some(2_000);
+            assert_eq!(
+                verify_device_cert(&plain),
+                Err(DeviceCertError::BadSignature)
+            );
+        }
+        let (_, chosen) = make_server_key(Some(5_000));
+        verify_device_cert_at(&chosen, 4_999).unwrap();
+        assert_eq!(
+            verify_device_cert_at(&chosen, 5_000),
+            Err(DeviceCertError::Expired)
+        );
+
+        // Only a grant reaching all workspaces is a server key, and a grant
+        // without the marker (an agent's, through consent) still expires.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        for capabilities in [
+            DeviceCapabilities {
+                server_key: true,
+                ..DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]))
+            },
+            DeviceCapabilities {
+                agent: None,
+                ..DeviceCapabilities::server_key_grant()
+            },
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        ] {
+            let mut cert = chosen.clone();
+            cert.capabilities = capabilities;
+            cert.expires_at_ns = None;
+            assert_eq!(
+                sign_device_cert(&mut cert, &root),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+            assert_eq!(
+                verify_device_cert(&forced(cert, &root)),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+        }
+    }
+
+    /// A key that may operate web pages in Browser is one its person signed,
+    /// and a key minted from it keeps that and can be given no more.
+    #[test]
+    fn operating_web_pages_is_what_the_person_signed_and_a_mint_keeps() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let granted = |capabilities| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: "Jane Doe's agent".to_owned(),
+                capabilities,
+                issued_at_ns: 1_000,
+                expires_at_ns: Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).map(|()| cert)
+        };
+        let scope = AgentScope::Workspace([7; 16]);
+        let operating = granted(DeviceCapabilities::agent_grant(scope).with_browser_pages(true))
+            .expect("a person signs the key their agent acts with");
+        verify_device_cert_at(&operating, 2_000).unwrap();
+        assert!(operating.capabilities.browser_pages);
+        assert!(
+            !granted(DeviceCapabilities::agent_grant(scope))
+                .unwrap()
+                .capabilities
+                .browser_pages,
+            "a key not asked about operates no page"
+        );
+        // A device's capabilities never carry it: only a key's do.
+        assert!(
+            !DeviceCapabilities::member()
+                .with_browser_pages(false)
+                .browser_pages
+        );
+        // Minted from a key that operates pages, the mint keeps it.
+        let mine = granted(
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
+        )
+        .unwrap();
+        let mut minted = prepare_minted_grant(&mine, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert!(minted.capabilities.browser_pages);
+        // From one that does not, a mint cannot gain it.
+        let plain = granted(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)).unwrap();
+        let mut gained = prepare_minted_grant(&plain, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        gained.capabilities.browser_pages = true;
+        assert_eq!(
+            sign_device_cert(&mut gained, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+    }
+
+    /// A server key that never expires mints keys for one workspace that
+    /// expire within the bound, and revoking it ends them.
+    #[test]
+    fn a_server_key_mints_keys_that_expire_and_end_with_it() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let (key, server) = make_server_key(None);
+        let mint = |expires_at_ns| {
+            prepare_minted_grant(&server, [12; 32], [7; 16], "Jane", 2_000, expires_at_ns)
+        };
+        let mut minted = mint(2_000 + MAX_AGENT_GRANT_LIFETIME_NS);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 3_000).unwrap();
+        assert_eq!(
+            minted.capabilities.agent,
+            Some(AgentScope::Workspace([7; 16]))
+        );
+        assert!(!minted.capabilities.server_key);
+        let mut forever = mint(3_000);
+        forever.expires_at_ns = None;
+        let mut longer = mint(2_001 + MAX_AGENT_GRANT_LIFETIME_NS);
+        for mut refused in [forever, longer.clone()] {
+            assert_eq!(
+                sign_device_cert(&mut refused, &key),
+                Err(DeviceCertError::InvalidAgentGrant)
+            );
+        }
+        longer.capabilities.server_key = true;
+        assert!(sign_device_cert(&mut longer, &key).is_err());
+
+        let mut entry = crate::RevocationEntry {
+            user_public_key: server.user_public_key,
+            revoked_device_public_key: server.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        crate::sign_revocation_entry(&mut entry, &root).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        revocations.insert(entry).unwrap();
+        assert!(revocations.refuses(&server));
+        assert!(revocations.refuses_at(&minted, 2_500));
     }
 
     /// Revoking a stand-in refuses what it issues from then on and keeps

@@ -66,6 +66,28 @@ impl Link {
         })
     }
 
+    /// [`Self::parse`], or, for a link whose workspace reads but whose part
+    /// inside it is damaged (an app, a document id, an item or a view), that
+    /// workspace's own link with the rule the rest broke: a person holding it
+    /// is let into the workspace and told what of the link was not used. Only
+    /// the workspace is kept; nothing damaged is guessed at.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::parse`], when the workspace itself does not read.
+    pub fn parse_or_workspace(
+        url: &str,
+        entries: &WebEntries,
+    ) -> Result<(Self, Option<LinkError>), LinkError> {
+        match Self::parse(url, entries) {
+            Ok(link) => Ok((link, None)),
+            Err(error) if error.is_inside_workspace() => workspace_of(url, entries)
+                .map(|link| (link, Some(error.clone())))
+                .ok_or(error),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read `tilo://open#<route>`. The scope is always explicit.
     ///
     /// # Errors
@@ -82,6 +104,26 @@ impl Link {
             secrets,
         })
     }
+}
+
+/// The desktop of the workspace web link `url` names, read no further than
+/// its scope.
+fn workspace_of(url: &str, entries: &WebEntries) -> Option<Link> {
+    let (entry, rest) = entries.find(url)?;
+    let rest = rest.strip_prefix("app/").unwrap_or(rest);
+    let (before, route) = rest.split_once('#')?;
+    if !(before.is_empty() || before.starts_with('?')) || route.len() > MAX_ROUTE_BYTES {
+        return None;
+    }
+    let path = route.split_once('?').map_or(route, |(path, _)| path);
+    let path = path.strip_prefix('/')?;
+    let mut segments = path.split('/').peekable();
+    let scope = parse_scope(&mut segments, Context::Web(entry), false).ok()?;
+    matches!(scope, Scope::Room { .. }).then(|| Link {
+        mode: Mode::Desktop,
+        target: LinkTarget::new(scope),
+        secrets: LinkSecrets::default(),
+    })
 }
 
 fn split_path(path: &str) -> Result<Vec<&str>, LinkError> {

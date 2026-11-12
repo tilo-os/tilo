@@ -73,7 +73,7 @@ pub fn deliver(
     document: RemoteDocument,
     from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) -> Delivery {
-    deliver_at(channels, fanout, document, from_user_id, SystemTime::now())
+    deliver_at(channels, fanout, document, from_user_id, tilo_clock::wall())
 }
 
 fn deliver_at(
@@ -104,12 +104,7 @@ fn deliver_at(
                 collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
             };
             let encryption = document.envelope.encryption.as_ref();
-            let admits_plaintext = if replayed {
-                ch.document_history_allowed(&document.cluster_id, channel, encryption)
-            } else {
-                ch.document_encryption_allowed(&document.cluster_id, channel, encryption)
-            };
-            if admits_plaintext {
+            if ch.document_order_allowed(&document.cluster_id, channel, artifact, encryption) {
                 let state = ch.state_for(artifact);
                 state.room.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -213,6 +208,9 @@ fn accept(
     let unsynced = channels.lock().ok().map(|mut ch| {
         first_of_the_record = !ch.routes.contains_key(&artifact);
         let unsynced = ch.record_history(route, &envelope);
+        if envelope.encryption.is_some() {
+            ch.sealed.insert(artifact);
+        }
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.kind == OpKind::Compaction
@@ -306,7 +304,7 @@ fn record_already_redacted(
             AuditEntry {
                 envelope: Box::new(envelope),
                 rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                at: SystemTime::now(),
+                at: tilo_clock::wall(),
             },
         );
     }
@@ -329,7 +327,7 @@ mod tests {
     #[test]
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let an_hour_ago = tilo_clock::wall() - Duration::from_secs(3600);
         let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
         let mut op = SignedOp::new_unsigned(
             mutation.encode().unwrap(),
@@ -341,7 +339,7 @@ mod tests {
             1,
         );
         collab_types::sign_op(&mut op, &key).unwrap();
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let channel = || {
             let mut state = ChannelState {
                 room: "workspace".into(),
@@ -379,7 +377,7 @@ mod tests {
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
-                std::time::SystemTime::now(),
+                tilo_clock::wall(),
                 1,
             );
             collab_types::sign_op(&mut op, &key).unwrap();
@@ -448,7 +446,7 @@ mod tests {
             let heads = note.get_heads();
             note.put(automerge::ROOT, field, text).unwrap();
             let change = note.save_after(&heads);
-            let now = SystemTime::now();
+            let now = tilo_clock::wall();
             let mut op = SignedOp::new_unsigned_with_encryption(
                 change,
                 document_artifact_id("notes", "workspace", "record"),
@@ -538,6 +536,71 @@ mod tests {
             .and_then(|(value, _)| value.into_string().ok())
     }
 
+    /// A record's writes in the clear before its seal are its base, live or
+    /// replayed, though the channel's gate has closed: a device away while
+    /// the record sealed reads it only by taking them in. Once a sealed
+    /// write of the record entered, one in the clear is refused however it
+    /// came.
+    #[test]
+    fn a_write_in_the_clear_enters_until_its_record_sealed() {
+        let [sealed, _] = two_sealed_writes(&ed25519_dalek::SigningKey::from_bytes(&[6; 32]));
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let clear = |seq: u64, title: &str| {
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+            let mut op = SignedOp::new_unsigned(
+                mutation.encode().unwrap(),
+                document_artifact_id("notes", "workspace", "record"),
+                collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                document_attestation_id("notes", "workspace", "record"),
+                OpKind::Change,
+                tilo_clock::wall(),
+                seq,
+            );
+            collab_types::sign_op(&mut op, &key).unwrap();
+            op
+        };
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        channels.lock().unwrap().register_channel_gate(
+            collab_types::document_channel_id("notes", "workspace", "record"),
+            channel_crypto::ChannelGate {
+                encryption_required: true,
+            },
+        );
+        let fanout = FanoutState::new();
+        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Arc::clone(&delivered);
+        let _app = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
+            Box::new(move |event, _| {
+                if matches!(event, CollabEvent::Document { .. }) {
+                    app.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }),
+        );
+        let shows = |envelope: SignedOp, replayed: bool| {
+            let before = delivered.load(std::sync::atomic::Ordering::SeqCst);
+            deliver(
+                &channels,
+                &fanout,
+                RemoteDocument {
+                    app_id: "notes".into(),
+                    cluster_id: "workspace".into(),
+                    record_id: "record".into(),
+                    author: editor(),
+                    replayed,
+                    envelope,
+                },
+                |_| "writer".into(),
+            );
+            delivered.load(std::sync::atomic::Ordering::SeqCst) > before
+        };
+        assert!(shows(clear(1, "live base"), false), "a live base write");
+        assert!(shows(clear(2, "kept base"), true), "a kept base write");
+        assert!(shows(sealed, false), "the seal");
+        assert!(!shows(clear(3, "after, live"), false), "a live downgrade");
+        assert!(!shows(clear(4, "after, kept"), true), "a kept downgrade");
+    }
+
     /// A write sealed under the channel's earlier epoch is taken live: its
     /// author was a member when they wrote it, and whoever receives it holds
     /// the key it was sealed under.
@@ -573,7 +636,7 @@ mod tests {
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("so.tilo.chat", "workspace", record),
                 OpKind::Change,
-                std::time::SystemTime::now(),
+                tilo_clock::wall(),
                 sequence,
             );
             collab_types::sign_op(&mut op, &key).unwrap();

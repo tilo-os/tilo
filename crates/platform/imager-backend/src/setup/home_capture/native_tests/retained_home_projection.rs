@@ -1520,7 +1520,7 @@ fn qualify_alias_iteration(
         "--add-seccomp-fd".into(),
         "61".into(),
     ]);
-    let args = alias.qualification_arguments(&argv, writable).unwrap();
+    let args = alias.qualification_arguments(&argv).unwrap();
     argv.extend([
         "--args".into(),
         "59".into(),

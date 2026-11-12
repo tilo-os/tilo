@@ -9,7 +9,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use ui::time::Instant;
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _, ScalarValue, Value};
@@ -147,7 +148,13 @@ pub struct Desk {
     store: Option<Rc<dyn Store>>,
     /// When how the desk looks was last written, so a drag or a burst of switches stays one change.
     looks_at: Cell<Option<Instant>>,
+    /// What [`Self::record_at`] last left the desk written from: the tree's revision, the records its
+    /// windows show and the document's heads. The same again writes nothing new.
+    kept: RefCell<Option<Kept>>,
 }
+
+/// A tree revision, the records shown and the document heads the desk was written from.
+type Kept = (u64, Vec<(TabId, String)>, Vec<ChangeHash>);
 
 impl Desk {
     /// The desk `document` holds, whose changes are written by `person` and kept through `store`.
@@ -162,6 +169,7 @@ impl Desk {
             person: person.to_owned(),
             store,
             looks_at: Cell::default(),
+            kept: RefCell::default(),
         }
     }
 
@@ -195,6 +203,30 @@ impl Desk {
         authors: Option<&Authors>,
     ) -> bool {
         self.write(desktop, time, true, None, records, authors)
+    }
+
+    /// [`Self::record`] the tree `desktop` reads, at `revision` of it, unless the desk was last
+    /// written from that revision with these records and the document did not move since: what a
+    /// desk that stands still keeps every frame without reading it again. Whether the desk changed.
+    pub fn record_at(
+        &self,
+        revision: u64,
+        desktop: impl FnOnce() -> DesktopTree,
+        time: i64,
+        records: &[(TabId, String)],
+    ) -> bool {
+        let heads = self.doc.borrow_mut().get_heads();
+        let kept = (revision, records.to_vec(), heads);
+        if self.kept.borrow().as_ref() == Some(&kept) {
+            return false;
+        }
+        let wrote = self.write(&desktop(), time, true, None, records, None);
+        // How the desk looks within a drag is written once the drag rests: until then, the same
+        // desk is written again.
+        let (revision, records, _) = kept;
+        *self.kept.borrow_mut() = (!self.looks_kept_recently())
+            .then(|| (revision, records, self.doc.borrow_mut().get_heads()));
+        wrote
     }
 
     /// [`Self::record`], and write even how the desk looks now: what ends the session, which the

@@ -44,7 +44,7 @@ use serde_json::{Map, Value};
 use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
-use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
+use tilo_settings_records::{Door, Hold, Holding, Records, Watch};
 
 use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
@@ -73,8 +73,9 @@ struct Docs {
     device: AutoCommit,
     /// The sections changed since the documents were last saved.
     unsaved: std::collections::BTreeSet<String>,
-    /// What a follower last loaded, to notice the holder's next save.
-    seen: (Stamp, Stamp),
+    /// The number of the save a follower last took the documents from, so it notices the holder's
+    /// next one.
+    seen: u64,
 }
 
 impl Docs {
@@ -152,9 +153,9 @@ fn load_doc(records: &Records, name: &str) -> std::io::Result<AutoCommit> {
     }
 }
 
-/// Both documents as saved now, with what tells this save from the next.
-fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, (Stamp, Stamp))> {
-    let seen = (records.stamp(PERSON_FILE), records.stamp(DEVICE_FILE));
+/// Both documents as saved now, with the number of the save they stand at.
+fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, u64)> {
+    let seen = records.revision();
     Ok((
         load_doc(records, PERSON_FILE)?,
         load_doc(records, DEVICE_FILE)?,
@@ -319,10 +320,7 @@ impl Store {
         if !self.is_follower() {
             return;
         }
-        let now = (
-            self.records.stamp(PERSON_FILE),
-            self.records.stamp(DEVICE_FILE),
-        );
+        let now = self.records.revision();
         let mut docs = self.docs.lock_recover();
         if docs.seen == now {
             return;
@@ -339,9 +337,11 @@ impl Store {
         docs.person = person;
         docs.device = device;
         docs.seen = now;
-        let document = Arc::new(docs.projection());
+        // Shown before the save is let go: a reader that finds the save already taken in — one
+        // that looks after `seen` became `now` — reads what this look loaded, never the save
+        // before it.
+        self.publish(Arc::new(docs.projection()));
         drop(docs);
-        self.publish(document);
     }
 
     fn publish(&self, document: Arc<Map<String, Value>>) {
@@ -446,11 +446,16 @@ impl Store {
         let sections = std::mem::take(&mut docs.unsaved);
         let person = docs.person.save();
         let device = docs.device.save();
+        // The save both documents are about to stand at, said once they do: a follower notices a
+        // change by this number alone, so it never takes one document of this save and the other
+        // of the save before.
+        let revision = self.records.revision().saturating_add(1);
         drop(docs);
         let saved = self
             .records
             .write(PERSON_FILE, &person)
-            .and_then(|()| self.records.write(DEVICE_FILE, &device));
+            .and_then(|()| self.records.write(DEVICE_FILE, &device))
+            .and_then(|()| self.records.commit(revision));
         if let Err(error) = saved {
             tracing::warn!(root = %self.root.display(), %error, "settings not saved");
             self.docs
@@ -1110,7 +1115,7 @@ fn empty(root: &Path) -> Arc<Store> {
             person: AutoCommit::new(),
             device: AutoCommit::new(),
             unsaved: std::collections::BTreeSet::new(),
-            seen: (Stamp::default(), Stamp::default()),
+            seen: 0,
         }),
         snapshot: Mutex::new(Snapshot {
             document: Arc::new(Map::new()),

@@ -3,6 +3,7 @@ use crate::model;
 use taffy::{NodeId, TaffyTree};
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
+use ui::widget::DrawChild;
 
 fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
     app.native_voice
@@ -246,7 +247,7 @@ fn with_no_channel_open_the_composer_takes_no_text() {
     reason = "one labelled phase per original scenario, each with its own fresh fixture"
 )]
 fn composer_edits_the_draft_and_sends_through_the_action_route() {
-    // Phase: send_affordance_dispatches_a_send_message_action.
+    // Phase: send_affordance_sends_what_the_draft_holds_to_the_channel.
     {
         let (mut app, mut doc) = app_with_doc();
         app.active_channel = "c_general".into();
@@ -254,15 +255,12 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         app.thread_open = None;
         crate::testing::write_draft(&mut app, &mut doc, "hi from the composer");
         app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
-        let action = app
-            .dispatched_parts
-            .borrow()
-            .iter()
-            .map(|action| serde_json::to_value(action).unwrap())
-            .find(|action| action["action"] == "post")
-            .expect("send dispatched a post");
-        assert_eq!(action["args"]["channel"], "c_general");
-        assert_eq!(action["args"]["text"], "hi from the composer");
+        let sent = crate::testing::messages(&doc, "c_general");
+        assert_eq!(
+            sent.last().map(|message| message.text.as_str()),
+            Some("hi from the composer"),
+            "send sends what the draft holds to the conversation shown"
+        );
     }
 
     // Phase: typing_then_send_appends_a_message.
@@ -599,7 +597,9 @@ fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
     let retries = app
         .hits
         .iter()
-        .filter(|(rect, hit)| matches!(hit, Hit::Send) && rect.y0 >= app.composer_main.rect().y1)
+        .filter(|(rect, hit)| {
+            matches!(hit, Hit::RetrySend) && rect.y0 >= app.composer_main.rect().y1
+        })
         .count();
     assert_eq!(retries, 1, "Retry stands under the composer");
 }
@@ -2162,7 +2162,6 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
 // path). These helpers drive that and the raw winit input path.
 
 fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
-    use ui::Widget;
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -2173,7 +2172,7 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
@@ -2210,7 +2209,7 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
     let mut frame = |app: &mut ChatApp, w: f64, h: f64| {
         app.rect = Rect::new(0.0, 0.0, w, h);
         let mut scene = vello::Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut tr,
@@ -2396,117 +2395,6 @@ fn the_attached_call_window_rests_below_the_header_row() {
     }
 }
 
-#[test]
-fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
-    use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
-    use ui::Widget;
-
-    for (width, height) in [(1600.0, 900.0), (800.0, 600.0)] {
-        let (mut app, mut doc) = app_with_doc();
-        stage_agent_work(&mut app, &mut doc);
-        app.land(&mut doc);
-        app.sync(&doc.chat, &automerge::ROOT);
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, height);
-        app.reconcile_flaps();
-        app.right_flap.snap(true);
-        render_frame(&mut app, width, height);
-
-        let description = |app: &ChatApp| {
-            app.accessibility()
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|node| node.name.as_deref() == Some("Messages"))
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|node| node.name.as_deref() == Some("Tide (agent): "))
-                .expect("the open thread exposes its agent reply")
-                .description
-                .unwrap()
-        };
-        assert!(description(&app).contains("Latest intent: Add function"));
-        assert!(description(&app).contains("Requested: Add function"));
-
-        if app.thread_is_page() {
-            // A thread that fills the window is the window bar's place: its
-            // Back closes it.
-            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Back);
-            app.apply_window_toolbar(&mut ui::widget::Edits::lend(&mut doc.chat));
-        } else {
-            let close = app
-                .hits
-                .iter()
-                .find(|(_, hit)| matches!(hit, Hit::CloseThread))
-                .expect("painted thread has a close control")
-                .0
-                .center();
-            click_point(&mut app, &mut doc, close);
-        }
-        assert!(app.thread_open.is_none());
-
-        // Render the settled closed flap, not the outgoing overlay frame
-        // that deliberately continues intercepting input during its exit.
-        app.right_flap.snap(false);
-
-        render_frame(&mut app, width, height);
-        let open = app
-            .hits
-            .iter()
-            .find(|(_, hit)| matches!(hit, Hit::OpenThread(id) if id == "m_agent_request"))
-            .expect("the original request retains its reply affordance")
-            .0
-            .center();
-        click_point(&mut app, &mut doc, open);
-        assert_eq!(app.thread_open.as_deref(), Some("m_agent_request"));
-
-        let mut applied_step = app
-            .messages
-            .iter()
-            .find(|message| message.id == crate::testing::agent_reply())
-            .unwrap()
-            .work
-            .as_ref()
-            .unwrap()
-            .trace[0]
-            .clone();
-        applied_step.outcome = AgentStepOutcome::Applied;
-        crate::testing::apply_part_as(
-            &mut doc,
-            crate::resource::DEMO_AGENT,
-            crate::testing::record_work(
-                crate::resource::DEMO_SUMMONS,
-                &AgentWork::new(
-                    AgentWorkState::Done {
-                        did: "Revenue curve added".into(),
-                    },
-                    crate::demo::NOW,
-                )
-                .with_trace(vec![applied_step]),
-            ),
-        )
-        .unwrap();
-        app.land(&mut doc);
-        app.sync(&doc.chat, &automerge::ROOT);
-        render_frame(&mut app, width, height);
-        assert_eq!(
-            description(&app),
-            "Completed: Revenue curve added; Applied: Add function",
-            "the state update retains the previously recorded dispatch evidence"
-        );
-        let reply = app
-            .messages
-            .iter()
-            .find(|message| message.id == crate::testing::agent_reply())
-            .unwrap();
-        assert_eq!(reply.parent.as_deref(), Some("m_agent_request"));
-        assert!(
-            reply.text.is_empty(),
-            "work updates do not overwrite authored text"
-        );
-    }
-}
-
 fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
     app.hits
         .iter()
@@ -2519,70 +2407,6 @@ fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {
     feed(app, doc, &cursor_moved(point.x, point.y));
     feed(app, doc, &mouse(ElementState::Pressed, MouseButton::Left));
     feed(app, doc, &mouse(ElementState::Released, MouseButton::Left));
-}
-
-#[test]
-fn agent_work_compact_thread_scrolls_all_evidence_without_moving_timeline() {
-    use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
-    use ui::Widget;
-    let (mut app, mut doc) = app_with_doc();
-    stage_agent_work(&mut app, &mut doc);
-    app.sync(&doc.chat, &automerge::ROOT);
-    let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::demo::NOW)
-        .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
-            format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
-            AgentStepOutcome::Applied, index)).collect());
-    crate::testing::apply_part_as(
-        &mut doc,
-        crate::resource::DEMO_AGENT,
-        crate::testing::record_work(crate::resource::DEMO_SUMMONS, &work),
-    )
-    .unwrap();
-    app.sync(&doc.chat, &automerge::ROOT);
-    render_frame(&mut app, 800.0, 600.0);
-    let region = app.primary_vertical_scroll().unwrap();
-    assert_eq!(region.key, "thread");
-    assert!(
-        region.metrics.max_scroll() > 600.0,
-        "production wrapping creates real overflow"
-    );
-    let timeline_offset = app.scroll;
-    assert!(matches!(
-        app.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End),
-        ui::widget::PrimaryScrollResult::Changed(_)
-    ));
-    render_frame(&mut app, 800.0, 600.0);
-    let region = app.primary_vertical_scroll().unwrap();
-    assert!((region.metrics.offset - region.metrics.max_scroll()).abs() < 0.01);
-    assert!((app.scroll - timeline_offset).abs() < 0.01);
-    let tree = app.accessibility().unwrap();
-    let messages = tree
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Messages"))
-        .unwrap();
-    assert_eq!(
-        messages.children.len(),
-        2,
-        "pushed detail exposes only parent and reply"
-    );
-    let description = messages
-        .children
-        .iter()
-        .find_map(|node| node.description.as_ref())
-        .unwrap();
-    assert!(
-        description.contains("Operation 59:"),
-        "the final recorded dispatch is accessible"
-    );
-    let point = app.thread_body.center();
-    feed(&mut app, &mut doc, &cursor_moved(point.x, point.y));
-    feed(&mut app, &mut doc, &wheel(2.0));
-    assert!(
-        f64::from(app.thread_scroll.offset_y()) < region.metrics.max_scroll(),
-        "pointer wheel reaches earlier evidence"
-    );
-    assert!((app.scroll - timeline_offset).abs() < 0.01);
 }
 
 use ui::synthetic_input::cursor_moved;
@@ -2698,6 +2522,7 @@ fn floating_pins_leave_the_composer_whole() {
     );
 }
 
+mod agent_work;
 mod calls_and_peers;
 mod menus;
 mod workspace_state;
@@ -2956,4 +2781,39 @@ fn the_attach_action_refuses_a_relative_path() {
         ),
         "{refused}"
     );
+}
+
+/// The bar names the conversation with who or what it is: the face of the agent a direct
+/// conversation is with, the channel's mark for a channel.
+#[test]
+fn the_bar_leads_the_conversation_with_who_it_is_with() {
+    let (mut app, _doc) = app_with_doc();
+    app.active_channel = crate::record::Chat::direct_id([
+        crate::record::Participant::person(app.me.id.clone()),
+        crate::record::Participant::agent("assistant"),
+    ])
+    .to_string();
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the conversation is the window's location");
+    let avatar = location.avatar.expect("the agent's face leads it");
+    assert!(avatar.agent);
+    assert_eq!(avatar.identity, "agent:assistant");
+    assert_eq!(location.icon, None);
+
+    let channel = app
+        .channels
+        .iter()
+        .find(|channel| !channel.direct && channel.kind == crate::model::ChannelKind::Text)
+        .expect("a text channel")
+        .id
+        .clone();
+    app.active_channel = channel;
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the channel is the window's location");
+    assert_eq!(location.icon.as_deref(), Some("hash"));
+    assert!(location.avatar.is_none());
 }

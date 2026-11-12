@@ -4,21 +4,28 @@
     allow(
         clippy::arc_with_non_send_sync,
         reason = "a page's store and neighbour handles reach JavaScript and stay on the page's one thread"
+    ),
+    allow(
+        clippy::future_not_send,
+        reason = "a page's signer answers through a JavaScript promise, so the owner's write future, which awaits it while it holds the page's store, stays on the page's one thread"
     )
 )]
-#[cfg(not(target_arch = "wasm32"))]
 mod frames;
 pub mod governance;
+pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_ledger;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_transport;
+mod kept_states;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
 use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};
+#[cfg(test)]
+mod admission_cost_tests;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
@@ -54,16 +61,15 @@ pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 /// The person's own documents between their devices, with no host in between.
-#[cfg(not(target_arch = "wasm32"))]
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
-    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS,
-    MemberAuthority, MembershipError, NativePublicationCut, OpenedRecord, PeerDocumentCapture,
-    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerMediaGovernance,
-    PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal, PeerPublication,
-    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore, PlaintextChanges,
-    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
+    GovernedMember, InstalledApp, InstalledBot, KeptRecord, MAX_HELD_BYTES, MAX_HELD_INPUTS,
+    MemberAuthority, MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord,
+    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
+    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
+    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument,
     SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_HOSTS_KEY,
     committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
     seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
@@ -83,12 +89,12 @@ pub mod legacy_policy;
 /// A workspace's membership: the signed operations it is made of, and the
 /// membership every device derives from them.
 pub mod members;
-pub mod workspace_checkpoint;
 pub mod workspace_membership;
 
 mod admission;
 pub mod resources;
+mod write_work;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
-    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite,
+    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,
 };

@@ -3,13 +3,13 @@
 
 use channel_crypto::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
 use collab_types::scope::Scope;
-use tilo_seal::discord_voice::{TransportCipher, XCHACHA};
+use tilo_seal::live::FrameCipher;
 
 use crate::roster::Roster;
 
-/// Bytes a sealed frame adds to its body: epoch (8), sequence (4) and the
-/// tag (16).
-pub const OVERHEAD: usize = 28;
+/// Bytes a sealed frame adds to its body: epoch (8), sequence (4), the
+/// random nonce (24) and the tag (16).
+pub const OVERHEAD: usize = HEADER_LEN + tilo_seal::live::OVERHEAD;
 
 /// Bytes of header before the ciphertext.
 const HEADER_LEN: usize = 12;
@@ -111,6 +111,9 @@ pub enum Stream {
     Window,
     /// Who is here, and what they are doing.
     Presence,
+    /// One window's page: its paint stream, sealed apart from every other
+    /// window's.
+    Page,
     /// One window's input events.
     Input,
     /// A low-rate note of what this device is doing.
@@ -131,6 +134,7 @@ impl Stream {
             Self::Screen => [VIDEO, 1],
             Self::Presence => [AUDIO, 1],
             Self::Window => [PLANE, 0],
+            Self::Page => [PLANE, 3],
             Self::Input => [PLANE, 1],
             Self::Activity => [PLANE, 2],
         }
@@ -146,6 +150,7 @@ impl Stream {
             Self::Camera => "camera",
             Self::Screen => "screen",
             Self::Window => "window",
+            Self::Page => "page",
             Self::Presence => "presence",
             Self::Input => "input",
             Self::Activity => "activity",
@@ -157,10 +162,14 @@ impl Stream {
 /// the epoch the channel is on, derived once, and the track those frames are
 /// named as.
 ///
+/// The key is the same for every session of the device and every track of
+/// the stream in that epoch, and each of them counts its own sequence, so the
+/// sequence is never the nonce: each frame carries a fresh random one.
+///
 /// The channel's epoch moves when its membership changes, and with it the
 /// key: a carrier that sees a new epoch builds a new sealer.
 pub struct Sealer {
-    cipher: TransportCipher,
+    cipher: FrameCipher,
     epoch: u64,
     stream: Stream,
     track: TrackName,
@@ -184,8 +193,7 @@ impl Sealer {
         let key = keys
             .media_key(epoch, sender, stream.tag())
             .map_err(|_| Refusal::NoKey(epoch))?;
-        let cipher =
-            TransportCipher::new(XCHACHA, key.expose_secret()).map_err(|_| Refusal::Primitive)?;
+        let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
         Ok(Self {
             cipher,
             epoch,
@@ -206,8 +214,8 @@ impl Sealer {
         &self.track
     }
 
-    /// `body` as frame `seq` of the stream: a sender's counter under this
-    /// epoch's key, never repeated under one key.
+    /// `body` as frame `seq` of the stream: the sender's position in it,
+    /// authenticated with the frame and named in its header.
     ///
     /// # Errors
     ///
@@ -215,7 +223,7 @@ impl Sealer {
     pub fn seal(&self, seq: u32, body: &[u8]) -> Result<Vec<u8>, Refusal> {
         let sealed = self
             .cipher
-            .seal(seq, &aad(self.epoch, seq, self.stream, &self.track), body)
+            .seal(&aad(self.epoch, seq, self.stream, &self.track), body)
             .map_err(|_| Refusal::Primitive)?;
         let mut frame = Vec::with_capacity(body.len().saturating_add(OVERHEAD));
         frame.extend_from_slice(&self.epoch.to_le_bytes());
@@ -278,10 +286,9 @@ impl Opener {
             .keys
             .media_key(epoch, sender, stream.tag())
             .map_err(|_| Refusal::NoKey(epoch))?;
-        let cipher =
-            TransportCipher::new(XCHACHA, key.expose_secret()).map_err(|_| Refusal::Primitive)?;
+        let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
         cipher
-            .open(seq, &aad(epoch, seq, stream, track), sealed)
+            .open(&aad(epoch, seq, stream, track), sealed)
             .map_err(|_| Refusal::Unauthenticated)
     }
 }
@@ -300,4 +307,108 @@ fn aad(epoch: u64, seq: u32, stream: Stream, track: &TrackName) -> Vec<u8> {
     aad.extend_from_slice(&stream.tag());
     aad.extend_from_slice(name);
     aad
+}
+
+#[cfg(test)]
+mod tests {
+    use channel_crypto::{ChannelGroup, MemberKey};
+
+    use super::*;
+    use crate::roster::Roster;
+
+    const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    const DEVICE: [u8; 32] = [3; 32];
+
+    fn keys() -> ChannelContentKeys {
+        let scope = Scope::workspace(WORKSPACE);
+        ChannelGroup::create(scope.channel_id(), MemberKey::generate("owner").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap()
+    }
+
+    fn sealer(keys: &ChannelContentKeys, track: &str) -> Sealer {
+        let name = TrackName::new(&Scope::workspace(WORKSPACE), track);
+        Sealer::new(keys, DEVICE, Stream::Presence, name).unwrap()
+    }
+
+    /// The bytes after the clear header: what the stream cipher produced.
+    fn ciphertext(frame: &[u8]) -> &[u8] {
+        frame.get(HEADER_LEN..).unwrap()
+    }
+
+    /// Two sessions of one device (a restart, a second tab) in one epoch
+    /// both start their sequence at 1 under the same derived key, and two
+    /// tracks of one stream (camera layers, windows) count independently. A
+    /// nonce taken from the sequence would seal both under one keystream:
+    /// the XOR of the ciphertexts would be the XOR of the plaintexts.
+    #[test]
+    fn frames_with_one_sequence_under_one_key_never_share_a_keystream() {
+        let keys = keys();
+        let first = sealer(&keys, "presence");
+        let second = sealer(&keys, "presence");
+        let other_track = sealer(&keys, "presence/2");
+        let a = b"state=present, window=notes".as_slice();
+        let b = b"state=away,    window=files".as_slice();
+        let plain_xor: Vec<u8> = a.iter().zip(b).map(|(x, y)| x ^ y).collect();
+
+        for other in [&second, &other_track] {
+            let sealed_a = first.seal(1, a).unwrap();
+            let sealed_b = other.seal(1, b).unwrap();
+            let cipher_xor: Vec<u8> = ciphertext(&sealed_a)
+                .iter()
+                .zip(ciphertext(&sealed_b))
+                .map(|(x, y)| x ^ y)
+                .collect();
+            assert!(
+                !cipher_xor.windows(plain_xor.len()).any(|w| w == plain_xor),
+                "two frames sealed as sequence 1 reused one keystream"
+            );
+        }
+
+        // The same body sealed twice at one sequence never repeats either.
+        assert_ne!(first.seal(1, a).unwrap(), first.seal(1, a).unwrap());
+    }
+
+    #[test]
+    fn a_sealed_frame_opens_only_as_its_sender_stream_track_and_sequence() {
+        let keys = keys();
+        let scope = Scope::workspace(WORKSPACE);
+        let name = TrackName::new(&scope, "presence");
+        let frame = sealer(&keys, "presence").seal(7, b"here").unwrap();
+        let opener = Opener::new(keys, Roster::new([DEVICE]));
+        assert_eq!(sequence(&frame), Some(7));
+        assert_eq!(
+            opener
+                .open(DEVICE, Stream::Presence, &name, &frame)
+                .unwrap(),
+            b"here"
+        );
+        assert_eq!(
+            opener.open(DEVICE, Stream::Camera, &name, &frame),
+            Err(Refusal::Unauthenticated)
+        );
+        let other = TrackName::new(&scope, "presence/2");
+        assert_eq!(
+            opener.open(DEVICE, Stream::Presence, &other, &frame),
+            Err(Refusal::Unauthenticated)
+        );
+        let mut moved = frame.clone();
+        moved[8] ^= 1;
+        assert_eq!(
+            opener.open(DEVICE, Stream::Presence, &name, &moved),
+            Err(Refusal::Unauthenticated)
+        );
+        assert_eq!(
+            opener.open([4; 32], Stream::Presence, &name, &frame),
+            Err(Refusal::OffRoster)
+        );
+        let mut changed = frame;
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert_eq!(
+            opener.open(DEVICE, Stream::Presence, &name, &changed),
+            Err(Refusal::Unauthenticated)
+        );
+    }
 }

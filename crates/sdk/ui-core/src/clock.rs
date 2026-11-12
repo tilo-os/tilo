@@ -6,10 +6,15 @@
 //! run, and an app that reads the system clock directly breaks that.
 //!
 //! [`time_of_day`] renders a time the way the person reads clocks, in the
-//! [`TimeStyle`] they chose in Settings. Every clock display goes through it
-//! rather than a fixed `%H:%M`.
+//! [`TimeStyle`](tilo_formats::TimeStyle) they chose in Settings. Every clock
+//! display goes through it rather than a fixed `%H:%M`.
+//!
+//! The styles and how they read are `tilo-formats`', so a host without the
+//! toolkit answers the same clock.
 //!
 //! Clock types and epoch readings are `ui::time`'s.
+
+pub use tilo_formats::TimeStyle;
 
 /// The local date and time every screenshot capture shows:
 /// 30 June 2026, 10:42.
@@ -54,119 +59,23 @@ pub fn capture_wall() -> Option<crate::time::SystemTime> {
     crate::time::UNIX_EPOCH.checked_add(crate::time::Duration::from_millis(ms))
 }
 
-/// How times of day render: the shared `locale.time_format` setting. Until
-/// the person picks a clock, it follows the desktop's language and region
-/// ([`TimeStyle::Language`]: 12-hour in US English, 24-hour in German).
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::Model,
-)]
-pub enum TimeStyle {
-    /// The language's own clock: `2:05 PM` in US English, `14:05` in German.
-    #[default]
-    #[model(rename = "Language")]
-    Language,
-    /// `14:05`
-    #[model(rename = "H24")]
-    H24,
-    /// `2:05 PM`
-    #[model(rename = "H12")]
-    H12,
-}
-
-impl TimeStyle {
-    pub const ALL: [TimeStyle; 3] = [TimeStyle::Language, TimeStyle::H24, TimeStyle::H12];
-
-    /// The style the person chose (see [`crate::format::region`]).
-    #[must_use]
-    pub fn configured() -> Self {
-        crate::format::region::current().time
-    }
-
-    /// The clock this style shows: itself, or for [`TimeStyle::Language`]
-    /// the clock of the language active on the calling thread.
-    #[must_use]
-    pub fn resolved(self) -> Self {
-        match self {
-            TimeStyle::Language => {
-                if crate::i18n::widget_format("format-clock-hours", &[]).trim() == "12" {
-                    TimeStyle::H12
-                } else {
-                    TimeStyle::H24
-                }
-            }
-            style => style,
-        }
-    }
-
-    /// Whether this style shows a 24-hour clock.
-    #[must_use]
-    pub fn is_24_hour(self) -> bool {
-        self.resolved() == TimeStyle::H24
-    }
-
-    /// `time` in this style.
-    #[must_use]
-    pub fn format(self, time: &impl chrono::Timelike) -> String {
-        self.format_hm(time.hour(), time.minute())
-    }
-
-    /// `hour:minute` (hour `0..24`) in this style.
-    #[must_use]
-    pub fn format_hm(self, hour: u32, minute: u32) -> String {
-        match self.resolved() {
-            TimeStyle::Language | TimeStyle::H24 => format!("{hour:02}:{minute:02}"),
-            TimeStyle::H12 => {
-                let half = crate::i18n::widget_format(
-                    if hour % 24 < 12 {
-                        "format-time-am"
-                    } else {
-                        "format-time-pm"
-                    },
-                    &[],
-                );
-                let hour = match hour % 12 {
-                    0 => 12,
-                    hour => hour,
-                };
-                format!("{hour}:{minute:02} {half}")
-            }
-        }
-    }
-
-    /// A worked example, 14:05 in this style.
-    #[must_use]
-    pub fn example(self) -> String {
-        self.format_hm(14, 5)
-    }
-
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            TimeStyle::Language => "Follow language",
-            TimeStyle::H24 => "24-hour (14:05)",
-            TimeStyle::H12 => "12-hour (2:05 PM)",
-        }
-    }
+/// The person's clock: the shared `locale.time_format` setting, kept with the rest of their
+/// formats ([`crate::format::region`]).
+#[must_use]
+pub fn configured() -> TimeStyle {
+    crate::format::region::current().time
 }
 
 /// `time` as the person reads clocks: `14:05` or `2:05 PM`.
 #[must_use]
 pub fn time_of_day(time: &impl chrono::Timelike) -> String {
-    TimeStyle::configured().format(time)
+    configured().format(time, crate::format::words())
 }
 
 /// [`time_of_day`] for a time kept as an hour (`0..24`) and a minute.
 #[must_use]
 pub fn hour_minute(hour: u32, minute: u32) -> String {
-    TimeStyle::configured().format_hm(hour, minute)
+    configured().format_hm(hour, minute, crate::format::words())
 }
 
 #[cfg(test)]
@@ -177,14 +86,15 @@ mod tests {
     #[test]
     fn each_style_reads_its_example() {
         let time = chrono::NaiveTime::from_hms_opt(14, 5, 0).unwrap();
+        let words = crate::format::words();
         for style in TimeStyle::ALL {
-            assert_eq!(style.format(&time), style.example());
+            assert_eq!(style.format(&time, words), style.example(words));
         }
-        assert_eq!(TimeStyle::H24.example(), "14:05");
-        assert_eq!(TimeStyle::H12.example(), "2:05 PM");
+        assert_eq!(TimeStyle::H24.example(words), "14:05");
+        assert_eq!(TimeStyle::H12.example(words), "2:05 PM");
         let midnight = chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap();
-        assert_eq!(TimeStyle::H24.format(&midnight), "00:07");
-        assert_eq!(TimeStyle::H12.format(&midnight), "12:07 AM");
+        assert_eq!(TimeStyle::H24.format(&midnight, words), "00:07");
+        assert_eq!(TimeStyle::H12.format(&midnight, words), "12:07 AM");
     }
 
     #[test]

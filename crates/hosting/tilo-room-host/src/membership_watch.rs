@@ -433,15 +433,16 @@ fn own_writes() -> &'static Mutex<HashMap<PathBuf, [u8; 32]>> {
     OWN.get_or_init(Mutex::default)
 }
 
-/// Record that this process wrote `bytes` to the membership file at
+/// Record that this process wrote the bytes whose BLAKE3 digest is `digest`
+/// to the membership file at
 /// `path`, and applied them to the workspace's runtime with every narrowing in
 /// them announced: the watch then does not announce the file holding them.
 /// Only the latest write of each file is remembered, so the file holding
 /// anything else (an earlier write, another process's) is announced.
-pub(crate) fn wrote_own(path: &Path, bytes: &[u8]) {
+pub(crate) fn wrote_own(path: &Path, digest: [u8; 32]) {
     own_writes()
         .lock_recover()
-        .insert(path.to_path_buf(), *blake3::hash(bytes).as_bytes());
+        .insert(path.to_path_buf(), digest);
 }
 
 /// Whether `bytes`, read from `path`, are what this process last wrote
@@ -470,7 +471,7 @@ mod tests {
         assert_eq!(room_directory(&path("7/membership.json")), None);
         assert_eq!(room_directory(&VPath::root()), None);
         assert!(names_membership(&path("membership.json")));
-        assert!(names_membership(&path("governed-access-v1.json")));
+        assert!(names_membership(&path("governed-access.log")));
         assert!(!names_membership(&path("snapshot.automerge")));
         assert!(!names_membership(&path("pending/membership.json")));
         assert!(!names_membership(&VPath::root()));
@@ -528,7 +529,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let file = workspace.join(GOVERNED_ACCESS_FILE);
         let own = br#"{"version":1,"member_devices":[],"member_user_roots":[]}"#;
-        wrote_own(&file, own);
+        wrote_own(&file, *blake3::hash(own).as_bytes());
         let before = generation.current();
         // Written as the store writes it: staged, then renamed into place.
         tilo_files::native::atomic::write(&file, own).unwrap();

@@ -228,27 +228,12 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     assert_eq!(people, ["grace"], "{found:#?}");
     assert!(found[0].excerpt.contains("look at"), "{found:#?}");
 
-    let look = |doc| ui::mentions::Look {
-        app: APP,
-        record: "",
-        kind: "tilolang",
-        doc,
-        tree: None,
-        quiet: false,
-        read: &ui::mentions::reading_nothing,
-    };
-    let name = |id: &str| id.to_owned();
-    let mut grace_inbox = ui::mentions::MentionInbox::new(["grace".to_owned()]);
-    let told = grace_inbox.look(&look(&grace.doc), &name);
-    assert_eq!(told.show.len(), 1, "Grace is told once: {:#?}", told.show);
+    // Ada wrote it: the mention names grace alone.
     assert!(
-        grace_inbox.look(&look(&grace.doc), &name).show.is_empty(),
-        "and never again"
-    );
-    let mut ada_inbox = ui::mentions::MentionInbox::new(["ada".to_owned()]);
-    assert!(
-        ada_inbox.look(&look(&ada.doc), &name).show.is_empty(),
-        "nobody else is told"
+        ui::mentions::in_record(&ada.doc)
+            .iter()
+            .all(|found| found.person != "ada"),
+        "the author is told nothing"
     );
 }
 
@@ -567,22 +552,10 @@ fn a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_p
     let read = |reference: &tilolang_runtime::rich::Reference| {
         tilolang_runtime::store::Store::reading(grace.host.store(), reference)
     };
-    let mut inbox = ui::mentions::MentionInbox::new(["grace".to_owned()]);
-    let told = inbox.look(
-        &ui::mentions::Look {
-            app: APP,
-            record: "",
-            kind: "tilolang",
-            doc: &grace.doc,
-            tree: None,
-            quiet: false,
-            read: &read,
-        },
-        &|id: &str| id.to_owned(),
-    );
-    assert_eq!(told.show.len(), 1, "{:#?}", told.show);
+    let told = ui::mentions::in_record_for(&grace.doc, &read);
+    assert_eq!(told.len(), 1, "{told:#?}");
     assert_eq!(
-        told.show[0].body,
+        told[0].excerpt,
         "@Grace the notes are in Not shared with you"
     );
 }

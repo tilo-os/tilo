@@ -1,7 +1,6 @@
 //! Runtime publisher pins installed by authenticated OS/component updates.
 //! These paths are never supplied by an app, environment or user data store.
 
-use std::io::Read as _;
 use std::path::Path;
 
 const PINS: [&str; 3] = [
@@ -165,6 +164,7 @@ fn denied() -> std::io::Error {
 
 #[cfg(unix)]
 fn read_immutable(path: &Path, bound: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let metadata = match std::fs::symlink_metadata(path) {

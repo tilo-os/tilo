@@ -160,26 +160,29 @@ operate it. Companion to `docs/security/design-rationale.md`.
   twice → identical `podman image inspect --format '{{.Id}}'`.
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
-  set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built and
-  published by **Build / RPM snapshot** to `registry.tilo.so/tilo/rpms`) and
-  addressed as `set-<fingerprint>`, where the fingerprint hashes both
-  architectures' package sets, `BASE_REF`, and the files that shape the snapshot
-  (`os/dev/rpm-snapshot-fingerprint.py`). Builds call
-  `os/dev/resolve-rpm-snapshot.sh`, which looks up that tag and verifies
-  signature, provenance and both architectures before printing the digest. Every
-  `os/Containerfile` `dnf install` mounts that repo and installs from it only
-  (`--setopt=reposdir=/repo`), never live Fedora mirrors.
-  The reference is an OCI index containing exactly native AMD64 and ARM64
-  repositories. Snapshot CI builds each architecture natively and joins both
-  into the index before tagging. The index is signed through the non-exportable release key and
-  carries verified SLSA provenance binding its exact digest, base image,
-  architecture set, source, and canonical package-set hash. CI and local image
-  builders reject it before any package transaction unless all of those claims
-  match the current build inputs.
+  set is published per architecture as a digest-pinned OCI image
+  (`os/Containerfile.rpms`, built and published by `publish-rpms-<arch>` on a
+  release tag to `registry.tilo.so/tilo/rpms`) and addressed as
+  `set-<fingerprint>-<arch>`, where the fingerprint hashes both architectures'
+  package sets, `BASE_REF`, and the files that shape the snapshot
+  (`os/dev/rpm-snapshot-fingerprint.py`), and the suffix says which
+  architecture's image the tag names. Builds call
+  `os/dev/resolve-rpm-snapshot.sh --arch <arch>`, which looks up that tag and
+  verifies signature, provenance and the image's own architecture before printing
+  the digest. Every `os/Containerfile` `dnf install` mounts that repo and installs
+  from it only (`--setopt=reposdir=/repo`), never live Fedora mirrors.
+  Each architecture's repository is built natively on a machine of that
+  architecture and tagged on its own, so one architecture is published without
+  the other's node existing. Each image is signed through the non-exportable
+  release key and carries verified SLSA provenance binding its exact digest, base
+  image, architecture, source, and that architecture's canonical package-set hash.
+  CI and local image builders reject it before any package transaction unless all
+  of those claims match the current build inputs.
   **When you add/remove/rename a package in `os/Containerfile`,** merging it to
-  `main` changes the fingerprint, and the next stable run builds, signs, attests
-  and tags the new `set-<fingerprint>`; a fingerprint already published is never
-  published again. There is no hand-kept pin file
+  `main` changes the fingerprint, and the next release tag's run builds, signs,
+  attests and tags the new `set-<fingerprint>-x86_64` (its `-aarch64` set is
+  published by a dispatch on a node of that architecture); a fingerprint already
+  published is never published again. There is no hand-kept pin file
   and no pin pull request. The kernel does not build against this snapshot.
   Until the matching tag exists the build fails `No match for argument: <pkg>`
   (or resolve fails closed). The package list is auto-derived from
@@ -195,9 +198,9 @@ operate it. Companion to `docs/security/design-rationale.md`.
   (the x86-64 one also carries Fedora's aarch64 cross compiler and binutils,
   refused unless their versions are the native ones'),
   deletes every repository file so a kernel build cannot fall back to the
-  network, and stable signs each digest through the non-exportable release key.
-  Both pins land in `os/kernel-buildroot-snapshot.env` through
-  `kernel-buildroot.sh pin`. A base
+  network, and a release tag signs each digest through the non-exportable release key.
+  Both pins land in `os/kernel-buildroot-snapshot.env` from what it published
+  (`kernel-buildroot.sh pins`). A base
   refresh re-runs it; an OS package change does not.
 - **Native custom kernels.** Kernel CI rebuilds the hardened kernel separately
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
@@ -227,14 +230,11 @@ operate it. Companion to `docs/security/design-rationale.md`.
   changes. An object is
   found only for the same compiler, flags and preprocessed source, so the
   kernel is the one an uncached build makes.
-- **Pin promotion credentials.** Pin promotion pushes its automation branch
-  with the job token but opens the pull request through
-  `os/dev/open-snapshot-pr.py` with protected secret `RELEASE_TOKEN`. Forgejo
-  answers the pull-request API with 404 for the push credential, while
-  `RELEASE_TOKEN` has repository scope. If the script reports that the token
-  cannot read pull requests, check that `RELEASE_TOKEN` exists and still grants
-  repository access; the branch is already pushed, so a PR can be opened from
-  it by hand in the meantime. OS CI selects the matching pin, verifies
+- **Pins.** A release's publish step writes the pinned references it published
+  (`kernel.sh pins`, `kernel-buildroot.sh pins`, `legacy-guest.sh pins`,
+  `hosted-guest.sh pins`), which are committed to `os/*-snapshot.env`: nothing
+  moves the pins automatically, so a pin moves when a person takes the published
+  references from the release and commits them. OS CI selects the matching pin, verifies
   its Cosign signature, OCI architecture, and SLSA source, architecture and
   digest provenance, then verifies the signature of the kernel buildroot
   that provenance binds (`os/dev/verify-kernel-provenance.sh`), before
@@ -261,11 +261,23 @@ operate it. Companion to `docs/security/design-rationale.md`.
   `os/base-snapshot.env` (one-line digest bump).
   `os/dev/ensure-base-mirror.sh` copies `BASE_SOURCE` into the mirror when the
   pinned digest is missing. Changing `BASE_REF` changes the
-  RPM fingerprint, so the next snapshot publishes a new `set-<fingerprint>`
-  tag; then `kernel-buildroot.sh pin` and `kernel.sh pin` write the new buildroot and
-  kernel pins once stable has published them. The ensure step refuses a `BASE_SOURCE`
+  RPM fingerprint, so the next snapshot publishes a new `set-<fingerprint>-<arch>`
+  tag; then the release's `pins.env` writes the new buildroot and kernel pins. The
+  ensure step refuses a `BASE_SOURCE`
   whose digest no longer matches the pin, so a silent major bump fails closed
   instead of shipping.
+  The server images that ship without a bootc base (the relay, the front door,
+  the VM host) run on `fedora-minimal` instead, pinned by digest from
+  `registry.fedoraproject.org`, which keeps the digests quay.io prunes. Their
+  runtime packages come from the same frozen snapshot as the OS, so all of them
+  share one base and one package set; `tools/ci/publish/relay-build.sh`,
+  `agent-host-build.sh`, `front-door-build.sh` and `vm-host-build.sh` are the
+  build path they share.
+  Every one of their programs is compiled by t (`relay-binaries`,
+  `agent-host-binaries`, `front-door-binaries`, `vm-host-binaries`,
+  tools/ci/publish/server-binaries.sh) and the images only package the result,
+  so no image build compiles Rust: a change costs that crate's compile and a
+  layering run.
 - **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.

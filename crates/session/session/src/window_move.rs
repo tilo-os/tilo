@@ -9,8 +9,9 @@
 //! says why. Nothing in a move touches the disk on the session's own thread.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash};
@@ -19,16 +20,14 @@ use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceSlot};
-use tilo_desktop_surface::DesktopNotifications;
-use tilo_desktop_surface::NotificationOutcome;
 use ui::record::RecordId;
 use ui::record::transfer::{Origin, Retirement, TransferError};
 
 use crate::Shared;
+use crate::apps::launch_of;
 use crate::continuations::{Continuations, HandoffNote};
 use crate::i18n::{t, t_args};
-use crate::mount::apps::launch_of;
-use crate::notices::Notice;
+use crate::platform::notice::{Notice, Notices};
 use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
 
 /// The action a move's notice offers: carry the window into its destination.
@@ -135,12 +134,11 @@ enum Phase {
 
 /// The windows the person carries between workspaces, and what they answer before one crosses.
 pub(crate) struct Moves {
-    /// The moves the person was asked about, by the notice that asked.
-    asking: RefCell<BTreeMap<u64, Asked>>,
+    /// The moves the person was asked about, by the tag of the notice that asked.
+    asking: RefCell<BTreeMap<String, Asked>>,
     crossing: RefCell<Vec<Crossing>>,
-    /// What the person answered, from the desk's own outcome taps.
-    answered: Receiver<(u64, String)>,
-    notices: DesktopNotifications,
+    /// What the person's notices are shown on, where the question and its answer go.
+    notices: Rc<dyn Notices>,
     /// What each window's app answered about a handoff step, taken up once a pass.
     notes: RefCell<Vec<HandoffNote>>,
     continuing: Arc<Continuations>,
@@ -148,23 +146,12 @@ pub(crate) struct Moves {
 }
 
 impl Moves {
-    /// Carries asked about on `notices` , whose answers come back here, and whose windows are
+    /// Carries asked about through `notices` , whose answers come back here, and whose windows are
     /// reached through `continuing` .
-    pub(crate) fn new(notices: DesktopNotifications, continuing: Arc<Continuations>) -> Self {
-        let (answered, answers) = mpsc::channel();
-        notices.on_outcome(move |outcome| {
-            if let NotificationOutcome::Activated {
-                notification,
-                action: Some(key),
-            } = outcome
-            {
-                let _ = answered.send((notification.id, key.clone()));
-            }
-        });
+    pub(crate) fn new(notices: Rc<dyn Notices>, continuing: Arc<Continuations>) -> Self {
         Self {
             asking: RefCell::new(BTreeMap::new()),
             crossing: RefCell::new(Vec::new()),
-            answered: answers,
             notices,
             notes: RefCell::new(Vec::new()),
             continuing,
@@ -182,8 +169,8 @@ impl Moves {
         self.notes
             .borrow_mut()
             .extend(self.continuing.take_handoffs());
-        for (id, key) in self.answered.try_iter() {
-            let Some(asked) = self.asking.borrow_mut().remove(&id) else {
+        for (tag, key) in self.notices.take_chosen_actions() {
+            let Some(asked) = self.asking.borrow_mut().remove(&tag) else {
                 continue;
             };
             if key == CARRY {
@@ -278,13 +265,12 @@ impl Moves {
                 &[("workspace", asked.from_name.clone().into())],
             ));
         }
-        let mut notice = Notice::new(t("window-move-app-name"), 1, title, body);
-        notice.actions = vec![
+        let notice = Notice::new(t("window-move-app-name"), 1, title, body).choosing(vec![
             (CARRY.to_owned(), t("window-move-ask-carry")),
             (STAY.to_owned(), t("window-move-ask-stay")),
-        ];
-        let id = notice.tell_desk(&self.notices);
-        self.asking.borrow_mut().insert(id, asked);
+        ]);
+        self.asking.borrow_mut().insert(notice.tag.clone(), asked);
+        self.notices.show(&notice);
     }
 
     /// Carry the tab to the workspace the person chose, and take the record the window shows along.
@@ -688,6 +674,7 @@ impl Moves {
             .map(|arrived| Launch::Record {
                 app: crossing.app.clone(),
                 record: arrived.target.id.as_str().to_owned(),
+                visitor: false,
             });
         let launch = on.unwrap_or_else(|| Launch::Package {
             app: crossing.app.clone(),
@@ -920,7 +907,8 @@ impl Moves {
             "window-move-failed-body",
             &[("workspace", source.to_owned().into())],
         );
-        Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
+        self.notices
+            .show(&Notice::new(t("window-move-app-name"), 1, title, body));
     }
 
     /// Say the record the window shows could not be moved, where it stayed and why.
@@ -939,7 +927,8 @@ impl Moves {
                 ("reason", why.to_owned().into()),
             ],
         );
-        Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
+        self.notices
+            .show(&Notice::new(t("window-move-app-name"), 1, title, body));
     }
 
     /// Put the move back in flight, waiting for `phase` .
@@ -1124,13 +1113,12 @@ fn app_name(app: &str) -> String {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::rc::Rc;
 
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     use durable_store::{DurableStore as _, StorageKey};
-    use tilo_action_broker::route::CrdtRoute;
     use tilo_action_policy::Role;
+    use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
@@ -1138,7 +1126,7 @@ mod tests {
     use ui::record::transfer::retirement;
     use ui::record::{RecordCheckout, RecordKind, RecordOwners};
 
-    use crate::mount::apps::Apps;
+    use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
 
     use super::*;
@@ -1321,10 +1309,14 @@ mod tests {
             records.try_flush().expect("the record is written");
             // The session notes what a window shows as its app holds it: this one holds the record
             // it was launched on.
-            self.session.shared.notes.read(&[(
-                self.tab,
-                CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
-            )]);
+            self.session.shared.notes.read(
+                &[(
+                    self.tab,
+                    CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
+                )],
+                &|_| Some(PROBE.to_owned()),
+                &[self.tab].into_iter().collect(),
+            );
             checkout
         }
 

@@ -39,6 +39,7 @@ use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
 use crate::model::{self, Channel, Id, Message, User};
 use crate::permissions::ChatPermissions;
+use ui::widget::DrawChild;
 
 // --- Floating call huddle home placement (fractions of the window) --------
 // The docked huddle's resting video rect before the user drags it. The
@@ -127,7 +128,7 @@ pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) 
 )]
 pub struct ChatApp {
     pub(crate) host_model: crate::host_model::HostModel,
-    pub(crate) expanded_reasoning: std::collections::HashSet<String>,
+    pub(crate) expanded_agent: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
@@ -135,6 +136,23 @@ pub struct ChatApp {
     /// reactors, mentioned people, and voice participants in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
+    /// The rows each held part of the messages chain was read as, with the
+    /// part state they were read from: a part whose state is the same
+    /// [`Rc`](std::rc::Rc) as here changed nothing since, and its rows are
+    /// the ones already read. A chat that grows holds thousands of messages in
+    /// one part, and a reload reads the parts that changed and no others.
+    pub(crate) rows_by_part: std::collections::BTreeMap<
+        u64,
+        (
+            std::rc::Rc<Vec<Message>>,
+            std::rc::Rc<crate::parts::ChatPart>,
+        ),
+    >,
+    /// Top-level messages each channel has in each part held, as that part's
+    /// rows were read: what an unread count sums, instead of reading every
+    /// part of the chain.
+    pub(crate) counts_by_part:
+        std::collections::BTreeMap<u64, std::collections::BTreeMap<String, usize>>,
     /// Whole-document snapshots used by global search. The visible `messages`
     /// are the open channel's.
     pub(crate) search_messages: Vec<Message>,
@@ -360,8 +378,17 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
-    /// Exact bare Agent ids from the authenticated workspace roster.
-    pub(crate) workspace_agents: Vec<Id>,
+    /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
+    /// record every app of the workspace reads, followed as it changes. It names an author
+    /// (`agent:<id>`) whether or not the agent is working here this moment.
+    pub(crate) workspace_agent_names: HashMap<Id, String>,
+    /// The presence colour each agent's record gives it, by bare id: the one its keeper chose, or
+    /// the one its identity gives it. An agent wears it here as it does in every app of the
+    /// workspace.
+    pub(crate) workspace_agent_colours: HashMap<Id, u8>,
+    /// The agent identity record, followed every frame (see `follow_agents`).
+    agents_record:
+        Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -418,6 +445,11 @@ pub struct ChatApp {
     // window's person, recorded in history and replicated. See
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// Chat's `send`, as the window publishes it: the action the composer's
+    /// send button runs, and the one an agent's send and the desk's send-to
+    /// box run. The button is where it lands, so a marker drawn for anyone
+    /// sending rests there.
+    pub(crate) send_action: Option<ui::tilo_actions::ActionAddress>,
     /// The read receipt last sent on its own and not answered yet, by
     /// channel, and the one the door refused: a receipt the door does not
     /// offer this person (a viewer) is not sent again until they read
@@ -668,6 +700,8 @@ impl ChatApp {
             categories: Vec::new(),
             users: Vec::new(),
             messages: Vec::new(),
+            rows_by_part: std::collections::BTreeMap::new(),
+            counts_by_part: std::collections::BTreeMap::new(),
             search_messages: Vec::new(),
             search_users: Vec::new(),
             reports: Vec::new(),
@@ -760,7 +794,9 @@ impl ChatApp {
             workspace_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
-            workspace_agents: Vec::new(),
+            workspace_agent_names: HashMap::new(),
+            workspace_agent_colours: HashMap::new(),
+            agents_record: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -778,8 +814,9 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
             host_model: crate::host_model::HostModel::default(),
-            expanded_reasoning: std::collections::HashSet::new(),
+            expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
+            send_action: None,
             read_asked: None,
             read_refused: None,
             chain: None,
@@ -1060,7 +1097,9 @@ impl ChatApp {
     pub fn held_messages(&self) -> crate::messages::Messages {
         self.chain
             .as_ref()
-            .map(|chain| crate::messages::Messages::new(chain.parts()))
+            .map(|chain| {
+                crate::messages::Messages::new(chain.parts()).with_sending(chain.unwritten())
+            })
             .unwrap_or_default()
             .with_kept(
                 self.kept_messages
@@ -1148,6 +1187,17 @@ impl ChatApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
         self.dispatch = Some(dispatcher);
+    }
+
+    /// Take the resource the window publishes its actions on: the composer's
+    /// send button is where Chat's `send` lands, so a person's press, an
+    /// agent's send and the desk's send-to box are one action at one control.
+    pub(crate) fn with_send_action(
+        mut self,
+        actions: &ui::framework::Actions<crate::resource::Chat>,
+    ) -> Self {
+        self.send_action = Some(crate::effects::ChatEffect::SEND.on(actions.resource_id()));
+        self
     }
 
     /// Keep the composers' drafts in the person's own `record`: theirs
@@ -1276,15 +1326,6 @@ impl ChatApp {
         id == self.me.id || self.former_ids.iter().any(|f| f == id)
     }
 
-    pub(crate) fn agent_display_name(&self, agent: &str) -> String {
-        self.workspace_names
-            .get(&format!("agent:{agent}"))
-            .or_else(|| self.workspace_names.get(agent))
-            .filter(|name| !name.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
-    }
-
     pub(crate) fn main_composer_can_edit(&self) -> bool {
         self.can_participate()
     }
@@ -1294,7 +1335,10 @@ impl ChatApp {
     pub(crate) fn conversation_placeholder(&self, channel: &str) -> String {
         match self.channel(channel) {
             Some(row) if row.direct => crate::i18n::t("chat-person-chat-placeholder"),
-            Some(row) => format!("Message #{}", row.name),
+            Some(row) => crate::i18n::t_args(
+                "chat-channel-composer-placeholder",
+                &[("channel", row.name.as_str().into())],
+            ),
             None => String::new(),
         }
     }
@@ -1327,6 +1371,15 @@ impl ChatApp {
     }
     pub(crate) fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id)
+    }
+
+    /// Whether the open conversation keeps its replies in threads: the
+    /// workspace's channels do, and a direct conversation shows every answer
+    /// where it was written instead, among the messages around it.
+    pub(crate) fn keeps_threads(&self) -> bool {
+        !self
+            .channel(&self.active_channel)
+            .is_some_and(|conversation| conversation.direct)
     }
 
     /// The workspace's channels, ordered. Archived channels are hidden from the
@@ -1991,7 +2044,7 @@ impl Widget for ChatApp {
             parts.draw(scene, "chat-call", window, |scene| {
                 self.draw_call_overlay_bg(scene, tf, tr, theme);
                 if host_has_frame {
-                    self.video.draw(scene, tf, tr, theme, presence);
+                    self.video.draw_child(scene, tf, tr, theme, presence);
                 }
                 self.draw_host_camera_off(scene, tf, tr, theme);
                 self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
@@ -2242,14 +2295,27 @@ impl Widget for ChatApp {
         {
             children.push(menu_node);
         }
+        // The text menu a composer opened on its words stands over the
+        // timeline: read where it is drawn, as the surface's own menu is.
+        for composer in [&self.composer_main, &self.composer_thread] {
+            if !composer.is_focused() {
+                continue;
+            }
+            if let Some(menu) = composer.text_menu_accessibility() {
+                children.push(menu);
+            }
+        }
         // Existing Chat controls are exported by their typed domain resources,
         // which carry device and destructive-operation metadata. Keep their
         // synthetic accessibility subtrees outside generic action projection.
         // Only the shared separators use the generic widget effect contract.
+        // The send button keeps its readable key: it is where the chat's
+        // `send` lands, and the marker drawn for whoever sends is found by
+        // that key.
         for child in &mut children {
             if !matches!(
                 child.action_target.as_deref(),
-                Some("sidebar-resize" | "inspector-resize")
+                Some("sidebar-resize" | "inspector-resize" | "chat.send")
             ) {
                 child.semantic_key = None;
             }
@@ -2319,6 +2385,20 @@ impl Widget for ChatApp {
         if target.starts_with("context-menu:item:") {
             return self.perform_menu_semantic_action(target, action, state, path);
         }
+        // A row of the text menu a composer opened runs as the click that row
+        // makes: the editor takes the row, and what it wrote is read back.
+        if target.starts_with("editor.text-menu:") {
+            let composer = if self.focus == Focus::Thread {
+                &mut self.composer_thread
+            } else {
+                &mut self.composer_main
+            };
+            if !composer.perform_semantic_action(target, action, state, path) {
+                return false;
+            }
+            self.reload(state);
+            return true;
+        }
         let hit = self
             .semantic_hits()
             .into_iter()
@@ -2340,11 +2420,12 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
-        let messages_before = matches!(hit, Hit::Send).then(|| {
-            crate::projection::read(state)
-                .message_rows(&self.held_messages(), &self.active_channel)
-                .len()
-        });
+        let messages_before =
+            matches!(hit, Hit::Send | Hit::RetrySend | Hit::ThreadSend).then(|| {
+                crate::projection::read(state)
+                    .message_rows(&self.held_messages(), &self.active_channel)
+                    .len()
+            });
         self.on_hit(hit, state);
         messages_before.is_none_or(|before| {
             crate::projection::read(state)
@@ -2697,7 +2778,7 @@ impl ChatApp {
         if self.huddle_features_me() {
             if self.video.latest_frame().is_some() {
                 self.video
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
             }
             self.draw_host_camera_off(scene, transform, text_renderer, theme);
         } else {

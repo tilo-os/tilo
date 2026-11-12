@@ -106,7 +106,7 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
     let requests = Rc::clone(requests);
     let core = Rc::clone(core);
     NavList::new(Vec::new())
-        .with_accessible_name("Vault")
+        .with_accessible_name(crate::CATALOG.t("passwords-a11y-vault"))
         .on_view("passwords.sidebar", move |id| {
             requests.borrow_mut().push(Request::Navigate(id));
         })
@@ -128,9 +128,11 @@ pub struct PasswordsWindow {
     overview_title: String,
     /// The overview header is in the window's bar ([`ui::window_toolbar`]).
     header_in_bar: bool,
-    /// The list title, the shell's own slots and the item's actions the
-    /// bar's slots were last declared with.
+    /// The window the bar's slots were declared on
+    /// ([`ui::window_toolbar::current_window`]), the list title, the shell's own
+    /// slots and the item's actions.
     declared_bar: Option<(
+        Option<u64>,
         String,
         ui::window_toolbar::WindowToolbar,
         Option<ItemActions>,
@@ -200,7 +202,12 @@ impl PasswordsWindow {
         // item in a narrow window has its list to go back to.
         let shell = self.shell.window_toolbar();
         let item = crate::pages::item_actions(&self.core.borrow());
-        let key = (self.overview_title.clone(), shell.clone(), item);
+        let key = (
+            ui::window_toolbar::current_window(),
+            self.overview_title.clone(),
+            shell.clone(),
+            item,
+        );
         if self.declared_bar.as_ref() != Some(&key) {
             let mut toolbar = WindowToolbar {
                 location: Some(ToolbarLocation {
@@ -214,10 +221,10 @@ impl PasswordsWindow {
                 "plus",
                 crate::CATALOG.t("passwords-new-item"),
             )];
-            if let Some(item) = &key.2 {
+            if let Some(item) = &key.3 {
                 actions.extend([
                     ToolbarAction::new(COPY_SECRET, "copy", item.copy.clone()),
-                    ToolbarAction::new(EDIT_ITEM, "pencil", "Edit"),
+                    ToolbarAction::new(EDIT_ITEM, "pencil", crate::CATALOG.t("passwords-edit")),
                     ToolbarAction::new(
                         FAVORITE,
                         "star",
@@ -239,7 +246,7 @@ impl PasswordsWindow {
                     NEW_ITEM => Request::NewItem,
                     COPY_SECRET => Request::CopySecret,
                     EDIT_ITEM => Request::Edit,
-                    FAVORITE => match self.declared_bar.as_ref().and_then(|key| key.2.as_ref()) {
+                    FAVORITE => match self.declared_bar.as_ref().and_then(|key| key.3.as_ref()) {
                         Some(item) => Request::ToggleFavorite(item.id.clone()),
                         None => continue,
                     },
@@ -254,12 +261,11 @@ impl PasswordsWindow {
     fn with_core(core: Core) -> Self {
         let core: Shared = Rc::new(RefCell::new(core));
         let requests: Requests = Rc::default();
-        let title = core.borrow().filter.label().to_owned();
+        let title = core.borrow().filter.label();
         // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("passwords.shell")
-            .with_header_in_window_bar()
             .sidebar(Box::new(sidebar(&core, &requests)))
             .overview(Box::new(ListPane::new(&core, &requests)))
             .overview_header(title.clone(), Self::overview_actions(&requests));
@@ -361,7 +367,7 @@ impl PasswordsWindow {
                 core.page_revision,
                 core.list_revision,
                 core.screen,
-                core.filter.label().to_owned(),
+                core.filter.label(),
                 core.show_pane.take(),
                 core.toast.take(),
                 core.saved.take(),

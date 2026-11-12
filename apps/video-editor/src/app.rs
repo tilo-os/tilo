@@ -34,8 +34,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ContextMenu, ControlSize, EditOutcome, EditableLabel,
-    FlapState, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
-    modal_dialog,
+    FlapState, InputHint, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout,
+    Widget, modal_dialog,
 };
 
 use crate::actions::VideoResourceCtx;
@@ -50,6 +50,7 @@ use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
+use ui::widget::DrawChild;
 
 mod accessibility;
 mod bin_paint;
@@ -188,9 +189,10 @@ const BIN_BREAKPOINT: f64 = 900.0;
 /// reader, which is two descriptions of one state.
 const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
 const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
-/// The marker list's add button, shared by the paint and the accessibility
-/// tree so a reader is offered the control the screen actually shows.
-const ADD_MARKER_LABEL: &str = "Add marker at playhead";
+/// The catalogue message naming the marker list's add button, shared by the
+/// paint and the accessibility tree so a reader is offered the control the
+/// screen actually shows.
+const ADD_MARKER_LABEL: &str = "video-editor-marker-add";
 /// The key the add button is addressed by, before hashing. A constant rather
 /// than a literal at each site so the node and the router cannot drift apart.
 const ADD_MARKER_KEY: &str = "add marker";
@@ -1372,7 +1374,7 @@ impl VideoEditorApp {
                 ui::widget::SplitOrientation::Vertical,
                 ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
             )
-            .with_label("Resize the preview and the timeline"),
+            .with_label(crate::resource::CATALOG.t("video-editor-a11y-resize")),
             selection: Selection::default(),
             selected_media: None,
             export: ExportSettings::default(),
@@ -1934,7 +1936,8 @@ impl VideoEditorApp {
         let (h, widths) = self.with_dialog_layout(|_, tr, theme| {
             let h = ButtonFace::height(ControlSize::Small, theme);
             let mut width = |kind| {
-                ButtonFace::new(Rect::ZERO, timeline_paint::add_track_label(kind))
+                let adding = timeline_paint::add_track_label(kind);
+                ButtonFace::new(Rect::ZERO, &adding)
                     .icon(Icon::Plus)
                     .control_size(ControlSize::Small)
                     .intrinsic_width(tr, theme)
@@ -2131,7 +2134,8 @@ impl VideoEditorApp {
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let scale = self.bin_ui_scale();
         let (w, h) = self.with_dialog_layout(|_, tr, theme| {
-            let face = ButtonFace::new(Rect::ZERO, "Title")
+            let title = crate::resource::CATALOG.t("video-editor-title-button");
+            let face = ButtonFace::new(Rect::ZERO, &title)
                 .icon(Icon::Plus)
                 .control_size(ControlSize::Small);
             (
@@ -2452,10 +2456,10 @@ impl VideoEditorApp {
         }
         match self.mix.hold_db() {
             Some(db) => Some(format!("Mix peak {db:.1} dB")),
-            // Silence and "nobody has listened" look identical on a meter,
-            // and telling someone their levels are fine when nothing has been
-            // measured would be the same silent failure in a nicer voice.
-            None => Some("Levels not measured — play the timeline to check".into()),
+            // Silence and "nobody has listened" look identical on a meter.
+            // A meter with no reading is why the line is here at all, so it
+            // says the one thing that changes it.
+            None => Some("Play the timeline to measure levels".into()),
         }
     }
 
@@ -5293,7 +5297,11 @@ impl VideoEditorApp {
         }
         let (w, h) = self.with_dialog_layout(|_, tr, theme| {
             (
-                ButtonFace::new(Rect::ZERO, "Import media").intrinsic_width(tr, theme),
+                ButtonFace::new(
+                    Rect::ZERO,
+                    &crate::resource::CATALOG.t("video-editor-import-media"),
+                )
+                .intrinsic_width(tr, theme),
                 ButtonFace::height(ControlSize::Regular, theme),
             )
         });
@@ -5537,8 +5545,9 @@ impl VideoEditorApp {
         let groups_h = 3.0 * (line_xs + s1 + seg_target + s3);
         let footer_h = s1 + line_sm + s2 + status_h + notice_h;
         let body_h = header_h + groups_h + footer_h;
-        let actions = self.export_actions();
-        let spec = ModalSpec::new("Export project")
+        let labels = ExportLabels::new();
+        let actions = self.export_actions(&labels);
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W);
         let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
@@ -5909,11 +5918,11 @@ struct HelpLayout {
     type_sizes: DialogType,
     /// Top of the "Esc or ? to close" line.
     hint_top: f64,
-    /// One entry per group, in `SHORTCUTS` order.
+    /// One entry per group, in [`shortcuts`] order.
     groups: Vec<HelpGroupLayout>,
     /// Where a row's description starts, measured from its column's left
-    /// edge: the widest key combination in the table plus one spacing step,
-    /// so no description ever starts inside a combination.
+    /// edge: the widest row of keycaps in the table plus one spacing step,
+    /// so no description ever starts inside a key.
     what_dx: f64,
     /// How far the body can scroll: the table's height past the body, or 0
     /// when the window holds the whole sheet.
@@ -5945,7 +5954,7 @@ struct GotoLayout {
 struct HelpMetrics {
     /// A group heading's line and the step down to its first row.
     header_h: f64,
-    /// One shortcut row: its line and the step to the next.
+    /// One shortcut row: its line or its keycaps, and the step to the next.
     row_h: f64,
     /// The gap after a group's last row.
     group_gap: f64,
@@ -6008,13 +6017,13 @@ impl VideoEditorApp {
         }
         if let (Some((_, dropdown)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font) {
             dropdown.apply_layout_external(rect);
-            dropdown.draw(scene, transform, tr, theme, presence);
+            dropdown.draw_child(scene, transform, tr, theme, presence);
         }
         if let (Some((media_id, field)), Some(rect)) = (self.title_edit.as_mut(), layout.title_text)
         {
             let media_id = *media_id;
             field.apply_layout_external(rect.inset(-4.0));
-            field.draw(scene, transform, tr, theme, presence);
+            field.draw_child(scene, transform, tr, theme, presence);
             crate::presence::draw_peer_field_carets(
                 &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
                 crate::presence::FIELD_TITLE_WORDS,
@@ -6034,7 +6043,7 @@ impl VideoEditorApp {
             .map(|(_, row)| self.marker_edit_rect(*row));
         if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), marker_row) {
             label.apply_layout_external(rect);
-            label.draw(scene, transform, tr, theme, presence);
+            label.draw_child(scene, transform, tr, theme, presence);
         }
     }
 }
@@ -7128,7 +7137,7 @@ impl Widget for VideoEditorApp {
         }
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name("Video editor")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-window"))
                 .with_value(format!(
                     "{}, {} in {} pane",
                     // The same line the project button's dot and tooltip
@@ -7248,8 +7257,8 @@ impl Widget for VideoEditorApp {
     ///
     /// The editor is one widget, so the host asks it once and it answers for
     /// whatever the pointer is actually over.
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_at(self.last_mouse)
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip_at(self.last_mouse).map(Into::into)
     }
 
     fn get_rect(&self) -> Rect {
@@ -7361,75 +7370,123 @@ impl VideoEditorApp {
     }
 }
 
+/// One row of the shortcut sheet: the keys that run it and what it does.
+pub(crate) struct ShortcutRow {
+    /// The key or chord templates that run it, spelled for this platform and
+    /// the person's keyboard. Two or more are alternatives, which the sheet
+    /// paints as separate keycaps — never as one string joined by a separator.
+    pub keys: &'static [&'static str],
+    /// What pressing them does.
+    pub what: String,
+}
+
 /// The keyboard shortcuts the editor answers to, grouped as the sheet shows
 /// them. Fifteen shortcuts existed and none of them were written down anywhere
 /// in the product; a sheet is also how a reader user learns they exist at all,
 /// which is why it is an accessibility affordance and not just a convenience.
-const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
-    (
-        "Project",
-        &[
-            ("{cmd:O}", "Open a project file"),
-            ("{cmd+shift:S}", "Export a project file"),
-            ("{cmd+shift:O}", "Import media"),
-            ("{cmd:E}", "Export video"),
-        ],
-    ),
-    (
-        "Playback",
-        &[
-            ("Space", "Play / pause"),
-            ("J / K / L", "Shuttle back / stop / fwd"),
-            ("Home / End", "Jump to start / end"),
-            (", / .", "Previous / next marker"),
-            ("C", "Go to where the mix clipped"),
-            ("G", "Go to timecode"),
-        ],
-    ),
-    (
-        "Editing",
-        &[
-            ("I / O", "Trim clip in / out at playhead"),
-            ("Shift+I / O", "Mark render range in / out"),
-            ("Shift+X", "Clear the render range"),
-            ("S", "Split at playhead"),
-            ("M", "Add marker"),
-            ("T", "Add title"),
-            ("Delete", "Delete clip"),
-            ("Shift+Delete", "Ripple delete"),
-            ("Arrows", "Nudge, or step playhead"),
-        ],
-    ),
-    (
-        "Clipboard",
-        &[
-            ("{cmd:X} / {cmd:C} / {cmd:V}", "Cut, copy, paste"),
-            ("{cmd:D}", "Duplicate selection"),
-            ("{cmd:A}", "Select all clips"),
-            ("{cmd:Z}", "Undo"),
-            // Both spellings work and neither was written down, so the sheet
-            // claimed the editor had undo and no redo.
-            ("{cmd+shift:Z}", "Redo"),
-            ("{cmd:Y}", "Redo"),
-        ],
-    ),
-    (
-        "View",
-        &[
-            ("Tab / Shift+Tab", "Next / previous pane"),
-            ("Page Up / Down", "Scroll the timeline"),
-            ("Z", "Zoom to fit"),
-            ("+ / -", "Zoom in / out"),
-            ("B", "Toggle media bin"),
-            ("{cmd:I}", "Toggle inspector"),
-            ("?", "This sheet"),
-        ],
-    ),
-];
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "the braces spell a key as the keyboard prints it, not format arguments"
+)]
+pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
+    let t = |key: &str| crate::resource::CATALOG.t(key);
+    let row = |keys: &'static [&'static str], what: String| ShortcutRow { keys, what };
+    vec![
+        (
+            "video-editor-shortcut-project",
+            vec![
+                row(&["{cmd:O}"], t("video-editor-shortcut-open-project")),
+                row(
+                    &["{cmd+shift:S}"],
+                    t("video-editor-shortcut-export-project"),
+                ),
+                row(&["{cmd+shift:O}"], t("video-editor-shortcut-import-media")),
+                row(&["{cmd:E}"], t("video-editor-shortcut-export-video")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-playback",
+            vec![
+                row(&["Space"], t("video-editor-shortcut-play-pause")),
+                row(&["J", "K", "L"], t("video-editor-shortcut-shuttle")),
+                row(&["Home", "End"], t("video-editor-shortcut-jump-start-end")),
+                row(&[",", "."], t("video-editor-shortcut-marker-step")),
+                row(&["C"], t("video-editor-shortcut-clipped")),
+                row(&["G"], t("video-editor-shortcut-timecode")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-editing",
+            vec![
+                row(&["I", "O"], t("video-editor-shortcut-trim")),
+                row(
+                    &["{shift:I}", "{shift:O}"],
+                    t("video-editor-shortcut-mark-range"),
+                ),
+                row(&["{shift:X}"], t("video-editor-shortcut-clear-range")),
+                row(&["S"], t("video-editor-shortcut-split")),
+                row(&["M"], t("video-editor-shortcut-add-marker")),
+                row(&["T"], t("video-editor-shortcut-add-title")),
+                row(&["Delete"], t("video-editor-shortcut-delete-clip")),
+                row(
+                    &["{shift:Delete}"],
+                    t("video-editor-shortcut-ripple-delete"),
+                ),
+                row(&["Arrows"], t("video-editor-shortcut-nudge")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-clipboard",
+            vec![
+                row(
+                    &["{cmd:X}", "{cmd:C}", "{cmd:V}"],
+                    t("video-editor-shortcut-cut-copy-paste"),
+                ),
+                row(&["{cmd:D}"], t("video-editor-shortcut-duplicate")),
+                row(&["{cmd:A}"], t("video-editor-shortcut-select-all")),
+                row(&["{cmd:Z}"], t("video-editor-shortcut-undo")),
+                // Both spellings work and neither was written down, so the sheet
+                // claimed the editor had undo and no redo.
+                row(&["{cmd+shift:Z}"], t("video-editor-shortcut-redo")),
+                row(&["{cmd:Y}"], t("video-editor-shortcut-redo")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-view",
+            vec![
+                row(&["Tab", "{shift:Tab}"], t("video-editor-shortcut-pane")),
+                row(
+                    &["Page Up", "Page Down"],
+                    t("video-editor-shortcut-scroll-timeline"),
+                ),
+                row(&["Z"], t("video-editor-shortcut-zoom-fit")),
+                row(&["+", "-"], t("video-editor-shortcut-zoom")),
+                row(&["B"], t("video-editor-shortcut-bin")),
+                row(&["{cmd:I}"], t("video-editor-shortcut-inspector")),
+                row(&["?"], t("video-editor-shortcut-sheet")),
+            ],
+        ),
+    ]
+}
 
 /// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     m.header_h + rows as f64 * m.row_h + m.group_gap
+}
+
+/// How wide one row's keys draw: its alternatives side by side, the shared
+/// sibling gap between them, the caps of one alternative touching as a chord
+/// does.
+fn shortcut_keys_width(keys: &[&str], tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+    let mut width = 0.0;
+    for (i, template) in keys.iter().enumerate() {
+        if i > 0 {
+            width += gap;
+        }
+        width += InputHint::measure_keycap_labels(&ui::spell_shortcut_keycaps(template), tr, theme);
+    }
+    width
 }
 
 /// Which group starts the second column, and how tall the taller column is.
@@ -7443,13 +7500,14 @@ fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     reason = "the shortcut label prefix is split only at the ASCII command separator emitted by this module"
 )]
 fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
-    let heights: Vec<f64> = SHORTCUTS
+    let shortcuts = shortcuts();
+    let heights: Vec<f64> = shortcuts
         .iter()
         .map(|(_, rows)| help_group_h(rows.len(), m))
         .collect();
     let total: f64 = heights.iter().sum();
     if !two_col {
-        return (SHORTCUTS.len(), total);
+        return (shortcuts.len(), total);
     }
     // Fill the first column until taking one more group would put it further
     // past half than stopping leaves it short.
@@ -7563,24 +7621,24 @@ enum LinkAffordance {
 impl LinkAffordance {
     /// What the control says it will do. The button names the *change*, not
     /// the state; the caption above it names the state.
-    fn label(self) -> &'static str {
-        match self {
-            LinkAffordance::Unlink => "Unlink audio and video",
-            LinkAffordance::Link => "Link audio and video",
-            LinkAffordance::SplitAudio => "Split off audio",
-        }
+    fn label(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            LinkAffordance::Unlink => "video-editor-unlink-audio-video",
+            LinkAffordance::Link => "video-editor-link-audio-video",
+            LinkAffordance::SplitAudio => "video-editor-split-off-audio",
+        })
     }
 
     /// What is true now, above the button.
-    fn state(self) -> &'static str {
-        match self {
-            LinkAffordance::Unlink => "Linked audio and video",
-            LinkAffordance::Link => "Not linked",
+    fn state(self) -> String {
+        crate::resource::CATALOG.t(match self {
+            LinkAffordance::Unlink => "video-editor-link-state-linked",
+            LinkAffordance::Link => "video-editor-link-state-unlinked",
             // True whether the sound has never left the picture or the clip it
             // left for is gone; the editor knows which of those it is, and
             // neither changes what the button does.
-            LinkAffordance::SplitAudio => "No linked audio clip",
-        }
+            LinkAffordance::SplitAudio => "video-editor-link-state-no-audio",
+        })
     }
 }
 
@@ -8025,9 +8083,9 @@ impl VideoEditorApp {
         }
         let w = self.rect;
         ui::overlay::scrim::modal(scene, tf, w, 1.0, theme);
-        let hint = "Drop to import";
+        let hint = crate::resource::CATALOG.t("video-editor-drop-import");
         let style = theme.text(TextRole::Heading);
-        let hw = text_width(tr, hint, &style);
+        let hw = text_width(tr, &hint, &style);
         let hh = line_height(tr, &style);
         let ctr = w.center();
         let plate = Rect::new(
@@ -8042,7 +8100,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            hint,
+            &hint,
             &style,
             ink.text_primary,
             plate.x0 + S6,
@@ -8066,7 +8124,8 @@ impl VideoEditorApp {
     ) {
         let l = self.help_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let spec = ModalSpec::new(&title).close_hovered(hit == Some(ModalHit::Close));
         modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
         let (ink, dim) = modal_dialog::ink(theme);
         let ty = &l.type_sizes;
@@ -8097,14 +8156,17 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "Esc or ? to close",
+                &crate::resource::CATALOG.t("video-editor-shortcut-close"),
                 &ty.sm,
                 dim,
                 body.x0,
                 l.hint_top,
             );
         }
-        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
+        let shortcuts = shortcuts();
+        let line = line_height(tr, &ty.sm);
+        let cap_h = InputHint::keycap_height(theme);
+        for ((group, rows), g) in shortcuts.iter().zip(&l.groups) {
             if whole(g.heading.y0, g.heading.height()) {
                 text(
                     scene,
@@ -8117,23 +8179,29 @@ impl VideoEditorApp {
                     g.heading.y0,
                 );
             }
-            for ((combo, what), row) in rows.iter().zip(&g.rows) {
+            for (shortcut, row) in rows.iter().zip(&g.rows) {
                 if !whole(row.y0, row.height()) {
                     continue;
                 }
-                // Spelled for this platform: a sheet that prints `Ctrl+S`
-                // teaches a Mac user the wrong modifier (`APP-video-editor-01`).
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &ui::spell_shortcut(combo),
-                    &ty.sm.clone().strong(),
-                    ink,
-                    row.x0,
-                    row.y0,
-                );
-                let shown = elide_at(what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
+                // Drawn keycaps, spelled for this platform and the person's
+                // keyboard — a sheet that prints `Ctrl+S` teaches a Mac user
+                // the wrong modifier (`APP-video-editor-01`). A row whose
+                // keys are alternatives draws them as separate caps.
+                let mut x = row.x0;
+                for (i, template) in shortcut.keys.iter().enumerate() {
+                    if i > 0 {
+                        x += f64::from(theme.tokens.spacing.rhythm.sibling);
+                    }
+                    x += InputHint::paint_keycap_labels_at(
+                        scene,
+                        tf,
+                        Point::new(x, row.center().y - cap_h / 2.0),
+                        &ui::spell_shortcut_keycaps(template),
+                        tr,
+                        theme,
+                    );
+                }
+                let shown = elide_at(&shortcut.what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
                 text(
                     scene,
                     tr,
@@ -8142,16 +8210,16 @@ impl VideoEditorApp {
                     &ty.sm,
                     ink,
                     row.x0 + l.what_dx,
-                    row.y0,
+                    row.y0 + (row.height() - line) / 2.0,
                 );
             }
         }
         scene.pop_layer();
         if let Some(hint_top) = l.footer_hint {
             let label = if self.help_scroll + 0.5 < l.max_scroll {
-                "Scroll for more shortcuts"
+                &crate::resource::CATALOG.t("video-editor-scroll-more-shortcuts")
             } else {
-                "Scroll up for earlier shortcuts"
+                &crate::resource::CATALOG.t("video-editor-scroll-earlier-shortcuts")
             };
             text(scene, tr, tf, label, &ty.xs, dim, body.x0, hint_top);
         }
@@ -8184,7 +8252,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            "Go to timecode",
+            &crate::resource::CATALOG.t("video-editor-go-to-timecode"),
             &ty.xs,
             panel.text_dim,
             x,
@@ -8192,7 +8260,7 @@ impl VideoEditorApp {
         );
         if let Some(field) = self.goto_entry.as_mut() {
             field.apply_layout_external(l.entry);
-            field.draw(scene, tf, tr, &panel, presence);
+            field.draw_child(scene, tf, tr, &panel, presence);
         }
         let (hint, hc) = if self.navigation.goto_notice {
             ("Not a timecode, try 1:30", c.semantic.danger)
@@ -8217,11 +8285,12 @@ impl VideoEditorApp {
     ) {
         let l = self.export_layout(tr, theme);
         let hit = l.modal.hit(self.last_mouse);
-        let mut actions = self.export_actions();
+        let labels = ExportLabels::new();
+        let mut actions = self.export_actions(&labels);
         for (i, action) in actions.iter_mut().enumerate() {
             action.hovered = hit == Some(ModalHit::Action(i));
         }
-        let spec = ModalSpec::new("Export project")
+        let spec = ModalSpec::new(&labels.title)
             .actions(&actions)
             .max_width(EXPORT_CARD_W)
             .close_hovered(hit == Some(ModalHit::Close));
@@ -8355,14 +8424,25 @@ impl VideoEditorApp {
                 // it is, not as a render stuck at its end.
                 let percent = (progress * 100.0).round() as i32;
                 let words = if percent >= 100 {
-                    "Finishing the file".to_owned()
+                    crate::resource::CATALOG.t("video-editor-finishing-file")
                 } else {
-                    format!("Rendering, {percent}%")
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-rendering",
+                        &[("percent", ui::i18n::ArgValue::Text(percent.to_string()))],
+                    )
                 };
                 text(scene, tr, tf, &words, &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
-                let done = elide_at(&format!("Done: {path}"), width, &ty.xs, tr);
+                let done = elide_at(
+                    &crate::resource::CATALOG.t_args(
+                        "video-editor-export-done",
+                        &[("path", ui::i18n::ArgValue::Text(path.clone()))],
+                    ),
+                    width,
+                    &ty.xs,
+                    tr,
+                );
                 text(
                     scene,
                     tr,
@@ -8450,7 +8530,8 @@ impl VideoEditorApp {
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec = ModalSpec::new("Keyboard shortcuts").body_height(content_h);
+        let title = crate::resource::CATALOG.t("video-editor-shortcuts-title");
+        let mut spec = ModalSpec::new(&title).body_height(content_h);
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
@@ -8470,25 +8551,17 @@ impl VideoEditorApp {
         } else {
             body.width()
         };
-        let what_dx = SHORTCUTS
+        let shortcuts = shortcuts();
+        let what_dx = shortcuts
             .iter()
             .flat_map(|(_, rows)| rows.iter())
-            .map(|(combo, _)| {
-                f64::from(
-                    tr.measure_style(
-                        &ui::spell_shortcut(combo),
-                        None,
-                        &type_sizes.sm.clone().strong(),
-                    )
-                    .0,
-                )
-            })
+            .map(|row| shortcut_keys_width(row.keys, tr, theme))
             .fold(0.0, f64::max)
             + s3;
-        let mut groups = Vec::with_capacity(SHORTCUTS.len());
+        let mut groups = Vec::with_capacity(shortcuts.len());
         let mut x = body.x0;
         let mut y = groups_top;
-        for (gi, (_, rows)) in SHORTCUTS.iter().enumerate() {
+        for (gi, (_, rows)) in shortcuts.iter().enumerate() {
             if two_col && gi == split {
                 x = body.x0 + col_w + s4;
                 y = groups_top;
@@ -8523,7 +8596,9 @@ impl HelpMetrics {
         let s1 = f64::from(theme.tokens.spacing.s1);
         Self {
             header_h: line_height(tr, &type_sizes.xs) + s1,
-            row_h: line_height(tr, &type_sizes.sm) + s1,
+            // A row holds drawn keycaps: taller than its line whenever the
+            // caps are, as in every other shortcut legend in the fleet.
+            row_h: line_height(tr, &type_sizes.sm).max(InputHint::keycap_height(theme)) + s1,
             group_gap: f64::from(theme.tokens.spacing.s2),
         }
     }
@@ -8562,19 +8637,39 @@ impl VideoEditorApp {
     }
 }
 
+/// What the export dialog's buttons say, in the window's language.
+struct ExportLabels {
+    title: String,
+    cancel: String,
+    close: String,
+    export: String,
+}
+
+impl ExportLabels {
+    fn new() -> Self {
+        let catalog = &crate::resource::CATALOG;
+        Self {
+            title: catalog.t("video-editor-export-title"),
+            cancel: catalog.t("video-editor-cancel-export"),
+            close: catalog.t("video-editor-close-export"),
+            export: catalog.t("video-editor-start-export"),
+        }
+    }
+}
+
 impl VideoEditorApp {
-    fn export_actions(&self) -> Vec<ModalAction<'static>> {
+    fn export_actions<'a>(&self, labels: &'a ExportLabels) -> Vec<ModalAction<'a>> {
         if self.export_running() {
             // A render in flight: Cancel, the only way to stop it, and
             // nothing else. The progress bar above says how far it has got.
-            return vec![ModalAction::secondary("Cancel")];
+            return vec![ModalAction::secondary(&labels.cancel)];
         }
         vec![
-            ModalAction::secondary("Close"),
+            ModalAction::secondary(&labels.close),
             // Export is offered only when it can actually happen. The dialog
             // used to say "Export needs the GStreamer build" and put a
             // bright, enabled Export button directly underneath it.
-            ModalAction::primary("Export").enabled(self.export_is_offered()),
+            ModalAction::primary(&labels.export).enabled(self.export_is_offered()),
         ]
     }
 }

@@ -199,6 +199,7 @@ impl Core {
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
             | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
+            | (Ty::File, Value::File(_))
             | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,
             _ => false,
@@ -244,13 +245,17 @@ impl Core {
                         p.ty
                     )
                 };
+                // A scalar a view carries from an event is boxed until it reaches the action it
+                // is passed to: the box is the place it lands, never a value of its own. Only a
+                // parameter of a scalar type unboxes: an option of one is a value as it is.
+                let scalar = || unboxed(v.clone());
                 match repr(&ty) {
-                    Repr::I64 => v.as_int().map(Wasm::I64).ok_or_else(mismatch),
-                    Repr::F64 => match v {
-                        Value::Float(f) => Ok(Wasm::F64(*f)),
+                    Repr::I64 => scalar().as_int().map(Wasm::I64).ok_or_else(mismatch),
+                    Repr::F64 => match scalar() {
+                        Value::Float(f) => Ok(Wasm::F64(f)),
                         _ => Err(mismatch()),
                     },
-                    Repr::Bool => v
+                    Repr::Bool => scalar()
                         .as_int()
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
@@ -887,7 +892,7 @@ impl Core {
             return self.invoke_foreign(aref);
         }
         // A verb the resource's app publishes without a package loading here (a channel's
-        // `post`) is that app's too: the same door, the same attribution.
+        // `send`) is that app's too: the same door, the same attribution.
         if let Some(invocation) = self.published_invocation(aref) {
             return self.invoke_published(&invocation?);
         }
@@ -954,8 +959,8 @@ impl Core {
     /// publishes it on that resource ([`crate::published`]).
     ///
     /// A published verb is the resource's own, as a declared action is its package's: Chat's
-    /// channel publishes `post`, and the app that publishes it runs it. This is one path for
-    /// both languages — a Rust view naming `post` on the channel it shows, and a tilolang view
+    /// channel publishes `send`, and the app that publishes it runs it. This is one path for
+    /// both languages — a Rust view naming `send` on the channel it shows, and a tilolang view
     /// naming it, make the same invocation with the same arguments by name.
     fn published_invocation(
         &self,
@@ -969,14 +974,14 @@ impl Core {
         {
             return None;
         }
-        let Some(Value::Ref(subject)) = aref.args.first() else {
+        let Value::Ref(subject) = aref.args.first()? else {
             return None;
         };
         let id = subject.target.id_string();
         let published = self.published.borrow();
         let verb = published.get(&id, &aref.action)?;
         // The verb's parameters as its app declares them, after the resource the address names
-        // (`post(channel: Text, text: Text)`); the resource is the subject, never an argument.
+        // (`send(to: List, attached: List, text: Text)`); the resource is the subject, never an argument.
         let args: Vec<(String, Value)> = verb
             .params
             .iter()
@@ -1014,6 +1019,7 @@ impl Core {
         };
         Ok(match invoker.invoke(invocation) {
             Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
             Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
         })
@@ -1037,6 +1043,7 @@ impl Core {
         };
         Ok(match answer {
             Invoked::Done(result) => InvokeOutcome::Done(result),
+            Invoked::Sent => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
             // The door said no, or asks the person first: nothing ran here. A host that asked
             // keeps what it said, and answers the person's decision itself.
@@ -1459,8 +1466,11 @@ impl Core {
                     Ok(None)
                 }
             }
-        // A host that holds no records sends the invocation on to the app that does.
-        } else if self.invoker.borrow().is_some() {
+        // An action of an app this runtime does not run goes to that app; a host that holds
+        // no records sends every invocation on to the app that does.
+        } else if self.invoker.borrow().is_some()
+            && (self.delegates_own.get() || self.foreign_action(&aref.action))
+        {
             let invocation = self.invocation_of(&aref)?;
             match self.delegated_step(&aref.action, &invocation)? {
                 Delegated::Ran(entry) => {
@@ -1840,6 +1850,10 @@ impl Core {
                 action: action.to_owned(),
                 result,
             })),
+            Invoked::Sent => Delegated::Ran(Box::new(JournalEntry::Invoked {
+                action: action.to_owned(),
+                result: self.unanswered(action),
+            })),
             Invoked::Failed(reason) => Delegated::Ran(Box::new(JournalEntry::Failed {
                 action: action.to_owned(),
                 reason,
@@ -1850,6 +1864,23 @@ impl Core {
             })),
             Invoked::Asks(_) => Delegated::Asks,
         })
+    }
+
+    /// The value the code goes on with for the action `action` sent to its app, which answers
+    /// there ([`crate::delegate::Invoked::Sent`]): its result type's empty value, a scalar's
+    /// zero, and nothing for any other.
+    fn unanswered(&self, action: &str) -> Value {
+        let result = self
+            .registry
+            .borrow()
+            .action_package(action)
+            .and_then(|pkg| pkg.action(action).and_then(|meta| meta.result.clone()));
+        match result.as_deref() {
+            Some("Int") => Value::Int(0),
+            Some("Float") => Value::Float(0.0),
+            Some("Bool") => Value::Bool(false),
+            _ => Value::Unit,
+        }
     }
 
     /// `r.f = v` in a program: the field edit of `r`, sent to the host's invoker as an
@@ -1907,7 +1938,7 @@ impl Core {
             }
         };
         let (entry, failed) = match answer {
-            Invoked::Done(_) => (
+            Invoked::Done(_) | Invoked::Sent => (
                 JournalEntry::Invoked {
                     action,
                     result: Value::Unit,
@@ -2119,7 +2150,9 @@ impl Core {
                         .iter()
                         .rev()
                         .take_while(|p| {
-                            p.default.is_some() || crate::platform::form_asks(&pkg.meta, &p.ty)
+                            p.default.is_some()
+                                || crate::platform::form_asks(&pkg.meta, &p.ty)
+                                || crate::platform::chooser_fills(&pkg.meta, &p.ty)
                         })
                         .count();
                     (a.params.len(), defaulted)

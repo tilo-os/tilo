@@ -1,10 +1,24 @@
 use super::SystemTime;
-use super::facades::PeerWorkspaceMut;
-use ed25519_dalek::SigningKey;
+use super::facades::{PeerWorkspace, PeerWorkspaceMut};
+use collab_types::signer::DeviceSigner;
 use tilo_automation::ShortcutChange;
 
 /// The most shortcuts one workspace holds.
 const MAX_SHORTCUTS: usize = 512;
+
+impl PeerWorkspace<'_> {
+    /// The shortcuts this peer's workspace holds, as every member reads them
+    /// from its document: each one saved by the device whose proof it carries.
+    #[must_use]
+    pub fn workspace_shortcuts(&self) -> Vec<tilo_automation::SavedShortcut> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map(tilo_desktop_model::projection::workspace_shortcuts_of)
+            .unwrap_or_default()
+    }
+}
 
 impl PeerWorkspaceMut<'_> {
     /// Save or remove one shortcut of the workspace as the admitted member whose
@@ -19,12 +33,12 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         change: &ShortcutChange,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
         use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
-        if key.verifying_key().to_bytes() != caller.device_public_key {
+        if key.device_public_key() != caller.device_public_key {
             return Err("a shortcut change is signed by its caller's own device".into());
         }
         if self

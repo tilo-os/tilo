@@ -1,208 +1,30 @@
-//! Explicit host services. These are process-owned capabilities, never wire flags.
-mod own_device;
+//! The host services this broker's own transport serves natively: launching applications,
+//! workspace memberships, browser sessions, and the contexts a certified connection arrives with.
+//! The rest lives in [`tilo_broker_core::services`] and is re-exported here.
+pub use tilo_broker_core::services::*;
+
 mod published;
-mod task_execution;
-mod workspace_nodes;
-pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch};
-pub use task_execution::{
-    AgentRoster, NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
-    TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
-    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_conversation_turn,
-    is_tracker_issue, tracker_written,
-};
-pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
+
+/// A write on `route` was admitted to this device's channels. Where it is a
+/// workspace's tracker, its readers (the broker's runs, the composer following
+/// one) are told to read it again, as the owner's publication tells them in
+/// a workspace it commits: a sealed workspace's tracker changes only here.
+pub fn tracker_written(route: &tilo_broker_core::route::CrdtRoute) {
+    if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
+        tilo_identity_host::policy_change::announce();
+    }
+}
 
 use std::sync::Arc;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
-
-/// Current native seat identity, installed only by the authenticated host.
-/// This Rust capability is never exposed through a wire request.
-pub trait LocalPersonServices: Send + Sync {
-    /// Derive the real local certificate for this person and current workspace.
-    fn certificate(
-        &self,
-        workspace: &str,
-        person: &str,
-    ) -> Result<tilo_user_identity::DeviceCert, String>;
-}
-
-/// The origin of a workspace's records on this device: it applies an agent task's change the broker
-/// admitted, running the action against the record as it is then.
-pub trait RecordChangeServices: Send + Sync {
-    /// Apply `change` in `workspace` as `invoker`'s step: the origin's answer.
-    fn apply(
-        &self,
-        workspace: &str,
-        change: &tilo_actions::remote::RecordChange,
-        invoker: &tilo_actions::ActionInvoker,
-    ) -> Result<serde_json::Value, String>;
-}
-
-/// The normal desktop opening deadline, shared with placement retirement.
-pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+use tilo_desktop_model::{Workspace, WorkspaceId};
 
 pub use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
-    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere,
-    PreparingElsewhere, RecordRead,
+    AudioOutputFuture, AudioOutputServices, AwaitingRecord, CertifiedPersonContext,
+    ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
+    NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
+    RecordRead,
 };
-
-/// One read-only host view lookup. The original admitted channel and exact
-/// source record are retained in the existing committed-read context.
-pub type NativeResourceViewFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<
-                    tilo_actions::remote::CataloguePage,
-                    tilo_actions::remote::ActionHostError,
-                >,
-            > + Send,
-    >,
->;
-
-/// Host-installed bridge to the workspace's authenticated resource publisher.
-/// Implementations revalidate the original caller and exact record Read
-/// before requesting metadata and before returning it. No action is invoked.
-pub trait NativeResourceViews: Send + Sync {
-    /// Read one existing resource's inert views and current host locator.
-    fn query(
-        &self,
-        context: NativeDocumentReadContext,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> NativeResourceViewFuture;
-}
-
-/// Reads the host's committed authority in place.
-/// Mutations go back to that host; this interface owns no replica or persistence.
-///
-/// Policy questions borrow the committed tree rather than copying it: a copy
-/// carries every workspace's strips, tasks and effect-receipt history, and in
-/// the compositor it is taken under the tree lock the render loop writes
-/// through. One admission asks once and decides every check on that one view.
-pub trait WorkspaceAuthority: Send + Sync {
-    /// Run `read` once against the committed workspace tree, borrowed.
-    ///
-    /// `read` must be short: it must not block, await or serialize, because
-    /// a host may hold its tree lock while it runs.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the committed authority cannot be read; `read`
-    /// is then not called.
-    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String>;
-
-    /// Run `read` once against the committed workspace of exactly `workspace`
-    /// (`None` when this host has no such workspace). Same rules as
-    /// [`Self::with_tree`]; a host whose workspaces are not one tree overrides it
-    /// to look up only the requested workspace.
-    fn with_workspace(
-        &self,
-        workspace: &str,
-        read: &mut dyn FnMut(Option<&Workspace>),
-    ) -> Result<(), String> {
-        self.with_tree(&mut |tree| read(workspace_in(tree, workspace)))
-    }
-
-    /// An owned copy of the committed workspace tree, for the few callers
-    /// that must keep one past the read. Never on an admission path.
-    fn snapshot(&self) -> Result<DesktopTree, String> {
-        let mut copy = None;
-        self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
-        copy.ok_or_else(|| UNANSWERED.to_owned())
-    }
-
-    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-
-    /// Whether every write to what the broker's membership and context
-    /// checks read on this host is announced
-    /// through [`tilo_identity_host::policy_change`]: this tree, the device fleet and
-    /// identity registry behind the installed certificate authority, and the
-    /// owner's task store. The broker then re-checks on those announcements
-    /// and at the next capability or certificate expiry. `false` (the
-    /// default) keeps the one-second re-check: a host that does not announce
-    /// a revocation must not have it go unenforced.
-    fn announces_policy_changes(&self) -> bool {
-        false
-    }
-
-    /// The delegated agents on `workspace`'s roster whose person's root signed
-    /// the delegation for exactly that device, as this host verified them:
-    /// who an app's history names for the changes an agent's own key
-    /// signed. Presentation only; nothing is admitted by it. The default
-    /// knows none, so every such change stays an unknown participant.
-    fn history_agents(&self, _workspace: &str) -> Vec<collab_types::history::RosterAgent> {
-        Vec::new()
-    }
-
-    /// The device revocations `workspace`'s document records, against which who
-    /// saved a shortcut is proven ([`tilo_peer_state::workspace::proven_saver`]).
-    /// `None` (the default) when this host holds no document of the workspace:
-    /// no shortcut there is anyone's.
-    fn workspace_revocations(
-        &self,
-        _workspace: &str,
-    ) -> Option<tilo_user_identity::RevocationList> {
-        None
-    }
-}
-
-const UNANSWERED: &str = "workspace authority did not answer";
-
-#[must_use]
-pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a Workspace> {
-    tree.workspaces
-        .iter()
-        .find(|workspace| workspace.id().to_string() == workspace_id)
-}
-
-impl dyn WorkspaceAuthority {
-    /// One policy sample of the whole tree: `decide` runs once on the
-    /// borrowed committed tree and its answer is returned.
-    pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&DesktopTree) -> R) -> Result<R, String> {
-        let mut decide = Some(decide);
-        let mut answer = None;
-        self.with_tree(&mut |tree| {
-            if let Some(decide) = decide.take() {
-                answer = Some(decide(tree));
-            }
-        })?;
-        answer.ok_or_else(|| UNANSWERED.to_owned())
-    }
-
-    /// One policy sample of one workspace: `decide` runs once on the borrowed
-    /// committed workspace of exactly `workspace` and its answer is returned.
-    pub fn decide_in_workspace<R>(
-        &self,
-        workspace: &str,
-        decide: impl FnOnce(Option<&Workspace>) -> R,
-    ) -> Result<R, String> {
-        let mut decide = Some(decide);
-        let mut answer = None;
-        self.with_workspace(workspace, &mut |workspace| {
-            if let Some(decide) = decide.take() {
-                answer = Some(decide(workspace));
-            }
-        })?;
-        answer.ok_or_else(|| UNANSWERED.to_owned())
-    }
-}
-/// Legacy native projection only; success is not an aggregate durability receipt.
-pub trait LegacyWorkspaceProjection: Send + Sync {
-    /// Records one effect receipt in the legacy projection.
-    fn record_effect(
-        &self,
-        workspace: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &str,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
-    ) -> Result<(), String>;
-}
-pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).
 pub type WorkspaceStatusFuture =
@@ -211,35 +33,7 @@ pub type WorkspaceStatusFuture =
 /// Native workspace membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
-    /// Recheck custody, retained integrity and all current source rights before
-    /// disclosing a completed checkpoint invocation, including journal retries.
-    fn checkpoint_result_access(
-        &self,
-        _workspace: &str,
-        _caller: &tilo_user_identity::DeviceCert,
-        _id: uuid::Uuid,
-        _mutation: bool,
-    ) -> Result<(), String> {
-        Err("native checkpoint result access unavailable".into())
-    }
-
-    /// Execute an authenticated native checkpoint request with host-owned custody.
-    fn checkpoint(
-        &self,
-        _request: tilo_peer_state::workspace_checkpoint::CheckpointRequest,
-    ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
-        Box::pin(async { Err("native checkpoint service unavailable".into()) })
-    }
-
     fn requires_workspace(&self, workspace: &str) -> bool;
-
-    /// Whether this device keeps `workspace`'s checkpoints. They are its
-    /// governor's custody, so a workspace this device governs offers them
-    /// whichever model its records follow, and a workspace governed elsewhere
-    /// does not.
-    fn keeps_checkpoints(&self, workspace: &str) -> bool {
-        self.requires_workspace(workspace)
-    }
 
     /// Where `workspace` stands for the apps on this device: ready, waiting for
     /// its join or its placement on its host, or refused, as when no host
@@ -316,227 +110,8 @@ pub trait WorkspaceMemberships: Send + Sync {
     ) -> tilo_peer_state::owner_commit::CommitFuture;
 }
 
-/// Where the view of a launched app opens: next to where the actor that
-/// needs it already is, so the person and every actor keep their place.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LaunchPlace {
-    /// Where the person on this device is looking: their own invocation,
-    /// from the palette, a chord or a click.
-    Focus,
-    /// Beside the view of `app_id` the actor works in, on whichever strip
-    /// holds it, which need not be the one the person is looking at.
-    Beside { app_id: String },
-    /// Beside where the person is looking, without taking their focus: the
-    /// first view of an agent or a Shortcut, which has none of its own yet
-    /// to open beside. Only the person's own invocation moves the view.
-    Aside,
-}
-
-#[derive(Clone)]
-pub struct LaunchableApplication {
-    pub package_id: String,
-    pub display_name: String,
-    /// A host application Tilo did not package: it runs outside every Tilo
-    /// sandbox, with the user's own files, and publishes no typed actions.
-    pub unconfined: bool,
-    /// What its signed manifest offers while it is not running
-    /// (`[[offers]]`): listed in a workspace where it has published nothing
-    /// yet. Invoking one launches it, and its published action admits the
-    /// invocation.
-    pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
-    /// The host capabilities its signed manifest declares (`[capabilities]`)
-    /// that the host decides grants on, such as
-    /// `settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`; a producer
-    /// that decides none leaves it empty.
-    pub capabilities: Vec<String>,
-}
-/// The application a launcher-authenticated connection belongs to, and the
-/// workspace it was launched into. Launch content is only ever read through
-/// this scope: holding a hash is not access.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LaunchScope {
-    pub app_id: String,
-    pub workspace_id: String,
-}
-
-/// What a launch opens: the lowercase BLAKE3 `hash` of content-addressed
-/// bytes (empty for a plain launch) and the application that asked, whose
-/// scope the bytes are read through.
-#[derive(Clone, Copy, Debug)]
-pub struct LaunchContent<'a> {
-    pub hash: &'a str,
-    pub caller: Option<&'a LaunchScope>,
-    /// The person who opened the app, when they may change the workspace:
-    /// the host records them granting it authorship, so it launches as an
-    /// author of the space rather than a viewer. `None` launches a viewer.
-    pub author: Option<&'a str>,
-}
-
-/// Original signed package evidence retained by the host for an actual launch.
-/// This has no wire decoder and is never supplied by the joining application.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ApplicationCreationEvidence {
-    pub package_hash: String,
-    pub declared_kinds: Vec<String>,
-}
-
-impl ApplicationCreationEvidence {
-    #[must_use]
-    pub fn valid(&self) -> bool {
-        self.package_hash.len() == 64
-            && self
-                .package_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            && !self.declared_kinds.is_empty()
-            && self.declared_kinds.len() <= 256
-            && self.declared_kinds.iter().all(|kind| {
-                !kind.is_empty() && kind.len() <= 256 && !kind.chars().any(char::is_control)
-            })
-    }
-}
-
-/// One admitted launch's actual startup observation. Dropping an unanswered
-/// observation retires its host-side subscription; enqueueing a worker is
-/// never sufficient to produce this receipt.
-pub struct LaunchReadiness {
-    receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
-    adoption: Option<tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>>,
-    retire: Option<Box<dyn FnOnce() + Send>>,
-}
-
-/// Host-observed public window identity, never an application-claimed PID.
-/// Kernel process attribution is available only through device-owner control.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LaunchAdoption {
-    /// Host-issued identity of this exact Wayland resource lifetime; not a grant.
-    pub adoption_id: uuid::Uuid,
-    pub surface_id: u64,
-    pub package_id: String,
-    pub workspace: String,
-}
-
-/// Distinguishes a reported startup failure from a lost startup observation.
-/// Losing observation does not establish that the launched process stopped.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LaunchReadinessError {
-    Failed(String),
-    ObserverStopped,
-    AdoptionObserverStopped,
-    TimedOut,
-}
-
-impl LaunchReadinessError {
-    #[must_use]
-    pub fn is_uncertain(&self) -> bool {
-        !matches!(self, Self::Failed(_))
-    }
-}
-
-impl std::fmt::Display for LaunchReadinessError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Failed(message) => f.write_str(message),
-            Self::ObserverStopped => f.write_str("the application startup observer stopped"),
-            Self::AdoptionObserverStopped => f.write_str("the adopted window observer stopped"),
-            Self::TimedOut => f.write_str("the application did not open a window in time"),
-        }
-    }
-}
-
-impl std::error::Error for LaunchReadinessError {}
-
-impl LaunchReadiness {
-    pub fn new(
-        receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
-        retire: impl FnOnce() + Send + 'static,
-    ) -> Self {
-        Self {
-            receiver,
-            adoption: None,
-            retire: Some(Box::new(retire)),
-        }
-    }
-
-    #[must_use]
-    pub fn with_adoption(
-        mut self,
-        receiver: tokio::sync::oneshot::Receiver<Option<LaunchAdoption>>,
-    ) -> Self {
-        self.adoption = Some(receiver);
-        self
-    }
-
-    /// Wait for an adopted window or a terminal startup failure.
-    pub async fn wait(self) -> Result<(), String> {
-        self.wait_with_adoption()
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Observe the adopted window association when the native host supplies custody.
-    /// Legacy hosts still settle readiness without inventing an association.
-    pub async fn wait_with_adoption(
-        mut self,
-    ) -> Result<Option<LaunchAdoption>, LaunchReadinessError> {
-        (&mut self.receiver)
-            .await
-            .map_err(|_| LaunchReadinessError::ObserverStopped)?
-            .map_err(LaunchReadinessError::Failed)?;
-        match self.adoption.take() {
-            Some(receiver) => receiver
-                .await
-                .map_err(|_| LaunchReadinessError::AdoptionObserverStopped),
-            None => Ok(None),
-        }
-    }
-}
-
-#[cfg(test)]
-mod launch_readiness_tests {
-    use super::{LaunchReadiness, LaunchReadinessError};
-
-    #[tokio::test]
-    async fn lost_observers_are_uncertain_but_reported_failures_are_not() {
-        for scenario in ["startup_lost", "adoption_lost", "reported_failure"] {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            let (adopt, adopted) = tokio::sync::oneshot::channel();
-            let ready = LaunchReadiness::new(receiver, || {}).with_adoption(adopted);
-            match scenario {
-                "startup_lost" => drop(sender),
-                "adoption_lost" => sender.send(Ok(())).unwrap(),
-                _ => sender
-                    .send(Err("the application startup observer stopped".into()))
-                    .unwrap(),
-            }
-            drop(adopt);
-            let error = ready.wait_with_adoption().await.unwrap_err();
-            let expected = match scenario {
-                "startup_lost" => LaunchReadinessError::ObserverStopped,
-                "adoption_lost" => LaunchReadinessError::AdoptionObserverStopped,
-                _ => {
-                    LaunchReadinessError::Failed("the application startup observer stopped".into())
-                }
-            };
-            assert_eq!(error, expected);
-            assert_eq!(error.is_uncertain(), scenario != "reported_failure");
-        }
-    }
-}
-
-impl Drop for LaunchReadiness {
-    fn drop(&mut self) {
-        if let Some(retire) = self.retire.take() {
-            retire();
-        }
-    }
-}
-
-/// Host-retained original custody for one exact observed application launch.
-/// No public constructor or wire representation exists. It never grants rights:
-/// the canonical membership action independently checks current administration.
+/// Host-retained original custody for one exact observed launch: no public constructor or wire
+/// form, and it never grants rights.
 #[derive(Clone)]
 pub struct ObservedApplicationLaunch {
     workspace: String,
@@ -583,53 +158,6 @@ impl ObservedApplicationLaunch {
         (self.grant)(&self.certificate()?)
     }
 }
-
-/// Original host-retained facts for one authenticated live launch.
-#[derive(Clone, Debug)]
-pub struct AuthenticatedApplicationLaunch {
-    pub creation: Option<ApplicationCreationEvidence>,
-    pub continuation_instance: Option<u64>,
-    /// The ticket [`LauncherServices::launch_content`] answered for the
-    /// launch that started this process ([`Launched::Started`]), read from
-    /// the host's own launch record. Correlation only, never authority.
-    pub launch_ticket: Option<u64>,
-    /// The host made this connection for an instance of the app with no
-    /// window ([`LauncherServices::windowless`]): it takes the app's actions
-    /// on its records, and never an `open`, which shows something.
-    pub windowless: bool,
-}
-
-/// What [`LauncherServices::launch_content`] started.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Launched {
-    /// A new instance, whose collaboration connection presents `ticket`
-    /// when it is authenticated
-    /// ([`AuthenticatedApplicationLaunch::launch_ticket`]): the launch can
-    /// name the instance it started without guessing.
-    Started { ticket: u64 },
-    /// Something the host cannot tie to a connection: an app another device
-    /// opens (a governed workspace), a host application, a launcher keeping no
-    /// tickets.
-    Unconfirmed,
-}
-
-/// Content-free progress of the existing executing-process custody handshake.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExecutingBindingPhase {
-    Started,
-    Challenge,
-    Answer,
-    Admitted,
-    Refused,
-    /// The launch exited before the app answered. The binding waits for the
-    /// answer, not for a clock, so this is how an unanswered binding ends.
-    Abandoned,
-}
-
-/// How the start of an instance of an app with no window ends
-/// ([`LauncherServices::windowless`]): `Ok` once it runs, why it could not
-/// otherwise. Its sender dropped unsent is a host that stopped starting it.
-pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
 pub trait LauncherServices: Send + Sync {
     /// Bind an optional diagnostic observation to the host's current exact
@@ -739,14 +267,6 @@ pub trait LauncherServices: Send + Sync {
         let _ = (app, workspace);
         Ok(None)
     }
-    /// Whether this session runs `app`'s model itself, so it has no window process for a launch
-    /// to bring up: a plain `open` of it places its root through the session's own `open` step
-    /// (`docs/designs/app-language/one-app-model.md` §3) instead of waiting for a process that
-    /// never publishes. `None` for a host that launches every app.
-    fn served(&self, app: &str) -> Option<String> {
-        let _ = app;
-        None
-    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     /// `window_instance` is the window the connection says it was made for:
@@ -764,15 +284,14 @@ pub trait LauncherServices: Send + Sync {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
-            creation: self.application_creation_evidence(pid, app, workspace)?,
             continuation_instance: None,
             launch_ticket: None,
             windowless: false,
         }))
     }
 
-    /// Admit kernel-attested executing custody only beneath this exact launch.
-    /// This grants no new identity or filesystem permissions.
+    /// Admit kernel-attested executing custody only beneath this exact launch; it grants no new
+    /// identity or filesystem permissions.
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
         &self,
@@ -783,17 +302,6 @@ pub trait LauncherServices: Send + Sync {
     ) -> bool {
         let _ = (launcher_pid, peer, app, workspace);
         false
-    }
-    /// Original declarations of this exact live launch, not the currently
-    /// installed replacement package. Unsupported hosts grant no creation.
-    fn application_creation_evidence(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Result<Option<ApplicationCreationEvidence>, String> {
-        let _ = (pid, app, workspace);
-        Ok(None)
     }
     /// An action invocation reached `app` in `workspace`. A person, an agent or
     /// another device drives an app through its actions as much as through
@@ -815,64 +323,6 @@ pub trait LauncherServices: Send + Sync {
     }
 }
 
-/// One host-owned workspace governance action, already admitted to the
-/// remote-action vocabulary. The broker mints `invocation`; the service
-/// validates the caller's authority and applies the action.
-pub struct WorkspaceGovernanceRequest<'a> {
-    /// Direct local origin, excluding a Shortcut or an on-behalf-of run.
-    /// Installed by the broker, never decoded from action arguments.
-    pub local_device: bool,
-    /// The original run's live custody, when the caller belongs to a run.
-    pub execution_lease: Option<tilo_actions::remote::ExecutionLease>,
-    pub workspace: &'a str,
-    pub actor: &'a crate::collab_app_broker::BrokerActor,
-    pub resource: &'a str,
-    pub action: &'a str,
-    pub argument: Option<&'a str>,
-    /// Legacy JSON confirmation evidence (`{"confirm": true}` or
-    /// `{"confirmation_phrase": ...}`).
-    pub confirmation: &'a serde_json::Value,
-    pub invocation: tilo_actions::InvocationId,
-}
-
-/// The terminal answer of an asynchronous workspace owner action.
-pub type WorkspaceGovernanceOutcome =
-    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
-
-/// Workspace governance (permission profiles) owned by a host that holds the
-/// workspace's capability authority. Its actions are offered through the
-/// broker's remote-action catalogue under the workspace provider.
-pub trait WorkspaceGovernanceServices: Send + Sync {
-    /// The application id governance actions are checked against.
-    fn app_id(&self) -> &str;
-    /// Whether `action` is one of this service's governance actions.
-    fn handles(&self, action: &str) -> bool;
-    /// Every governance action of `workspace`, before the caller's
-    /// permission check.
-    fn descriptors(&self, workspace: &Workspace) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Whether this owner action requires canonical descriptor admission and
-    /// broker-checked confirmation. Existing governance services retain their
-    /// own admission semantics unless they explicitly opt in.
-    fn requires_descriptor_admission(&self, _action: &str) -> bool {
-        false
-    }
-    /// Validate and apply one governance action, recording its effect.
-    fn invoke(&self, _request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
-        Err("this owner action requires asynchronous execution".into())
-    }
-
-    /// Start a potentially asynchronous owner action without blocking the door.
-    /// The default preserves synchronous governance implementations.
-    fn start(
-        &self,
-        request: &WorkspaceGovernanceRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<WorkspaceGovernanceOutcome>, String> {
-        self.invoke(request)?;
-        Ok(tilo_actions::remote::Pending::ready(Ok(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-}
 /// One checked change to a workspace's saved shortcuts. The broker mints
 /// `invocation` and has checked the change against what `actor` (a policy
 /// id) is offered.
@@ -914,117 +364,16 @@ pub trait ShortcutLibraryServices: Send + Sync {
     }
 }
 
-/// The device's own keyboard shortcuts, described by the host that owns
-/// their labels. The broker loads the keymap, offers the catalogue only to
-/// callers on this machine, and checks each action against the caller's
-/// policy under [`Self::app_id`]. Changing a shortcut is the person's
-/// `shortcuts` settings section's action, not this door's.
-pub trait KeyboardShortcutServices: Send + Sync {
-    /// The application id keyboard shortcut actions are checked against.
-    fn app_id(&self) -> &str;
-    /// Whether `resource` is the shortcut catalogue or one of its entries.
-    fn is_resource(&self, resource: &str) -> bool;
-    /// The catalogue rows under workspace provider `provider` for `keymap`.
-    fn catalogue_rows(
-        &self,
-        provider: &str,
-        keymap: &settings_store::hardware::ShortcutConfig,
-    ) -> Vec<tilo_actions::remote::CatalogueRow>;
-    /// The action `address` names in `keymap`, when there is one.
-    fn descriptor(
-        &self,
-        keymap: &settings_store::hardware::ShortcutConfig,
-        address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::ActionDescriptor>;
-    /// Decode `argument` for `address` and answer it from `keymap`.
-    fn apply(
-        &self,
-        keymap: &settings_store::hardware::ShortcutConfig,
-        address: &tilo_actions::ActionAddress,
-        argument: Option<&str>,
-    ) -> Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
-}
-
-/// The steps a host serves the session, as every host names them:
-/// [`HostStepServices`] and its request, a live result, and what a window
-/// reports about resuming.
 pub use tilo_broker_core::steps::{
     ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
     TaskRun,
 };
 
-/// Encoded bytes one application's search index change may take: the bound
-/// `ui::search::index_publication::MAX_DELTA_BYTES` publishers chunk to.
-pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;
-
-/// The session's persistent search index of applications' content. An app
-/// publishes changes to its entries over its certified route; the index
-/// keeps them after the app closes, so what the app holds stays findable
-/// whether or not it runs.
-pub trait SearchIndexServices: Send + Sync {
-    /// Apply one change to the entries `app` published in `workspace` from its
-    /// record `record`. `delta` is an encoded
-    /// `ui::search::index_publication::IndexDelta`, at most
-    /// [`MAX_SEARCH_INDEX_DELTA_BYTES`]; the host decodes and bounds it.
-    fn publish(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-        delta: &[u8],
-    ) -> Result<(), String>;
-}
-
-/// What the session hears of a workspace's record changing: an app of the
-/// workspace wrote it here, or a peer's change of it was taken in. The content
-/// the record holds may have moved, and the search index that reads it without
-/// the app's window is out of date.
-pub trait RecordIndexChanges: Send + Sync {
-    /// The record `record` of `app` in `workspace` changed.
-    fn changed(&self, workspace: &str, app: &str, record: &str);
-}
-
-/// The scope component content puts are kept under in a workspace's content
-/// store: neutral, no application's. The store reads by workspace, so every app
-/// of the workspace reads what was put there once an action hands it the
-/// reference.
-pub const CONTENT_PUT_SCOPE: &str = "tilo.content";
-
-/// The device content store, as the content put door writes to it
-/// (`tilo_actions::remote::ContentPuts`). Actions carry intent and
-/// references; bytes travel by session transport into the content store.
-pub trait ContentStoreServices: Send + Sync {
-    /// The most bytes one piece of content may have.
-    fn max_bytes(&self) -> u64;
-    /// Open an upload kept for `workspace` under [`CONTENT_PUT_SCOPE`].
-    fn begin(&self, workspace: &str) -> Result<Box<dyn ContentSink>, String>;
-
-    /// Whether `workspace` still holds `hash`: content it put there that no one
-    /// has dropped since. A compaction of the content put attributions keeps
-    /// the ones this answers `true` for and drops the rest, so the log stays
-    /// as long as the content it describes is worth attributing. A store that
-    /// cannot tell keeps the attribution.
-    fn holds(&self, workspace: &str, hash: &str) -> bool {
-        let _ = (workspace, hash);
-        true
-    }
-}
-
-/// One upload into the content store. Dropped unfinished, it stores
-/// nothing.
-pub trait ContentSink: Send {
-    /// Hand the store the next bytes.
-    fn append(&mut self, bytes: &[u8]) -> Result<(), String>;
-    /// Store what was appended, recording the workspace's reference to it, and
-    /// answer its hash (lowercase BLAKE3 hex) and length.
-    fn finish(self: Box<Self>) -> Result<(String, u64), String>;
-}
-
 /// What a workspace control session's calls answer.
 pub type ControlAnswer<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
 
-/// One open workspace control session; it lives on the broker `LocalSet`.
+/// One open workspace control session, on the broker's `LocalSet`.
 pub trait WorkspaceControlSession {
     /// The session's next event.
     fn read(&self) -> ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>;
@@ -1092,9 +441,8 @@ impl RealtimeRequestContext {
     }
 }
 
-/// Native realtime continuity remains host-owned because it binds portal
-/// capture leases and certified device-fabric state. The shared broker owns
-/// admission, exact route binding, wire bounds, and disconnect cleanup.
+/// Native realtime continuity: the host binds portal capture leases and certified device-fabric
+/// state, while the broker owns admission, route binding, wire bounds and disconnect cleanup.
 pub trait RealtimeServices: Send + Sync {
     /// Runs one realtime continuity command.
     fn command(
@@ -1111,8 +459,8 @@ pub trait RealtimeServices: Send + Sync {
 
     fn disconnect(&self, peer_id: u64);
 }
-/// The host's speaker groups: the broker admits only the certified Settings
-/// route, bounds and validates the command, and hands it here.
+/// The host's speaker groups: the broker admits only the certified Settings route, then hands it
+/// the validated command.
 pub trait SpeakerServices: Send + Sync {
     /// Runs one validated speaker-group command.
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
@@ -1133,9 +481,8 @@ pub trait SpeakerServices: Send + Sync {
 /// returns it.
 pub type SpeakerChange = NearbyTransferChange;
 
-/// The host's drives, as the tools service lists them to Files. The broker
-/// admits only the certified Files route to wait on them; the list itself
-/// is asked of the tools service, which answers as it always does.
+/// The host's drives, as Files lists them: the broker admits only the certified Files route to
+/// wait on them.
 pub trait DriveServices: Send + Sync {
     /// Resolves once the drive list may have changed since `after` (0 at
     /// first, then the value the previous wait returned), with the value to
@@ -1149,9 +496,8 @@ pub trait DriveServices: Send + Sync {
 /// returns it.
 pub type DriveChange = NearbyTransferChange;
 
-/// The person's apps, as the tools service lists them to Files. The broker
-/// admits only the certified Files route to wait on them; the list itself is
-/// asked of the tools service, which answers as it always does.
+/// The person's apps, as Files lists them: the broker admits only the certified Files route to
+/// wait on them.
 pub trait ApplicationServices: Send + Sync {
     /// Resolves once the app list may have changed since `after` (0 at first,
     /// then the value the previous wait returned), with the value to wait
@@ -1164,9 +510,8 @@ pub trait ApplicationServices: Send + Sync {
 /// A wait for the app list's next change, as
 /// [`ApplicationServices::changed`] returns it.
 pub type ApplicationChange = NearbyTransferChange;
-/// The host's Wi-Fi credential continuity across the person's devices: the
-/// broker admits only the certified Settings route, bounds and validates the
-/// command, and hands it here. A host without Wi-Fi radios installs none.
+/// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
+/// certified Settings route. A host without radios installs none.
 pub trait WifiContinuityServices: Send + Sync {
     /// Runs one validated Wi-Fi continuity command.
     fn command(
@@ -1175,9 +520,8 @@ pub trait WifiContinuityServices: Send + Sync {
     ) -> runtime_collab::WifiContinuityReply;
 }
 
-/// The broker-authenticated connection a Nearby Send command came from.
-/// Every handle the host issues is bound to this peer and channel, never to
-/// anything the caller claims.
+/// The broker-authenticated connection a Nearby Send command came from: every handle the host
+/// issues is bound to this peer and channel, never to what the caller claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearbyTransferRequestContext {
     peer_id: u64,
@@ -1254,10 +598,8 @@ impl NearbyTransferRequestContext {
     }
 }
 
-/// The host's Nearby Send between the person's devices: the broker admits
-/// only the certified Files route, bounds and validates the command and the
-/// reply, and drops a connection's handles when it goes away. A host without
-/// nearby radios installs none.
+/// The host's Nearby Send between the person's devices: the broker admits only the certified Files
+/// route and drops a connection's handles when it goes away.
 pub trait NearbyTransferServices: Send + Sync {
     /// Runs one validated Nearby Send command for `context`.
     fn command(
@@ -1370,8 +712,8 @@ pub type NearbyTransferChange =
 pub(crate) type SelectedDescriptorSource =
     Arc<dyn Fn(u32) -> Result<std::fs::File, String> + Send + Sync>;
 
-/// Sealed local Files admission. Its callback rechecks the original caller,
-/// live connection and existing workspace policy, never a JSON-claimed actor.
+/// Sealed local Files admission: its callback rechecks the original caller, live connection and
+/// workspace policy, never a JSON-claimed actor.
 #[derive(Clone)]
 pub struct FileClipboardContext {
     pub(crate) peer: u64,
@@ -1424,131 +766,7 @@ impl FileClipboardContext {
         (self.check)(permission)
     }
 }
-#[cfg(target_os = "linux")]
-#[derive(Clone)]
-pub struct OpenSelectedContext {
-    pub(crate) launch: ObservedApplicationLaunch,
-    pub(crate) workspace: String,
-    pub(crate) duplicate: SelectedDescriptorSource,
-    pub(crate) executing: Arc<runtime_portal::process_binding::ExecutingPeer>,
-    pub(crate) check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-}
-#[cfg(target_os = "linux")]
-impl OpenSelectedContext {
-    pub fn observed_launch(&self) -> &ObservedApplicationLaunch {
-        &self.launch
-    }
-    pub fn workspace(&self) -> &str {
-        &self.workspace
-    }
-    pub fn executing(&self) -> &Arc<runtime_portal::process_binding::ExecutingPeer> {
-        &self.executing
-    }
-    /// # Errors
-    /// Refuses cancelled, revoked or retired `OpenWith` custody.
-    pub fn authorize(&self) -> Result<(), String> {
-        (self.check)()?;
-        if !self.executing.current() {
-            return Err("Files process ended".into());
-        }
-        Ok(())
-    }
-    pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
-        self.authorize()?;
-        let file = (self.duplicate)(descriptor)?;
-        self.authorize()?;
-        Ok(file)
-    }
-}
-#[cfg(target_os = "linux")]
-pub type OpenSelectedFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<runtime_collab::open_selected::ObservedOpenReply, String>,
-            > + Send,
-    >,
->;
-#[cfg(target_os = "linux")]
-pub type OpenSelectedV2Future = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<runtime_collab::open_selected::v2::ObservedReply, String>,
-            > + Send,
-    >,
->;
-/// Read-only discovery context sealed to the same admitted native Files task.
-/// The context cannot admit a selection or stand in for an original `OpenWith`.
-#[cfg(target_os = "linux")]
-#[derive(Clone)]
-pub struct SelectedDiscoveryContext {
-    pub(crate) clipboard: FileClipboardContext,
-    pub(crate) executing: Arc<runtime_portal::process_binding::ExecutingPeer>,
-    pub(crate) certificate: tilo_user_identity::DeviceCert,
-    pub(crate) original: Option<ObservedApplicationLaunch>,
-    pub(crate) needed: tilo_actions::ActionKind,
-}
-#[cfg(target_os = "linux")]
-impl SelectedDiscoveryContext {
-    pub fn workspace(&self) -> &str {
-        self.clipboard.workspace()
-    }
-    pub fn owner(&self) -> &str {
-        self.clipboard.owner()
-    }
-    pub fn executing(&self) -> &Arc<runtime_portal::process_binding::ExecutingPeer> {
-        &self.executing
-    }
-    pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
-        &self.certificate
-    }
-    pub fn authorize(&self) -> Result<(), String> {
-        self.clipboard.authorize(self.needed)?;
-        if let Some(original) = &self.original
-            && original.certificate()? != self.certificate
-        {
-            return Err("selected discovery original certificate changed".into());
-        }
-        if !self.executing.current() {
-            return Err("Files discovery process ended".into());
-        }
-        Ok(())
-    }
-}
-#[cfg(target_os = "linux")]
-pub type SelectedDiscoveryFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<runtime_collab::open_selected::discovery::Reply, String>,
-            > + Send,
-    >,
->;
 pub trait FileClipboardServices: Send + Sync {
-    #[cfg(target_os = "linux")]
-    fn discover_selected(
-        &self,
-        _context: SelectedDiscoveryContext,
-        _request: runtime_collab::open_selected::discovery::Request,
-    ) -> SelectedDiscoveryFuture {
-        Box::pin(async { Err("selected discovery is unavailable".into()) })
-    }
-
-    #[cfg(target_os = "linux")]
-    fn open_selected_v2(
-        &self,
-        _context: OpenSelectedContext,
-        _request: runtime_collab::open_selected::v2::Request,
-    ) -> OpenSelectedV2Future {
-        Box::pin(async { Err("selected version two access unsupported".into()) })
-    }
-    #[cfg(target_os = "linux")]
-    fn open_selected(
-        &self,
-        _context: OpenSelectedContext,
-        _request: runtime_collab::open_selected::Request,
-    ) -> OpenSelectedFuture {
-        Box::pin(async { Err("retained selected-open transport unavailable".into()) })
-    }
-
     /// Perform a bounded command under the sealed local admission.
     fn command(
         &self,
@@ -1593,7 +811,7 @@ pub trait AppActionGrants: Send + Sync {
     /// its call was decided.
     fn revoke(&self, workspace: &str, grant: &str);
 }
-/// Identity of an exact private Settings worker, derived by the broker.
+/// The identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]
 pub struct DisplayControlContext {
     pub(crate) workspace: String,
@@ -1611,6 +829,18 @@ impl DisplayControlContext {
         self.device
     }
 }
+/// Where the records of a workspace another device hosts run their actions.
+pub trait HostedWorkspaces: Send + Sync {
+    /// The actions of `workspace`'s host, when a host other than this device
+    /// holds it and runs its records' actions in its own workers: what the
+    /// person's invocations of those actions are sent to, decided and run.
+    /// `None` for a workspace this device hosts itself or holds alone.
+    fn host_actions(
+        &self,
+        workspace: &str,
+    ) -> Option<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>>;
+}
+
 /// The native host's separately authorized display transaction service.
 pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
@@ -1620,94 +850,75 @@ pub trait DisplayControlServices: Send + Sync {
 pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
-    /// Read-only existing-resource discovery, absent unless the native host
-    /// can carry it over its current authenticated workspace connection.
-    pub resource_views: Option<Arc<dyn NativeResourceViews>>,
+    /// Read-only existing-resource discovery, absent unless the host can carry it.
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
-    /// The Tasks app's tracker, whose issues assigned to an agent are its
-    /// runs. Without it agents run no tasks.
+    /// The Tasks app's tracker, whose issues assigned to an agent are its runs; without it agents
+    /// run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
-    /// The workspaces' agents, as their records name them: what the broker
-    /// admits an agent's session with. Without it no agent joins.
+    /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
-    /// The resources this session's services publish, which the apps it
-    /// admits read, watch and invoke. Without it those calls are refused:
-    /// a host that publishes nothing serves its apps no resources.
+    /// The resources this session's services publish, which its apps read, watch and invoke;
+    /// without it those calls are refused.
     pub published: Option<Arc<dyn PublishedResources>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
-    /// The device's keyboard shortcuts on the action door. Without it
-    /// they are not offered.
+    /// The device's keyboard shortcuts on the action door; without it they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
-    /// The steps the host runs itself, each service under its own
-    /// provider. No door offers a step whose service is not installed.
+    /// The steps the host runs itself, each under its own provider.
     pub host_steps: Vec<Arc<dyn HostStepServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
-    /// The session's persistent search index of applications' content.
-    /// Without it apps' content is findable only while they run.
+    /// The session's persistent search index; without it apps' content is findable only while
+    /// they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
-    /// What the session hears of a record changing, so search reads it again
-    /// without the app's window.
+    /// What the session hears of a record changing, so search reads it again.
     pub record_index_changes: Option<Arc<dyn RecordIndexChanges>>,
-    /// The device content store content puts go to. Without it the content
-    /// put door is not offered.
+    /// The device content store content puts go to; without it that door is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
-    /// The drives the tools service lists to Files, which tell the certified
-    /// Files route when they change (`drivesChanged`). Without it Files is
-    /// never told, and lists no drives.
+    /// The drives Files lists, which tell its certified route when they change
+    /// (`drivesChanged`); without it Files lists none.
     pub drives: Option<Arc<dyn DriveServices>>,
-    /// The person's apps the tools service lists to Files, which tell the
-    /// certified Files route when they change (`applicationsChanged`).
-    /// Without it Files is never told, and its Applications place asks on a
-    /// timer while it is open.
+    /// The person's apps Files lists, which tell its certified route when they change
+    /// (`applicationsChanged`); without it its Applications place asks on a timer.
     pub applications: Option<Arc<dyn ApplicationServices>>,
-    /// The session's settings, of which each app reaches its own entries
-    /// and the shared sections (`settings_store::app_scope`). Without it
-    /// apps have no settings beyond their own process.
+    /// The session's settings (`settings_store::app_scope`); without it apps have none beyond
+    /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
     pub display_control: Option<Arc<dyn DisplayControlServices>>,
-    /// Every app's live activity, as the host presents it. Without it no
-    /// app shows anything outside its windows.
+    /// Every app's live activity, as the host presents it; without it no app shows anything
+    /// outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
-    /// What each application declared it may do on the action door under
-    /// its own identity. Without it no application declared anything.
+    /// What each application declared it may do on the door; without it none declared anything.
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
-    /// Records grants people give applications for other apps' actions.
-    /// Without it an app is never offered a grant question.
+    /// Records grants people give apps for other apps' actions; without it no grant is asked.
     pub app_action_grants: Option<Arc<dyn AppActionGrants>>,
-    /// Where the launchable action catalogue survives a restart. Without it
-    /// closed apps' actions are retained for this broker's lifetime only.
+    /// Where the launchable action catalogue survives a restart; without it it lives as long as
+    /// this broker.
     pub launchable_catalogue: Option<std::path::PathBuf>,
-    /// Content records reference, kept on this device and asked of each
-    /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
-    /// it apps' content stays in their own process.
+    /// Content records reference, kept here and asked of its route; without it apps' content stays
+    /// in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
-    /// This device's channel encryption service, which tells each route's
-    /// endpoint when its channel keys changed (`channelKeysChanged`).
-    /// Without it endpoints ask the identity service on a timer.
+    /// This device's channel encryption service, which tells each route's endpoint when its
+    /// channel keys changed (`channelKeysChanged`).
     pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
-    /// Where an admitted invocation of an offloadable action runs: on the
-    /// person's best-placed device when another is
-    /// (`tilo_actions::offload`). Without it every one runs here, through
-    /// the app's own handler.
+    /// Where an admitted offloadable action runs (`tilo_actions::offload`); without it every one
+    /// runs here.
     pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
-    /// Carries an application's action to another of the person's own
-    /// devices. Without it no app reaches another device's actions.
+    /// Carries an application's action to another of the person's devices; without it none does.
     pub own_device: Option<Arc<dyn OwnDeviceActions>>,
     /// Asks the workspace a node of its tree is in to share it, end a share of
     /// it, or say what the person may do there. Without it no app's share
@@ -1717,18 +928,17 @@ pub struct HostServices {
     /// The person's own store, which carries the records of their own scope
     /// to their other devices. Without it those records stay on this device.
     pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// The hosts of the workspaces another device hosts, where the person's
+    /// invocations of those workspaces' record actions run. Without it every
+    /// action runs here.
+    pub hosted_workspaces: Option<Arc<dyn HostedWorkspaces>>,
 }
 
 impl HostServices {
-    /// The seams of these services, by name, in the order the struct declares
-    /// them: what a host's list of decisions is checked against, so a seam it
-    /// stops deciding is found here rather than by an app.
-    ///
-    /// A field added above belongs here too: a host must name its decision for
-    /// every seam, and its own test compares its list to this one.
+    /// The seams of these services, by name, in the order the struct declares them: a field added
+    /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const SEAMS: &[&str] = &[
         "approved_checks",
-        "resource_views",
         "committed_documents",
         "native_media",
         "audio_output",
@@ -1770,5 +980,6 @@ impl HostServices {
         "own_device",
         "workspace_nodes",
         "personal",
+        "hosted_workspaces",
     ];
 }

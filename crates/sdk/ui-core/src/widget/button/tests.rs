@@ -431,7 +431,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
     fn icon_only_buttons_are_square_named_and_plain() {
         let button = Button::icon_only("close", crate::icons::Icon::X, "Close");
         assert_eq!(button.role, ButtonRole::Plain);
-        assert_eq!(Widget::tooltip(&button), Some("Close"));
+        assert_eq!(Widget::tooltip(&button).as_deref(), Some("Close"));
         assert_eq!(
             Widget::accessibility(&button).unwrap().name.as_deref(),
             Some("Close")
@@ -1231,7 +1231,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
     }
 
     /// An icon-only face has an empty label key. Under the expanded
-    /// pseudo-locale `i18n!("")` came back as `⟦⟧`, painting a bracket pair
+    /// pseudo-locale `widget_text("")` came back as `⟦⟧`, painting a bracket pair
     /// beside the glyph; the resolved label must stay empty.
     fn icon_only_face_paints_no_label_under_the_pseudo_locale() {
         use crate::i18n::{I18nManager, PseudoLocale};
@@ -1588,7 +1588,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         let b = Button::new("id", "")
             .with_icon(crate::icons::Icon::Search)
             .tooltip("Search");
-        assert_eq!(Widget::tooltip(&b), Some("Search"));
+        assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
         let plain = Button::new("id", "Save");
         assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
     }
@@ -1607,7 +1607,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             "compaction never makes an icon-only control silent"
         );
         assert_eq!(
-            Widget::tooltip(&button),
+            Widget::tooltip(&button).as_deref(),
             Some("Publish this document now"),
             "the authored tooltip survives compaction"
         );
@@ -1624,7 +1624,10 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             Some("Publish document"),
             "the name the app stated still says it after expansion"
         );
-        assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
+        assert_eq!(
+            Widget::tooltip(&button).as_deref(),
+            Some("Publish this document now")
+        );
     }
 
     fn icon_only_tooltip_doubles_as_accessible_name() {
@@ -1883,5 +1886,38 @@ fn a_button_named_beyond_its_label_is_announced_with_that_name() {
         glyph.accessibility().unwrap().name.as_deref(),
         Some("61%, charging"),
         "an icon-only button keeps the name its label only states"
+    );
+}
+
+/// A control the solver has placed answers its measure there, not in a draw: a control that is
+/// laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
+/// to answer it, so one switch of input would keep it — and its path to the root — asking to be
+/// measured on every frame after.
+#[test]
+fn a_button_the_solver_placed_answers_its_measure() {
+    let mut harness = crate::headless::FrameHarness::new(
+        crate::State::new(),
+        Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
+            "pin",
+            crate::icons::Icon::Pin,
+            "Pin",
+        )))),
+        (400, 100),
+    );
+    harness.relayout();
+    // The person reaches for the mouse, then for the keyboard: the face is the same size.
+    let keyboard = harness.interaction_environment().with_keyboard_modality();
+    harness.set_interaction_environment(keyboard);
+    assert!(
+        harness.last_relayout().measured,
+        "the switch lays the window out once: {:?}",
+        harness.last_relayout()
+    );
+    harness.relayout();
+    assert_eq!(
+        harness.last_relayout().marked_leaves,
+        0,
+        "a control the solver placed asks for no second measure: {:?}",
+        harness.last_relayout()
     );
 }

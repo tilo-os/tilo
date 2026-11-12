@@ -14,8 +14,6 @@
     reason = "test assertions"
 )]
 
-mod support;
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
@@ -24,7 +22,7 @@ const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    support::installed("interaction");
+    crate::support::installed("interaction");
     let mut app = TestApp::<TlApp>::capture_at(Some("a conversation"), viewport)
         .expect("the scenario stages");
     settle(&mut app);
@@ -386,7 +384,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation() {
     app.harness().type_text("@");
     app.harness().relayout();
     let people = drawer_rows(&mut app);
-    // Who spoke last in the conversation first (its scenario's people), then its members.
+    // Who spoke in the conversation first (its scenario's people), then its members.
     let members = people.iter().position(|row| row == "Members").map_or_else(
         || panic!("the members have their header: {people:?}"),
         |at| &people[at + 1..],

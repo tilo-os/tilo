@@ -42,7 +42,6 @@ pub mod gestures;
 mod gpu_health;
 mod hdr;
 pub mod heap_trim;
-pub mod host;
 pub mod idle;
 pub mod input;
 pub mod keys;
@@ -74,6 +73,7 @@ mod text_input;
 mod toplevel_icon;
 mod touch;
 mod typing;
+mod uploads;
 mod window_frame;
 mod x11;
 mod x11_windows;
@@ -82,9 +82,12 @@ mod xdnd_bridge;
 mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};
+pub use uploads::gpu_frames_node;
 
+use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -98,7 +101,6 @@ use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
 pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
-pub use backdrop::{BackdropImage, BackdropRequest};
 pub use backend::drm::access_keys::Assists;
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
@@ -109,22 +111,19 @@ pub use color_filter::ColorFilter;
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
-pub use effects::{WindowEffect, WindowPicture};
-pub use host::{
-    CursorIcon, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, Region, SurfaceHost,
-};
+pub use effects::WindowEffect;
+
 pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
-    TabletPadEvent, TabletPhase,
+    GestureEvent, InputEvent, ObservedInput, PadAction, Switch, TabletEvent, TabletPadEvent,
+    TabletPhase,
 };
-pub use keys::{KeyClaim, KeyRepeat};
-pub use layer::LayerPose;
+pub use keys::KeyRepeat;
 
 /// How close to the whole timeout a park must be to have ended on the deadline rather than on
 /// arriving work.
 const WAKE_MARGIN: Duration = Duration::from_millis(1);
-pub use output::{HostedOutput, ModeRequest, OutputChange, OutputConfig, OutputInfo};
+pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
 /// What the person is in the middle of, as the compositor sees it: an arranging change moves
 /// nothing under a gesture or while they type (shell.md §1).
@@ -152,8 +151,12 @@ pub use share_stream::ShareStream;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
+pub use typing::TypedMark;
+
+use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+use tilo_session_core::surface::{HostDrag, LayerPose, SurfaceHost};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11::X11Displays;
@@ -204,6 +207,100 @@ impl From<BackendError> for Error {
 
 fn io(error: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(error.to_string()))
+}
+
+/// A display name this session published for the login, which goes when the session does.
+struct PublishedDisplay {
+    file: PathBuf,
+    name: String,
+}
+
+impl Drop for PublishedDisplay {
+    fn drop(&mut self) {
+        // Only the name this session published: a session that took the file over in the meantime
+        // is the one the login's programs reach now.
+        if std::fs::read(&self.file).is_ok_and(|published| published == self.name.as_bytes()) {
+            let _ = std::fs::remove_file(&self.file);
+        }
+    }
+}
+
+/// Where [`publish_display`] writes, given `$XDG_RUNTIME_DIR`. `None` when the variable is unset
+/// or not absolute: guessing `/tmp` would put a session-scoped file somewhere world-writable.
+fn display_file(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::WAYLAND_DISPLAY_FILE))
+}
+
+/// Publish the socket `name` to the login's own file for it, so a program the session starts, and
+/// a tool beside the session, finds the display without reading the compositor's log. Never fatal
+/// on failure: the session runs either way.
+fn publish_display(name: &str) -> Option<PublishedDisplay> {
+    publish_at(&display_file(std::env::var_os("XDG_RUNTIME_DIR"))?, name)
+}
+
+/// [`publish_display`] at `path`: left alone when it names another session that is running still,
+/// and replaced otherwise, so a session after a crash is found at the same place.
+fn publish_at(path: &Path, name: &str) -> Option<PublishedDisplay> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+
+    if another_live_session_published(path, name) {
+        tracing::info!(
+            file = %path.display(),
+            "the file names another running session; leaving it to that one"
+        );
+        return None;
+    }
+    // 0700 when created: the session's other sockets share this directory.
+    if let Some(dir) = path.parent()
+        && let Err(error) = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    {
+        tracing::warn!(%error, file = %path.display(), "the session's display is not published");
+        return None;
+    }
+    // 0600: not a secret, but nothing else should write it. Written beside and renamed into
+    // place, so a reader never sees a half-written name.
+    let beside = path.with_extension(format!("{}.tmp", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&beside)
+        .and_then(|mut file| file.write_all(name.as_bytes()))
+        .and_then(|()| std::fs::rename(&beside, path));
+    match written {
+        Ok(()) => Some(PublishedDisplay {
+            file: path.to_owned(),
+            name: name.to_owned(),
+        }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&beside);
+            tracing::warn!(%error, file = %path.display(), "the session's display is not published");
+            None
+        }
+    }
+}
+
+/// Whether the display file at `path` names another session's socket that a compositor still
+/// answers on, beside this one in the runtime directory.
+fn another_live_session_published(path: &Path, ours: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(named) = std::fs::read(path) else {
+        return false;
+    };
+    let named = std::ffi::OsStr::from_bytes(&named);
+    let bare = Path::new(named).file_name() == Some(named);
+    if named == ours || !bare {
+        return false;
+    }
+    // Through the helper: the runtime directory is the login's, not ours, so its length is not
+    // ours to assume.
+    path.parent()
+        .and_then(Path::parent)
+        .is_some_and(|runtime| tilo_files::native::socket::connect(&runtime.join(named)).is_ok())
 }
 
 /// The instant a risky display change's wait for the person is measured from, and against: the
@@ -319,6 +416,9 @@ pub struct Compositor {
     recorder: tilo_frame_metrics::FrameRecorder,
     /// A turn is open: [`Compositor::begin_tick`] ran and [`Compositor::end_tick`] has not.
     ticking: bool,
+    /// The display name this session published for the login while it runs
+    /// ([`Compositor::listen`]): the file goes with the compositor.
+    published_display: Option<PublishedDisplay>,
 }
 
 impl Compositor {
@@ -358,6 +458,7 @@ impl Compositor {
             keys: AccessKeys::default(),
             recorder: tilo_frame_metrics::FrameRecorder::from_env(),
             ticking: false,
+            published_display: None,
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -428,6 +529,9 @@ impl Compositor {
         if let Some((serial, at)) = self.data.state.take_retired() {
             self.recorder.note_retirement(serial, at);
         }
+        // A surface shown past the time its app had to draw its fitted frame takes the frame it
+        // has, rather than staying hidden.
+        self.data.state.expire_layer_settling(Instant::now());
         self.recorder.begin_tick(Instant::now());
     }
 
@@ -466,19 +570,17 @@ impl Compositor {
         self.recorder.end_tick();
     }
 
-    /// Whether a client has drawn something no frame has shown yet: the frame the desk owes answers
-    /// it, and until it is drawn a client is waiting on this turn.
+    /// Whether something an output shows changed since its last frame: a client's commit, a place
+    /// the policy moved a window to, a hosted surface's layer. The display builds that frame for its
+    /// next blank, so an output owes a change for up to a refresh after it arrived, and a client
+    /// that drew it waits on this turn until it is drawn.
     pub fn owes_frame(&self) -> bool {
         !self.data.state.redraw.is_empty()
     }
 
-    /// Take in what arrived while the caller worked out this frame — a
-    /// commit with the frame a surface just laid out, a configure it
-    /// acknowledged, a door message — and tell the clients what the caller
-    /// queued for them, without waiting for any of it.
-    ///
-    /// Whether an output then owes a frame: what arrived is drawn now and
-    /// answers its client in this turn rather than the next.
+    /// Take in what arrived while the caller worked out this frame (a commit, an acked configure,
+    /// a door message) and send the clients what is queued, without waiting for any of it.
+    /// Whether an output then owes a frame: what arrived is answered in this turn, not the next.
     ///
     /// # Errors
     /// The display is gone.
@@ -487,7 +589,7 @@ impl Compositor {
         self.event_loop
             .dispatch(Some(Duration::ZERO), &mut self.data)
             .map_err(io)?;
-        self.display.flush_clients()?;
+        self.take_in()?;
         Ok(self.owes_frame())
     }
 
@@ -498,30 +600,32 @@ impl Compositor {
         self.data.backend.next_deadline(&self.data.state)
     }
 
-    /// Answer the clients until it is time to build the frame a display owes:
-    /// what arrives while it waits joins that frame instead of each arrival
-    /// taking a turn of its own.
+    /// Answer the clients until it is time to build the frame a display owes: what arrives while
+    /// it waits joins that frame instead of each arrival taking a turn of its own. `arrived` runs
+    /// after each wait, for what a host serves at once rather than after the frame: input a tool
+    /// hands the desk, which joins the frame as a device's own input does, or an app someone is
+    /// waiting on, whose start then runs beside that frame.
     ///
     /// # Errors
     /// The compositor's clients failed.
-    pub fn await_frame(&mut self) -> Result<(), Error> {
-        self.await_frame_arrivals(|| {})
-    }
-
-    /// [`Self::await_frame`] that also runs `arrived` after each wait: what a host serves at once
-    /// rather than after the frame — an app someone is waiting on starts while the frame the desk
-    /// owes is still ahead, so its own start runs beside that frame.
-    ///
-    /// # Errors
-    /// The compositor's clients failed.
-    pub fn await_frame_arrivals(&mut self, mut arrived: impl FnMut()) -> Result<(), Error> {
+    pub fn await_frame_arrivals(
+        &mut self,
+        mut arrived: impl FnMut(&mut Self),
+    ) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
-            let wait = due.saturating_duration_since(std::time::Instant::now());
+            let wait = due.saturating_duration_since(tilo_clock::now());
             if wait.is_zero() {
                 break;
             }
+            let asked = Instant::now();
             self.dispatch(wait)?;
-            arrived();
+            arrived(self);
+            // A clock held still never reaches the deadline, so a pass that asks again for a wait
+            // it has already spent would never draw the frame it owes. Once the wait it asked for
+            // has gone by on the machine, the frame is built rather than waited for again.
+            if asked.elapsed() >= wait {
+                break;
+            }
         }
         Ok(())
     }
@@ -532,14 +636,15 @@ impl Compositor {
     /// # Errors
     /// The compositor's clients or its backend failed.
     pub fn draw_frame(&mut self) -> Result<(), Error> {
-        self.await_frame()?;
+        self.await_frame_arrivals(|_| {})?;
         self.render()
     }
 
     /// How long a loop may wait for clients, devices and its own work before the next frame is due;
     /// `None` when nothing is due, and it waits for an event.
     pub fn next_wait(&self) -> Option<Duration> {
-        let now = std::time::Instant::now();
+        // The deadlines are on the displays' clock, so the time they are counted from is too.
+        let now = tilo_clock::now();
         let backend = self.frame_deadline();
         // A running visual alert fades frame by frame.
         let alert = a11y::flashing(&self.data.state, now)
@@ -588,11 +693,12 @@ impl Compositor {
     }
 
     /// Host a surface app above the windows (and above earlier hosts), or under them when it says
-    /// so ([`SurfaceHost::below_windows`]).
-    pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
+    /// so ([`SurfaceHost::below_windows`]). The host drives the surface the caller still holds: what
+    /// it publishes and what it shows are read from the same instance.
+    pub fn add_host(&mut self, host: Rc<RefCell<dyn SurfaceHost>>) {
         let outputs = self.data.state.hosted_outputs();
-        host.outputs_changed(&outputs);
-        self.data.state.hosts.push(host);
+        host.borrow_mut().outputs_changed(&outputs);
+        self.data.state.hosts.push(Box::new(host));
         self.data.state.mark_redraw_all();
     }
 
@@ -670,6 +776,11 @@ impl Compositor {
         self.data.state.idle.session.is_locked()
     }
 
+    /// Whether the lock screen's own client has drawn on every output it stands on.
+    pub fn lock_client_drawn(&self) -> bool {
+        self.data.state.lock_drawn_everywhere()
+    }
+
     /// Whether the lock is what the outputs show: the lock client's own frame is on one of them, or
     /// the session draws the lock itself because the lock screen's app could not show it.
     pub fn lock_drawn(&self) -> bool {
@@ -680,11 +791,7 @@ impl Compositor {
     /// the shortcut guide, which see keys before any client does.
     #[must_use]
     pub fn host_takes_keys(&self) -> bool {
-        self.data
-            .state
-            .hosts
-            .iter()
-            .any(|host| host.wants_keyboard())
+        self.data.state.host_holds_keys()
     }
 
     /// Whether a fullscreen window is up: it owns its display, and with it the controller in the
@@ -782,7 +889,8 @@ impl Compositor {
     }
 
     /// Listen for clients on a fresh `wayland-N` socket in `$XDG_RUNTIME_DIR` and return its name
-    /// (for `WAYLAND_DISPLAY` ).
+    /// (for `WAYLAND_DISPLAY` ). The name is published to the login that starts programs beside
+    /// this session ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]) until the compositor ends.
     pub fn listen(&mut self) -> Result<String, Error> {
         let source = ListeningSocketSource::new_auto().map_err(io)?;
         let name = source.socket_name().to_string_lossy().into_owned();
@@ -797,6 +905,7 @@ impl Compositor {
                 }
             })
             .map_err(io)?;
+        self.published_display = publish_display(&name);
         Ok(name)
     }
 
@@ -834,6 +943,12 @@ impl Compositor {
         dispatched?;
         self.recorder
             .mark_input(started.elapsed().saturating_sub(parked));
+        self.take_in()
+    }
+
+    /// Handle what the loop's wait brought: the keys due, the clients' requests (a commit, an
+    /// acked configure) and what they change, then flush the answers.
+    fn take_in(&mut self) -> Result<(), Error> {
         self.data.state.repeat_keys();
         let ticked = Instant::now();
         let due = self.keys.tick(ticked);
@@ -849,6 +964,7 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         self.display.dispatch_clients(&mut self.data.state)?;
+        self.data.state.sync_keyboard_owner();
         self.sync_text_input();
         self.data.state.refresh();
         if let Some(x11) = self.data.state.x11.clone() {
@@ -1006,6 +1122,20 @@ impl Compositor {
     #[must_use]
     pub fn text_caret(&self) -> Option<TextCaret> {
         self.data.state.text_caret()
+    }
+
+    /// Whether the focused field has committed the caret the keys it received left: a surface a
+    /// key opens at the caret waits for it rather than standing where the caret was before the
+    /// field's last redraw.
+    pub fn caret_settled(&mut self) -> bool {
+        self.data.state.caret_settled()
+    }
+
+    /// When the wait for the focused field's caret gives up, while one runs: what a surface
+    /// waiting on [`Self::caret_settled`] is woken for.
+    #[must_use]
+    pub fn caret_deadline(&self) -> Option<std::time::Instant> {
+        self.data.state.caret_deadline()
     }
 
     /// Insert `text` into the field the person is typing into, whatever that field asks of its
@@ -1401,7 +1531,10 @@ impl Compositor {
     /// [`Compositor::start_drag`] with an icon under the pointer, or a drag that follows the finger
     /// holding the app when a touch holds it.
     pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
-        let started = self.data.state.start_host_drag(drag.offer, drag.icon);
+        let icon = drag
+            .icon
+            .map(|(frame, (x, y))| (frame, Point::from((x, y))));
+        let started = self.data.state.start_host_drag(drag.offer, icon);
         self.display.flush_clients()?;
         Ok(started)
     }
@@ -1416,7 +1549,10 @@ impl Compositor {
             .filter_map(|host| host.take_drag())
             .collect();
         for drag in asked {
-            if !self.data.state.start_host_drag(drag.offer, drag.icon) {
+            let icon = drag
+                .icon
+                .map(|(frame, (x, y))| (frame, Point::from((x, y))));
+            if !self.data.state.start_host_drag(drag.offer, icon) {
                 tracing::debug!("a hosted app's drag could not start");
             }
         }
@@ -1703,6 +1839,12 @@ impl Compositor {
         }
     }
 
+    /// Where the layout the keyboard types in now puts each ASCII mark: the key, as it types alone,
+    /// and whether Shift or `AltGr` add the mark. What a chord on a mark is shown as.
+    pub fn typed_marks(&mut self) -> Vec<TypedMark> {
+        self.data.state.typed_marks()
+    }
+
     /// The layout the keyboard types in now, as XKB names it; `None` without a keyboard.
     pub fn keyboard_layout(&mut self) -> Option<String> {
         let LoopData { state, .. } = &mut self.data;
@@ -1767,6 +1909,14 @@ impl Compositor {
     #[must_use]
     pub fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
         self.data.state.window_rect(id)
+    }
+
+    /// The frames the client of the window whose [`WindowInfo::id`] is `id` committed since it
+    /// opened: a window that keeps showing the same thing keeps its count, so two reads that agree
+    /// say the window drew nothing between them.
+    #[must_use]
+    pub fn window_frames(&self, id: u64) -> u64 {
+        self.data.state.committed_frames(id)
     }
 
     /// The foreign-toplevel identifier of the mapped window whose [`WindowInfo::id`] is `id` : what
@@ -1852,7 +2002,35 @@ impl Compositor {
             host.set_frame_interval(interval);
             drew |= host.prepare_frame();
         }
+        // A surface drawing the translucent material fills it with the opaque stand-in of what lies
+        // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
+        // backdrop before the frame is shown, and the surfaces just handed one draw their material
+        // in this same turn. Presenting the stand-in would flash a flat card over the desk, which a
+        // still desk would keep until the next input.
+        for index in self.data.backend.serve_backdrops(&mut self.data.state) {
+            if let Some(host) = self.data.state.hosts.get_mut(index) {
+                drew |= host.prepare_frame();
+            }
+        }
         if drew {
+            self.data.state.mark_redraw_all();
+        }
+        // A hosted surface that drew its layers and drew none this frame leaves what it drew
+        // behind it — a sheet whose card has gone, a panel taken down — and nothing else redraws
+        // the screen it stood on: the display keeps its last frame, the card at whatever it had
+        // faded to, until the next thing that happens to damage it. What the hosts draw now is
+        // compared with the last frame, and a screen that lost a layer is drawn again.
+        let layer_counts: Vec<(usize, usize)> = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(index, host)| (index, host.layers().len()))
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        if layer_counts != self.data.state.layer_counts {
+            self.data.state.layer_counts = layer_counts;
             self.data.state.mark_redraw_all();
         }
         // What the surfaces draw over the windows, by the window each part is of: a floating window
@@ -1860,8 +2038,11 @@ impl Compositor {
         // with for it, and a press there is the desk's.
         let mut covers = std::collections::BTreeMap::new();
         for host in &self.data.state.hosts {
-            for (window, cover) in host.drawn_over_windows() {
-                covers.insert(window, cover);
+            for (window, (x, y, width, height)) in host.drawn_over_windows() {
+                covers.insert(
+                    window,
+                    Rectangle::new((x, y).into(), (width, height).into()),
+                );
             }
         }
         if self.data.state.covers != covers {
@@ -1887,12 +2068,11 @@ impl Compositor {
             self.recorder.settle_unpainted_input();
         }
         // The frame is on the output now, so the clients that drew it hear about it before anything
-        // the frame itself asked for is served: a capture to read back, a blur of what lies below a
-        // window. Those go with the frame but are not what answers it, so they run behind it and
-        // the client starts its next frame while they are made.
+        // the frame itself asked for is served: a capture to read back. Those go with the frame but
+        // are not what answers it, so they run behind it and the client starts its next frame while
+        // they are made.
         self.display.flush_clients()?;
         self.data.backend.serve_captures(&mut self.data.state);
-        self.data.backend.serve_backdrops(&mut self.data.state);
         // Answers read back after the frame's own pictures, and whatever is still queued for
         // clients, reach them here.
         self.data.state.confirm_lock();
@@ -2171,6 +2351,34 @@ impl Compositor {
         self.data.state.set_layer_shown(namespace, shown);
     }
 
+    /// Show the session's layer surface `namespace` once its app has drawn a frame after the
+    /// `after`th it committed: the page the session asked it for, at the size it asked, rather
+    /// than the one the app was left on.
+    pub fn show_layer_after(&mut self, namespace: &str, after: u64) {
+        self.data
+            .state
+            .set_layer_shown_after(namespace, true, Some(after));
+    }
+
+    /// How many frames the client of the layer surface `namespace` has committed: what a show asks
+    /// to be drawn after.
+    #[must_use]
+    pub fn layer_frames(&self, namespace: &str) -> u64 {
+        self.data.state.layer_frames(namespace)
+    }
+
+    /// Hand the keyboard to the session's layer surface `namespace` until it is hidden, when it
+    /// takes the keyboard at all; false while it does not stand yet.
+    pub fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {
+        self.data.state.lend_layer_keyboard(namespace)
+    }
+
+    /// Give the keyboard the session's layer surface `namespace` was lent back to where it was,
+    /// as the surface is put away and before it has finished leaving.
+    pub fn return_layer_keyboard(&mut self, namespace: &str) {
+        self.data.state.return_layer_keyboard(namespace);
+    }
+
     /// Whether the session shows its layer surface `namespace` , hid it, or never said (shown).
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
@@ -2182,6 +2390,50 @@ impl Compositor {
     #[must_use]
     pub fn layer_drawn(&self, namespace: &str) -> bool {
         self.data.state.layer_drawn(namespace)
+    }
+
+    /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout
+    /// coordinates), as big as its app asks for inside it, whatever its own anchors and margins
+    /// say; `None` gives it back to them. A surface whose content fits itself rests against the
+    /// room's bottom edge with `rests_at_bottom` — a panel opened above the caret it edits hangs by
+    /// its bottom there, clear of the caret's line — else against its top. A popover the session
+    /// places moves and gets less room with a configure, not a new start of its app.
+    pub fn place_layer_in(
+        &mut self,
+        namespace: &str,
+        room: Option<(i32, i32, i32, i32)>,
+        rests_at_bottom: bool,
+    ) {
+        let room = room.map(|(x, y, w, h)| layer::Place {
+            room: Rectangle::new((x, y).into(), (w, h).into()),
+            rests_at_bottom,
+        });
+        self.data.state.place_layer_in(namespace, room);
+    }
+
+    /// Where the session's layer surface `namespace` stands now (`x, y, w, h` , logical layout
+    /// coordinates): a panel that fits its content is as tall as its page. `None` before it
+    /// stands anywhere.
+    #[must_use]
+    pub fn layer_rect(&self, namespace: &str) -> Option<(i32, i32, i32, i32)> {
+        self.data
+            .state
+            .layer_rect(namespace)
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
+    /// When showing a layer surface next gives up waiting for a frame at the size its app asks
+    /// for, so a panel that cannot resize is still shown.
+    #[must_use]
+    pub fn layer_settle_deadline(&self) -> Option<Instant> {
+        self.data.state.layer_settle_deadline()
+    }
+
+    /// Whether the person sees the layer surface `namespace`: it is shown, its app has drawn it,
+    /// and that frame is the size it asked for.
+    #[must_use]
+    pub fn layer_visible(&self, namespace: &str) -> bool {
+        self.data.state.layer_visible(namespace)
     }
 
     /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands
@@ -2334,5 +2586,60 @@ impl std::os::fd::AsFd for Compositor {
     /// another loop.
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.event_loop.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod display_publication_tests {
+    use super::{another_live_session_published, display_file, publish_at};
+
+    /// A runtime directory of this test's own.
+    fn runtime() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("tilo-runtime-")
+            .tempdir()
+            .expect("a runtime directory")
+    }
+
+    #[test]
+    fn the_display_lives_in_the_logins_session_directory() {
+        assert_eq!(
+            display_file(Some("/run/user/1000".into())),
+            Some(std::path::PathBuf::from(
+                "/run/user/1000/tilo-session/wayland-display"
+            ))
+        );
+        assert_eq!(display_file(None), None);
+        assert_eq!(display_file(Some("relative/run".into())), None);
+    }
+
+    #[test]
+    fn the_socket_name_is_published_bare_and_goes_with_the_session() {
+        let runtime = runtime();
+        let path = runtime.path().join("tilo-session/wayland-display");
+        let published = publish_at(&path, "wayland-3").expect("the display is published");
+        // `WAYLAND_DISPLAY=$(cat …)` is exactly the client's environment.
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-3");
+        drop(published);
+        assert!(!path.exists(), "the file goes when the session does");
+    }
+
+    #[test]
+    fn a_stale_file_is_replaced_and_a_running_sessions_is_left_alone() {
+        let runtime = runtime();
+        let path = runtime.path().join("tilo-session/wayland-display");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A session that ended left its name behind: nothing answers there.
+        std::fs::write(&path, "wayland-0").unwrap();
+        let published = publish_at(&path, "wayland-4").expect("the stale name is replaced");
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+
+        // A session still running there keeps the file that names it.
+        let _listening = std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-4"))
+            .expect("a socket beside the session's own");
+        assert!(another_live_session_published(&path, "wayland-5"));
+        assert!(publish_at(&path, "wayland-5").is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+        drop(published);
     }
 }

@@ -1199,8 +1199,8 @@ impl SignInFlow {
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
-                            .with_accessible_name("Code from the provider")
-                            .with_placeholder("Paste the code"),
+                            .with_accessible_name(crate::i18n::t("settings-a11y-provider-code"))
+                            .with_placeholder(crate::i18n::t("settings-paste-code")),
                     ),
                 )),
                 Stage::Code { .. } => fields.push(field_row(
@@ -1209,7 +1209,7 @@ impl SignInFlow {
                         TextInput::from_state(&self.code)
                             .with_kind(TextInputKind::Code)
                             .with_id("accounts.signin.code")
-                            .with_accessible_name("Verification code")
+                            .with_accessible_name(crate::i18n::t("settings-a11y-verification-code"))
                             .with_placeholder("123456"),
                     ),
                 )),
@@ -1229,8 +1229,8 @@ impl SignInFlow {
         let mut buttons = Row::new();
         if unavailable.is_none() && !waiting {
             let label = match (&self.stage, self.kind) {
-                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "Verify",
-                (_, AccountKind::ICloudDrive) => "Sign in",
+                (Stage::Code { .. } | Stage::PastedCode { .. }, _) => "settings-accounts-verify",
+                (_, AccountKind::ICloudDrive) => "settings-accounts-sign-in",
                 _ => &t("accounts-services-continue"),
             };
             buttons = buttons.push(Box::new(bind(
@@ -1284,7 +1284,7 @@ impl SignInFlow {
                 TextInput::from_state(&self.name)
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
-                    .with_accessible_name("Display name")
+                    .with_accessible_name(crate::i18n::t("settings-a11y-display-name"))
                     .with_placeholder(self.kind.label()),
             ),
         ));
@@ -1296,7 +1296,7 @@ impl SignInFlow {
                         TextInput::from_state(&self.server)
                             .with_kind(TextInputKind::Url)
                             .with_id("accounts.signin.server")
-                            .with_accessible_name("Server URL")
+                            .with_accessible_name(crate::i18n::t("settings-a11y-server-url"))
                             .with_placeholder("https://cloud.example.com"),
                     ),
                 ));
@@ -1313,19 +1313,19 @@ impl SignInFlow {
                         TextInput::from_state(&self.apple_id)
                             .with_kind(TextInputKind::Email)
                             .with_id("accounts.signin.apple-id")
-                            .with_accessible_name("Apple ID")
+                            .with_accessible_name(crate::i18n::t("settings-a11y-apple-id"))
                             .with_placeholder("you@icloud.com"),
                     ),
                 ));
                 fields.push(field_row(
-                    "Password",
+                    &crate::i18n::t("accounts-password-short"),
                     Box::new(
                         TextInput::from_state(&self.password)
                             .with_kind(TextInputKind::Password)
                             .with_id("accounts.signin.password")
-                            .with_accessible_name("Apple ID password")
+                            .with_accessible_name(crate::i18n::t("settings-a11y-apple-password"))
                             .with_secret(true)
-                            .with_placeholder("Password"),
+                            .with_placeholder(crate::i18n::t("accounts-password-short")),
                     ),
                 ));
             }

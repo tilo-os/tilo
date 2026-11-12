@@ -121,6 +121,25 @@ pub struct Grant {
     pub last_ms: Option<i64>,
     /// Its runs open now, oldest first.
     pub runs: Vec<Run>,
+    /// The key operates web pages in Browser without asking the person each
+    /// time, as its certificate carries it
+    /// ([`tilo_user_identity::DeviceCapabilities::browser_pages`]): what it
+    /// opens, fills, selects and clicks runs on the person's word, while
+    /// submitting a page still asks them.
+    pub browser_pages: bool,
+    /// Where the agent runs, as its key's certificate names it: the
+    /// machine it was connected from, or the service that holds the key
+    /// for it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub runs_on: String,
+    /// When the grant ends, Unix milliseconds; `None` for one that lasts
+    /// until the person revokes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_ms: Option<i64>,
+    /// The person made it as a key for their own script or backend rather
+    /// than letting an agent's app in.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub script_key: bool,
 }
 
 impl Grant {

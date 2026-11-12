@@ -458,6 +458,10 @@ enum CanvasState {
     Ready,
 }
 
+/// A photograph's pixels decoded off the frame: its content hash, and what the
+/// decoder made of them, for the pass that takes them.
+type DecodedPixels = Arc<std::sync::Mutex<Vec<(String, Option<Rgba>)>>>;
+
 /// Authored content observed by local transient work, excluding operational metadata.
 #[derive(Clone, PartialEq)]
 struct LiveContent {
@@ -522,6 +526,10 @@ pub struct Photos {
     /// Decoded original, before any edit. `None` until a file opens.
     original: Option<(String, Rgba)>,
     original_identity: Option<String>,
+    /// The photograph whose pixels are being decoded off the frame, and where
+    /// what came of them lands for the next pass to take.
+    decoding: Option<String>,
+    decoded: DecodedPixels,
     observed_content: Option<LiveContent>,
     import_content: Option<LiveContent>,
     picker_stale: bool,
@@ -595,7 +603,9 @@ pub struct Photos {
     /// window that analyses nothing (a past version History shows) starts
     /// no worker.
     analysis_tx: Option<SyncSender<AnalysisJob>>,
-    analysis_result_tx: SyncSender<AnalysisResult>,
+    /// The analysis worker's results: a result landing wakes this window to
+    /// take it in, instead of waiting for the person to touch something.
+    analysis_result_tx: ui::wake::WakingSyncSender<AnalysisResult>,
     analysis_rx: Receiver<AnalysisResult>,
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
@@ -931,7 +941,7 @@ impl Photos {
         reason = "construction lists every app-owned state field explicitly so local, shared, and transient state remain auditable"
     )]
     pub fn with_content(content: ContentStore) -> Self {
-        let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        let (analysis_result_tx, analysis_rx) = ui::wake::waking_sync_channel(ANALYSIS_QUEUE_LIMIT);
         // In memory until `new_persistent` swaps in the per-user preview cache:
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
@@ -956,6 +966,8 @@ impl Photos {
             last_library_action: None,
             original: None,
             original_identity: None,
+            decoding: None,
+            decoded: Arc::default(),
             observed_content: None,
             import_content: None,
             picker_stale: false,
@@ -1273,37 +1285,38 @@ impl Photos {
     }
 
     fn open_bytes(&mut self, path: &str, bytes: Option<&[u8]>) {
-        match bytes.and_then(pixels::decode) {
-            Some(img) => {
-                // Put the bytes in the content store before naming them, so
-                // the hash this document is about to carry is one this machine
-                // can already answer for — and one the workspace can be handed.
-                // Otherwise the document would name a picture only the path
-                // could find, and the path is true on one machine.
-                let content = match self.content.put(bytes.unwrap_or_default()) {
-                    Ok(content) => content,
-                    Err(error) => {
-                        tracing::warn!(%error, "photos: could not store an opened original");
-                        self.notice = Some(tr("photos-open-failed"));
-                        return;
-                    }
-                };
-                let open = OpenImage::new(path, img.w, img.h, content);
-                self.original = Some((path.to_string(), img));
-                self.original_identity = Some(decode_key(&open));
-                self.rendered = None;
-                self.close_viewer();
-                self.original_decode_failed = None;
-                let photo = LibraryPhoto::from_image(open);
-                let photo_id = photo.id.clone();
-                self.commit(crate::resource::import(&photo));
-                self.show_photo(&photo_id);
-                self.notice = None;
-            }
-            None => {
+        // A chosen photograph is named by its header's size here; its pixels
+        // are decoded off the frame while the window shows it, as any other
+        // photograph in the library is.
+        let Some((width, height)) = bytes.and_then(pixels::size) else {
+            self.notice = Some(tr("photos-open-failed"));
+            return;
+        };
+        // Put the bytes in the content store before naming them, so
+        // the hash this document is about to carry is one this machine
+        // can already answer for — and one the workspace can be handed.
+        // Otherwise the document would name a picture only the path
+        // could find, and the path is true on one machine.
+        let content = match self.content.put(bytes.unwrap_or_default()) {
+            Ok(content) => content,
+            Err(error) => {
+                tracing::warn!(%error, "photos: could not store an opened original");
                 self.notice = Some(tr("photos-open-failed"));
+                return;
             }
-        }
+        };
+        let open = OpenImage::new(path, width, height, content);
+        self.original = None;
+        self.original_identity = None;
+        self.decoding = None;
+        self.rendered = None;
+        self.close_viewer();
+        self.original_decode_failed = None;
+        let photo = LibraryPhoto::from_image(open);
+        let photo_id = photo.id.clone();
+        self.commit(crate::resource::import(&photo));
+        self.show_photo(&photo_id);
+        self.notice = None;
     }
 
     /// The path of the photograph this instance is showing, if any.
@@ -1736,6 +1749,8 @@ impl Photos {
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
+        // The decode itself runs off the frame, and the picture shows the
+        // loading state it already has until its pixels land.
         let identity = decode_key(&open);
         if self.original_identity.as_ref() != Some(&identity) || self.original.is_none() {
             let key = decode_key(&open);
@@ -1746,20 +1761,38 @@ impl Photos {
                 self.canvas_state = CanvasState::Error;
                 return;
             }
-            let bytes = crate::model::bytes_of(&open, &self.content);
-            if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
-                self.original = Some((open.name, img));
-                self.original_identity = Some(identity.clone());
-                self.original_decode_failed = None;
-            } else {
+            // What a decode that finished since the last pass came to. A
+            // photograph this window has since stopped showing is dropped:
+            // only the pixels on screen matter.
+            for (decoded, pixels) in self.take_decoded() {
+                if decoded != key {
+                    continue;
+                }
+                self.decoding = None;
+                if let Some(img) = pixels {
+                    self.original = Some((open.name.clone(), img));
+                    self.original_identity = Some(identity.clone());
+                    self.original_decode_failed = None;
+                } else {
+                    self.original = None;
+                    self.rendered = None;
+                    self.close_viewer();
+                    self.original_decode_failed = Some(key);
+                    self.canvas_state = CanvasState::Error;
+                    return;
+                }
+            }
+            if self.original_identity.as_ref() != Some(&identity) {
                 self.original = None;
                 self.rendered = None;
                 self.close_viewer();
-                if bytes.is_some() {
-                    self.original_decode_failed = Some(key);
-                    self.canvas_state = CanvasState::Error;
-                } else {
-                    self.canvas_state = CanvasState::Loading;
+                self.canvas_state = CanvasState::Loading;
+                if self.decoding.as_deref() != Some(key.as_str()) {
+                    match crate::model::bytes_of(&open, &self.content) {
+                        Some(bytes) => self.start_decode(key, bytes),
+                        // Bytes another device holds are still on their way.
+                        None => self.decoding = None,
+                    }
                 }
                 return;
             }
@@ -1791,6 +1824,36 @@ impl Photos {
             edits,
             rgba,
         });
+    }
+
+    /// Start decoding the photograph `key` from `bytes` off the frame, so the
+    /// frame that asked for it draws its loading state instead of blocking on
+    /// the decoder. What comes of it lands for the next pass to take.
+    fn start_decode(&mut self, key: String, bytes: Vec<u8>) {
+        let decoded = Arc::clone(&self.decoded);
+        let wake = ui::WakeHandle::new();
+        let landed = key.clone();
+        ui::rt::app().spawn_then(
+            async move { pixels::decode_async(&bytes).await },
+            move |pixels| {
+                decoded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((landed, pixels));
+                wake.wake();
+            },
+        );
+        self.decoding = Some(key);
+    }
+
+    /// The decodes that finished since the last pass.
+    fn take_decoded(&self) -> Vec<(String, Option<Rgba>)> {
+        std::mem::take(
+            &mut *self
+                .decoded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn refresh_library_index(&self) -> Result<(), ui::search::SearchCatalogError> {

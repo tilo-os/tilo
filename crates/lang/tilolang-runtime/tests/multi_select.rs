@@ -2,15 +2,11 @@
 //! over all of them, and running one changes them all as one step a single undo takes back.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = super::common::TASKS_SOURCE;
+    const TASKS: &str = crate::common::TASKS_SOURCE;
     /// What a task's page says about it: tasks are made from discussions of them.
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 

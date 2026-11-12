@@ -256,3 +256,27 @@ maps-what-nearby = Das Laden naher Orte
 maps-route-estimate = { $reason } Die Offline-Schätzung wird angezeigt.
 
 maps-addresses-places = Adressen und Orte
+
+## Actions
+
+maps-offline-areas = Offline-Bereiche
+maps-offline-areas-record = Heruntergeladenen Bereich erfassen
+maps-offline-areas-forget = Gelöschten Bereich vergessen
+maps-offline-areas-clear = Gelöschte Offline-Karten erfassen
+maps-effect-search = Orte suchen
+maps-effect-locate = Meinen Standort verwenden
+maps-effect-toggle-traffic = Verkehr anzeigen
+maps-effect-open-place = Ort öffnen
+maps-effect-directions = Route berechnen
+maps-effect-open-poi = Interessanten Ort öffnen
+maps-effect-poi-directions = Route zum interessanten Ort berechnen
+maps-effect-delete-offline-area = Offline-Bereich löschen
+maps-effect-clear-offline-areas = Offline-Bereiche leeren
+maps-workspace = Karten
+maps-workspace-accept-places = Orte übernehmen
+maps-workspace-commit-search = Orte suchen
+maps-workspace-clear-recents = Letzte Suchen löschen
+maps-workspace-accept-route = Route übernehmen
+maps-workspace-clear-route = Route verwerfen
+maps-workspace-accept-transit = Verbindungen übernehmen
+maps-workspace-clear-transit = Verbindungen verwerfen

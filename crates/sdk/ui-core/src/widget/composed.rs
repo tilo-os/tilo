@@ -7,6 +7,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use super::DrawChild;
 use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
 use crate::i18n::I18nManager;
 use crate::interaction::InteractionEnvironment;
@@ -160,7 +161,7 @@ impl Composed {
         presence: &PresenceCtx,
     ) {
         if let Some(element) = &mut self.element {
-            element.draw(scene, transform, text_renderer, theme, presence);
+            element.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -281,8 +282,14 @@ macro_rules! forward_to_child {
             theme: &$crate::theme::Theme,
             presence: &$crate::presence::PresenceCtx,
         ) {
-            self.$child
-                .draw(scene, transform, text_renderer, theme, presence);
+            $crate::widget::DrawChild::draw_child(
+                &mut self.$child,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
 
         fn handle_event(

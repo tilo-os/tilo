@@ -53,7 +53,9 @@
 //!   a tool a test starts as a process of its own — which the run's harness
 //!   builds before the tests start.
 //! - [`in_own_process`] runs a test that changes what the whole process
-//!   sees, such as a held wall clock, in a process no other test shares.
+//!   sees, such as a held wall clock, in a process no other test shares;
+//!   [`in_own_process_here`] is the same for a test that drives its own
+//!   future.
 //! - [`held_wall_clock`] holds this thread's wall clock at the instant a
 //!   test environment and a capture start at, so two pictures of the desk a
 //!   test compares show the same date and time.
@@ -141,7 +143,7 @@ pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, wi
 #[cfg(feature = "document")]
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};
-pub use own_process::in_own_process;
+pub use own_process::{in_own_process, in_own_process_here};
 #[cfg(target_os = "linux")]
 pub use stand_in::{StandIn, stand_in};
 pub use wall::held_wall_clock;
@@ -718,6 +720,27 @@ pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
         Some(memory) => tempfile::tempdir_in(memory),
         None => tempfile::tempdir(),
     }
+}
+
+/// A device key for a fixture's node — a device, host or relay that answers on
+/// the network — fresh on every call.
+///
+/// A relay or host answers on the Iroh node its device key names, and it
+/// publishes the address it listens on under that node's id (a relay derives
+/// its transport key from the device secret). Fixtures that mint a constant key
+/// are one node to every dialer: two of
+/// them alive at once answer each other's joins and each other's members'
+/// links, and their address records overwrite one another. Give each node of a
+/// test a key of its own, and keep a constant only where a test asserts on it.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture's key has no fallback: a machine whose entropy source fails cannot run the test it is minted for"
+)]
+pub fn node_key() -> [u8; 32] {
+    let mut seed = [0; 32];
+    getrandom::fill(&mut seed).expect("the system's entropy source");
+    seed
 }
 
 /// An executable fixture script written by [`script`].

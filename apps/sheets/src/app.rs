@@ -30,6 +30,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 
 use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
+use ui::i18n::ArgValue;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
@@ -68,6 +69,7 @@ use crate::fill;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
 use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
+use crate::resource::CATALOG;
 use crate::resource::verbs;
 use crate::settings::{DocSettings, EffectiveLocale};
 use crate::workbook::{Cell, ChartKind, ChartSnapshot, CommentThread, Workbook};
@@ -131,7 +133,7 @@ impl Interchange {
             Self::Csv => FileFilter::new("CSV").glob("*.csv"),
             Self::Xlsx => FileFilter::new("Excel workbook").glob("*.xlsx"),
             Self::Ods => FileFilter::new("Calc spreadsheet").glob("*.ods"),
-            Self::Notion => FileFilter::new(&ui::i18n!("sheets-notion-files"))
+            Self::Notion => FileFilter::new(&CATALOG.t("sheets-notion-files"))
                 .glob("*.zip")
                 .glob("*.json"),
         }
@@ -140,7 +142,7 @@ impl Interchange {
 
 fn spreadsheet_import_request(format: Interchange) -> PickRequest {
     let request = if format == Interchange::Notion {
-        let title = ui::i18n!("sheets-notion-import-title");
+        let title = CATALOG.t("sheets-notion-import-title");
         PickRequest::open(&title, &title)
     } else {
         PickRequest::open("Import spreadsheet", "Import")
@@ -781,7 +783,7 @@ impl Widget for SheetsApp {
             }
         });
         parts.draw(scene, "sheet-comment-markers", window, |scene| {
-            self.draw_comment_markers(scene, transform, theme);
+            self.draw_comment_markers(scene, transform, theme, presence);
         });
         parts.draw(scene, "sheet-cell-presence", window, |scene| {
             self.draw_cell_presence(scene, transform, tr, theme, presence);
@@ -791,7 +793,7 @@ impl Widget for SheetsApp {
         });
         // The open comment floats over the cells beside its own.
         parts.draw(scene, "sheet-comment", window, |scene| {
-            self.draw_comment_popover(scene, transform, tr, theme);
+            self.draw_comment_popover(scene, transform, tr, theme, presence);
         });
         parts.draw(scene, "sheet-tab-rename", window, |scene| {
             self.draw_tab_rename(scene, transform, tr, theme);
@@ -1012,14 +1014,14 @@ impl Widget for SheetsApp {
         // The formula bar; the commands are the window bar's.
         let toolbar_controls: Vec<AccessNode> = [
             AccessNode::new(Role::Button)
-                .with_name("Start a formula")
-                .with_description("Begin a formula in the active cell")
+                .with_name(crate::resource::CATALOG.t("sheets-start-formula"))
+                .with_description(crate::resource::CATALOG.t("sheets-start-formula-detail"))
                 .with_action_target("sheets.fx")
                 .with_bounds(self.fx_rect)
                 .with_state(AccessState::new().focusable(true)),
             AccessNode::new(Role::TextInput)
-                .with_name("Name box")
-                .with_description("Go to a cell or range; shortcut Control+G")
+                .with_name(crate::resource::CATALOG.t("sheets-name-box"))
+                .with_description(crate::resource::CATALOG.t("sheets-name-box-detail"))
                 .with_value(self.grid.selection_label())
                 .with_action_target("sheets.name-box")
                 .with_bounds(self.name_box_rect)
@@ -1029,8 +1031,8 @@ impl Widget for SheetsApp {
                         .focused(self.name_box_edit.is_some()),
                 ),
             AccessNode::new(Role::TextInput)
-                .with_name("Formula bar")
-                .with_description("Edit the active cell's value or formula")
+                .with_name(crate::resource::CATALOG.t("sheets-formula-bar"))
+                .with_description(crate::resource::CATALOG.t("sheets-formula-bar-detail"))
                 .with_value(self.grid.active_display_raw())
                 .with_action_target("sheets.formula-bar")
                 .with_bounds(self.formula_field_rect)
@@ -1040,7 +1042,7 @@ impl Widget for SheetsApp {
                         .focused(self.grid.is_editing()),
                 ),
             AccessNode::new(Role::Button)
-                .with_name("Add sheet")
+                .with_name(crate::resource::CATALOG.t("sheets-add-sheet"))
                 .with_action_target("sheets.new-sheet")
                 .with_bounds(self.add_tab_rect)
                 .with_state(AccessState::new().focusable(true)),
@@ -1085,7 +1087,10 @@ impl Widget for SheetsApp {
             .map(|&column| {
                 let letter = crate::model::col_to_letters(column);
                 AccessNode::new(Role::Cell)
-                    .with_name(format!("Column {letter}"))
+                    .with_name(CATALOG.t_args(
+                        "sheets-a11y-column",
+                        &[("letter", ArgValue::Text(letter.clone()))],
+                    ))
                     .with_value(letter)
                     .with_position(column as usize + 1, window.total_columns as usize)
             })
@@ -1093,7 +1098,7 @@ impl Widget for SheetsApp {
         let mut rows = Vec::with_capacity(window.rows.len().saturating_add(1));
         rows.push(
             AccessNode::new(Role::Row)
-                .with_name("Column headers")
+                .with_name(crate::resource::CATALOG.t("sheets-column-headers"))
                 // The virtual table's data rows are keyed by their durable
                 // row coordinate. Give the fixed header row its own reserved
                 // key too: mixing keyed and positional synthetic siblings
@@ -1116,7 +1121,13 @@ impl Widget for SheetsApp {
                     };
                     AccessNode::new(Role::Cell)
                         .with_name(reference)
-                        .with_description(format!("Column {column}, row {}", cell.addr.1 + 1))
+                        .with_description(CATALOG.t_args(
+                            "sheets-a11y-cell",
+                            &[
+                                ("column", ArgValue::Text(column)),
+                                ("row", ArgValue::Text((cell.addr.1 + 1).to_string())),
+                            ],
+                        ))
                         .with_optional_value((!value.is_empty()).then_some(value))
                         .with_position(cell.addr.0 as usize + 1, window.total_columns as usize)
                         .with_bounds(cell.bounds)
@@ -1128,7 +1139,10 @@ impl Widget for SheetsApp {
                 })
                 .collect();
             AccessNode::new(Role::Row)
-                .with_name(format!("Row {}", row.index + 1))
+                .with_name(CATALOG.t_args(
+                    "sheets-a11y-row",
+                    &[("row", ArgValue::Text((row.index + 1).to_string()))],
+                ))
                 .with_position(row.index as usize + 1, window.total_rows as usize)
                 .with_state(AccessState::new().selected(selected))
                 .with_key(u64::from(row.index))
@@ -1142,18 +1156,20 @@ impl Widget for SheetsApp {
             .unwrap_or_else(|| "Worksheet".into());
         let sheet = AccessNode::new(Role::Table)
             .with_name(sheet_name)
-            .with_description(format!(
-                "Worksheet; selected range {}; {} columns by {} rows; only the visible grid window is announced",
-                self.grid.selection_label(),
-                window.total_columns,
-                window.total_rows,
+            .with_description(CATALOG.t_args(
+                "sheets-a11y-worksheet",
+                &[
+                    ("range", ArgValue::Text(self.grid.selection_label())),
+                    ("columns", ArgValue::Text(window.total_columns.to_string())),
+                    ("rows", ArgValue::Text(window.total_rows.to_string())),
+                ],
             ))
             .with_value(format!("Active cell {active_name}"))
             .with_bounds(window.bounds)
             .with_state(AccessState::new().focusable(true))
             .with_children(rows);
         let annotations = AccessNode::new(Role::List)
-            .with_name("Comments and charts")
+            .with_name(crate::resource::CATALOG.t("sheets-comments-charts"))
             .with_children(
                 self.sheet_charts
                     .iter()
@@ -1161,27 +1177,43 @@ impl Widget for SheetsApp {
                         let target = format!("sheets.annotation:chart:{}", chart.id);
                         AccessNode::new(Role::ListItem)
                             .with_name(format!("{} chart", chart.title))
-                            .with_description(format!(
-                                "{}:{}; open, rename, change its type or cells, or delete from the chart card",
-                                crate::model::addr_to_a1(chart.start.0, chart.start.1),
-                                crate::model::addr_to_a1(chart.end.0, chart.end.1)
+                            .with_description(CATALOG.t_args(
+                                "sheets-a11y-chart-extent",
+                                &[
+                                    (
+                                        "start",
+                                        ArgValue::Text(crate::model::addr_to_a1(
+                                            chart.start.0,
+                                            chart.start.1,
+                                        )),
+                                    ),
+                                    (
+                                        "end",
+                                        ArgValue::Text(crate::model::addr_to_a1(
+                                            chart.end.0,
+                                            chart.end.1,
+                                        )),
+                                    ),
+                                ],
                             ))
                             .with_children(vec![
                                 AccessNode::new(Role::Button)
-                                    .with_name("Manage chart")
+                                    .with_name(crate::resource::CATALOG.t("sheets-manage-chart"))
                                     .with_action_target(format!("{target}:manage"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Open chart range")
+                                    .with_name(
+                                        crate::resource::CATALOG.t("sheets-open-chart-range"),
+                                    )
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Rename chart")
+                                    .with_name(crate::resource::CATALOG.t("sheets-rename-chart"))
                                     .with_value(chart.title.clone())
                                     .with_action_target(format!("{target}:edit"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Column chart")
+                                    .with_name(crate::resource::CATALOG.t("sheets-column-chart"))
                                     .with_action_target(format!("{target}:column"))
                                     .with_state(
                                         AccessState::new()
@@ -1189,7 +1221,7 @@ impl Widget for SheetsApp {
                                             .selected(chart.kind == ChartKind::Column),
                                     ),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Line chart")
+                                    .with_name(crate::resource::CATALOG.t("sheets-line-chart"))
                                     .with_action_target(format!("{target}:line"))
                                     .with_state(
                                         AccessState::new()
@@ -1197,7 +1229,7 @@ impl Widget for SheetsApp {
                                             .selected(chart.kind == ChartKind::Line),
                                     ),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Chart cells")
+                                    .with_name(crate::resource::CATALOG.t("sheets-chart-cells"))
                                     .with_value(format!(
                                         "{}:{}",
                                         crate::model::addr_to_a1(chart.start.0, chart.start.1),
@@ -1206,7 +1238,7 @@ impl Widget for SheetsApp {
                                     .with_action_target(format!("{target}:cells"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Delete chart")
+                                    .with_name(crate::resource::CATALOG.t("sheets-delete-chart"))
                                     .with_action_target(format!("{target}:delete"))
                                     .with_state(AccessState::new().focusable(true)),
                             ])
@@ -1214,7 +1246,10 @@ impl Widget for SheetsApp {
                     .chain(self.sheet_comments.iter().map(|thread| {
                         let target = format!("sheets.annotation:comment:{}", thread.id);
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!("Comment by {}", self.author_name(&thread.author)))
+                            .with_name(CATALOG.t_args(
+                                "sheets-a11y-comment-by",
+                                &[("author", ArgValue::Text(self.author_name(&thread.author)))],
+                            ))
                             .with_description(format!(
                                 "{}; {} replies; {}",
                                 thread.body,
@@ -1223,27 +1258,29 @@ impl Widget for SheetsApp {
                             ))
                             .with_children(vec![
                                 AccessNode::new(Role::Button)
-                                    .with_name("Reply to comment")
+                                    .with_name(crate::resource::CATALOG.t("sheets-reply-comment"))
                                     .with_action_target(format!("{target}:reply"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Edit comment")
+                                    .with_name(crate::resource::CATALOG.t("sheets-edit-comment"))
                                     .with_value(thread.body.clone())
                                     .with_action_target(format!("{target}:edit"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Open comment anchor")
+                                    .with_name(
+                                        crate::resource::CATALOG.t("sheets-open-comment-anchor"),
+                                    )
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Delete comment")
+                                    .with_name(crate::resource::CATALOG.t("sheets-delete-comment"))
                                     .with_action_target(format!("{target}:delete"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
                                     .with_name(if thread.resolved {
-                                        "Reopen comment"
+                                        crate::resource::CATALOG.t("sheets-reopen-comment")
                                     } else {
-                                        "Resolve comment"
+                                        crate::resource::CATALOG.t("sheets-resolve-comment")
                                     })
                                     .with_action_target(format!("{target}:toggle"))
                                     .with_state(AccessState::new().focusable(true)),
@@ -1253,18 +1290,18 @@ impl Widget for SheetsApp {
             );
         let children = vec![
             AccessNode::new(Role::Toolbar)
-                .with_name("Spreadsheet actions")
+                .with_name(crate::resource::CATALOG.t("sheets-actions"))
                 .with_children(toolbar_controls),
             AccessNode::new(Role::TabBar)
-                .with_name("Sheets")
+                .with_name(crate::resource::CATALOG.t("sheets-window-name"))
                 .with_children(tabs),
             sheet,
             annotations,
         ];
         Some(
             AccessNode::new(Role::Document)
-                .with_name("Spreadsheet")
-                .with_description("Editable workbook with formula bar and sheet tabs")
+                .with_name(crate::resource::CATALOG.t("sheets-window-name"))
+                .with_description(crate::resource::CATALOG.t("sheets-window-detail"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

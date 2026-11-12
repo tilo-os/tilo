@@ -34,6 +34,7 @@ what was stored inside the guest.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -62,6 +63,7 @@ WORKSPACE = "Branch e2e"
 SECRET_ATTRS = {"service": "tilo-e2e-branch", "account": "person"}
 GIT_NAME, GIT_EMAIL = "Ada Branch", "ada@branch.example"
 PASSWORD_TITLE = "Branch e2e mail"
+PASSWORDS = "so.tilo.passwords"
 PROVIDER_LABEL = "Branch e2e"
 PROVIDER_MODEL = "e2e-branch"
 MODEL_PORT = 18431
@@ -71,9 +73,18 @@ class Failed(Exception):
     """A step observed something wrong."""
 
 
+class Unscriptable(Exception):
+    """What the step does is only reachable by a person's hands here: no action reaches it.
+    Reported as `skip` with the reason, never as a pass."""
+
+
 def expect(cond, message: str) -> None:
     if not cond:
         raise Failed(message)
+
+
+# Each VM's run, for the helpers that keep evidence of it.
+run_of: dict = {}
 
 
 class Run:
@@ -89,6 +100,7 @@ class Run:
     def vm(self, name: str) -> TiloVm:
         if name not in self.vms:
             self.vms[name] = TiloVm(self.binary, name, SLOT, self.out / f"tilo-vm-{name}.log")
+            run_of[name] = self
         return self.vms[name]
 
     def write(self, name: str, text: str) -> None:
@@ -100,6 +112,9 @@ class Run:
         print(f"{sid} ... {title}", flush=True)
         try:
             value = fn(entry["facts"], *args)
+        except Unscriptable as exc:
+            entry["status"], entry["detail"] = "skip", str(exc)[:4000]
+            value = None
         except (Failed, VmError) as exc:
             entry["status"], entry["detail"] = "fail", str(exc)[:4000]
             value = None
@@ -152,11 +167,19 @@ PERSON_FACTS = r"""
 echo "USER=$(id -un)"
 echo "IDENTITY-BEGIN"; tilo-identity --json status 2>&1; echo "IDENTITY-END"
 echo "STORE=$(tilo-secret-service status 2>&1 | head -1)"
-echo "SECRET-DIGEST=$(python3 -I "$XDG_RUNTIME_DIR/e2e-secret.py" get __SERVICE__ __ACCOUNT__ | sha256sum | cut -c1-16)"
+# The store keeps an item for the program that stored it: read it back as secret-tool, which
+# stored it, where the image has it.
+if command -v secret-tool >/dev/null; then
+  echo "SECRET-DIGEST=$(secret-tool lookup service __SERVICE__ account __ACCOUNT__ | sha256sum | cut -c1-16)"
+else
+  echo "SECRET-DIGEST=$(python3 -I "$XDG_RUNTIME_DIR/e2e-secret.py" get __SERVICE__ __ACCOUNT__ | sha256sum | cut -c1-16)"
+fi
 echo "GIT-NAME=$(git config --global user.name)"
 echo "GIT-EMAIL=$(git config --global user.email)"
 [ -f ~/.ssh/id_ed25519 ] && echo "SSH-KEY=$(ssh-keygen -lf ~/.ssh/id_ed25519 | awk '{print $2}')"
 [ -f ~/.ssh/id_ed25519 ] && echo "SSH-KEY-READABLE=$(head -c 35 ~/.ssh/id_ed25519)"
+t="${XDG_CONFIG_HOME:-$HOME/.config}/t/config.toml"
+[ -f "$t" ] && echo "T-CONFIG=$(sha256sum < "$t" | cut -c1-16) $(stat -c %a "$t")"
 """
 
 # The Secret Service as libsecret and secret-tool speak it (org.freedesktop.secrets, plain
@@ -324,17 +347,100 @@ def boot_box(facts: dict, run: Run, disk: Path, memory: int) -> None:
            f"product_uuid {m.get('UUID')!r} (tilo-device-branch.service: {m.get('BRANCH-UNIT')})")
 
 
-def wait_session(vm: TiloVm, timeout: float = 300) -> None:
-    """Until the person's session answers and lists its apps; a slot whose session did not
-    come up with the box is started as tilo-vm starts it."""
+def desk_up(vm: TiloVm) -> bool:
+    """Whether the session shows its desk, unlocked, with no setup over it: what a person who
+    turns the box on finds, read as e2e-remote reads it."""
+    keep_awake(vm)
     try:
-        vm.wait_catalogue(timeout)
-    except VmError:
-        vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+        dump = vm.state()
+        names = [str(t.get("name")) for t in vm.targets()]
+    except (VmError, ValueError):
+        return False
+    state = dump.get("state") or dump
+    chrome = state.get("chrome") or {}
+    return ("workspace_tree" in state and not chrome.get("session_locked")
+            and any(n.startswith("DesktopChrome") for n in names)
+            and not any(n.startswith("OnboardingView") for n in names) and "Setup" not in names)
+
+
+def wait_session(vm: TiloVm, timeout: float = 300) -> bool:
+    """Until the person's session answers and lists its apps; a slot whose session did not
+    come up with the box is started as tilo-vm starts it. Whether it had to be."""
+    if wait_until(lambda: desk_up(vm), timeout, interval=1.0):
+        return False
+    vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+    if not wait_until(lambda: desk_up(vm), timeout, interval=1.0):
+        raise Failed(f"{vm.vm}'s session never showed its desk within {timeout:.0f}s")
+    return True
+
+
+IDENTITY_DIAGNOSIS = r"""
+u=$(id -u tds-me)
+echo "== account"; id tds-me; getent group tilo-identity
+echo "== suid_dumpable $(cat /proc/sys/fs/suid_dumpable)"; getcap /usr/bin/tilo-session 2>&1
+for p in $(pgrep -u "$u" -f /usr/bin/tilo-session); do
+  echo "== process $p: $(tr '\0' ' ' </proc/$p/cmdline | cut -c1-120)"
+  grep -E '^(Uid|Gid|Groups|CapPrm|CapEff|CapAmb|NoNewPrivs|Seccomp):' /proc/$p/status
+done
+echo "== identity files"
+ls -la --time-style=full-iso ~tds-me/.config/tilo/identity /var/lib/tilo/device   /var/lib/tilo/device/certs /var/lib/tilo/device-private /var/lib/tilo/user-identity 2>&1
+echo "== the session's own check, as the person"
+runuser -u tds-me -- env XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus   /usr/bin/tilo-session --provision-identity 2>&1 | tail -n 20
+echo "== the session's stderr this boot"
+journalctl -m --since "$(uptime -s)" --no-pager -o short-iso _UID=$u 2>&1   | grep -a 'tilo-session-me\|secret' | grep -av 'FRAME-LIFECYCLE\|paint-stats\|HEAP-MILESTONE' | head -n 60
+"""
+
+
+def identity_diagnosis(vm: TiloVm) -> str:
+    """What the person's identity check answers now and what it reads, from root: the
+    session's process (its groups and capabilities), the identity files, the check run as
+    the person, and what the session said this boot."""
+    try:
+        return vm.root_exec(IDENTITY_DIAGNOSIS, timeout=180, check=False)
+    except VmError as exc:
+        return f"diagnosis failed: {exc}"
+
+
+def what_shows(vm: TiloVm) -> str:
+    """What the session answers when it lists no apps: its chrome's flags, the targets it
+    draws, and what listing its actions says."""
+    parts = []
+    try:
+        dump = vm.state()
+        state = dump.get("state") or dump
+        chrome = state.get("chrome") or {}
+        parts.append("chrome " + json.dumps({k: v for k, v in chrome.items()
+                                             if isinstance(v, (bool, int, str))})[:600])
+    except (VmError, ValueError) as exc:
+        parts.append(f"state: {str(exc)[:400]}")
+    try:
+        parts.append("targets " + json.dumps([t.get("name") for t in vm.targets()][:40])[:800])
+    except (VmError, ValueError) as exc:
+        parts.append(f"targets: {str(exc)[:400]}")
+    try:
+        parts.append("actions " + vm.run("control", "actions", "list", "Terminal", "--json",
+                                         "--limit", "20", timeout=60)[:600])
+    except VmError as exc:
+        parts.append(f"actions: {str(exc)[:800]}")
+    return "; ".join(parts)
+
+
+def desk_at_boot(run: Run, name: str, label: str) -> list[str]:
+    """Whether the person's session came up at its desk on its own this boot: what stood in
+    its way (setup or identity recovery, or a session that listed no apps), with what the
+    session's own identity check answers now kept as evidence. Empty when the desk is up."""
+    vm = run.vm(name)
+    up = wait_until(lambda: desk_up(vm) or bool(setup_shown(vm)), 300, interval=1.0)
+    shown = setup_shown(vm) if up else [f"the desk did not come up within 300s: {what_shows(vm)}"]
+    if shown:
+        run.write(f"{label}-{name}-verify-session.txt",
+                  f"== what the session shows\n{'; '.join(shown)}\n" + identity_diagnosis(vm))
+        run.write(f"{label}-{name}-session.txt", session_excerpt(vm))
         try:
-            vm.wait_catalogue(timeout)
-        except VmError as exc:
-            raise Failed(f"{vm.vm}'s session never answered with its apps: {exc}") from exc
+            wait_session(vm)
+        except Failed as exc:
+            shown.append(f"and after a slot restart: {exc}: {what_shows(vm)}")
+    return shown
 
 
 # -- the boxes' local network --------------------------------------------------------
@@ -377,10 +483,71 @@ ip -o addr show dev "$dev"
 """, timeout=120)
 
 
+BOOT_JOURNAL = ("journalctl -b --no-pager -o short-monotonic -u tilo-device-branch "
+                "-u tilo-device-key-init -u tilo-vmd -u tilo-vm-restore 2>&1 | tail -n 200; "
+                "journalctl -b -k --no-pager 2>&1 | grep -i 'type=1326\\|seccomp' | tail -n 5; "
+                "systemctl show tilo-device-branch -p ActiveState -p Result -p ExecMainStatus; "
+                "ls -la /var/lib/tilo /var/lib/tilo/device-private /var/lib/tilo/device "
+                "/var/lib/tilo/user-identity 2>&1")
+
+
+def keep_boot(run: Run, name: str, label: str) -> str:
+    """What the box's boot said of its device identity, for the evidence."""
+    try:
+        text = run.vm(name).root_exec(BOOT_JOURNAL, timeout=120, check=False)
+    except VmError as exc:
+        text = f"could not read the boot journal: {exc}"
+    run.write(f"{label}-{name}-boot.txt", text)
+    return text
+
+
+def keep_session(run: Run, name: str, label: str) -> None:
+    """What the person's session said and showed, for a step that could not reach it."""
+    vm = run.vm(name)
+    parts = []
+    for args in (("logs", SLOT, "-n", "4000"),
+                 ("control", "raw", '{"op":"list_targets"}'),
+                 ("control", "actions", "list", "--json", "--limit", "300")):
+        try:
+            parts.append(f"$ tilo-vm {' '.join(args)}\n" + vm.run(*args, timeout=120, check=False,
+                                                                 slot=args[0] != "logs"))
+        except VmError as exc:
+            parts.append(f"$ tilo-vm {' '.join(args)}: {exc}")
+    try:
+        targets = first_json(vm.run("control", "raw", '{"op":"list_targets"}', timeout=60, check=False))
+        names = [t.get("name") for t in (targets.get("answer") or targets).get("targets") or []]
+        parts.append("target names: " + json.dumps([n for n in names if n and len(n) < 80]))
+    except (VmError, AttributeError) as exc:
+        parts.append(f"target names: {exc}")
+    noise = ("FRAME-LIFECYCLE", "paint-stats:", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=")
+    run.write(f"{label}-{name}-session.txt",
+              "\n".join(l for l in "\n".join(parts).splitlines() if not any(n in l for n in noise)))
+    keep_boot(run, name, label)
+
+
+def keep_actions(run: Run, name: str, label: str) -> None:
+    """What the desktop lists, by provider and id, for steps that address its actions."""
+    try:
+        listed = listed_actions(run.vm(name))
+        # The desk's own chrome last: what an app offers is what a failing step looks for, and the
+        # evidence keeps the file's end.
+        listed.sort(key=lambda r: r.get("provider") not in ("so.tilo.session", "applications"))
+        rows = [f"{r.get('provider')}  {r.get('application') or ''}  "
+                f"{str(r.get('id')).replace(chr(31), ' | ')[:160]}  {r.get('operation')}  "
+                f"{r.get('title')}" for r in listed]
+        run.write(f"{label}-{name}-actions.txt", "\n".join(rows))
+    except VmError as exc:
+        run.write(f"{label}-{name}-actions.txt", f"could not list: {exc}")
+
+
 def sign_in(facts: dict, run: Run) -> None:
     box = run.vm(SOURCE)
-    out = box.run("--json", "slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1",
-                  "--identity", "device", timeout=900, slot=False)
+    try:
+        out = box.run("--json", "slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1",
+                      "--identity", "device", timeout=900, slot=False)
+    except VmError:
+        keep_session(run, SOURCE, "S02")
+        raise
     run.write("S02-slot-create.json", out)
     wait_session(box)
     p = person_facts(run, SOURCE, "S02-box")
@@ -388,10 +555,13 @@ def sign_in(facts: dict, run: Run) -> None:
     facts["identity"] = ident
     expect((ident.get("identity") or {}).get("id"), f"the person has no identity: {ident}")
     expect(ident.get("this_device"), f"box holds no valid certificate for the person: {ident}")
+    # Where the person's root is decides how a branch is certified: at boot by the root in the
+    # machine's identity tree, else at the person's next sign-in by the root in their record.
     m = machine_facts(run, SOURCE, "S02-box")
-    expect(m.get("ROOT-HERE") == "yes",
-           "the person's root is not in the machine's identity tree, so a branch cannot "
-           "certify itself at boot")
+    facts["root_in_machine_tree"] = m.get("ROOT-HERE") == "yes"
+    keep_actions(run, SOURCE, "S02")
+    # The same diagnosis as at a boot that misses its desk, of a session at its desk.
+    run.write("S02-box-diagnosis-session.txt", identity_diagnosis(run.vm(SOURCE)))
 
 
 def configure(facts: dict, run: Run) -> None:
@@ -402,17 +572,32 @@ def configure(facts: dict, run: Run) -> None:
     facts["secret_tool"] = bool(have_tool)
     value = "e2e-branch-secret-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \\n')"
     if have_tool:
-        box.exec(f'printf %s "{value}" | secret-tool store --label "tilo e2e branch" '
-                 f'service {SECRET_ATTRS["service"]} account {SECRET_ATTRS["account"]}')
+        stored = box.exec(f'printf %s "{value}" | secret-tool store --label "tilo e2e branch" '
+                          f'service {SECRET_ATTRS["service"]} account {SECRET_ATTRS["account"]} 2>&1; '
+                          'echo "exit=$?"', check=False)
     else:
-        box.exec(f'printf %s "{value}" | python3 -I "$XDG_RUNTIME_DIR/e2e-secret.py" store '
-                 f'{SECRET_ATTRS["service"]} {SECRET_ATTRS["account"]}')
+        stored = box.exec(f'printf %s "{value}" | python3 -I "$XDG_RUNTIME_DIR/e2e-secret.py" store '
+                          f'{SECRET_ATTRS["service"]} {SECRET_ATTRS["account"]} 2>&1; echo "exit=$?"',
+                          check=False)
+    facts["store"] = stored.strip()[-600:]
+    read = box.exec(f'secret-tool lookup service {SECRET_ATTRS["service"]} account '
+                    f'{SECRET_ATTRS["account"]} 2>&1 >/dev/null | tail -n 5; echo "exit=$?"',
+                    check=False)
+    facts["read_back"] = read.strip()[-600:]
     box.exec(f"git config --global user.name {shlex.quote(GIT_NAME)} && "
              f"git config --global user.email {shlex.quote(GIT_EMAIL)} && "
              "mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N '' -C ada@box -f ~/.ssh/id_ed25519")
+    # Their t client's server and token, where t reads them (`dirs::config_dir()/t`): a token
+    # made for this run, never a real one.
+    token = "e2e-branch-" + os.urandom(16).hex()
+    box.exec('d="${XDG_CONFIG_HOME:-$HOME/.config}/t" && mkdir -p -m 700 "$d" && umask 077 && '
+             f'printf \'server = "https://t.tilo.so"\\ntoken = "{token}"\\n\' > "$d/config.toml"')
     p = person_facts(run, SOURCE, "S03-box")
-    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY")}
-    expect(p.get("SECRET-DIGEST") not in (None, EMPTY_DIGEST), "the stored secret does not read back")
+    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG")}
+    expect(p.get("T-CONFIG", "").endswith(" 600"), f"the t config is not the person's alone: {p.get('T-CONFIG')}")
+    expect(p.get("SECRET-DIGEST") not in (None, EMPTY_DIGEST),
+           f"the stored secret does not read back: store said {facts['store']!r}; "
+           f"reading said {facts['read_back']!r}")
     expect(p.get("GIT-NAME") == GIT_NAME, "git config did not take")
     expect(p.get("SSH-KEY"), "no SSH key")
 
@@ -429,32 +614,75 @@ def configure_provider(facts: dict, run: Run) -> None:
 
 
 def configure_passwords(facts: dict, run: Run) -> None:
-    """A login in their passwords vault, through Passwords' own controls."""
+    """A login in their passwords vault, saved through Passwords' own save-login action."""
     box = run.vm(SOURCE)
     open_passwords(box)
     before = password_items(box)
-    app_action(box, "", "add")
-    box.control("click", "passwords.field.name")
-    box.input("type", PASSWORD_TITLE)
-    app_action(box, "", "generate")
-    app_action(box, "", "save")
+    password = "e2e-" + os.urandom(12).hex()
+    app_action(box, "", "save-login", {"name": PASSWORD_TITLE, "origin": "https://branch.example",
+                                       "username": "ada@branch.example",
+                                       "password": password}, PASSWORDS)
     new = wait_until(lambda: password_items(box) - before, 30, interval=1.0)
-    expect(new, "Passwords lists no new item after the save")
+    expect(new, "Passwords lists no new item after save-login")
     facts["password_items"] = sorted(new)
+    expect(password not in json.dumps(listed_actions(box)),
+           "the saved password is in the desktop's action listing")
+    leaks = secret_leaks(box, password)
+    expect(not leaks, f"the saved password is in plain text in {leaks}")
+
+
+# Where a secret a person saved must never be in plain text: the system journal (every unit's
+# and the session's own log) and the files under /var/log and the person's home, where the
+# vault keeps it only sealed.
+SECRET_PLACES = """p=$(printf %s {pattern} | base64 -d)
+journalctl -m --no-pager -o cat 2>/dev/null | grep -qaF -- "$p" && echo journal
+grep -rlaF --exclude-dir=proc -- "$p" /var/log /home 2>/dev/null | head -n 20
+true"""
+
+
+def secret_leaks(vm: TiloVm, secret: str) -> list[str]:
+    """The places on `vm` that hold `secret` in plain text. The secret travels base64-encoded,
+    so no command line or log of this harness carries it either."""
+    pattern = shlex.quote(base64.b64encode(secret.encode()).decode())
+    text = vm.root_exec(SECRET_PLACES.format(pattern=pattern), timeout=300)
+    return [line for line in text.splitlines() if line.strip()]
 
 
 def open_passwords(vm: TiloVm) -> None:
-    vm.invoke("applications", "so.tilo.passwords")
-    expect(wait_until(lambda: app_rows(vm, "", "add"), 60, interval=1.0),
-           f"Passwords on {vm.vm} offers no add")
+    if not of_app(app_rows(vm, "", "save-login"), PASSWORDS):
+        open_app(vm, PASSWORDS)
+    if not wait_until(lambda: of_app(app_rows(vm, "", "save-login"), PASSWORDS),
+                      60, interval=1.0):
+        keep_actions(run_of[vm.vm], vm.vm, "S03d")
+        raise Failed(f"Passwords is open on {vm.vm}, but the desktop lists none of its "
+                           "actions, so no login can be saved without a person's hands")
 
 
 def password_items(vm: TiloVm) -> set[str]:
-    """The vault items Passwords publishes rows for, by their resource ids."""
-    listed = vm.control_json("actions", "list", "--json", "--programmatic", "--wait=8000",
-                             "--limit", "2000")
-    return {part for row in listed.get("actions", []) if row.get("provider") == "app-actions"
-            for part in row["id"].split("\x1f") if part.startswith("passwords:item:")}
+    """The logins in the vault, by their opaque item ids, as Passwords' own list-logins action
+    answers: the vault's rows in the listing name an item only once a query reaches it."""
+    answer = app_action(vm, "", "list-logins", None, PASSWORDS)
+    logins = found_key(answer, "logins")
+    expect(isinstance(logins, list), f"list-logins answered no logins: {json.dumps(answer)[:600]}")
+    return {login["item"] for login in logins if login.get("name") == PASSWORD_TITLE}
+
+
+def found_key(value, key: str):
+    """The first value under `key` anywhere in `value`, or None."""
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (hit := found_key(item, key)) is not None:
+                return hit
+    if isinstance(value, str) and key in value:
+        try:
+            return found_key(json.loads(value), key)
+        except ValueError:
+            return None
+    return None
 
 
 def configure_workspace(facts: dict, run: Run) -> None:
@@ -463,6 +691,31 @@ def configure_workspace(facts: dict, run: Run) -> None:
     ws = make_workspace(box)
     facts["workspace"] = ws
     facts["window_on_box"] = open_window(box, ws)
+
+
+def keep_awake(vm: TiloVm) -> None:
+    """A key on the slot's seat, as a person at it: an idle desk locks, and a locked one offers
+    none of its actions."""
+    try:
+        vm.key("shift")
+    except VmError:
+        pass
+
+
+def act(vm: TiloVm, provider: str, name: str, args: dict | None = None, wait: bool = False) -> dict:
+    """Invoke the desktop action `name` of `provider`, addressed as `tilo-control actions list`
+    prints it (`resource␟action`): the listed row whose id is `name` or ends in it."""
+    keep_awake(vm)
+    rows = [r for r in listed_actions(vm) if r.get("provider") == provider
+            and (r["id"] == name or r["id"].endswith("\x1f" + name))]
+    pages = "every"
+    expect(rows, f"{vm.vm} lists no {provider} action {name!r} in {pages} page(s)")
+    argv = ["actions", "invoke", provider, rows[0]["id"]]
+    if wait:
+        argv.append("--wait=20000")
+    if args is not None:
+        argv += ["--args-json", json.dumps(args)]
+    return vm.control_json(*argv, timeout=90)
 
 
 # -- a model provider's API key, through Settings ------------------------------------
@@ -476,24 +729,76 @@ def serve_model(vm: TiloVm, key_digest: str) -> None:
                  f"2>/dev/null; systemd-run --unit e2e-model --quiet python3 -I /run/e2e-model.py {MODEL_PORT}")
 
 
+def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
+    """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
+    (`MAX_CATALOGUE_PAGE`), and the desk's own chrome fills most of the first."""
+    keep_awake(vm)
+    for _ in range(LISTING_READS):
+        rows = read_listing(vm, query)
+        if rows is not None:
+            return rows
+    raise VmError(f"the action listing changed on each of {LISTING_READS} reads while it was paged")
+
+
+# How often a listing is read again from its first page when it moved on while paged, as it
+# does while an app that just opened publishes its actions.
+LISTING_READS = 10
+
+
+def read_listing(vm: TiloVm, query: tuple[str, ...]) -> list[dict] | None:
+    """One paged read of the listing, or `None` when it moved on between two pages
+    (`stale_cursor`): a page past the first is cut from the listing the first was."""
+    rows, cursor = [], None
+    for _ in range(40):
+        page = ["--cursor", cursor] if cursor else []
+        try:
+            listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
+                                     "--wait=8000", "--limit", "256", *page)
+        except VmError as exc:
+            if cursor and "stale_cursor" in str(exc):
+                return None
+            raise
+        rows.extend(listed.get("actions", []))
+        cursor = listed.get("next_cursor")
+        if not cursor:
+            break
+    return rows
+
+
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
-    """The app actions named `action` (the last part of a row's id) the desktop lists."""
-    listed = vm.control_json("actions", "list", *([query] if query else []), "--json", "--programmatic",
-                             "--wait=8000", "--limit", "2000")
-    return [row for row in listed.get("actions", [])
-            if row.get("provider") == "app-actions" and row["id"].split("\x1f")[-1] == action]
+    """The app actions named `action` the desktop lists: an app the desktop launches is listed
+    under `app-actions`, a running app's instance under a provider of its own, naming its app
+    (`application`) and its action (`operation`)."""
+    def offered(row: dict) -> bool:
+        if row.get("provider") in ("so.tilo.session", "applications"):
+            return False
+        named = row.get("operation") or str(row.get("id", "")).split("\x1f")[-1]
+        return named == action and (row.get("provider") == "app-actions"
+                                    or bool(row.get("application")))
+    return [row for row in listed_actions(vm, *([query] if query else [])) if offered(row)]
+
+
+def of_app(rows: list[dict], app: str) -> list[dict]:
+    """The rows of `rows` that are `app`'s."""
+    return [r for r in rows if r.get("application") == app or app in str(r.get("id", ""))]
 
 
 def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, part: str = "") -> dict:
     """Invoke the app action `action` a live window offers (else its directory's row), as the
     agent-chat e2e does, and its answer once it succeeded."""
-    rows = sorted((r for r in app_rows(vm, query, action) if part in r["id"]),
+    rows = sorted((r for r in app_rows(vm, query, action)
+                   if part in r["id"] or part == r.get("application")),
                   key=lambda row: row["id"].startswith("directory"))
     expect(rows, f"{vm.vm} offers no {action} (asked for {query!r})")
     argv = ["actions", "invoke", rows[0]["provider"], rows[0]["id"], "--wait=20000"]
     if args is not None:
         argv += ["--args-json", json.dumps(args)]
-    answer = vm.control_json(*argv, timeout=90)
+    try:
+        answer = vm.control_json(*argv, timeout=90)
+    except VmError:
+        if vm.vm in run_of:
+            run_of[vm.vm].write(f"invoke-{action}-{vm.vm}.txt", invoke_excerpt(vm))
+        raise
     state = (answer.get("receipt") or {}).get("update", {}).get("state")
     expect(state == "succeeded", f"{action} did not succeed on {vm.vm}: {json.dumps(answer)[:800]}")
     return answer
@@ -504,10 +809,23 @@ def record_part(row_id: str) -> str:
     return parts[-2] if len(parts) >= 2 else ""
 
 
+CHROME = "desktop:chrome\x1f"
+
+
+def open_app(vm: TiloVm, app: str) -> dict:
+    """Open `app` in the shown strip, as the desk's own Open an app does."""
+    return act(vm, "so.tilo.session", CHROME + "open-app", {"app": app}, wait=True)
+
+
 def open_provider_settings(vm: TiloVm) -> None:
-    vm.control_json("actions", "invoke", "settings-pages", "page:agent_models", "--wait=20000", timeout=90)
-    expect(wait_until(lambda: app_rows(vm, "Add provider", "add-provider"), 60, interval=1.0),
-           f"Settings on {vm.vm} offers no add-provider")
+    """The model providers' settings: the app a person adds a provider and its key in."""
+    if not app_rows(vm, "", "add-provider"):
+        open_app(vm, "so.tilo.model-providers")
+    if not wait_until(lambda: app_rows(vm, "", "add-provider"), 60, interval=1.0):
+        keep_actions(run_of[vm.vm], vm.vm, "S03b")
+        raise Failed(f"the model providers' window is open on {vm.vm}, but the desktop lists "
+                           "none of its actions (an open app's own actions are not among them), so "
+                           "no key can be saved without a person's hands")
 
 
 def provider_part(vm: TiloVm) -> str | None:
@@ -559,7 +877,7 @@ def held(state: dict, wid) -> bool:
 
 def make_workspace(vm: TiloVm) -> dict:
     before = {w["id"] for w in workspaces(vm.state())}
-    vm.invoke("actions", "workspace.create", {"name": WORKSPACE})
+    act(vm, "so.tilo.session", CHROME + "new-workspace", {"name": WORKSPACE}, wait=True)
     made = wait_until(lambda: next((w for w in workspaces(vm.state()) if w["id"] not in before), None),
                       30, interval=0.5)
     expect(made, "workspace.create made no workspace")
@@ -579,7 +897,8 @@ def select_workspace(vm: TiloVm, room: str) -> None:
     expect(ws, f"{vm.vm} has no workspace {room} on its desk: "
                f"{[(w.get('room'), w.get('name')) for w in workspaces(state)]}")
     if (state.get("workspace_tree") or {}).get("active") != ws["id"]:
-        vm.invoke("actions", f"workspace.select.{room}")
+        act(vm, "so.tilo.session", CHROME + "switch-workspace", {"workspace": str(ws["id"])},
+            wait=True)
         expect(wait_until(lambda: (vm.state().get("workspace_tree") or {}).get("active") == ws["id"],
                           15, interval=0.5), f"{vm.vm} did not show workspace {room}")
 
@@ -589,22 +908,112 @@ def groups_in(state: dict, room: str) -> list[dict]:
     return [g for s in (ws or {}).get("strips") or [] for g in s.get("window_groups") or []]
 
 
+# Apps every image carries, in the order a new window is opened from them: an app already
+# showing in the workspace brings its window forward rather than opening another, so the next
+# one is tried.
+WINDOW_APPS = ("so.tilo.terminal", "so.tilo.notes", "so.tilo.calculator", "so.tilo.calendar",
+               "so.tilo.chat")
+
+
 def open_window(vm: TiloVm, ws: dict) -> object:
-    """A window on the workspace's desk: a new Terminal there. Its group id."""
+    """A new window on the workspace's desk, from the first app that opens one there. Its
+    group id."""
     select_workspace(vm, ws["room"])
     before = {g["id"] for g in groups_in(vm.state(), ws["room"])}
-    vm.invoke("actions", "window.new.terminal")
-    new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"]) if g["id"] not in before],
-                     60, interval=0.5)
-    expect(new, f"{vm.vm} opened no window in the workspace")
+    new = None
+    for app in WINDOW_APPS:
+        try:
+            open_app(vm, app)
+        except (Failed, VmError):
+            continue
+        new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"])
+                                  if g["id"] not in before], 30, interval=0.5)
+        if new:
+            break
+    if not new:
+        st = vm.state()
+        where = {w.get("name"): [g["id"] for g in groups_in(st, w.get("room"))] for w in workspaces(st)}
+        raise Failed(f"{vm.vm} opened no window in the workspace {ws['room']}: its desk holds {where}")
     return new[0]["id"]
 
 
+# What the person's session says of its workspaces' sync, at debug: set on box before it is
+# branched, so a and b inherit it. Read back only when a window does not travel.
+SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::shared_desktop=debug,"
+            "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug,"
+            "tilo_network_actor=debug,tilo_action_broker=debug,tilo_session::agent_door=debug")
+
+
+def log_sync(vm: TiloVm) -> None:
+    """Have the person's session log its sync at debug from its next start on."""
+    vm.root_exec(
+        "d=/etc/systemd/system/tilo-vm-session@me.service.d; mkdir -p $d && "
+        f"printf '[Service]\\nEnvironment=RUST_LOG={SYNC_LOG}\\n' > $d/90-e2e-sync-log.conf && "
+        "systemctl daemon-reload", timeout=60, check=False)
+
+
+def notices(vm: TiloVm) -> str:
+    """What the desk tells the person of changes another device would not take, as its state
+    carries the notices."""
+    import re
+    said = re.compile(r"will not take|Your change stays|did not take|not a member|refus", re.I)
+    found: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str) and said.search(node) and node not in found:
+            found.append(node[:400])
+    try:
+        walk(vm.state())
+    except (VmError, ValueError) as exc:
+        return f"== notices: {exc}\n"
+    return "== notices\n" + "\n".join(found[:20]) + "\n"
+
+
+def sync_excerpt(vm: TiloVm) -> str:
+    """The session's last words of its workspaces' sync this boot, unfiltered but for drawing."""
+    text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
+                        "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
+                        "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
+                        "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
+                        "| tail -n 400 | cut -c1-500", timeout=120, check=False)
+    return text or "(nothing)"
+
+
+def invoke_excerpt(vm: TiloVm) -> str:
+    """What the person's session said lately of the actions it was asked to run."""
+    text = vm.root_exec("journalctl -m --since '-3min' --no-pager -o short-iso "
+                        "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
+                        "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
+                        "| grep -av 'GPU budget' "
+                        "| tail -n 500 | cut -c1-600", timeout=120, check=False)
+    return text or "(nothing)"
+
+
 def session_excerpt(vm: TiloVm) -> str:
-    return vm.exec("sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" "
-                   "2>/dev/null | grep -aiE 'join_flow|channel|workspace|refus|admit|enter|ERROR|desktop|"
-                   "branch|certif' | grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 300 | cut -c1-600; true",
-                   timeout=60, check=False)
+    """What the person's session said this boot of its identity, joining, its channels and its
+    workspaces. Read with --merge: a branch renews its machine id after the journal opened its
+    files under the old one, so plain journalctl finds nothing of its first boot."""
+    import re
+    try:
+        text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
+                            "SYSLOG_IDENTIFIER=tilo-session-me + _UID=$(id -u tds-me) "
+                            "2>&1 | tail -n 4000",
+                            timeout=120, check=False)
+    except VmError as exc:
+        return f"journalctl failed: {exc}"
+    keep = re.compile(r"identity|recover|chain|join|channel|workspace|refus|admit|enter|host|"
+                      r"certif|secret|vault|proof|sync|peer|transport|sibling|lock|ERROR|WARN", re.I)
+    noise = ("FRAME-LIFECYCLE", "paint-stats", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=",
+             "MESA", "app_output")
+    lines = [l[:600] for l in text.splitlines() if not any(n in l for n in noise)]
+    kept = [l for l in lines if keep.search(l)]
+    return "\n".join((kept or lines)[-150:]) or f"(journalctl said nothing: {text[-300:]!r})"
 
 
 def tabs_in(state: dict, room: str) -> dict:
@@ -622,6 +1031,10 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     gid = open_window(w, ws)
 
     def arrived():
+        # Both desks stay in use while the window travels: an idle desk locks, and a locked
+        # one offers none of its actions to the next step.
+        keep_awake(w)
+        keep_awake(r)
         try:
             mine = tabs_in(w.state(), ws["room"]).get(gid)
             theirs = tabs_in(r.state(), ws["room"])
@@ -634,9 +1047,15 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     if not seen:
         run.write(f"{label}-{writer}-state.json", json.dumps(w.state(), indent=1))
         run.write(f"{label}-{reader}-state.json", json.dumps(r.state(), indent=1))
-        run.write(f"{label}-{writer}-session.log", session_excerpt(w))
-        run.write(f"{label}-{reader}-session.log", session_excerpt(r))
-        raise Failed(f"a window {writer} opened in the workspace (group {gid}, "
+        run.write(f"{label}-{writer}-sync-session.txt", notices(w) + sync_excerpt(w))
+        run.write(f"{label}-{reader}-sync-session.txt", notices(r) + sync_excerpt(r))
+        def desk(vm):
+            st = vm.state()
+            return {"workspaces": [(w.get("room"), w.get("name"), len(groups_in(st, w.get("room"))))
+                                   for w in workspaces(st)],
+                    "held": st.get("held_workspaces")}
+        raise Failed(f"desks: {writer} {desk(w)}; {reader} {desk(r)}. "
+                     f"A window {writer} opened in the workspace (group {gid}, "
                      f"{tabs_in(w.state(), ws['room']).get(gid)}) did not show on {reader} within "
                      f"{timeout:.0f}s; {reader} shows {tabs_in(r.state(), ws['room'])}")
     return {"group": gid, "shown": {str(k): v for k, v in seen.items()}}
@@ -655,22 +1074,44 @@ def branch(facts: dict, run: Run) -> None:
     run.write("S04-list.txt", listing)
 
 
+def setup_shown(vm: TiloVm) -> list[str]:
+    """The setup layer's controls, when setup or identity recovery stands over the desk."""
+    try:
+        targets = first_json(vm.run("control", "raw", '{"op":"list_targets"}', timeout=60, check=False))
+    except VmError:
+        return []
+    names = [t.get("name") or "" for t in (targets.get("answer") or targets).get("targets") or []]
+    if "Setup" not in names:
+        return []
+    return [n for n in names if len(n) < 80][:20]
+
+
 def boot(facts: dict, run: Run, names: tuple[str, ...]) -> None:
     for name in names:
         run.vm(name).vm_cmd("start", name, timeout=900)
+    # The person's session comes up at the desk: a branch or its source that opened identity
+    # setup or recovery instead would ask the person for what the box already holds.
+    over = {}
     for name in names:
-        wait_session(run.vm(name))
+        shown = desk_at_boot(run, name, "S05")
+        if shown:
+            over[name] = shown
+        else:
+            run.write(f"S05-{name}-session.txt", session_excerpt(run.vm(name)))
     for name in names:
         facts[f"lan_{name}"] = address_lan(run, name).strip()[-300:]
     # The sessions start again on the network the boxes now share, as on a box that came up
     # on it.
     for name in names:
-        run.vm(name).restart_session(300)
+        run.vm(name).run("slot", "restart", SLOT, timeout=300, slot=False)
         wait_session(run.vm(name))
+    expect(not over, f"setup or identity recovery stood over the desk at first boot: {over}")
 
 
 def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) -> dict:
-    m = machine_facts(run, name, f"S05-{name}")
+    m = machine_facts(run, name, f"S06-{name}")
+    boot = keep_boot(run, name, "S06")
+    facts["branch_unit"] = [l for l in boot.splitlines() if "tilo-device-key-init" in l or "branch" in l][-25:]
     facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "KEY-DIGEST", "DEVICE-PUBLIC",
                                                "CERT", "PENDING-LABEL", "JOURNAL", "BRANCH-UNIT")}
     problems = []
@@ -698,7 +1139,7 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
             problems.append(f"{name} and {other} share a device key")
         if theirs.get("MACHINE-ID") == m.get("MACHINE-ID"):
             problems.append(f"{name} and {other} share a machine id")
-    if source.get("CERT") and m.get("CERT") != source.get("CERT"):
+    if m.get("CERT") and source.get("CERT") and m.get("CERT") != source.get("CERT"):
         problems.append(f"{name} holds certificates of {m.get('CERT')}, the source of {source.get('CERT')}")
     expect(not problems, "; ".join(problems))
     return m
@@ -709,13 +1150,15 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
     vm = run.vm(name)
     # The certificate a branch without its root in the system tree gets at the person's
     # next sign-in; this one holds it, so the boot issued it. Give the session a moment.
-    p = wait_until(lambda: (q := person_facts(run, name, f"S05-{name}"))
-                   if (q.get("identity") or {}).get("this_device") else None, 120, interval=5.0) \
-        or person_facts(run, name, f"S05-{name}")
+    def certified():
+        q = person_facts(run, name, f"S07-{name}")
+        return q if (q.get("identity") or {}).get("this_device") else None
+    p = wait_until(certified, 120, interval=5.0) or person_facts(run, name, f"S07-{name}")
     ident = p.get("identity") or {}
     this = ident.get("this_device") or {}
     facts["identity"] = {"id": (ident.get("identity") or {}).get("id"), "this_device": this}
-    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "STORE")}
+    facts["person"] = {k: p.get(k) for k in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG",
+                                             "STORE")}
     problems = []
     if (ident.get("identity") or {}).get("id") != (source_ident.get("identity") or {}).get("id"):
         problems.append(f"the person is {ident.get('identity')}, not the source's "
@@ -729,7 +1172,7 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
                             f"{devices[name]['DEVICE-PUBLIC']}")
         if name != SOURCE and mine == (source_ident.get("this_device") or {}).get("device"):
             problems.append("the branch's certificate is the source's")
-    for key in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY"):
+    for key in ("SECRET-DIGEST", "GIT-NAME", "SSH-KEY", "T-CONFIG"):
         if p.get(key) != source_person.get(key):
             problems.append(f"{key}: {p.get(key)!r}, on the source {source_person.get(key)!r}")
     if key_digest:
@@ -745,6 +1188,7 @@ def judge_person(facts: dict, run: Run, name: str, source_person: dict, source_i
                                 60, interval=2.0)
             facts["passwords"] = "listed" if listed else sorted(password_items(vm))
             if not listed:
+                run.write(f"invoke-list-logins-{name}.txt", invoke_excerpt(vm))
                 problems.append(f"Passwords lists {sorted(password_items(vm))}, not the vault's "
                                 f"{passwords}")
         except (Failed, VmError) as exc:
@@ -763,6 +1207,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--taps", required=True, help="the tap devices of box, a and b on their network")
     ap.add_argument("--hold", type=int, default=0, help="seconds to keep the VMs up after the steps")
+    ap.add_argument("--boot-only", action="store_true",
+                    help="stop after the boxes' first boot and its checks (S01-S07)")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     run = Run(args.tilo_vm, args.out, dict(zip(NAMES, args.taps.split(","))))
@@ -786,10 +1232,13 @@ def steps(run: Run, args) -> None:
     run.step("S02", "a person signs in on box: the VM's person, certified by their root",
              sign_in, run)
     run.step("S03", "the person sets box up: a Secret Service secret, git, an SSH key", configure, run)
-    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
-    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
+    # The workspace first: the apps the person sets up next open in it, so their records are on
+    # box's disk, and so on each branch's. A window a branch opens where its app has no record
+    # yet waits for the workspace's host, and b boots while box, the host, is stopped.
     run.step("S03c", "the person makes a workspace on box and opens a window on its desk",
              configure_workspace, run)
+    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
+    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
     try:
         source = machine_facts(run, SOURCE, "S03-box-source")
         source_person = person_facts(run, SOURCE, "S03-box-source")
@@ -801,6 +1250,8 @@ def steps(run: Run, args) -> None:
                        if s["id"] == "S03b" and s["status"] == "pass"), None)
     passwords = next((s["facts"].get("password_items") for s in run.steps
                       if s["id"] == "S03d" and s["status"] == "pass"), None)
+    log_sync(run.vm(SOURCE))
+    run.step("S03e", "box stopped and started again comes up at its desk", cold_boot, run)
     run.step("S04", "box is stopped and branched into a and b", branch, run)
     if not run.passed("S04"):
         return
@@ -820,6 +1271,8 @@ def steps(run: Run, args) -> None:
 
     run.step("S05", f"{', '.join(first)} boot", boot, run, first)
     judge(first)
+    if args.boot_only:
+        return
     ws = next((s["facts"].get("workspace") for s in run.steps if s["id"] == "S03c"), None)
     if ws:
         run.step("S08", "an edit on a shows on box", lambda f: f.update(
@@ -832,22 +1285,40 @@ def steps(run: Run, args) -> None:
         run.step("S12", "after the reboot, an edit on box shows on a", lambda f: f.update(
             edit_shows_on(run, ws, SOURCE, "a", "S12")))
     if not together:
-        run.step("S05-b", "b boots, with box stopped to make room", boot_later, run)
+        run.step("S05-b", "b boots, with a stopped to make room and box, its host, up", boot_later, run)
         judge(("b",))
     run.step("S13", "vm rm box leaves a and b bootable", remove_source, run)
 
 
 def boot_later(facts: dict, run: Run) -> None:
-    run.vm(SOURCE).vm_cmd("stop", SOURCE, timeout=600)
+    """b boots beside box, the host of the person's workspaces: a branch is a device of its own,
+    and only the host admits it, once it reaches it, as a was at its first boot. Until then its
+    apps there run nothing (`device_branch.rs` proves that refusal); a box gone for good is S13's."""
+    run.vm("a").vm_cmd("stop", "a", timeout=600)
     boot(facts, run, ("b",))
+
+
+def cold_boot(facts: dict, run: Run) -> None:
+    """The first boot after the branch with no branch: box stopped as `--stop` stops it, and
+    started. A fault of every cold boot shows here, apart from one of branching."""
+    vm = run.vm(SOURCE)
+    vm.vm_cmd("stop", SOURCE, timeout=600)
+    vm.vm_cmd("start", SOURCE, timeout=900)
+    shown = desk_at_boot(run, SOURCE, "S03e")
+    facts["setup_shown"] = shown
+    expect(not shown, f"box stopped and started, not branched, did not come up at its desk: {shown}")
 
 
 def reboot(facts: dict, run: Run, names: tuple[str, ...]) -> None:
     for name in names:
         run.vm(name).vm_cmd("restart", name, timeout=900)
+    over = {}
     for name in names:
-        wait_session(run.vm(name))
+        shown = desk_at_boot(run, name, "S10")
+        if shown:
+            over[name] = shown
         facts[f"lan_{name}"] = address_lan(run, name).strip()[-300:]
+    expect(not over, f"setup or identity recovery stood over the desk after a reboot: {over}")
 
 
 def remove_source(facts: dict, run: Run) -> None:
@@ -870,11 +1341,13 @@ def finish(run: Run, meta: dict, args) -> int:
             pass
     meta.update(run.facts)
     meta["finished"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-    failed = [s for s in run.steps if s["status"] != "pass"]
+    failed = [s for s in run.steps if s["status"] not in ("pass", "skip")]
     meta["overall"] = "fail" if failed or not run.steps else "pass"
     (args.out / "report.json").write_text(json.dumps({"meta": meta, "steps": run.steps}, indent=1))
+    skipped = [s for s in run.steps if s["status"] == "skip"]
     lines = [f"# Branching a configured box: {meta['overall'].upper()}", "",
-             f"commit {meta.get('commit')}, {len(run.steps) - len(failed)}/{len(run.steps)} steps pass", ""]
+             f"commit {meta.get('commit')}, {len(run.steps) - len(failed) - len(skipped)}/"
+             f"{len(run.steps)} steps pass, {len(skipped)} skipped (not scriptable)", ""]
     for s in run.steps:
         lines.append(f"- {s['id']} {s['status'].upper()} ({s['seconds']}s) {s['title']}")
         if s["detail"]:

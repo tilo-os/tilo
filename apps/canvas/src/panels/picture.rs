@@ -244,9 +244,7 @@ pub fn panel(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     let sampling = cx.actions().bind(
         Toggle::from_state(&pixelated)
             .with_id("canvas-picture-pixelated")
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
-                "canvas-picture-pixelated",
-            )),
+            .with_accessible_name(&crate::locales::CATALOG.t("canvas-picture-pixelated")),
         Artwork::SET_PIXELATED.map({
             let ids = ids.to_vec();
             move |on: bool| (ids.clone(), on)
@@ -255,7 +253,7 @@ pub fn panel(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     section(vec![
         heading("canvas-picture"),
         labelled(
-            &ui::i18n::I18nManager::lookup_plain("canvas-picture-pixelated"),
+            &crate::locales::CATALOG.t("canvas-picture-pixelated"),
             Box::new(sampling),
         ),
         framing(cx, ids, tools),
@@ -320,10 +318,10 @@ fn framing(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
             } else {
                 "canvas-crop"
             };
-            let name = ui::i18n::I18nManager::lookup_plain(id);
+            let name = crate::locales::CATALOG.t(id);
             let flip = crop.clone();
             let button = Button::new(id, &name)
-                .tooltip(ui::i18n::I18nManager::lookup_plain("canvas-crop-hint"))
+                .tooltip(crate::locales::CATALOG.t("canvas-crop-hint"))
                 .on_view(move || flip.set(!flip.with(|on| *on)));
             Box::new(if *cropping {
                 button.role(ButtonRole::Primary)
@@ -334,9 +332,7 @@ fn framing(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     };
     let fit = cx
         .button("canvas-fit-artwork", Artwork::FIT_ARTWORK.with(first))
-        .tooltip(ui::i18n::I18nManager::lookup_plain(
-            "canvas-fit-artwork-hint",
-        ));
+        .tooltip(crate::locales::CATALOG.t("canvas-fit-artwork-hint"));
     let flip = |id: &str, way: &str| {
         Box::new(
             cx.button(id, Artwork::FLIP.with((ids.to_vec(), way.to_owned())))
@@ -404,7 +400,7 @@ fn straighten(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
             .with_step(0.1)
             .with_precision(1)
             .with_id("canvas-straighten-degrees")
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain(ID)),
+            .with_accessible_name(crate::locales::CATALOG.t(ID)),
         Artwork::SET_STRAIGHTEN.map({
             let ids = ids.to_vec();
             move |value: f64| (ids.clone(), (value * 10.0).round() / 10.0)
@@ -413,7 +409,7 @@ fn straighten(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
     let slider = cx.actions().bind(
         Slider::from_state(&state)
             .with_id(ID)
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(ID))
+            .with_accessible_name(&crate::locales::CATALOG.t(ID))
             .commits_on_release(),
         Artwork::SET_STRAIGHTEN.map({
             let ids = ids.to_vec();
@@ -421,7 +417,7 @@ fn straighten(cx: &ViewCx<Artwork>, ids: &[String], tools: &Tools) -> Element {
         }),
     );
     tight(vec![
-        labelled(&ui::i18n::I18nManager::lookup_plain(ID), Box::new(typed)),
+        labelled(&crate::locales::CATALOG.t(ID), Box::new(typed)),
         Box::new(slider),
     ])
 }
@@ -449,7 +445,7 @@ fn slider(cx: &ViewCx<Artwork>, target: &Target, step: &'static Step, tools: &To
         cx,
         Slider::from_state(&state)
             .with_id(step.id)
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(step.id))
+            .with_accessible_name(&crate::locales::CATALOG.t(step.id))
             .commits_on_release(),
         move |travel: f64| {
             let mut edit = Adjust::default();
@@ -458,10 +454,7 @@ fn slider(cx: &ViewCx<Artwork>, target: &Target, step: &'static Step, tools: &To
         },
     );
     tight(vec![
-        labelled(
-            &ui::i18n::I18nManager::lookup_plain(step.id),
-            Box::new(shown),
-        ),
+        labelled(&crate::locales::CATALOG.t(step.id), Box::new(shown)),
         Box::new(control),
     ])
 }
@@ -483,12 +476,12 @@ fn flag(
         cx,
         Toggle::from_state(&state)
             .with_id(id)
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(id)),
+            .with_accessible_name(&crate::locales::CATALOG.t(id)),
         move |on: bool| {
             let mut edit = Adjust::default();
             write(&mut edit, on);
             edit
         },
     );
-    labelled(&ui::i18n::I18nManager::lookup_plain(id), Box::new(toggle))
+    labelled(&crate::locales::CATALOG.t(id), Box::new(toggle))
 }

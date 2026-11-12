@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, VirtualList};
+use super::{ListModel, RowGroup, RowStance, VirtualList};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
@@ -24,12 +24,14 @@ pub const TREE_INDENT: f64 =
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
 
-/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the column of the top
-/// level stands in from it, and `step` the disclosure gutter every depth indents its content by.
+/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the box of the top level
+/// stands in from it, `column` the chevron column kept inside that box, and `step` the disclosure
+/// gutter every depth indents its content by.
 #[derive(Clone, Copy)]
 pub(super) struct Chevrons {
     pub(super) x0: f64,
     pub(super) lead: f64,
+    pub(super) column: f64,
     pub(super) step: f64,
 }
 
@@ -39,6 +41,7 @@ impl<M: ListModel> VirtualList<M> {
         Chevrons {
             x0: self.rect.x0,
             lead: self.lead,
+            column: self.chevron_column,
             step: self.disclosure,
         }
     }
@@ -46,31 +49,30 @@ impl<M: ListModel> VirtualList<M> {
 
 impl Chevrons {
     /// The gutter the row `key`'s chevron hangs in, when it has subtasks: the step in front of
-    /// its content, ending where its content starts, saying whether they show.
+    /// its content, ending where its content starts.
     pub(super) fn gutter<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
         key: &K,
-    ) -> Option<(f64, bool)> {
+    ) -> Option<f64> {
         if !marks.is_branch(key) {
             return None;
         }
         // The step in front of the row's content, one step back for each depth it stands in.
-        let gutter = self.x0 + self.lead + (f64::from(marks.depth(key)) - 1.0) * self.step;
-        Some((gutter, marks.is_folded(key)))
+        Some(self.x0 + self.lead + self.column + (f64::from(marks.depth(key)) - 1.0) * self.step)
     }
 
     /// The box the row `key`'s chevron takes: in its own depth's gutter, centred on the row's
-    /// own box `row`, and how the row folds what stands under it. `None` when the row has no
-    /// subtasks to fold.
+    /// own box `row`, folded when `folded`. `None` when the row has no subtasks to fold.
     pub(super) fn rect<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
         theme: &Theme,
         key: &K,
         row: Rect,
+        folded: bool,
     ) -> Option<(Rect, bool)> {
-        let (gutter, folded) = self.gutter(marks, key)?;
+        let gutter = self.gutter(marks, key)?;
         let side = f64::from(theme.tokens.metrics.icon_sm);
         let cy = row.center().y;
         Some((
@@ -92,7 +94,8 @@ impl Chevrons {
     ) {
         let depth = marks.depth(key);
         for level in 0..depth {
-            let x = self.x0 + self.lead + f64::from(level) * self.step + self.step / 2.0;
+            let x =
+                self.x0 + self.lead + self.column + f64::from(level) * self.step + self.step / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -103,7 +106,8 @@ impl Chevrons {
         }
     }
 
-    /// Paint the row `key`'s chevron into the row's own box `row`, at its own depth's gutter.
+    /// Paint the row `key`'s chevron into the row's own box `row`, at its own depth's gutter,
+    /// folded when `folded`.
     pub(super) fn paint<K: Clone + Eq + Hash>(
         &self,
         marks: &TreeMarks<K>,
@@ -112,8 +116,9 @@ impl Chevrons {
         theme: &Theme,
         key: &K,
         row: Rect,
+        folded: bool,
     ) {
-        let Some((chevron, folded)) = self.rect(marks, theme, key, row) else {
+        let Some((chevron, folded)) = self.rect(marks, theme, key, row, folded) else {
             return;
         };
         let icon = if folded {
@@ -126,11 +131,20 @@ impl Chevrons {
 }
 
 /// What a row is in a tree of rows: the row of the item it is a subtask of, when that item is
-/// one of the list's rows.
+/// one of the list's rows, and how deep it stands when the model says it itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TreeRow<K> {
     /// The row of the item this row is a subtask of, when that item is a row of the list.
     pub parent: Option<K>,
+    /// How deep it stands, when the model says: the list indents the row by it rather than by
+    /// the rows over it, so a row whose parent stands off screen — a row the host renders as it
+    /// is shown, and one of a window deep in a long tree — keeps its place.
+    pub depth: Option<u32>,
+    /// The row standing just over this one under the same parent, when the view says it: the
+    /// row `Tab` indents under and `Alt-Up` goes before. What the view shows between the two —
+    /// a branch's own, scrolled away — costs a move nothing, and the row it names need not be
+    /// one the list holds.
+    pub above: Option<K>,
 }
 
 /// What a tree list works out of its rows, for the rows it builds: how deep each stands, which
@@ -173,8 +187,9 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
     }
 
     /// Whether the row stands under the row it follows, rather than away from the parent it
-    /// names: a list keeps the order its filter gave it, and a subtask the sort put elsewhere
-    /// says whose it is instead of standing indented under nothing.
+    /// names: a list keeps the order its filter gave it, and a subtask the sort put elsewhere —
+    /// in another group, under another heading — says whose it is instead of standing indented
+    /// under nothing.
     pub fn is_nested(&self, key: &K) -> bool {
         self.nested.borrow().contains(key)
     }
@@ -251,7 +266,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn disclosure_rect(&self, key: &M::Key) -> Option<Rect> {
         let marks = self.tree.as_ref()?;
         let row = self.line_box(key, self.row_rect(key)?);
-        let (gutter, _) = self.chevrons().gutter(marks, key)?;
+        let gutter = self.chevrons().gutter(marks, key)?;
         let side = self.disclosure;
         let cy = row.center().y;
         Some(Rect::new(
@@ -265,11 +280,23 @@ impl<M: ListModel> VirtualList<M> {
     /// The row's own line, where a row that grew into its item still starts: its chevron and
     /// the way back to the part of it on screen hang on the line, not beside the document the
     /// row opened into, which may run far below it.
+    ///
+    /// The line is the box the row's content stands in — the one its text, its leading control
+    /// and its lift share — across the slot the list gives it. A finger's row takes a taller slot
+    /// than its box, so the slot's own centre is not the line's.
     pub(super) fn line_box(&self, key: &M::Key, row: Rect) -> Rect {
-        if self.open.as_ref() == Some(key) && row.height() > self.row_line {
-            Rect::new(row.x0, row.y0, row.x1, row.y0 + self.row_line)
+        let own = self
+            .mounted
+            .iter()
+            .find(|mounted| &mounted.key == key)
+            .map(|mounted| mounted.widget.get_rect())
+            .filter(|own| own.height() > 0.0)
+            .unwrap_or(row);
+        let line = Rect::new(row.x0, own.y0, row.x1, own.y1);
+        if self.open.as_ref() == Some(key) && line.height() > self.row_line {
+            Rect::new(line.x0, line.y0, line.x1, line.y0 + self.row_line)
         } else {
-            row
+            line
         }
     }
 
@@ -369,7 +396,11 @@ impl<M: ListModel> VirtualList<M> {
     /// What the tree's rows are in `range`: what stands under what, how deep each row stands,
     /// and which rows a folded one hides. A tree's rows come in order: a row stands under the
     /// row it follows when it names it, so the walk reads each row of the range once, and only
-    /// the rows in view.
+    /// the rows in view. A group's heading comes between the rows it holds and the ones above
+    /// it, and the rows under a heading belong together: a subtask whose task the sort put in
+    /// another group stands on the group's own first level, and names what it is in
+    /// ([`TreeMarks::is_nested`] saying it stands under nothing), rather than indented under a
+    /// row that stands under another heading.
     pub(super) fn shape_tree(&mut self, range: &Range<usize>) {
         if self.tree.is_none() {
             return;
@@ -379,9 +410,9 @@ impl<M: ListModel> VirtualList<M> {
         for key in rebuilt {
             self.tree_rows.remove(&key);
         }
-        let keys: Vec<M::Key> = range
+        let rows: Vec<(usize, M::Key)> = range
             .clone()
-            .filter_map(|index| self.model.key_at(index))
+            .filter_map(|index| Some((index, self.model.key_at(index)?)))
             .collect();
         // The rows over the row being read, outermost first, each with how deep it stands and
         // whether a row over it hides it.
@@ -390,8 +421,18 @@ impl<M: ListModel> VirtualList<M> {
         let mut hidden: HashSet<M::Key> = HashSet::new();
         let mut branches: Vec<M::Key> = Vec::new();
         let mut nested: Vec<M::Key> = Vec::new();
-        for key in &keys {
-            let parent = self.tree_facts(key).and_then(|facts| facts.parent);
+        // The group the row above stands in, as the model names it: a row that starts a group
+        // stands under no row of the one before it.
+        let mut heading: Option<RowGroup> = None;
+        for (index, key) in &rows {
+            let group = self.model.group_at(*index);
+            if group.is_some() && group != heading {
+                over.clear();
+            }
+            heading = group;
+            let facts = self.tree_facts(key);
+            let parent = facts.as_ref().and_then(|facts| facts.parent.clone());
+            let stated = facts.as_ref().and_then(|facts| facts.depth);
             let at = parent
                 .as_ref()
                 .and_then(|parent| over.iter().rposition(|(row, _, _)| row == parent));
@@ -403,12 +444,24 @@ impl<M: ListModel> VirtualList<M> {
                 branches.push(parent.clone());
                 nested.push(key.clone());
                 over.truncate(at + 1);
-                (depth + 1, hidden || self.folded(&parent))
+                // A row under the row standing open into its item is what that row's document
+                // lists: the list folds its branch while it stands open, and shows it again
+                // when it closes.
+                let open = self.open.as_ref() == Some(&parent);
+                (depth + 1, hidden || self.folded(&parent) || open)
+            } else if let Some(depth) = stated {
+                // The model says how deep it stands: a row whose parent the window does not
+                // hold keeps the place the model gives it, and the row it names still opens.
+                if let Some(parent) = parent.clone() {
+                    branches.push(parent);
+                }
+                over.clear();
+                (depth, self.under_open(key))
             } else {
                 // The list holds its order, not a tree: a row whose parent the sort put
                 // elsewhere stands on its own, and names the parent instead.
                 over.clear();
-                (0, false)
+                (0, self.under_open(key))
             };
             let found = found.min(TREE_DEPTH_GUARD);
             depth.insert(key.clone(), found);
@@ -426,12 +479,53 @@ impl<M: ListModel> VirtualList<M> {
                 branches.push(key);
             }
         }
+        // Whether a row of the first level holds any: a tree whose first level folds nothing
+        // keeps no column for a chevron, so its rows line up with the words over them. Only
+        // the first level in view says it; a range that holds none leaves the last word.
+        let first_level = rows
+            .iter()
+            .map(|(_, key)| key)
+            .filter(|key| depth.get(*key) == Some(&0))
+            .fold(None, |found: Option<bool>, key| {
+                Some(found.unwrap_or(false) || branches.contains(key))
+            });
+        // A first level that stops folding anything while rows it showed still stand keeps its
+        // column: a task ticked off taking its subtasks out of the list, say. Giving the column
+        // back would move every row the person is looking at sideways, the one under their
+        // finger too; the list lines its rows up with the words over them again when it next
+        // reads rows anew. A column that a first-level row now needs is taken at once.
+        // A range whose rows are still on their way says nothing of either.
+        if let Some(branch) = first_level {
+            let kept = self.chevron_column > 0.5 || self.lead > self.bleed + 0.5;
+            let staying = rows.iter().any(|(_, key)| self.column_rows.contains(key));
+            self.column_rows = rows.iter().map(|(_, key)| key.clone()).collect();
+            self.first_level_branch = Some(branch || (kept && staying));
+        }
         if let Some(marks) = &self.tree {
             marks.depth.borrow_mut().extend(depth);
             marks.branches.borrow_mut().extend(branches);
             marks.nested.borrow_mut().extend(nested);
         }
         self.tree_hidden = hidden;
+    }
+
+    /// Whether the row of `key` stands under the row standing open into its item, at any depth:
+    /// the document that row shows lists its branch, so the list keeps none of those rows.
+    fn under_open(&mut self, key: &M::Key) -> bool {
+        let Some(open) = self.open.clone() else {
+            return false;
+        };
+        let mut cursor = key.clone();
+        for _ in 0..TREE_DEPTH_GUARD {
+            let Some(parent) = self.tree_facts(&cursor).and_then(|facts| facts.parent) else {
+                return false;
+            };
+            if parent == open {
+                return true;
+            }
+            cursor = parent;
+        }
+        false
     }
 
     /// What the model says row `key` is in a tree, read once while its props stand as they
@@ -455,11 +549,51 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn forget_tree(&mut self) {
         self.tree_rows.clear();
         self.tree_hidden.clear();
+        self.first_level_branch = None;
         if let Some(marks) = &self.tree {
             marks.depth.borrow_mut().clear();
             marks.branches.borrow_mut().clear();
             marks.nested.borrow_mut().clear();
         }
+    }
+
+    /// Keep the column a chevron hangs in left of the rows only while a row of the first level
+    /// has subtasks to fold: a tree whose first level folds nothing stands its rows on the
+    /// column the words over them do. The rows are built again where the column moves, as they
+    /// are as wide as the column leaves them.
+    pub(super) fn settle_lead(&mut self) {
+        let gutter = if self.tree.is_some() {
+            // A tree's first level says whether it folds anything, read as its rows mount:
+            // until a row of it has been read, the column stands as it always has.
+            match self.first_level_branch {
+                Some(false) => 0.0,
+                Some(true) | None => self.disclosure,
+            }
+        } else if self.model.discloses() {
+            self.disclosure
+        } else {
+            0.0
+        };
+        // Where the rows' box starts in from the list's leading edge, and the column kept for
+        // the chevrons in front of their content. A column's list keeps its gutter: the rows' box
+        // stands on the pane's content edge — so the row's lift keeps the column's gutter — and
+        // the chevron column stands inside that box, as the first thing at the edge, where on a
+        // phone it would otherwise reach the glass. A list inside a page has its own edge as the
+        // gutter: the page already stands in from the window, so the chevron column stands in
+        // front of the rows' box there.
+        let (lead, chevron_column) = match self.stance {
+            RowStance::Column => (self.bleed, gutter),
+            RowStance::Bleed | RowStance::Flush => (self.bleed.max(gutter), 0.0),
+        };
+        let stepped = (self.chevron_column - chevron_column).abs() > 0.5;
+        self.chevron_column = chevron_column;
+        if (lead - self.lead).abs() <= 0.5 && !stepped {
+            return;
+        }
+        self.lead = lead;
+        self.update_edges();
+        let mounted: Vec<M::Key> = self.mounted.iter().map(|row| row.key.clone()).collect();
+        self.invalidate_rows(mounted);
     }
 
     /// Whether the pointer is over the disclosure the list shows for the row `key`.
@@ -474,6 +608,13 @@ impl<M: ListModel> VirtualList<M> {
     /// anywhere else the click is the row's.
     pub(super) fn press_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
         if self.disclosure_at(&key) {
+            // A row standing open shows its branch in its item's document: the rows it holds
+            // are no rows of the list, and its chevron reads folded. A press there folds them
+            // back into the list by closing the row.
+            if self.open.as_ref() == Some(&key) {
+                self.open_where_it_stands(key);
+                return;
+            }
             let folded = self.row_folded(&key);
             self.fold_row(&key, !folded);
             return;
@@ -499,6 +640,9 @@ impl<M: ListModel> VirtualList<M> {
     /// How many rows under its top row `key` stands, read from what the model says of its
     /// parents rather than from the rows in view: a move reaches rows the window never built.
     pub(super) fn depth_of(&mut self, key: &M::Key) -> u32 {
+        if let Some(depth) = self.tree_facts(key).and_then(|facts| facts.depth) {
+            return depth;
+        }
         let mut depth = 0;
         let mut cursor = key.clone();
         while depth < TREE_DEPTH_GUARD {
@@ -509,6 +653,16 @@ impl<M: ListModel> VirtualList<M> {
             cursor = parent;
         }
         depth
+    }
+
+    /// The row standing over `key` under the same parent: the one the view says it is, or — a
+    /// view that says nothing of it — the row the list shows at `depth` over `index`.
+    fn above_of(&mut self, key: &M::Key, index: usize, depth: u32) -> Option<M::Key> {
+        if let Some(above) = self.tree_facts(key).and_then(|facts| facts.above) {
+            return Some(above);
+        }
+        let above = self.sibling_above(index, depth)?;
+        self.model.key_at(above)
     }
 
     /// The row above `index` that stands as deep as `depth`, stepping over the rows under it.
@@ -552,11 +706,8 @@ impl<M: ListModel> VirtualList<M> {
         let depth = self.depth_of(key);
         match movement {
             TreeMove::Up => {
-                let above = self.sibling_above(index, depth)?;
-                Some(DropTarget::new(
-                    self.model.key_at(above)?,
-                    DropPlacement::Before,
-                ))
+                let above = self.above_of(key, index, depth)?;
+                Some(DropTarget::new(above, DropPlacement::Before))
             }
             TreeMove::Down => {
                 let below = self.sibling_below(index, depth)?;
@@ -565,16 +716,12 @@ impl<M: ListModel> VirtualList<M> {
                     DropPlacement::After,
                 ))
             }
+            // Under the row over it, which the view names: whether it takes subtasks is the
+            // owner's to refuse, whose validator knows the row even when the list has not built
+            // it.
             TreeMove::Indent => {
-                let above = self.sibling_above(index, depth)?;
-                self.model
-                    .accepts_children(above)
-                    .then(|| {
-                        self.model
-                            .key_at(above)
-                            .map(|above| DropTarget::new(above, DropPlacement::Inside))
-                    })
-                    .flatten()
+                let above = self.above_of(key, index, depth)?;
+                Some(DropTarget::new(above, DropPlacement::Inside))
             }
             // Out of the row it stands under, directly after it: a top row stays where it is.
             TreeMove::Outdent => {
@@ -692,7 +839,10 @@ impl<M: ListModel> VirtualList<M> {
         }
         // Where the rows at that depth begin: a dropped row lands in its own column, clear of
         // the step its chevron takes.
-        let indent = self.rect.x0 + self.lead + (f64::from(depth) + 1.0) * self.disclosure;
+        let indent = self.rect.x0
+            + self.lead
+            + self.chevron_column
+            + (f64::from(depth) + 1.0) * self.disclosure;
         let right = self.lift_rect(0.0, 0.0).x1;
         let preview = match placement {
             DropPlacement::Inside => Rect::new(indent, row.y0, right, row.y1),
@@ -744,6 +894,12 @@ impl<M: ListModel> VirtualList<M> {
                 .is_some_and(|below| marks.depth(&below) == depth + 1);
             under && self.focus_index(index + 1, false)
         } else {
+            // A row standing open shows its branch in its item's document: the left key closes
+            // it, and the rows it holds come back to the list.
+            if self.open.as_ref() == Some(&key) {
+                self.open_where_it_stands(key);
+                return true;
+            }
             if marks.is_branch(&key) && !marks.is_folded(&key) {
                 return self.fold_row(&key, true);
             }

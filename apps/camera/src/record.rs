@@ -74,14 +74,33 @@ pub struct Record {
     pub recent: Option<SharedCapture>,
 }
 
-#[resource(kind = "camera", label = "Camera", search = Record::search)]
+impl Record {
+    /// What the record holds: the one recent capture it hands off and the codes it scanned.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "camera",
+    search = Record::search,
+    read_content = Record::read_document
+)]
 impl Record {
     /// Hand off a capture.
     ///
     /// The capture taken last, whose verified bytes are in the content
     /// store, becomes the one Camera offers to open in Photos or Video
     /// Player.
-    #[action]
+    #[action(label = "camera-action-register-capture")]
     pub fn register_capture(&mut self, #[param("The capture")] capture: SharedCapture) {
         self.recent = Some(capture);
     }
@@ -90,7 +109,7 @@ impl Record {
     ///
     /// It goes to the front of the history; the same code scanned again
     /// moves there rather than repeating.
-    #[action]
+    #[action(label = "camera-action-record-scan")]
     pub fn record_scan(
         &mut self,
         cx: &mut ActionCx,

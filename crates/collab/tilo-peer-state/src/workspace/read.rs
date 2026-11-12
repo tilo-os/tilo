@@ -45,6 +45,11 @@ impl<E> ReadError<ReadError<E>> {
 }
 
 /// Callbacks borrow each scalar for the duration of the call.
+/// What [`WorkspaceRead::visit_entries`] calls with each key of a map and
+/// its values.
+pub(crate) type EntryVisitor<'v, O, E> =
+    dyn for<'a> FnMut(&'a str, &[WorkspaceValue<'a, O>]) -> Result<(), E> + 'v;
+
 pub(crate) trait WorkspaceRead {
     type Object;
     fn root(&self) -> Self::Object;
@@ -60,6 +65,22 @@ pub(crate) trait WorkspaceRead {
         key: &str,
         selection: Selection,
         visitor: impl for<'a> FnMut(WorkspaceValue<'a, Self::Object>) -> Result<(), E>,
+    ) -> Result<usize, ReadError<E>>;
+
+    /// Every key of the map `object` in [`Self::visit_keys`]'s order, each
+    /// with the values [`Self::visit_property`] would visit for it under
+    /// `selection`, in one pass over the map. A workspace's governance holds a
+    /// row for every member: looking each one up by its key on its own made
+    /// a whole reading cost a seek per member through a map that grows with
+    /// them.
+    ///
+    /// The visitor is taken by reference, so the walk is built once for each
+    /// kind of error rather than for every visitor.
+    fn visit_entries<E>(
+        &self,
+        object: &Self::Object,
+        selection: Selection,
+        visitor: &mut EntryVisitor<'_, Self::Object, E>,
     ) -> Result<usize, ReadError<E>>;
 }
 
@@ -78,6 +99,7 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     read: &R,
     mut visitor: impl for<'a> FnMut(GovernanceEntry<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
+    crate::governance_work::governance_read();
     let root = read.root();
     let owner = read.visit_property(&root, "owner", Selection::Winner, |value| {
         if let WorkspaceValue::Str(value) = value {
@@ -109,37 +131,32 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
                     object,
                 } = value
                 {
-                    read.visit_keys(&object, |key| {
-                        let property =
-                            read.visit_property(&object, key, Selection::Winner, |value| {
-                                match (kind, value) {
-                                    (0, WorkspaceValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::Grant { key, bytes })
-                                    }
-                                    (3, WorkspaceValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::Member { key, bytes })
-                                    }
-                                    (4, WorkspaceValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::Sandbox { key, bytes })
-                                    }
-                                    (5, WorkspaceValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::MemberJoined { key, bytes })
-                                    }
-                                    (1, WorkspaceValue::Str(name)) => {
-                                        visitor(GovernanceEntry::Peer { key, name })
-                                    }
-                                    (2, WorkspaceValue::Bytes(bytes)) => {
-                                        visitor(GovernanceEntry::Identity { key, bytes })
-                                    }
-                                    _ => Ok(()),
+                    read.visit_entries(&object, Selection::Winner, &mut |key, values| {
+                        for value in values {
+                            match (kind, value) {
+                                (0, WorkspaceValue::Bytes(bytes)) => {
+                                    visitor(GovernanceEntry::Grant { key, bytes })?;
                                 }
-                            });
-                        match property {
-                            Err(ReadError::Malformed) => Ok(()),
-                            result => result.map(|_| ()),
+                                (3, WorkspaceValue::Bytes(bytes)) => {
+                                    visitor(GovernanceEntry::Member { key, bytes })?;
+                                }
+                                (4, WorkspaceValue::Bytes(bytes)) => {
+                                    visitor(GovernanceEntry::Sandbox { key, bytes })?;
+                                }
+                                (5, WorkspaceValue::Bytes(bytes)) => {
+                                    visitor(GovernanceEntry::MemberJoined { key, bytes })?;
+                                }
+                                (1, WorkspaceValue::Str(name)) => {
+                                    visitor(GovernanceEntry::Peer { key, name })?;
+                                }
+                                (2, WorkspaceValue::Bytes(bytes)) => {
+                                    visitor(GovernanceEntry::Identity { key, bytes })?;
+                                }
+                                _ => {}
+                            }
                         }
-                    })
-                    .map_err(ReadError::flatten)?;
+                        Ok(())
+                    })?;
                 }
                 Ok::<(), ReadError<E>>(())
             })
@@ -202,6 +219,71 @@ impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
             }
         }
     }
+
+    fn visit_entries<E>(
+        &self,
+        object: &ObjId,
+        selection: Selection,
+        visitor: &mut EntryVisitor<'_, ObjId, E>,
+    ) -> Result<usize, ReadError<E>> {
+        let mut count = 0usize;
+        for item in self.0.map_range(object, ..) {
+            count = count.saturating_add(1);
+            if item.conflict && matches!(selection, Selection::All) {
+                // The few keys written concurrently: every value, as a
+                // lookup by key reads them.
+                let all = self
+                    .0
+                    .get_all(object, item.key.as_ref())
+                    .map_err(|_| ReadError::Malformed)?;
+                let values: Vec<WorkspaceValue<'_, ObjId>> = all
+                    .iter()
+                    .map(|(value, object)| legacy_value(value, object.clone()))
+                    .collect();
+                visitor(&item.key, &values).map_err(ReadError::Visitor)?;
+                continue;
+            }
+            let value = entry_value(&item.value, || item.id());
+            visitor(&item.key, std::slice::from_ref(&value)).map_err(ReadError::Visitor)?;
+        }
+        Ok(count)
+    }
+}
+
+/// `value`, an entry of a map read in one pass, as a [`WorkspaceValue`].
+fn entry_value<'a>(
+    value: &'a automerge::ValueRef<'_>,
+    object: impl FnOnce() -> ObjId,
+) -> WorkspaceValue<'a, ObjId> {
+    use automerge::ScalarValueRef;
+    match value {
+        automerge::ValueRef::Object(kind) => WorkspaceValue::Object {
+            kind: *kind,
+            object: object(),
+        },
+        automerge::ValueRef::Scalar(ScalarValueRef::Bytes(bytes)) => WorkspaceValue::Bytes(bytes),
+        automerge::ValueRef::Scalar(ScalarValueRef::Str(value)) => WorkspaceValue::Str(value),
+        automerge::ValueRef::Scalar(ScalarValueRef::Boolean(value)) => {
+            WorkspaceValue::Boolean(*value)
+        }
+        automerge::ValueRef::Scalar(_) => WorkspaceValue::Other,
+    }
+}
+
+/// `value`, read by key, as a [`WorkspaceValue`].
+fn legacy_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a, ObjId> {
+    match value {
+        Value::Object(kind) => WorkspaceValue::Object {
+            kind: *kind,
+            object,
+        },
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
+            ScalarValue::Str(value) => WorkspaceValue::Str(value),
+            ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
+            _ => WorkspaceValue::Other,
+        },
+    }
 }
 
 pub(super) fn visit_legacy_value<E>(
@@ -244,6 +326,52 @@ pub(crate) fn strict_map<R: WorkspaceRead>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Conflict))
 }
 
+/// [`strict_string`] of an entry [`WorkspaceRead::visit_entries`] read.
+pub(crate) fn strict_string_of<O>(
+    values: &[WorkspaceValue<'_, O>],
+) -> Result<String, ReadError<super::media::MediaPolicyError>> {
+    use super::media::MediaPolicyError;
+    let mut result: Option<&str> = None;
+    for value in values {
+        let WorkspaceValue::Str(value) = value else {
+            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+        };
+        match result {
+            Some(prior) if prior != *value => {
+                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+            }
+            Some(_) => {}
+            None => result = Some(value),
+        }
+    }
+    result
+        .map(str::to_owned)
+        .ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+}
+
+/// [`strict_bytes`] of an entry [`WorkspaceRead::visit_entries`] read.
+pub(crate) fn strict_bytes_of<O>(
+    values: &[WorkspaceValue<'_, O>],
+) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
+    use super::media::MediaPolicyError;
+    let mut result: Option<&[u8]> = None;
+    for value in values {
+        let WorkspaceValue::Bytes(value) = value else {
+            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+        };
+        match result {
+            Some(prior) if prior != *value => {
+                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+            }
+            Some(_) => {}
+            None => result = Some(value),
+        }
+    }
+    result
+        .map(<[u8]>::to_vec)
+        .ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+}
+
 pub(crate) fn strict_string<R: WorkspaceRead>(
     read: &R,
     parent: &R::Object,
@@ -268,6 +396,7 @@ pub(crate) fn strict_string<R: WorkspaceRead>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
 }
 
+#[cfg(test)]
 pub(crate) fn strict_bytes<R: WorkspaceRead>(
     read: &R,
     parent: &R::Object,
@@ -350,6 +479,104 @@ mod tests {
         assert_eq!(
             strict_map(&LegacyRead(&first), &ROOT, "channels"),
             Err(ReadError::Visitor(MediaPolicyError::Conflict))
+        );
+    }
+
+    /// Each key with every value a lookup by key reads for it.
+    type Read = Vec<(String, Vec<String>)>;
+
+    fn described(value: &WorkspaceValue<'_, ObjId>) -> String {
+        match value {
+            WorkspaceValue::Object { kind, object } => format!("{kind:?} {object}"),
+            WorkspaceValue::Bytes(bytes) => format!("bytes {bytes:?}"),
+            WorkspaceValue::Str(value) => format!("str {value}"),
+            WorkspaceValue::Boolean(value) => format!("bool {value}"),
+            WorkspaceValue::Other => "other".into(),
+        }
+    }
+
+    fn by_key(read: &LegacyRead<'_, AutoCommit>, object: &ObjId, winner: bool) -> Read {
+        let mut keys = Vec::new();
+        read.visit_keys::<()>(object, |key| {
+            keys.push(key.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        keys.into_iter()
+            .map(|key| {
+                let mut values = Vec::new();
+                let selection = if winner {
+                    Selection::Winner
+                } else {
+                    Selection::All
+                };
+                read.visit_property::<()>(object, &key, selection, |value| {
+                    values.push(described(&value));
+                    Ok(())
+                })
+                .unwrap();
+                (key, values)
+            })
+            .collect()
+    }
+
+    fn in_one_pass(read: &LegacyRead<'_, AutoCommit>, object: &ObjId, winner: bool) -> Read {
+        let mut entries = Vec::new();
+        let selection = if winner {
+            Selection::Winner
+        } else {
+            Selection::All
+        };
+        read.visit_entries::<()>(object, selection, &mut |key, values| {
+            entries.push((key.to_owned(), values.iter().map(described).collect()));
+            Ok(())
+        })
+        .unwrap();
+        entries
+    }
+
+    /// A map read in one pass reads what looking up each key reads: the
+    /// same keys in the same order, each with the winning value or, for a
+    /// key written concurrently, every value.
+    #[test]
+    fn a_map_read_in_one_pass_reads_what_each_key_reads() {
+        let mut first = AutoCommit::new();
+        let rows = first.put_object(ROOT, "rows", ObjType::Map).unwrap();
+        for n in 0..40u8 {
+            first.put(&rows, format!("row-{n:02}"), vec![n]).unwrap();
+        }
+        first.put(&rows, "name", "first").unwrap();
+        first.put(&rows, "flag", true).unwrap();
+        first.put_object(&rows, "nested", ObjType::Map).unwrap();
+        first.commit();
+        let mut second = first.fork();
+        first.put(&rows, "row-07", vec![70]).unwrap();
+        first.put(&rows, "name", "one").unwrap();
+        first.commit();
+        second.put(&rows, "row-07", vec![71]).unwrap();
+        second.put(&rows, "name", "other").unwrap();
+        second.delete(&rows, "row-09").unwrap();
+        second.commit();
+        first.merge_incoming(&mut second).unwrap();
+        assert_eq!(first.get_all(&rows, "row-07").unwrap().len(), 2);
+        let read = LegacyRead(&first);
+        for winner in [true, false] {
+            let expected = by_key(&read, &rows, winner);
+            assert_eq!(
+                in_one_pass(&read, &rows, winner),
+                expected,
+                "winner: {winner}"
+            );
+            assert_eq!(expected.len(), 42);
+        }
+        assert_eq!(
+            in_one_pass(&read, &rows, false)
+                .iter()
+                .find(|(key, _)| key == "row-07")
+                .unwrap()
+                .1
+                .len(),
+            2
         );
     }
 

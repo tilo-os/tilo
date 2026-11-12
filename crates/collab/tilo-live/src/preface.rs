@@ -1,10 +1,9 @@
 //! The admission preface: the three header bytes and the grant that open a
 //! `moq-lite` session, and the host's one-byte answer.
 //!
-//! The carrier runs the exchange over its transport ([`crate::carrier`]); the
-//! page runs the same bytes over its WebTransport session
-//! (`tilo_browser_peer::live`). Both encode and read the preface here, so the
-//! two carriers cannot drift: one layout, one version, one set of answers.
+//! The carrier runs the exchange over its transport ([`crate::carrier`]), and
+//! both ends encode and read the preface here: one layout, one version, one
+//! set of answers.
 //!
 //! Client to host, on the first bidirectional stream, exactly once:
 //!
@@ -22,12 +21,9 @@
 //! | [`STATUS_DENIED`] | Refused; the host closes with [`CLOSE_DENIED`]. |
 //! | [`STATUS_REVOKED`] | Authority lapsed; close with [`CLOSE_REVOKED`]. |
 
-/// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
+/// The `moq-lite` draft every Tilo `MoQ` session
 /// negotiates. No other version is offered or accepted.
 pub const PROTOCOL: &str = "moq-lite-06";
-/// The one path a carrier's WebTransport listener serves. A session on any
-/// other path, or behind a query, is refused before the preface.
-pub const PATH: &str = "/moq/voice";
 /// Admission preface version byte.
 pub const PREFACE_VERSION: u8 = 1;
 /// Largest grant the preface carries. Routes may apply a smaller ceiling.
@@ -38,11 +34,11 @@ pub const STATUS_ADMITTED: u8 = 0;
 pub const STATUS_DENIED: u8 = 1;
 /// Control message after admission: authority lapsed, close now.
 pub const STATUS_REVOKED: u8 = 2;
-/// WebTransport close code for a missing, malformed or late preface.
+/// Close code for a missing, malformed or late preface.
 pub const CLOSE_PREFACE: u32 = 0x7400;
-/// WebTransport close code for a refused grant.
+/// Close code for a refused grant.
 pub const CLOSE_DENIED: u32 = 0x7401;
-/// WebTransport close code for a session whose authority lapsed.
+/// Close code for a session whose authority lapsed.
 pub const CLOSE_REVOKED: u32 = 0x7402;
 /// How long a refused session stays open for its client to read the
 /// refusal and close it.

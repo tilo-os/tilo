@@ -98,3 +98,23 @@ snippets-record-use = Copied { $item }
 snippets-rename-folder = Renamed the folder { $folder } to { $to }
 snippets-rename-tag = Renamed the tag { $tag } to { $to }
 snippets-remove-tag = Removed the tag { $tag } from every snippet
+
+## Facts, property labels and section titles
+snippets-a11y-tag = Tag: { $tag }
+snippets-a11y-folder = Folder: { $folder }
+
+## What the window shows
+
+## Actions
+
+snippets-view-reveal = Show snippets
+snippets-view-reveal-folder = Show folder
+snippets-view-search = Search snippets
+snippets-view-read-tag = Read a tag
+snippets-view-read-folder = Read a folder
+snippets-library-duplicate = Duplicate snippet
+snippets-library-delete = Delete snippet
+snippets-library-record-use = Record use
+snippets-library-rename-folder = Rename folder
+snippets-library-rename-tag = Rename tag
+snippets-library-remove-tag = Remove tag

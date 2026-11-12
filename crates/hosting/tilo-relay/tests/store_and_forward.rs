@@ -128,6 +128,7 @@ async fn b_connects_and_drains_queue(
             Envelope::Ready {
                 workspace_id,
                 pending_deltas,
+                records_when_opened: false,
             } => {
                 assert_eq!(workspace_id, 5);
                 assert_eq!(pending_deltas, 2);

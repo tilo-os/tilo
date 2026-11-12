@@ -3,6 +3,7 @@
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
 )]
 use super::*;
+use ui::widget::DrawChild;
 
 impl VideoEditorApp {
     /// The bin's ground — the sidebar region docked, the floating drawer as an
@@ -28,11 +29,12 @@ impl VideoEditorApp {
         let heading = ctx.theme.text(TextRole::Subheading);
         let heading_y = text_baseline(band, &heading, ctx.text);
         let x0 = r.bin.x0 + PAD * ctx.scale;
+        let media = crate::resource::CATALOG.t("video-editor-media");
         text(
             ctx.scene,
             ctx.text,
             ctx.transform,
-            "Media",
+            &media,
             &heading,
             c.text_primary,
             x0,
@@ -41,7 +43,7 @@ impl VideoEditorApp {
         // How many sources the bin holds, as a quiet count beside its name.
         let count = self.project.media.len().to_string();
         let count_style = ctx.theme.text(TextRole::Subheading).numeric();
-        let count_x = x0 + text_width(ctx.text, "Media", &heading) + S2;
+        let count_x = x0 + text_width(ctx.text, &media, &heading) + S2;
         if count_x + text_width(ctx.text, &count, &count_style) < add.x0 - S2 {
             text(
                 ctx.scene,
@@ -54,11 +56,13 @@ impl VideoEditorApp {
                 heading_y,
             );
         }
-        let face = ButtonFace::new(add, "Title")
+        let title = crate::resource::CATALOG.t("video-editor-title-button");
+        let new_title = crate::resource::CATALOG.t("video-editor-new-title");
+        let face = ButtonFace::new(add, &title)
             .icon(Icon::Plus)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
-            .accessible_name("New title")
+            .accessible_name(&new_title)
             .hovered(add.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
     }
@@ -316,12 +320,13 @@ impl VideoEditorApp {
             if let Some(btn) = self.empty_bin_import_rect(r) {
                 let msg = theme.text(TextRole::Body);
                 let h = line_height(tr, &msg);
-                let w = text_width(tr, "No media yet", &msg);
+                let words = crate::resource::CATALOG.t("video-editor-no-media");
+                let w = text_width(tr, &words, &msg);
                 text(
                     scene,
                     tr,
                     tf,
-                    "No media yet",
+                    &words,
                     &msg,
                     theme.tokens.colors.text_dim,
                     area.center().x - w / 2.0,
@@ -333,7 +338,7 @@ impl VideoEditorApp {
                     tr,
                     theme,
                     btn,
-                    "Import media",
+                    &crate::resource::CATALOG.t("video-editor-import-media"),
                     ButtonRole::Primary,
                     btn.contains(self.last_mouse),
                 );
@@ -436,7 +441,7 @@ impl VideoEditorApp {
         };
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
-            label.draw(scene, tf, tr, &panel, presence);
+            label.draw_child(scene, tf, tr, &panel, presence);
         }
     }
 }

@@ -22,16 +22,10 @@
               outlives every call made into it"
 )]
 
-mod common;
-
-// A device that founds its workspace does it through an Automerge worker: this binary is that
-// worker, as the session's own is.
-tilo_automerge_isolate::test_worker!();
-
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
-/// The person at this device, as `dist/dev/shell-run.sh` mints them: a throwaway test identity
+/// The person at this device, as `dist/dev/nested-session.sh` mints them: a throwaway test identity
 /// whose certificate lets the device govern the workspaces it founds, so the session holds one
 /// whose records it seals.
 const PERSON: &str = "Pat";
@@ -48,7 +42,7 @@ fn notices(session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// A session as `dist/dev/shell-run.sh` starts it: it keeps its desk in
+/// A session as `dist/dev/nested-session.sh` starts it: it keeps its desk in
 /// `state`, takes part in the collaboration plane, shows the tilolang shell,
 /// and holds the workspace it founds there.
 ///
@@ -75,9 +69,9 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
     })
 }
 
-/// The desktop's own action that opens an app, as `dist/dev/shell-run.sh` drives a session: an app
-/// opened on the desk is a window of the workspace in front, and so a change of that workspace's
-/// shared desk.
+/// The desktop's own action that opens an app, as `dist/dev/nested-session.sh` drives a session:
+/// an app opened on the desk is a window of the workspace in front, and so a change of that
+/// workspace's shared desk.
 const OPEN_APP: &str = "open-app";
 
 /// A session whose device holds no channel keys arranges its desk — an app is opened in the
@@ -100,7 +94,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
             .try_init();
     }
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    // The identity `dist/dev/shell-run.sh` mints before it starts its session: a throwaway whose
+    // The identity `dist/dev/nested-session.sh` mints before it starts its session: a throwaway whose
     // certificate lets the device govern its own workspaces.
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
@@ -118,7 +112,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
 
     // The desk is up, and the workspace it shows is one the engine holds: a workspace it founded
     // here keeps its records as sealed channels.
-    common::until(&mut session, "the workspace the desk shows", |session| {
+    crate::common::until(&mut session, "the workspace the desk shows", |session| {
         !workspaces(session).is_empty()
     });
 
@@ -134,7 +128,7 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
                 .expect("an object"),
         )
         .expect("an app opens on the desk");
-    common::until(&mut session, "the app's window on the desk", |session| {
+    crate::common::until(&mut session, "the app's window on the desk", |session| {
         session.handle().read(|tree| {
             tree.workspaces
                 .iter()

@@ -8,10 +8,14 @@ impl Music {
     /// The invocation of the library's Open audio file, as the window bar's
     /// slot runs it through the window's controls.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
-        let resource = tilo_actions::ResourceSpec::new("music.library", "music.library", "Library")
-            .with_action(ui::tilo_resource::Effect::bound(
-                &crate::actions::MusicEffect::OpenFile,
-            ));
+        let resource = tilo_actions::ResourceSpec::new(
+            "music.library",
+            "music.library",
+            crate::i18n::CATALOG.t("music-resource-library"),
+        )
+        .with_action(ui::tilo_resource::Effect::bound(
+            &crate::actions::MusicEffect::OpenFile,
+        ));
         tilo_actions::ActionBinding::unit_for(&resource, "open-file")
             .ok()?
             .invoke(())
@@ -1524,9 +1528,12 @@ impl Music {
         ]
         .into_iter()
         .filter_map(|(effect, key)| {
-            let resource =
-                tilo_actions::ResourceSpec::new("music.library", "music.library", "Library")
-                    .with_action(effect.bound());
+            let resource = tilo_actions::ResourceSpec::new(
+                "music.library",
+                "music.library",
+                crate::i18n::CATALOG.t("music-resource-library"),
+            )
+            .with_action(effect.bound());
             tilo_actions::ActionBinding::unit_for(&resource, effect.id())
                 .ok()
                 .map(|binding| ui::widget::Button::new(key, key).on_action(binding))

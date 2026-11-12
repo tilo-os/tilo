@@ -364,11 +364,15 @@ impl TiloMenu {
         }
     }
 
-    /// Show the About sheet (the menu's first entry). The menu goes at once: fading out under the
-    /// sheet's scrim it showed through it, over what the scrim dims.
-    pub fn show_about(&mut self) {
-        self.menu.close_at_once();
-        self.about.set_open(true);
+    /// Show the About sheet, or take it away: the chrome's own `about` verb, and the menu's entry
+    /// and the overview's About, all here.
+    pub fn set_about_open(&mut self, open: bool) {
+        if open {
+            // The menu goes at once: fading out under the sheet's scrim it showed through it, over
+            // what the scrim dims.
+            self.menu.close_at_once();
+        }
+        self.about.set_open(open);
     }
 
     pub fn is_menu_open(&self) -> bool {
@@ -395,7 +399,7 @@ impl TiloMenu {
         let mut changed = false;
         match self.chosen.take() {
             Some(Entry::About) => {
-                self.show_about();
+                self.set_about_open(true);
                 changed = true;
             }
             Some(Entry::Feedback) if self.offers_feedback => {

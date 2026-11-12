@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
-  REVOKE_DEVICE, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, CONNECT_AGENT, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO,
+  RECOVERY, RESET_PHOTO, REVOKE_DEVICE, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {IdentityError} from './identity.mjs';
@@ -48,18 +48,18 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.deepEqual(mount.offers, [RECOVERY.id]);
   const [ask] = mount.said;
   assert.equal(ask.title, 'Come back as “Ada” next time?');
-  assert.equal(ask.action.title, 'Save key');
+  assert.equal(ask.action.title, 'Remember me', 'the button says what it does for the person');
   assert.doesNotMatch(ask.body, /passkey/);
 });
 
-test('an agent grant taken back at the door is revoked by the root this tab holds', async () => {
+test('a key taken back is revoked by the root this tab holds, for the reason chosen', async () => {
   const revoked = [];
-  const identity = {...fakeIdentity(), revokeDevice: async key => { revoked.push(key); return {key}; }};
+  const identity = {...fakeIdentity(), revokeDevice: async (key, reason) => { revoked.push([key, reason]); return {key}; }};
   const errors = [];
   const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
     onError: error => errors.push(error)});
-  await actions.perform(REVOKE_DEVICE, 'ab'.repeat(32));
-  assert.deepEqual(revoked, ['ab'.repeat(32)]);
+  await actions.perform(REVOKE_DEVICE, {key: 'ab'.repeat(32), reason: 'stolen'});
+  assert.deepEqual(revoked, [['ab'.repeat(32), 'stolen']]);
   assert.deepEqual(errors, []);
 });
 
@@ -425,6 +425,27 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
 const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
   invite, requestedAtMs: 0, ...extra});
 
+test('the card offers the agent setup, and choosing it shows that setup again', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  let shown = 0;
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false,
+    showAgentSetup: () => { shown += 1; }});
+  await actions.attach(mount);
+  assert.ok(mount.actions.includes(CONNECT_AGENT.id), 'the card offers it beside the devices');
+  assert.equal(mount.subtitles[CONNECT_AGENT.id], CONNECT_AGENT.subtitle);
+  await actions.perform(CONNECT_AGENT.id);
+  assert.equal(shown, 1, 'the first screen\'s own setup, with a fresh code');
+});
+
+test('without a page that can show the setup, the card offers nothing it cannot do', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  const actions = createIdentityActions({identity, session: memorySession(), passkeys: async () => false});
+  await actions.attach(mount);
+  assert.ok(!mount.actions.includes(CONNECT_AGENT.id));
+});
+
 test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
   const pairing = await pairingFixture();
   assert.ok(pairing.mount.actions.includes(PAIR.id));
@@ -506,6 +527,7 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   const made = await pairing.actions.connectAgent();
   assert.deepEqual(made, {
     link: `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    invite: INVITE_A,
     expiresAt: 10 * 60 * 1000,
   });
   assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
@@ -533,6 +555,17 @@ test('the agent that answers its link is approved without asking, once, and said
   assert.equal(pairing.agents.length, 1);
   assert.equal(pairing.poll, null);
   assert.deepEqual(pairing.errors, []);
+});
+
+test('an agent’s link this tab made before it loaded again is approved the same way, while it is open', async () => {
+  const pairing = await pairingFixture();
+  const adopted = await pairing.actions.connectAgent({adopt: {id: INVITE_B, expiresAt: 5 * 60 * 1000}});
+  assert.deepEqual(adopted, {link: null, invite: INVITE_B, expiresAt: 5 * 60 * 1000}, 'its link is in the agent’s hands already');
+  pairing.host.pending = [request('d1', INVITE_B, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]]);
+  assert.deepEqual(pairing.asks, []);
+  assert.equal(await pairing.actions.connectAgent({adopt: {id: INVITE_A, expiresAt: 0}}), null, 'an expired one is not taken');
 });
 
 test('an agent’s link that expired approves nobody', async () => {
@@ -579,32 +612,24 @@ function fakeStandIn() {
   return {
     asked, stored,
     standIn: {
-      ask: async body => {
-        const request = typeof body === 'string' ? JSON.parse(body.replace(/"signed_at_ns":(\d+)/, '"signed_at_ns":"$1"')) : body;
-        asked.push(request);
-        return request.op === 'key' ? {state: 'key', key: 'cd'.repeat(32)} : request.op === 'certify' ? {state: 'kept', expires_at_ms: 1} : {state: 'retired'};
-      },
-      certify: async key => { asked.push({certify: key}); return `cert-of-${key.slice(0, 4)}`; },
-      revoke: async key => { asked.push({revoke: key}); },
+      keep: async () => { asked.push('keep'); return 'cd'.repeat(32); },
+      retire: async () => { asked.push('retire'); },
+      revoke: async key => { asked.push(`revoke ${key}`); },
     },
     standInStore: {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key)},
   };
 }
 
-test('a person set up through an agent gets a stand-in: the host makes a key, the root certifies it, the host keeps it', async () => {
+test('a person set up through an agent gets a stand-in, once', async () => {
+  // How the host makes the key, the root certifies it and the host keeps it
+  // is the shared client's (tilo-relay-client's `keep_stand_in`).
   const identity = fakeIdentity();
   const fake = fakeStandIn();
-  const actions = createIdentityActions({passkeys: withPasskeys, identity, now: () => 1_700_000_000_123, ...fake});
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, ...fake});
   assert.equal(await actions.keepStandIn(), 'cd'.repeat(32));
-  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['key', 'certify', 'certify']);
-  const [key] = fake.asked;
-  assert.equal(key.user, identity.userPublicKey);
-  assert.equal(key.signed_at_ns, '1700000000123000000', 'the exact nanoseconds, not a rounded number');
-  assert.equal(key.signature, '00'.repeat(64));
-  assert.deepEqual(fake.asked[1], {certify: 'cd'.repeat(32)});
-  assert.deepEqual(fake.asked[2], {op: 'certify', cert: 'cert-of-cdcd'});
+  assert.deepEqual(fake.asked, ['keep']);
   assert.equal(await actions.keepStandIn(), 'cd'.repeat(32), 'made once');
-  assert.equal(fake.asked.length, 3);
+  assert.deepEqual(fake.asked, ['keep']);
 });
 
 test('keeping with a passkey revokes the stand-in and has the host forget it', async () => {
@@ -617,8 +642,7 @@ test('keeping with a passkey revokes the stand-in and has the host forget it', a
   await actions.attach(fakeMount());
   await actions.perform(KEEP.id);
   assert.deepEqual(errors, []);
-  assert.deepEqual(fake.asked.map(request => request.op ?? Object.keys(request)[0]), ['revoke', 'retire']);
-  assert.equal(fake.asked[1].user, identity.userPublicKey);
+  assert.deepEqual(fake.asked, [`revoke ${'cd'.repeat(32)}`, 'retire']);
   assert.equal(fake.stored.size, 0);
   assert.equal(await actions.keepStandIn(), null, 'a kept root needs no stand-in');
 });
@@ -631,8 +655,8 @@ test('the host is asked to forget the stand-in only once its revocation is signe
   const actions = createIdentityActions({
     passkeys: withPasskeys, identity, publish: async () => {},
     standIn: {
-      ask: async body => { asked.push((typeof body === 'string' ? JSON.parse(body) : body).op); return {}; },
-      certify: async () => 'cert',
+      keep: async () => 'cd'.repeat(32),
+      retire: async () => { asked.push('retire'); },
       revoke: async key => {
         asked.push(`revoke ${key}`);
         await settled;

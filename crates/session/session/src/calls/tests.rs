@@ -7,22 +7,21 @@
 //! playout a device's call runs, ending in memory instead of a speaker,
 //! and a tone instead of a microphone.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::fabric::Continuity;
-use crate::platform::plane::Event;
+use crate::platform::fabric::Continuity;
+use crate::sync::Event;
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
 use collab_types::presence::{Availability, Payload, Presence};
 use collab_types::{ChannelRoute, Ed25519PublicKey};
 use iroh::EndpointId;
 use runtime_collab::native_media::{Command, Request, State};
-use tilo_action_broker::channel_encryption::{
+use tilo_broker_core::collab_core::BrokerChannels;
+use tilo_channels::{
     ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
     ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance,
 };
-use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::{HostIdentity, workspace_topic_id};
@@ -31,7 +30,7 @@ use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
 use crate::{ActionPlane, Options, Session};
 use tilo_live::plane::Join;
-use tilo_live::relay::{Denied, Peer, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::scope::Scope;
 
@@ -43,7 +42,7 @@ const RECORD: &str = "chat";
 const HEARD: f32 = 0.02;
 
 fn public(seed: u8) -> EndpointId {
-    iroh::SecretKey::from_bytes(&[seed; 32]).public()
+    test_relay::endpoint_key(seed).public()
 }
 
 /// The person a device is a device of, in the hex everyone here knows them by.
@@ -57,11 +56,7 @@ fn person(seed: u8) -> String {
 
 /// One device's key, as the workspace's governance names it.
 fn key(seed: u8) -> Ed25519PublicKey {
-    Ed25519PublicKey::from_bytes(
-        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
-            .verifying_key()
-            .to_bytes(),
-    )
+    Ed25519PublicKey::from_bytes(test_relay::signing_key(seed).verifying_key().to_bytes())
 }
 
 /// The person all of a call's devices are devices of.
@@ -109,31 +104,22 @@ fn private_home() -> tempfile::TempDir {
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
 /// plane as its certified self.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, person).expect("the person signs their device");
+    let key = test_relay::signing_key(seed);
+    let cert = test_relay::certified(
+        person,
+        &key,
+        label,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     Client::start(
         Entry {
-            identity: Some(HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            }),
+            identity: Some(HostIdentity::kept(cert, key)),
             own: OwnPresence::default(),
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
+            fabric: None,
+            relays: test_relay::loopback(),
         },
         None,
         None,
@@ -174,17 +160,22 @@ impl ChannelDirectory for Directory {
 /// someone founds them.
 fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
-    let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+    let gates = Arc::new(tilo_broker_core::collab_core::BrokerGates(Arc::new(
+        Mutex::new(BrokerChannels::default()),
+    )));
     let encryption = ChannelEncryption::open(
         ChannelEncryptionConfig {
-            root: directory.path().join("channels"),
+            state: Arc::new(tilo_channels::ChannelsDir::new(
+                directory.path().join("channels"),
+            )),
             vault: VaultKey::new([vault; 32]),
-            device_key: ed25519_dalek::SigningKey::from_bytes(&[device; 32]),
+            signer: std::sync::Arc::new(test_relay::signing_key(device)),
+            role: tilo_channels::Role::Participant,
         },
         Box::new(Directory {
             admitted: admitted.iter().copied().map(key).collect(),
         }),
-        broker,
+        gates,
     )
     .expect("a channel service");
     let provider = ChannelKeyProvider::default();
@@ -275,13 +266,7 @@ fn hello(from: u8, label: &str) -> Event {
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities {
             can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
+            ..tilo_user_identity::DeviceCapabilities::member()
         },
         issued_at_ns: 0,
         expires_at_ns: None,
@@ -439,12 +424,8 @@ async fn bound(client: &Client) {
 fn relay() -> Arc<Relay> {
     struct Nobody;
     impl RelayAuthority for Nobody {
-        fn admit(
-            &self,
-            _peer: Peer,
-            _proof: &[u8],
-        ) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-            Err(Denied)
+        fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+            Box::pin(std::future::ready(Err(Denied)))
         }
     }
     Arc::new(Relay::new(Arc::new(Nobody)))

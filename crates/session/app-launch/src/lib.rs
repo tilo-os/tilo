@@ -40,6 +40,17 @@ pub mod authority;
 pub mod doors;
 pub mod downloaded;
 pub mod env;
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+mod i18n {
+    tilo_resource::declared_catalogue!(CATALOGUE);
+
+    pub(crate) fn name(kind: &str, source: &str) -> String {
+        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
+    }
+}
+
 pub mod instance;
 pub mod launch;
 mod memory;
@@ -47,10 +58,12 @@ pub mod output;
 pub mod plan;
 pub mod routing;
 pub mod spawner;
+#[cfg(target_os = "linux")]
+pub mod tilolang_hosts;
 pub mod workspace;
 
 pub use authority::Authority;
-pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
+pub use doors::{Connects, Doors, HeldDoor, HostedWindow, Opens, Routed, StartAlone};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};

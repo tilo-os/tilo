@@ -5,6 +5,7 @@
     reason = "bounded app-local chart and filesystem arithmetic"
 )]
 
+pub mod locales;
 pub mod resource;
 pub mod scan;
 mod view;

@@ -10,24 +10,21 @@
 //! its bound, so its copy goes on following the record however long the
 //! workspace keeps writing. Every other device taking part in a channel does the
 //! same with its own copy and publishes the checkpoint
-//! ([`tilo_peer_state::PeerPublicationMut::compact_sealed_history`]): the
+//! ([`tilo_peer_state::PeerPublication::draft_sealed_compaction`]): the
 //! governor's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
-use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
-#[cfg(feature = "agents")]
+use collab_types::{ArtifactId, ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
-#[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
-#[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
 /// Member writes followed before a failed compaction is tried again. A
-/// record whose merged snapshot outgrew one mutation never compacts; trying
-/// on every write opened and merged its whole history each time.
+/// record whose history does not merge yet does not compact; trying on every
+/// write opened and merged its whole history each time.
 const COMPACTION_RETRY: usize = 256;
 
 /// The content keys of one record's channel, as the node holds them.
@@ -52,15 +49,52 @@ impl RecordKeys {
     }
 
     /// Seal content of the record under the channel's current epoch.
+    #[cfg(feature = "agents")]
     fn seal(
         &self,
         retention: ContentRetention,
-    ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + '_ {
+    ) -> impl FnMut(&[u8]) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + '_ {
         move |plaintext| {
             self.keys
                 .seal_content(self.artifact, retention, plaintext)
                 .map_err(|error| error.to_string())
         }
+    }
+
+    /// Compact `record`'s sealed history in `candidate` as the host's `key`,
+    /// into `rebuilt` when the operator rebuilt the record, else into its
+    /// merged history.
+    fn compact(
+        &self,
+        candidate: &mut StatePeer,
+        (app, record): (&str, &str),
+        rebuilt: Option<Vec<u8>>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut open = self.open();
+        // A snapshot larger than one op goes in segments: the first a
+        // checkpoint, the rest following it.
+        let mut seal = |frame: &[u8]| {
+            self.keys
+                .seal_content(self.artifact, ContentRetention::of_frame(frame), frame)
+                .map_err(|error| error.to_string())
+        };
+        let author = key.verifying_key().to_bytes();
+        let mut ops = candidate.publication().draft_sealed_compaction(
+            (app, record),
+            rebuilt,
+            &mut open,
+            &mut seal,
+            author,
+            now,
+        )?;
+        for op in &mut ops {
+            collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
+        }
+        candidate
+            .publication_mut()
+            .admit_sealed_compaction(app, record, ops, now)
     }
 }
 
@@ -177,8 +211,62 @@ impl GovernedWorkspace {
     }
 }
 
+/// `record` of `app` of `workspace` with every write of its history, saved,
+/// read from `peer`, a copy of the governor's state, and opened with
+/// `device`'s keys where it is sealed: what a reader that must see all of a
+/// record reads without holding the workspace while it does.
+///
+/// # Errors
+///
+/// Why it does not read whole: a sealed write of it does not open or merge,
+/// or its channel's keys are not here.
+pub(super) async fn whole_document(
+    peer: &StatePeer,
+    device: Option<&super::DeviceKeys>,
+    workspace: &str,
+    (app, record): (&str, &str),
+) -> Result<Vec<u8>, String> {
+    if !peer.publication().is_sealed_record(app, record) {
+        return peer
+            .document(app, record)
+            .ok_or_else(|| "the host holds no copy of it".to_owned());
+    }
+    let device = device.ok_or("it is sealed and this host has no channel keys")?;
+    let route = collab_types::ChannelRoute::new(app, record);
+    let keys = match device.channel_keys(workspace, &route, false).await {
+        None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
+        Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
+        Some(Ok(keys)) => keys,
+    };
+    let keys = RecordKeys {
+        keys,
+        artifact: collab_types::document_artifact_id(app, workspace, record),
+    };
+    let opened = peer
+        .publication()
+        .opened_document(app, record, &mut keys.open())
+        .map_err(|error| format!("its sealed history does not open: {error}"))?
+        .ok_or("its sealed history holds no write")?;
+    if opened.unmerged.is_empty() {
+        Ok(opened.document)
+    } else {
+        let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
+        Err(format!(
+            "{} sealed writes of its history do not merge: {}",
+            writes.len(),
+            writes.join("; ")
+        ))
+    }
+}
+
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
 /// sealed with `keys` for a sealed record, in the clear otherwise.
+///
+/// The first sealed write of a record is the whole record, its cleartext base
+/// with `changes`: a reader holding only the record's ciphertext history — a
+/// page that joins later, whose host replays nothing the workspace's
+/// governance already covers — reads the record from it, where a change
+/// alone would wait forever for a base that never comes.
 #[cfg(feature = "agents")]
 pub(super) fn publish_changes(
     candidate: &mut StatePeer,
@@ -192,6 +280,24 @@ pub(super) fn publish_changes(
         None => candidate
             .publication_mut()
             .publish_incremental(app, record, changes, key, now),
+        Some(keys) if !candidate.publication().is_sealed_record(app, record) => {
+            let mut document = match candidate.document(app, record) {
+                Some(base) => {
+                    automerge::AutoCommit::load(&base).map_err(|error| error.to_string())?
+                }
+                None => automerge::AutoCommit::new(),
+            };
+            tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes)
+                .map_err(|error| error.to_string())?;
+            refound(
+                candidate,
+                Some(keys),
+                (app, record),
+                document.save(),
+                key,
+                now,
+            )
+        }
         Some(keys) => candidate.publication_mut().publish_sealed_incremental(
             app,
             record,
@@ -337,6 +443,90 @@ impl Workspaces {
         )
     }
 
+    /// Everything the governor's copy holds of `record` of `app` in
+    /// `workspace`: its cleartext base and, for a sealed record, every write
+    /// of its history opened with the channel's keys this relay holds, none
+    /// merged. What an operator repairing a record that does not read whole
+    /// reads it from; `None` for a record not held here.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, or the record is sealed and its
+    /// channel's keys are not here.
+    pub async fn record_history(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<tilo_peer_state::OpenedHistory>, super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?;
+        let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
+        let history = match &keys {
+            Some(keys) => {
+                governed
+                    .peer()
+                    .publication()
+                    .opened_history(app, record, &mut keys.open())
+            }
+            None => governed
+                .peer()
+                .publication()
+                .opened_history(app, record, &mut sealed_shut),
+        };
+        drop(governed);
+        Ok(history)
+    }
+
+    /// Replace the sealed history of `record` of `app` in `workspace` with
+    /// `rebuilt`, the record as an operator rebuilt it from that history
+    /// ([`Self::record_history`]) where it does not merge whole: one sealed
+    /// checkpoint, compacted by this host as the workspace's governor and
+    /// published like any compaction, which every member takes in place of
+    /// exactly the writes it covers.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, the record is held in the clear or
+    /// its channel's keys are not here, or the compaction could not be made,
+    /// committed or published.
+    pub async fn compact_record_into(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        rebuilt: Vec<u8>,
+    ) -> Result<(), super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?
+            .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
+        let now = tilo_clock::wall();
+        let mut candidate = governed.peer().clone();
+        keys.compact(
+            &mut candidate,
+            (app, record),
+            Some(rebuilt),
+            &self.inner.host.key,
+            now,
+        )
+        .map_err(super::CollaborationError::new)?;
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, now, |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(&mut governed).await?;
+        drop(governed);
+        Ok(())
+    }
+
     /// Seal the records the workspaces this relay takes part in hold in the clear, from
     /// now on: the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
@@ -391,7 +581,7 @@ impl Workspaces {
                     let settled = match workspace.commit(
                         candidate,
                         &self.inner.host.key,
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                         |_, _| Ok(collaboration),
                     ) {
                         Ok(_) => self.settle(&mut workspace).await,
@@ -498,16 +688,15 @@ impl Workspaces {
             workspace.compaction_wait = workspace.compaction_wait.saturating_sub(1);
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let mut compacted = 0usize;
         for (app, record) in &due {
             let compaction = match workspace.record_keys(app, record).await {
-                Ok(Some(keys)) => candidate.publication_mut().compact_sealed_history(
-                    app,
-                    record,
-                    &mut keys.open(),
-                    &mut keys.seal(ContentRetention::Checkpoint),
+                Ok(Some(keys)) => keys.compact(
+                    &mut candidate,
+                    (app, record),
+                    None,
                     &self.inner.host.key,
                     now,
                 ),
@@ -534,6 +723,8 @@ impl Workspaces {
     }
 }
 
+#[cfg(all(test, feature = "agents"))]
+mod chain_head_tests;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub mod fixtures;
 #[cfg(all(test, feature = "agents"))]

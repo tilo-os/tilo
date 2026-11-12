@@ -33,9 +33,15 @@ use ui::widget::{Element, SecretAnswer};
 use crate::presentation::Presentation;
 use crate::t;
 
+mod agent;
 mod fixtures;
 mod keys;
 mod view;
+
+pub use agent::{AgentQuestion, risk_words};
+
+/// Where the sheet's presses go.
+pub type Ask = Rc<dyn Fn(&PortalEffect)>;
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.portal-sheet";
@@ -45,7 +51,7 @@ pub const APP_ID: &str = "so.tilo.portal-sheet";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PortalSheet {}
 
-#[resource(kind = "portal-sheet.question", label = "System question")]
+#[resource(kind = "portal-sheet.question")]
 impl PortalSheet {}
 
 /// What the sheet asks of the shell. Every effect names the request
@@ -192,12 +198,26 @@ pub struct Dialog {
     pub heading: String,
     /// What the person reviews: this page of it, when it is paged.
     pub detail: String,
+    /// The rows the person weighs under the detail, each label beside its
+    /// value in one column (the arguments an action would run with).
+    pub facts: Vec<(String, String)>,
+    /// What allowing it risks, said last and quiet, in the caution ink: the
+    /// action acts outside Tilo, reveals something, or Undo cannot take it
+    /// back.
+    pub caution: Option<String>,
     /// A code to read out or compare, shown large above the detail: a
     /// pairing's passkey or PIN.
     pub code: Option<String>,
+    /// A picture of what the person is allowing, by its content address: the
+    /// filled page a departure leaves from, so they see it and not only its
+    /// name.
+    pub picture: Option<String>,
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
+    /// A second way to allow, beside the confirm button ("Always allow"): it
+    /// answers as choice 1, where confirming answers as choice 0.
+    pub alternate_label: Option<String>,
     /// The highlighted choice.
     pub selected: usize,
     /// The page of a paged review, and how many there are.
@@ -207,6 +227,22 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// What the sheet says, as plain text, for a reader that shows it
+    /// without the sheet (a notification).
+    #[must_use]
+    pub fn words(&self) -> String {
+        let facts = self
+            .facts
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"));
+        std::iter::once(self.detail.clone())
+            .chain(facts)
+            .chain(self.caution.clone())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// More of the review follows this page: Enter turns to it.
     pub fn reviewing_more(&self) -> bool {
         self.page
@@ -739,6 +775,59 @@ fn typed_field(dialog: &Dialog, name: &str) -> Option<Field> {
     }
 }
 
+/// The sheet for a host that draws it itself rather than mounting it as an
+/// app (a page, over its desktop): the same view and keys, every press taken
+/// by the seat as the app's door takes it ([`PortalSeat::take_asked`]).
+pub struct DrawnSheet {
+    parts: view::Parts,
+    built: Option<Shown>,
+}
+
+impl DrawnSheet {
+    /// The sheet of `seat`, which shows what the host hands the seat.
+    #[must_use]
+    pub fn new(seat: &PortalSeat) -> Self {
+        let dialog = seat.drawn();
+        let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
+        let shown = LocalState::new(Shown {
+            dialog,
+            focus,
+            typed: 0,
+        });
+        *seat.shown.borrow_mut() = Some(shown.clone());
+        let taking = seat.clone();
+        let ask: Ask = Rc::new(move |effect: &PortalEffect| {
+            // A press for a question no longer up answers nothing.
+            if taking.take(effect.clone()).is_ok() {
+                taking.presentation.wake();
+            }
+        });
+        Self {
+            parts: view::Parts {
+                ask,
+                shown,
+                seat: seat.clone(),
+            },
+            built: None,
+        }
+    }
+
+    /// The sheet built again, when what it shows moved since it was last
+    /// built or the host holds none of it (`missing`).
+    pub fn rebuilt(&mut self, missing: bool) -> Option<Element> {
+        let shown = self.parts.shown.get();
+        if !missing && self.built.as_ref() == Some(&shown) {
+            return None;
+        }
+        let content = view::sheet(&shown, &self.parts);
+        self.built = Some(shown);
+        Some(Box::new(keys::Keys {
+            content,
+            parts: self.parts.clone(),
+        }))
+    }
+}
+
 /// The sheet as an app.
 pub struct PortalApp;
 
@@ -785,8 +874,9 @@ impl ResourceApp for PortalApp {
             asking.take(effect)?;
             Ok(Effected::done())
         });
+        let dispatch = cx.dispatcher();
         let parts = view::Parts {
-            dispatch: cx.dispatcher(),
+            ask: Rc::new(move |effect: &PortalEffect| dispatch.effect(effect)),
             shown: shown.clone(),
             seat,
         };
@@ -800,7 +890,12 @@ impl ResourceApp for PortalApp {
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<PortalSheet>) {
-        let dialog = fixtures::dialog(fixture.scenario());
+        let mut dialog = fixtures::dialog(fixture.scenario());
+        // A picture is a content address, and the fixture's own bytes are kept
+        // in this process's store: the sheet draws one as it draws a host's.
+        if dialog.picture.is_some() {
+            dialog.picture = fixtures::lend_filled_form();
+        }
         fixture.provide(dialog);
     }
 }

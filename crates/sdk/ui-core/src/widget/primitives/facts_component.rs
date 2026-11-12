@@ -3,7 +3,7 @@
 use crate::component::{Component, Described};
 use crate::icons::Icon;
 
-use super::{Fact, Facts};
+use super::{Fact, FactMark, Facts};
 
 /// Separate facts in one row, each an optional glyph and its text, with space between them and
 /// no separator glyph: "12 files", "3 MB", "Edited today" are three facts. Where the row is too
@@ -35,7 +35,7 @@ crate::component::part_slot!(FactProps);
 impl From<FactProps> for Fact {
     fn from(props: FactProps) -> Self {
         Self {
-            icon: props.icon,
+            mark: props.icon.map(FactMark::Icon),
             text: props.text,
             priority: u8::try_from(props.priority.clamp(0, 255)).unwrap_or(u8::MAX),
         }

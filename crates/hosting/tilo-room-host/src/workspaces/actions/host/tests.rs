@@ -17,9 +17,9 @@ use tilo_actions::remote::{
 };
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, CREATE_ROOM, CreatedWorkspace, DETACH_HOST, ENTER_ROOM, EnteredWorkspace,
-    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_REVOCATIONS, LIST_ROOMS,
-    UNHOST_ROOM, WorkspaceListing,
+    ATTACH_HOST, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM, DETACH_HOST, ENTER_ROOM,
+    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_REVOCATIONS,
+    LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -99,7 +99,10 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
         offered(&host, &laptop, &caller(&laptop)).await,
         [
             CREATE_ROOM,
+            DELETE_ROOM,
             LIST_ROOMS,
+            tilo_relay_session::workspaces::LIST_PERSONAL,
+            tilo_relay_session::workspaces::KEEP_PERSONAL,
             LIST_REVOCATIONS,
             ENTER_ROOM,
             ATTACH_HOST,

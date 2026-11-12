@@ -33,8 +33,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tilo_browser_peer::Host;
 use tilo_content::ContentStore;
+use tilo_relay_client::Host;
+
+use tilo_content::WorkspaceStores;
 use tilo_relay_protocol::agents::AgentStatus;
 use tilo_user_identity::DeviceCert;
 
@@ -51,6 +53,8 @@ const STATE_FILE: &str = "agents.json";
 /// agent's steps) is written as one.
 const WRITE_SPACING: Duration = Duration::from_millis(500);
 /// The directory under the state directory each workspace's content is kept in.
+/// Where a test keeps the host's content, under its state directory.
+#[cfg(test)]
 const CONTENT_DIR: &str = "content";
 
 /// Builds the apps an agent may open, on the agent's own thread.
@@ -89,11 +93,12 @@ struct Shared {
     stopping: AtomicBool,
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
-    /// Each workspace's content store, by the workspace's uuid.
-    content: Mutex<BTreeMap<String, ContentStore>>,
+    /// Each workspace's content store: the host's one store, which its
+    /// workspace actions and members' reads use too.
+    content: Arc<WorkspaceStores>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
-    sessions: Mutex<BTreeMap<String, Arc<tilo_browser_peer::MemoryPeerStore>>>,
+    sessions: Mutex<BTreeMap<String, Arc<tilo_session_client::MemoryPeerStore>>>,
     /// The wall clock the keeper judges grants by.
     clock: HostClock,
 }
@@ -104,22 +109,9 @@ struct Shared {
 type HostClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 impl Shared {
-    /// The content store of `workspace`, under the state directory. One workspace's
-    /// store never answers for another's.
+    /// The content store of `workspace`, under the state directory.
     fn workspace_content(&self, workspace: &str) -> Result<ContentStore, String> {
-        let workspace = uuid::Uuid::parse_str(workspace)
-            .map_err(|_| "the workspace is not a uuid".to_string())?
-            .hyphenated()
-            .to_string();
-        let mut stores = self.content.lock_recover();
-        let store = stores
-            .entry(workspace)
-            .or_insert_with_key(|workspace| {
-                ContentStore::in_dir(self.state_dir.join(CONTENT_DIR).join(workspace))
-            })
-            .clone();
-        drop(stores);
-        Ok(store)
+        self.content.get(workspace)
     }
 }
 
@@ -134,18 +126,19 @@ pub struct AgentHost {
 
 impl AgentHost {
     /// Agents of `user_public_key`, kept under `state_dir`, planning with
-    /// `model`. Serve [`Self::supervisor`] to browsers (it answers the
-    /// agent vocabulary), then [`Self::start`] once the host is up.
+    /// `model`, keeping what their apps make in the host's `content`. Serve
+    /// [`Self::supervisor`] to browsers (it answers the agent vocabulary),
+    /// then [`Self::start`] once the host is up.
     #[must_use]
     pub fn new(
         user_public_key: [u8; 32],
-        state_dir: PathBuf,
+        (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
         model: ModelChoice,
         catalogue: CatalogueFactory,
     ) -> Self {
         Self::with_clock(
             user_public_key,
-            state_dir,
+            (state_dir, content),
             model,
             catalogue,
             Arc::new(tilo_clock::unix_now_ns),
@@ -156,12 +149,13 @@ impl AgentHost {
     #[must_use]
     pub fn with_clock(
         user_public_key: [u8; 32],
-        state_dir: PathBuf,
+        (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
         model: ModelChoice,
         catalogue: CatalogueFactory,
         clock: HostClock,
     ) -> Self {
         let shared = Arc::new(Shared {
+            content,
             state_dir,
             model,
             catalogue,
@@ -170,7 +164,6 @@ impl AgentHost {
             runtime: OnceLock::new(),
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
-            content: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(BTreeMap::new()),
             clock,
         });
@@ -291,9 +284,12 @@ impl AgentHost {
     ///
     /// Returns why the workspace is not one, or why the store refused the bytes.
     pub fn put_content(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
+        // Sealed here, before an action names it: the host keeps and serves
+        // ciphertext, and the reference the action carries holds the key.
         let hash = self
             .shared
             .workspace_content(workspace)?
+            .sealing()
             .put(bytes)
             .map_err(|error| error.to_string())?;
         tilo_actions::content_resource(&hash).ok_or_else(|| "the store named no content".into())
@@ -304,14 +300,14 @@ impl AgentHost {
     /// the workspace holds none there.
     #[must_use]
     pub fn content(&self, workspace: &str, address: &str) -> Option<Vec<u8>> {
-        let hash = tilo_actions::content_hash(address).unwrap_or(address);
-        if !tilo_content::valid_hash(hash) {
+        let reference = tilo_actions::content_hash(address).unwrap_or(address);
+        if !tilo_content::valid_reference(reference) {
             return None;
         }
         self.shared
             .workspace_content(workspace)
             .ok()?
-            .read(&hash.to_ascii_lowercase())
+            .read(reference)
     }
 
     /// Write the state now.
@@ -407,6 +403,11 @@ fn run_agent(
             return;
         }
     };
+    let workspace_name = shared
+        .link
+        .get()
+        .zip(tilo_relay_protocol::room_workspace_id(&workspace).ok())
+        .and_then(|(link, id)| link.workspace_name(id));
     let session = Arc::clone(
         shared
             .sessions
@@ -419,6 +420,7 @@ fn run_agent(
             host: endpoint.host,
             host_cert: endpoint.host_cert,
             workspace,
+            workspace_name,
             content,
         },
         identity,
@@ -545,7 +547,7 @@ mod tests {
         let clock = Arc::clone(&pinned);
         let mut host = AgentHost::with_clock(
             root.verifying_key().to_bytes(),
-            state.path().to_owned(),
+            (state.path().to_owned(), test_content(state.path())),
             ModelChoice::Scripted,
             Arc::new(AppCatalogue::native),
             Arc::new(move || clock.load(Ordering::Relaxed)),
@@ -599,10 +601,18 @@ mod tests {
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     const OTHER_WORKSPACE: &str = "0b8e2f64-93d1-4c55-a6f7-2e9d1c4b8a30";
 
+    /// The host's content, under its state directory as a relay keeps it.
+    fn test_content(state: &Path) -> Arc<WorkspaceStores> {
+        Arc::new(WorkspaceStores::in_dir(
+            state.join(CONTENT_DIR),
+            tilo_content::ContentLimits::default(),
+        ))
+    }
+
     fn agent_host(state: &Path) -> AgentHost {
         AgentHost::new(
             [7; 32],
-            state.to_path_buf(),
+            (state.to_path_buf(), test_content(state)),
             ModelChoice::Scripted,
             Arc::new(|| AppCatalogue::new(Vec::new())),
         )

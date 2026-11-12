@@ -33,17 +33,17 @@ pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 /// Largest single blob the capability accepts or reassembles. Document media
 /// is images and attachments; bigger content belongs in a file record.
 pub const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
-/// Largest piece of an upload handed to the backend at once. An upload's
-/// `write` carries up to [`MAX_PUT_CHUNK`]; the server passes it on in pieces
-/// of this size so that what waits between the connection and the store is
-/// bounded by pieces, not by whole messages.
+/// Largest piece of an upload held at once: an upload writes one piece per
+/// message, and the server passes it on in pieces of this size, so what waits
+/// between the app and the store is bounded by pieces, not by whole messages.
 ///
-/// The bound is in pieces at every hop: [`UPLOAD_PIECES_IN_FLIGHT`] here, and
-/// the content store queues up to 32 more on their way to its writer
-/// (iroh-blobs' import channel). How full that queue runs depends on how far
-/// the disk lags the connection, so the piece size is what keeps the worst
-/// case small: 64 KiB pieces put at most 2.25 MiB between the connection and
-/// the disk, where 256 KiB pieces let a slow writer hold 9 MiB.
+/// The bound is in pieces at every hop: the message carrying one, the framed
+/// connection decoding it, [`UPLOAD_PIECES_IN_FLIGHT`] here, and the content
+/// store's queue of up to 32 more on their way to its writer (iroh-blobs'
+/// import channel). How full that queue runs depends on how far the disk lags
+/// the connection, so the piece size is what keeps the worst case small:
+/// 64 KiB pieces put at most 2.25 MiB between the app and the disk, where
+/// 256 KiB pieces let a slow writer hold 9 MiB.
 pub const UPLOAD_PIECE: usize = 64 * 1024;
 /// Pieces of one upload that may wait for the backend before the uploader's
 /// next `write` is held back.
@@ -500,9 +500,13 @@ impl BlobClient {
         self.put_reader(&mut reader, mime)
     }
 
-    /// Store everything `reader` yields, [`MAX_PUT_CHUNK`] at a time: this
-    /// holds one chunk, never the whole content, and hashes it as it goes so
+    /// Store everything `reader` yields, [`UPLOAD_PIECE`] at a time: this
+    /// holds one piece, never the whole content, and hashes it as it goes so
     /// the reference the store answers is checked against the bytes sent.
+    /// A piece is the unit every hop between here and the disk holds, so the
+    /// message carrying it is the same size as the piece the store takes:
+    /// framing and decoding a whole [`MAX_PUT_CHUNK`] would hold it twice on
+    /// each side.
     ///
     /// # Errors
     ///
@@ -527,7 +531,7 @@ impl BlobClient {
                 });
             }
             hasher.update(&chunk);
-            let last = chunk.len() < MAX_PUT_CHUNK;
+            let last = chunk.len() < UPLOAD_PIECE;
             let id = match upload.as_ref().map(|open| open.id) {
                 Some(id) => id,
                 None if last => {
@@ -846,11 +850,11 @@ impl BlobClient {
     }
 }
 
-/// Up to one message of content from `reader`; shorter only at its end.
+/// Up to one piece of content from `reader`; shorter only at its end.
 fn next_chunk(reader: &mut impl io::Read) -> Result<Vec<u8>, BlobError> {
-    let mut chunk = Vec::with_capacity(MAX_PUT_CHUNK);
+    let mut chunk = Vec::with_capacity(UPLOAD_PIECE);
     reader
-        .take(MAX_PUT_CHUNK as u64)
+        .take(UPLOAD_PIECE as u64)
         .read_to_end(&mut chunk)
         .map_err(|error| BlobError::Input(error.to_string()))?;
     Ok(chunk)

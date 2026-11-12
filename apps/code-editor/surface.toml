@@ -5,74 +5,76 @@ kind = "code_editor.project"
 label = "Code Editor"
 version = 1
 fields = [
-  { path = "files", type = "Collection<Entry>", stored = "collection" },
-  { path = "files.*.kind", type = "EntryKind", readonly = true },
-  { path = "files.*.name", type = "String", label = true, readonly = true },
-  { path = "files.*.parent", type = "Option<Id>", readonly = true },
-  { path = "files.*.language", type = "String" },
-  { path = "buffers", type = "BTreeMap<String, Source>" },
-  { path = "terminal_panel", type = "Option<Terminal>", readonly = true, stored = "record" },
-  { path = "terminal_panel.target", type = "Option<Atom>", readonly = true },
-  { path = "terminal_panel.relay_session", type = "Option<Atom>", readonly = true },
-  { path = "terminal_panel.pane", type = "Option<Atom>", readonly = true },
-  { path = "terminal_panel.runs", type = "Collection<Run>", readonly = true, stored = "collection" },
-  { path = "terminal_panel.runs.*.command", type = "Atom", label = true },
-  { path = "terminal_panel.runs.*.cwd", type = "Atom" },
-  { path = "terminal_panel.runs.*.environment", type = "Option<Atom>" },
-  { path = "terminal_panel.runs.*.actor", type = "Atom" },
-  { path = "terminal_panel.runs.*.for_person", type = "Option<Atom>" },
-  { path = "terminal_panel.runs.*.started_ms", type = "i64" },
-  { path = "terminal_panel.runs.*.ended_ms", type = "i64" },
-  { path = "terminal_panel.runs.*.exit", type = "i32" },
-  { path = "terminal_panel.runs.*.output", type = "Bytes" },
+  { path = "files", type = { collection = { named = "Entry" } }, stored = "collection" },
+  { path = "files.*.kind", type = { named = "EntryKind" }, readonly = true },
+  { path = "files.*.name", type = "text", label = true, readonly = true },
+  { path = "files.*.parent", type = { option = "text" }, readonly = true },
+  { path = "files.*.language", type = "text" },
+  { path = "buffers", type = { map = "any" } },
+  { path = "terminal_panel", type = { option = { named = "Terminal" } }, readonly = true, stored = "record" },
+  { path = "terminal_panel.target", type = { option = "text" }, readonly = true },
+  { path = "terminal_panel.relay_session", type = { option = "text" }, readonly = true },
+  { path = "terminal_panel.pane", type = { option = "text" }, readonly = true },
+  { path = "terminal_panel.device", type = { option = "text" }, readonly = true },
+  { path = "terminal_panel.holder", type = { option = "text" }, readonly = true },
+  { path = "terminal_panel.runs", type = { collection = { named = "Run" } }, readonly = true, stored = "collection" },
+  { path = "terminal_panel.runs.*.command", type = "text", label = true },
+  { path = "terminal_panel.runs.*.cwd", type = "text" },
+  { path = "terminal_panel.runs.*.environment", type = { option = "text" } },
+  { path = "terminal_panel.runs.*.actor", type = "text" },
+  { path = "terminal_panel.runs.*.for_person", type = { option = "text" } },
+  { path = "terminal_panel.runs.*.started_ms", type = "int" },
+  { path = "terminal_panel.runs.*.ended_ms", type = "int" },
+  { path = "terminal_panel.runs.*.exit", type = "int" },
+  { path = "terminal_panel.runs.*.output", type = "any" },
   { path = "terminal_panel.runs.*.truncated", type = "bool" },
-  { path = "terminal_panel.runs.*.tool", type = "Atom" },
+  { path = "terminal_panel.runs.*.tool", type = "text" },
   { path = "terminal_panel.runs.*.undoable", type = "bool" },
-  { path = "terminal_panel.runs.*.items", type = "Vec<RunItem>" },
-  { path = "terminal_panel.requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
-  { path = "terminal_requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
+  { path = "terminal_panel.runs.*.items", type = { list = { named = "RunItem" } } },
+  { path = "terminal_panel.requests", type = { outbox = { named = "RunRequest" } }, readonly = true, unit = true },
+  { path = "terminal_requests", type = { outbox = { named = "RunRequest" } }, readonly = true, unit = true },
 ]
 
 [[resources.verbs]]
 id = "new-file"
 kind = "undoable"
 params = [
-  { name = "name", required = false, schema = { type = ["string", "null"] } },
-  { name = "folder", required = false, schema = { type = ["string", "null"] } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "new-folder"
 kind = "undoable"
 params = [
-  { name = "name", required = false, schema = { type = ["string", "null"] } },
-  { name = "folder", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "rename"
 kind = "undoable"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-entry"
 kind = "undoable"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
-  { name = "folder", required = false, schema = { type = ["string", "null"] } },
-  { name = "before", required = false, schema = { type = ["string", "null"] } },
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "before", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "replace-text"
 kind = "undoable"
 params = [
-  { name = "file", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -80,7 +82,7 @@ id = "replace-range"
 kind = "undoable"
 params = [
   { name = "at", required = true, schema = { type = "object", additionalProperties = false, place = "files", properties = { at = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, item = { type = "string", minLength = 1 }, start = { type = "integer", minimum = 0 } }, required = ["item"] } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -88,87 +90,232 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "entry", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-entry"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "kind", required = true, schema = { type = "string", enum = ["file", "folder"] } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "folder", required = false, schema = { type = ["string", "null"] } },
-  { name = "language", required = true, schema = { type = "string" } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "kind", type = { named = "EntryKind" }, required = true, schema = { type = "string", enum = ["file", "folder"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "language", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-text"
 kind = "undoable"
 params = [
-  { name = "file", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "record-target"
 kind = "undoable"
 params = [
-  { name = "target", required = true, schema = { type = "string" } },
+  { name = "target", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "record-relay-session"
 kind = "undoable"
 params = [
-  { name = "session", required = false, schema = { type = ["string", "null"] } },
+  { name = "session", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "claim-pane"
 kind = "undoable"
 params = [
-  { name = "pane", required = true, schema = { type = "string" } },
+  { name = "pane", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "run"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "command", required = true, schema = { type = "string" } },
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rerun"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "run", required = true, schema = { type = "string" } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "rerun-test"
 kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
 params = [
-  { name = "run", required = true, schema = { type = "string" } },
-  { name = "test", required = true, schema = { type = "string" } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
+  { name = "test", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "stop"
+kind = "undoable"
 
 [[resources.verbs]]
 id = "record-run"
 kind = "undoable"
 params = [
-  { name = "command", required = true, schema = { type = "string" } },
-  { name = "cwd", required = true, schema = { type = "string" } },
-  { name = "started_ms", required = true, schema = { type = "integer" } },
-  { name = "ended_ms", required = true, schema = { type = "integer" } },
-  { name = "exit", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
-  { name = "output", required = false, schema = { type = ["string", "null"] } },
-  { name = "output_len", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "truncated", required = true, schema = { type = "boolean" } },
-  { name = "tool", required = true, schema = { type = "string" } },
-  { name = "undoable", required = true, schema = { type = "boolean" } },
-  { name = "items", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
-  { name = "request", required = false, schema = { type = ["string", "null"] } },
-  { name = "run", required = true, schema = { type = "string" } },
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
+  { name = "cwd", type = "text", required = true, schema = { type = "string" } },
+  { name = "started_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "output", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "output_len", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "truncated", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "tool", type = "text", required = true, schema = { type = "string" } },
+  { name = "undoable", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "items", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
+  { name = "request", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reveal"
+kind = "read"
+params = [
+  { name = "file", type = { option = "text" }, required = false },
+  { name = "path", type = { option = "any" }, required = false },
+  { name = "line", type = "int", required = true },
+  { name = "column", type = "int", required = true },
+  { name = "results", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "find"
+kind = "read"
+
+[[resources.verbs]]
+id = "search-project"
+kind = "read"
+
+[[resources.verbs]]
+id = "go-to-line"
+kind = "read"
+params = [
+  { name = "value", type = { option = "text" }, required = false },
+]
+
+[[resources.verbs]]
+id = "toggle-bottom-panel"
+kind = "read"
+
+[[resources.verbs]]
+id = "next-theme"
+kind = "read"
+
+[[resources.verbs]]
+id = "go-to-problems"
+kind = "read"
+
+[[resources.verbs]]
+id = "go-to-search"
+kind = "read"
+
+[[resources.verbs]]
+id = "go-to-terminal"
+kind = "read"
+
+[[resources.verbs]]
+id = "toggle-sidebar"
+kind = "read"
+
+[[resources.verbs]]
+id = "toggle-language-servers"
+kind = "read"
+
+[[resources.verbs]]
+id = "toggle-format-on-save"
+kind = "read"
+
+[[resources.types]]
+name = "Entry"
+fields = [
+  { name = "kind", type = { named = "EntryKind" } },
+  { name = "name", type = "text" },
+  { name = "parent", type = { option = "text" } },
+  { name = "language", type = "text" },
+]
+
+[[resources.types]]
+name = "EntryKind"
+cases = [
+  { name = "file" },
+  { name = "folder" },
+]
+
+[[resources.types]]
+name = "ItemKind"
+cases = [
+  { name = "error" },
+  { name = "warning" },
+  { name = "location" },
+  { name = "url" },
+  { name = "test-passed" },
+  { name = "test-failed" },
+  { name = "test-ignored" },
+  { name = "change" },
+]
+
+[[resources.types]]
+name = "Run"
+fields = [
+  { name = "command", type = "text" },
+  { name = "cwd", type = "text" },
+  { name = "environment", type = { option = "text" } },
+  { name = "actor", type = "text" },
+  { name = "for_person", type = { option = "text" } },
+  { name = "started_ms", type = "int" },
+  { name = "ended_ms", type = "int" },
+  { name = "exit", type = "int" },
+  { name = "output", type = "any" },
+  { name = "truncated", type = "bool" },
+  { name = "tool", type = "text" },
+  { name = "undoable", type = "bool" },
+  { name = "items", type = { list = { named = "RunItem" } } },
+]
+
+[[resources.types]]
+name = "RunItem"
+fields = [
+  { name = "kind", type = { named = "ItemKind" } },
+  { name = "text", type = "text" },
+  { name = "path", type = { option = "text" } },
+  { name = "line", type = { option = "int" } },
+  { name = "column", type = { option = "int" } },
+  { name = "code", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "RunRequest"
+fields = [
+  { name = "command", type = "text" },
+  { name = "requested_by", type = "text" },
+  { name = "for_person", type = { option = "text" } },
+  { name = "pane", type = "text" },
+  { name = "agent", type = "bool" },
+]
+
+[[resources.types]]
+name = "Terminal"
+fields = [
+  { name = "target", type = { option = "text" } },
+  { name = "relay_session", type = { option = "text" } },
+  { name = "pane", type = { option = "text" } },
+  { name = "runs", type = { collection = { named = "Run" } } },
+  { name = "requests", type = { outbox = { named = "RunRequest" } } },
 ]
 

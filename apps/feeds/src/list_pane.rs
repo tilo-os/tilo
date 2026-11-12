@@ -28,7 +28,10 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
+use crate::i18n::CATALOG;
 use crate::model::{Article, Filter, Id, relative_time};
+use ui::i18n::ArgValue;
+use ui::widget::DrawChild;
 
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 
@@ -120,7 +123,7 @@ impl Default for ListState {
             reveal: true,
             content: 0.0,
             rows: Vec::new(),
-            progress: ProgressBar::new(0.0).with_label("Refreshing feeds"),
+            progress: ProgressBar::new(0.0).with_label(crate::i18n::t("feeds-refreshing")),
             shown_drawing: None,
             shown_presented: None,
         }
@@ -504,7 +507,9 @@ impl Core {
         };
         self.list.progress.set_progress(fraction as f32);
         self.list.progress.apply_layout_external(bar);
-        self.list.progress.draw(scene, t, text, theme, presence);
+        self.list
+            .progress
+            .draw_child(scene, t, text, theme, presence);
         let top = bar.y1 + f64::from(spacing.s3);
         ui::surface::separator(
             scene,
@@ -576,7 +581,10 @@ impl Core {
                     .accessibility(row.rect, format!("feeds.article:{}", row.id))
                     .with_children(vec![
                         AccessNode::new(Role::ToggleButton)
-                            .with_name(format!("Star {}", article.title))
+                            .with_name(CATALOG.t_args(
+                                "feeds-a11y-star",
+                                &[("article", ArgValue::Text(article.title.clone()))],
+                            ))
                             .with_state(AccessState::new().focusable(true).checked(article.starred))
                             .with_bounds(row.star.unwrap_or(row.rect))
                             .with_action_target(format!("feeds.star:{}", row.id)),
@@ -724,7 +732,7 @@ impl Widget for ListPane {
         if let Some((_, empty)) = self.empty.as_mut() {
             // Centred in the rows' viewport, below any refresh progress.
             empty.apply_layout_external(viewport);
-            empty.draw(scene, transform, text, theme, presence);
+            empty.draw_child(scene, transform, text, theme, presence);
         }
     }
 

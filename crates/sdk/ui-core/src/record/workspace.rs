@@ -158,7 +158,9 @@ impl WorkspaceRecords {
         };
         let store = (self.open)(owner)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
-        match store.try_open_record(&checkout) {
+        // A list names far more records than anyone opens: it never asks the
+        // workspace for one it does not hold.
+        match store.open_if_held(&checkout) {
             Ok(_) => Ok(true),
             Err(RecordOpenError::MissingRecord) => Ok(false),
             Err(error) => Err(error),

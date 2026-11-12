@@ -1,12 +1,13 @@
 //! Content a governed workspace's records reference that this host keeps: what
 //! its bots fetched from outside (a bridged person's avatar, a file posted
-//! elsewhere) and the surfaces of the apps it decided changes with, whichever
+//! elsewhere), the surfaces of the apps it decided changes with, whichever
 //! version those changes were written by, which members decide the host's
-//! changes against.
+//! changes against, and the files of a workspace its members wrote and left
+//! ([`crate::workspaces::ContentKeeper`]).
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
 //! presence ([`NeighbourMsg::RecordContentWant`]), as it asks any member.
-//! The host answers from what it keeps, to that member's device alone, in
+//! The host answers from everything it keeps, to that member's device alone, in
 //! the same bounded pieces a member answers with; the member keeps the
 //! content once every piece arrived and the bytes hash to what it asked.
 //!
@@ -16,15 +17,20 @@
 //! and it lacks ([`super::surfaces`]). It asks the workspace on its own
 //! presence, and the pieces members answer it with come to it, not to another
 //! device.
+//!
+//! Several keepers keep for a host at once (its bots' files, its workspaces'
+//! files), each of them saying which of the pieces members answer the host
+//! with are its own; and several sources serve, each answering with the
+//! content it keeps and leaving the rest to the others.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::ContentWants;
 use tilo_peer_state::peer_handle;
 
-use super::Workspaces;
+use super::{CollaborationError, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The bytes of one piece, as members answer.
@@ -43,6 +49,7 @@ pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
         app_id,
         cluster_id,
         hash,
+        ..
     }) = postcard::from_bytes(body)
     else {
         return None;
@@ -87,8 +94,12 @@ pub trait ContentKeeper: Send + Sync {
 /// members answer the host with, once it has them.
 #[derive(Default)]
 pub(super) struct ContentSlot {
-    pub(super) source: RwLock<Option<Arc<dyn WorkspaceContent>>>,
-    pub(super) keeper: RwLock<Option<Arc<dyn ContentKeeper>>>,
+    pub(super) sources: RwLock<Vec<Arc<dyn WorkspaceContent>>>,
+    /// Held weakly: a keeper keeps the workspaces that answer members' pieces
+    /// (a host's files do), so a strong handle here would keep the keeper and
+    /// the workspaces alive — and the host's endpoint with them — for as long
+    /// as the process runs.
+    pub(super) keepers: RwLock<Vec<Weak<dyn ContentKeeper>>>,
     /// The app surfaces this host asked the workspace for, by hash
     /// ([`Workspaces::ask_surface`]).
     pub(super) surfaces: Mutex<ContentWants<()>>,
@@ -98,23 +109,32 @@ pub(super) struct ContentSlot {
 }
 
 impl ContentSlot {
-    fn get(&self) -> Option<Arc<dyn WorkspaceContent>> {
-        self.source.read_recover().clone()
+    fn get(&self) -> Vec<Arc<dyn WorkspaceContent>> {
+        self.sources.read_recover().clone()
+    }
+
+    fn keepers(&self) -> Vec<Arc<dyn ContentKeeper>> {
+        self.keepers
+            .read_recover()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
     }
 }
 
 impl Workspaces {
-    /// Answer members' requests for content from `content`.
+    /// Answer members' requests for content from `content`, beside whatever
+    /// else this host serves.
     pub fn serve_content(&self, content: Arc<dyn WorkspaceContent>) {
-        *self.inner.content.source.write_recover() = Some(content);
+        let mut sources = self.inner.content.sources.write_recover();
+        if !sources.iter().any(|served| Arc::ptr_eq(served, &content)) {
+            sources.push(content);
+        }
     }
 
-    /// The bytes named `hash` this host keeps for the workspace of `workspace`
-    /// governed here, checked against the hash: what its bots fetched and
-    /// the files it keeps for members. `None` for a workspace not governed here
-    /// or content it does not keep.
-    pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
-        let source = self.inner.content.get()?;
+    /// The uuid of the workspace governed here whose channels are
+    /// `workspace`; `None` for one not governed here.
+    pub async fn workspace_identity(&self, workspace: u64) -> Option<String> {
         let workspaces = self
             .inner
             .workspaces
@@ -125,53 +145,221 @@ impl Workspaces {
             .collect::<Vec<_>>();
         for (identity, governed) in workspaces {
             if governed.lock().await.workspace_id() == workspace {
-                return source
-                    .read(&identity, "", hash)
-                    .filter(|bytes| tilo_content::verify(hash, bytes));
+                return Some(identity);
             }
         }
         None
     }
 
-    /// Hand the pieces of content members send this host to `keeper`.
-    pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
-        *self.inner.content.keeper.write_recover() = Some(keeper);
+    /// The name of the workspace governed here whose channels are
+    /// `workspace`; `None` for one not governed here.
+    pub async fn workspace_name(&self, workspace: u64) -> Option<String> {
+        let identity = self.workspace_identity(workspace).await?;
+        let governed = self.inner.workspaces.lock().await.get(&identity)?.clone();
+        let name = governed.lock().await.record.name.clone();
+        Some(name)
+    }
+
+    /// The bytes named `hash` this host keeps for the workspace of `workspace`
+    /// governed here, checked against the hash: what its bots fetched and
+    /// the files it keeps for members. `None` for a workspace not governed here
+    /// or content it does not keep.
+    pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+        let sources = self.inner.content.get();
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .iter()
+            .map(|(identity, governed)| (identity.clone(), governed.clone()))
+            .collect::<Vec<_>>();
+        for (identity, governed) in workspaces {
+            if governed.lock().await.workspace_id() == workspace {
+                return sources.iter().find_map(|source| {
+                    source
+                        .read(&identity, "", hash)
+                        .filter(|bytes| tilo_content::verify(hash, bytes))
+                });
+            }
+        }
+        None
+    }
+
+    /// Every record of `workspace` the governor's copy holds (or of `only`
+    /// among them), each saved with all of its history: what tells a host
+    /// which content the workspace still references, now or in a version it
+    /// can go back to. Read from a copy of the governor's state, taken in a
+    /// moment: the workspace takes writes while its records are read.
+    /// A record that cannot be read whole (sealed for a channel this host has
+    /// no keys of, or with sealed writes that do not open or merge yet) is
+    /// logged with why and listed in [`WholeRecords::unread`], and the rest
+    /// are read all the same: a caller that must see every reference checks
+    /// [`WholeRecords::is_whole`]. A person's own record sealed for their
+    /// devices alone is listed in [`WholeRecords::private`] instead.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn whole_records(
+        &self,
+        workspace: &str,
+        only: Option<&BTreeSet<(String, String)>>,
+    ) -> Result<WholeRecords, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let (peer, device) = {
+            let governed = state.lock().await;
+            let peer = governed.peer().clone();
+            (peer, governed.device.clone())
+        };
+        let routes: Vec<(String, String)> = peer
+            .plaintext_routes()
+            .into_iter()
+            .chain(peer.sealed_routes())
+            .filter(|route| only.is_none_or(|only| only.contains(route)))
+            .collect();
+        let mut read = WholeRecords::default();
+        for (app, record) in routes {
+            #[cfg(any(feature = "agents", feature = "web"))]
+            let document = super::sealed_records::whole_document(
+                &peer,
+                device.as_ref(),
+                workspace,
+                (&app, &record),
+            )
+            .await;
+            #[cfg(not(any(feature = "agents", feature = "web")))]
+            let document = {
+                let _ = &device;
+                if peer.publication().is_sealed_record(&app, &record) {
+                    Err("it is sealed and this host opens no sealed records".to_owned())
+                } else {
+                    peer.document(&app, &record)
+                        .ok_or_else(|| "the host holds no copy of it".to_owned())
+                }
+            };
+            let document = document.and_then(|document| {
+                peer.record_revision(&app, &record)
+                    .map(|revision| (document, revision))
+                    .ok_or_else(|| "it has no revision yet".to_owned())
+            });
+            match document {
+                Ok((document, revision)) => {
+                    read.revisions
+                        .insert((app.clone(), record.clone()), revision);
+                    read.documents.push(((app, record), document));
+                }
+                // A person's own record sealed for their devices alone
+                // ([`tilo_action_policy::member_record`], their drafts) is not
+                // the host's to read: it is named apart, not as unread.
+                Err(why)
+                    if tilo_action_policy::member_record(&record).is_some()
+                        && peer.publication().is_sealed_record(&app, &record) =>
+                {
+                    tracing::debug!(workspace, %app, %record, %why, "a person's own record is not the host's to read");
+                    read.private.push((app, record));
+                }
+                Err(why) => {
+                    tracing::warn!(
+                        workspace,
+                        %app,
+                        %record,
+                        %why,
+                        "a record of the workspace does not read whole"
+                    );
+                    read.unread.push(((app, record), why));
+                }
+            }
+        }
+        Ok(read)
+    }
+
+    /// Run `act` while `workspace` takes no write, if none of the records
+    /// `read` read has changed since and none was added: `Ok(Ok(_))` with
+    /// what it answered, or `Ok(Err(_))` with the records that changed or
+    /// appeared, for the caller to read again. The workspace waits only as
+    /// long as `act` takes.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn while_unwritten<R>(
+        &self,
+        workspace: &str,
+        read: &WholeRecords,
+        act: impl FnOnce() -> R,
+    ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        // Members' writes are taken into the replica under its own lock: held
+        // too, nothing lands while `act` runs.
+        let peer = governed.peer();
+        let changed: BTreeSet<(String, String)> = peer
+            .plaintext_routes()
+            .into_iter()
+            .chain(peer.sealed_routes())
+            .filter(|(app, record)| {
+                read.revisions.get(&(app.clone(), record.clone()))
+                    != peer.record_revision(app, record).as_ref()
+            })
+            .collect();
+        let answer = if changed.is_empty() {
+            Ok(act())
+        } else {
+            Err(changed)
+        };
+        drop(peer);
+        drop(governed);
+        Ok(answer)
+    }
+
+    /// Hand the pieces of content members send this host to `keeper`, beside
+    /// whatever else this host keeps. The keeper is not held: whoever runs it
+    /// owns it, and its pieces stop coming here when it goes.
+    pub fn keep_content(&self, keeper: &Arc<dyn ContentKeeper>) {
+        let mut keepers = self.inner.content.keepers.write_recover();
+        keepers.retain(|kept| kept.strong_count() > 0);
+        let keeper = Arc::downgrade(keeper);
+        if !keepers.iter().any(|kept| Weak::ptr_eq(kept, &keeper)) {
+            keepers.push(keeper);
+        }
     }
 
     /// `frame`, a piece of content the member device `from` sent this host
-    /// in `workspace`: to the keeper, or, when it is a surface the host asked
-    /// for, into the content plane the host decides with. Dropped when the
-    /// host expects neither.
+    /// in `workspace`: to the keeper that asked for it, or, when it is a
+    /// surface the host asked for, into the content plane the host decides
+    /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
-        let keeper = self.inner.content.keeper.read_recover().clone();
-        if let Some(keeper) = keeper
-            && keeper.expects(workspace, frame)
-        {
-            keeper.piece(workspace, from, frame);
-            return;
+        for keeper in self.inner.content.keepers() {
+            if keeper.expects(workspace, frame) {
+                keeper.piece(workspace, from, frame);
+                return;
+            }
         }
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
         // answered with it.
         let device = self.inner.host.cert.device_public_key;
-        let arrived = self
-            .inner
-            .content
-            .surfaces
-            .lock_recover()
-            .piece(&device, frame);
+        let arrived = self.inner.content.surfaces.lock_recover().piece(
+            &device,
+            frame,
+            tilo_clock::unix_now_ms(),
+        );
         if let Some(arrived) = arrived {
             crate::surfaces::keep(&arrived.hash, &arrived.bytes);
         }
     }
 
     /// Whether `frame`, a piece of content a member sent this host in
-    /// `workspace`, answers a request this host made: its keeper's
+    /// `workspace`, answers a request this host made: a keeper's
     /// ([`ContentKeeper::expects`]) or its own for a surface.
     pub(crate) fn host_expects(&self, workspace: &str, frame: &[u8]) -> bool {
-        let keeper = self.inner.content.keeper.read_recover().clone();
         let device = self.inner.host.cert.device_public_key;
-        keeper.is_some_and(|keeper| keeper.expects(workspace, frame))
+        self.inner
+            .content
+            .keepers()
+            .iter()
+            .any(|keeper| keeper.expects(workspace, frame))
             || self
                 .inner
                 .content
@@ -206,8 +394,12 @@ impl Workspaces {
     }
 
     /// Publish `body`, a `NeighbourMsg::RecordContentWant` naming this
-    /// host, on `workspace`'s presence: the members keeping the content answer
-    /// the host. The number of devices it reached.
+    /// host, to `workspace`'s members: the ones keeping the content answer the
+    /// host. A member reaches the workspace's other devices only through this
+    /// host, and the host asks them the same way they ask it — on the live
+    /// plane for the members reaching it there, and on the workspace's own
+    /// link for those directly connected, which is where their answers come
+    /// from. The number of devices it reached on the live plane.
     ///
     /// # Errors
     ///
@@ -220,11 +412,20 @@ impl Workspaces {
             .lock()
             .await
             .workspace_id();
-        self.inner
+        let reached = self
+            .inner
             .host
             .records
-            .host_presence(workspace_id, body)
-            .await
+            .host_presence(workspace_id, body.clone())
+            .await?;
+        // ignored-failure: the body is the host's own request, which it just encoded
+        if let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&body)
+            && let Some(link) = self.inner.direct.link(workspace_id)
+            && let Err(error) = link.send(message)
+        {
+            tracing::debug!(%workspace, %error, "a workspace's link did not carry the host's request");
+        }
+        Ok(reached)
     }
 
     /// The answer to `body`, a presence `workspace`'s member published, when it
@@ -239,6 +440,7 @@ impl Workspaces {
             app_id,
             cluster_id,
             hash,
+            have,
         }) = postcard::from_bytes(body)
         else {
             return Vec::new();
@@ -254,7 +456,8 @@ impl Workspaces {
                 self.inner
                     .content
                     .get()
-                    .and_then(|content| content.read(workspace, &app_id, &hash))
+                    .iter()
+                    .find_map(|source| source.read(workspace, &app_id, &hash))
             })
             // A record started by an older version of an app reads its writes
             // with that version's surface, which the workspace's content plane
@@ -277,23 +480,75 @@ impl Workspaces {
             offset,
             bytes: chunk.to_vec(),
         };
+        // At most a window of what the asker lacks: it asks again for the
+        // rest, so a large file crosses a session's outbound queue in windows
+        // instead of filling it and losing what it cannot carry
+        // ([`neighbour_wire::content::answer`] makes the same answer for the
+        // content a keeper holds).
         let pieces = if bytes.is_empty() {
             vec![piece(0, &[])]
         } else {
-            let mut offset = 0_u64;
-            bytes
-                .chunks(PIECE_BYTES)
-                .map(|chunk| {
-                    let message = piece(offset, chunk);
-                    offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(0));
-                    message
-                })
-                .collect()
+            let mut pieces = Vec::new();
+            for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
+                if pieces.len() >= neighbour_wire::content::PIECES_PER_ANSWER {
+                    break;
+                }
+                let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
+                let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+                if neighbour_wire::content::holds(&have, offset, len) {
+                    continue;
+                }
+                pieces.push(piece(offset, chunk));
+            }
+            pieces
         };
         pieces
             .iter()
             .filter_map(|message| postcard::to_allocvec(message).ok())
             .collect()
+    }
+}
+
+/// Records of a workspace read whole ([`Workspaces::whole_records`]), with
+/// the revision each was read at, and those that did not read whole.
+#[derive(Default)]
+pub struct WholeRecords {
+    /// Each record, by its app and id, saved with all of its history.
+    pub documents: Vec<((String, String), Vec<u8>)>,
+    /// Each record that did not read whole, by its app and id, with why.
+    pub unread: Vec<((String, String), String)>,
+    /// People's own records sealed for their devices alone, by app and id:
+    /// not the host's to read, and no part of what it reads whole.
+    pub private: Vec<(String, String)>,
+    revisions: BTreeMap<(String, String), [u8; 32]>,
+}
+
+impl WholeRecords {
+    /// Every record the host is to read read whole: what they name is all the
+    /// workspace names that the host keeps for it. A person's own sealed
+    /// record is theirs, not one the host reads.
+    #[must_use]
+    pub fn is_whole(&self) -> bool {
+        self.unread.is_empty()
+    }
+
+    /// Take in `newer`, records read again: their revisions are the ones
+    /// read last, and each read again is unread only if it is unread now.
+    pub fn extend(&mut self, newer: Self) {
+        self.unread.retain(|(route, _)| {
+            !newer.revisions.contains_key(route)
+                && !newer.unread.iter().any(|(again, _)| again == route)
+        });
+        self.documents.extend(newer.documents);
+        self.unread.extend(newer.unread);
+        self.private
+            .retain(|route| !newer.revisions.contains_key(route));
+        for route in newer.private {
+            if !self.private.contains(&route) {
+                self.private.push(route);
+            }
+        }
+        self.revisions.extend(newer.revisions);
     }
 }
 
@@ -322,6 +577,7 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             cluster_id: workspace.into(),
             hash: hash.into(),
+            have: Vec::new(),
         })
         .unwrap()
     }

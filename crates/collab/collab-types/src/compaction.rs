@@ -142,15 +142,27 @@ fn hash_ops<'a>(ops: impl IntoIterator<Item = &'a SignedOp>) -> Result<[u8; 32],
     Ok(arr)
 }
 
-/// Version of [`SealedCompaction`] this build writes and reads.
+/// Version of a [`SealedCompaction`] whose snapshot is one op.
 pub const SEALED_COMPACTION_VERSION: u8 = 1;
+/// Version of a [`SealedCompaction`] whose snapshot spans its op and the
+/// [`SealedCompactionSegment`]s it names.
+pub const SEGMENTED_COMPACTION_VERSION: u8 = 2;
+/// Version of a [`SealedCompactionSegment`].
+pub const COMPACTION_SEGMENT_VERSION: u8 = 3;
+const SEGMENT_HASH_DOMAIN: &[u8] = b"tilo-compaction-segment-v1\0";
 
 /// Payload of a sealed record's `Compaction` op. The op itself is sealed
 /// under the channel's content key with [`ContentRetention::Checkpoint`]
 /// metadata; `ciphertext` is that sealed `DocumentMutation::Snapshot` of the
 /// merged record, and opens exactly like a sealed snapshot's payload.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// A snapshot larger than one op travels as a segmented document transfer
+/// ([`crate::document_transfer`]): `ciphertext` opens to its first segment,
+/// and `segments` names each later one, sealed in a
+/// [`SealedCompactionSegment`] op of the same author and sequence that follows
+/// the compaction in the record's history. A replica takes the compaction only
+/// with every segment it names, at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedCompaction {
     pub version: u8,
     /// Highest superseded sequence per author, sorted by author, unique.
@@ -159,9 +171,126 @@ pub struct SealedCompaction {
     pub covers: Vec<(Ed25519PublicKey, u64)>,
     /// [`hash_sealed_prefix`] of every superseded write.
     pub prefix_hash: [u8; 32],
-    /// The sealed snapshot of the merged record.
+    /// The sealed snapshot of the merged record, or its first segment.
+    pub ciphertext: Vec<u8>,
+    /// [`segment_hash`] of each later segment's payload, in order; empty for
+    /// a snapshot in one op.
+    pub segments: Vec<[u8; 32]>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WholeWire {
+    version: u8,
+    covers: Vec<(Ed25519PublicKey, u64)>,
+    prefix_hash: [u8; 32],
+    #[serde(with = "serde_bytes")]
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SegmentedWire {
+    version: u8,
+    covers: Vec<(Ed25519PublicKey, u64)>,
+    prefix_hash: [u8; 32],
+    #[serde(with = "serde_bytes")]
+    ciphertext: Vec<u8>,
+    segments: Vec<[u8; 32]>,
+}
+
+/// Payload of one later segment of a segmented [`SealedCompaction`]: a
+/// `Compaction` op of the compaction's author and sequence, sealed with
+/// delta retention, whose `ciphertext` opens to one segment of the
+/// compaction's snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SealedCompactionSegment {
+    pub version: u8,
     #[serde(with = "serde_bytes")]
     pub ciphertext: Vec<u8>,
+}
+
+impl SealedCompactionSegment {
+    /// The segment payload carrying `ciphertext`.
+    #[must_use]
+    pub fn new(ciphertext: Vec<u8>) -> Self {
+        Self {
+            version: COMPACTION_SEGMENT_VERSION,
+            ciphertext,
+        }
+    }
+
+    /// Canonical bytes, the payload of the segment op.
+    pub fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(self)
+    }
+
+    /// Decode `op` as one segment of a segmented compaction.
+    ///
+    /// # Errors
+    ///
+    /// As [`SealedCompaction::parse`], for an op that is no segment.
+    pub fn parse(op: &SignedOp) -> Result<Self, CompactionError> {
+        if op.kind != OpKind::Compaction {
+            return Err(CompactionError::WrongOpKind { actual: op.kind });
+        }
+        // It follows its compaction in a store's retained tail, as a later
+        // segment of any snapshot does.
+        if op.encryption.and_then(|meta| meta.retention()) != Some(ContentRetention::Delta) {
+            return Err(CompactionError::InvalidSealed(
+                "a compaction segment is a content-key delta",
+            ));
+        }
+        if op.payload.first() != Some(&COMPACTION_SEGMENT_VERSION) {
+            return Err(CompactionError::InvalidSealed("not a compaction segment"));
+        }
+        let segment =
+            from_canonical_bytes::<Self>(&op.payload).map_err(CompactionError::Malformed)?;
+        if segment.ciphertext.is_empty() {
+            return Err(CompactionError::InvalidSealed("empty ciphertext"));
+        }
+        Ok(segment)
+    }
+}
+
+/// Whether `op` is one later segment of a segmented compaction, by its
+/// payload's version; [`SealedCompactionSegment::parse`] checks the rest.
+#[must_use]
+pub fn is_compaction_segment(op: &SignedOp) -> bool {
+    op.kind == OpKind::Compaction && op.payload.first() == Some(&COMPACTION_SEGMENT_VERSION)
+}
+
+/// Whether `op` is a piece of a compaction that spans several ops: one of its
+/// segments, or the compaction that names them. A replica takes such a piece
+/// only with every other piece of its compaction.
+#[must_use]
+pub fn is_compaction_piece(op: &SignedOp) -> bool {
+    is_compaction_segment(op)
+        || (op.kind == OpKind::Compaction
+            && op.payload.first() == Some(&SEGMENTED_COMPACTION_VERSION))
+}
+
+/// Digest a segmented compaction names a segment op's `payload` by.
+#[must_use]
+pub fn segment_hash(payload: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(SEGMENT_HASH_DOMAIN);
+    hasher.update(payload);
+    hasher.finalize().into()
+}
+
+fn sealed_checkpoint(op: &SignedOp) -> Result<(), CompactionError> {
+    if op.kind != OpKind::Compaction {
+        return Err(CompactionError::WrongOpKind { actual: op.kind });
+    }
+    if op.encryption.and_then(|meta| meta.retention()) != Some(ContentRetention::Checkpoint) {
+        return Err(CompactionError::InvalidSealed(
+            "a sealed compaction is a content-key checkpoint",
+        ));
+    }
+    Ok(())
 }
 
 impl SealedCompaction {
@@ -188,12 +317,44 @@ impl SealedCompaction {
             covers: covers.into_iter().collect(),
             prefix_hash: hash_sealed_prefix(superseded).map_err(CompactionError::Malformed)?,
             ciphertext,
+            segments: Vec::new(),
         })
+    }
+
+    /// This compaction with its snapshot continued in the segment ops whose
+    /// payloads are `segments`, in order.
+    #[must_use]
+    pub fn segmented(mut self, segments: &[Vec<u8>]) -> Self {
+        self.segments = segments
+            .iter()
+            .map(|payload| segment_hash(payload))
+            .collect();
+        self.version = if self.segments.is_empty() {
+            SEALED_COMPACTION_VERSION
+        } else {
+            SEGMENTED_COMPACTION_VERSION
+        };
+        self
     }
 
     /// Canonical bytes, the payload of the compaction op.
     pub fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
-        canonical_bytes(self)
+        if self.segments.is_empty() {
+            canonical_bytes(&WholeWire {
+                version: self.version,
+                covers: self.covers.clone(),
+                prefix_hash: self.prefix_hash,
+                ciphertext: self.ciphertext.clone(),
+            })
+        } else {
+            canonical_bytes(&SegmentedWire {
+                version: self.version,
+                covers: self.covers.clone(),
+                prefix_hash: self.prefix_hash,
+                ciphertext: self.ciphertext.clone(),
+                segments: self.segments.clone(),
+            })
+        }
     }
 
     /// Decode `op` as a sealed compaction: a `Compaction` op sealed with
@@ -204,19 +365,37 @@ impl SealedCompaction {
     /// [`CompactionError::WrongOpKind`], [`CompactionError::Malformed`] or
     /// [`CompactionError::InvalidSealed`].
     pub fn parse(op: &SignedOp) -> Result<Self, CompactionError> {
-        if op.kind != OpKind::Compaction {
-            return Err(CompactionError::WrongOpKind { actual: op.kind });
-        }
-        if op.encryption.and_then(|meta| meta.retention()) != Some(ContentRetention::Checkpoint) {
-            return Err(CompactionError::InvalidSealed(
-                "a sealed compaction is a content-key checkpoint",
-            ));
-        }
-        let compaction =
-            from_canonical_bytes::<Self>(&op.payload).map_err(CompactionError::Malformed)?;
-        if compaction.version != SEALED_COMPACTION_VERSION {
-            return Err(CompactionError::InvalidSealed("unknown version"));
-        }
+        sealed_checkpoint(op)?;
+        let compaction = match op.payload.first() {
+            Some(&SEALED_COMPACTION_VERSION) => {
+                let wire = from_canonical_bytes::<WholeWire>(&op.payload)
+                    .map_err(CompactionError::Malformed)?;
+                Self {
+                    version: wire.version,
+                    covers: wire.covers,
+                    prefix_hash: wire.prefix_hash,
+                    ciphertext: wire.ciphertext,
+                    segments: Vec::new(),
+                }
+            }
+            Some(&SEGMENTED_COMPACTION_VERSION) => {
+                let wire = from_canonical_bytes::<SegmentedWire>(&op.payload)
+                    .map_err(CompactionError::Malformed)?;
+                if wire.segments.is_empty() {
+                    return Err(CompactionError::InvalidSealed(
+                        "a segmented compaction names no segment",
+                    ));
+                }
+                Self {
+                    version: wire.version,
+                    covers: wire.covers,
+                    prefix_hash: wire.prefix_hash,
+                    ciphertext: wire.ciphertext,
+                    segments: wire.segments,
+                }
+            }
+            _ => return Err(CompactionError::InvalidSealed("unknown version")),
+        };
         if compaction.covers.is_empty()
             || !compaction
                 .covers
@@ -247,6 +426,21 @@ impl SealedCompaction {
             .and_then(|index| self.covers.get(index))
             .map(|(_, seq)| *seq)
     }
+
+    /// Whether `segment`, a segment op, is the `index`th this compaction
+    /// (whose op is `head`) names: of its author and sequence, under its epoch.
+    #[must_use]
+    pub fn names_segment(&self, head: &SignedOp, index: usize, segment: &SignedOp) -> bool {
+        self.segments
+            .get(index)
+            .is_some_and(|hash| *hash == segment_hash(&segment.payload))
+            && segment.author == head.author
+            && segment.seq == head.seq
+            && segment.artifact == head.artifact
+            && segment.encryption.map(|meta| (meta.channel, meta.epoch))
+                == head.encryption.map(|meta| (meta.channel, meta.epoch))
+            && SealedCompactionSegment::parse(segment).is_ok()
+    }
 }
 
 /// Digest of a set of sealed writes, independent of the order a replica
@@ -261,13 +455,16 @@ pub fn hash_sealed_prefix<'a>(
 }
 
 /// The content-key ciphertext of a sealed op: a sealed compaction's
-/// snapshot, any other op's payload. Every content opener reads through
+/// snapshot (or one segment of it), any other op's payload. Every content opener reads through
 /// this, so a key holder opens a compaction like any sealed snapshot.
 ///
 /// # Errors
 ///
 /// As [`SealedCompaction::parse`], for a `Compaction` op.
 pub fn sealed_ciphertext(op: &SignedOp) -> Result<Cow<'_, [u8]>, CompactionError> {
+    if is_compaction_segment(op) {
+        return SealedCompactionSegment::parse(op).map(|segment| Cow::Owned(segment.ciphertext));
+    }
     if op.kind == OpKind::Compaction {
         return SealedCompaction::parse(op).map(|compaction| Cow::Owned(compaction.ciphertext));
     }
@@ -483,6 +680,59 @@ mod tests {
             ))
             .is_err(),
             "trailing bytes"
+        );
+    }
+
+    /// A compaction whose snapshot spans several ops names each segment by its payload, keeps
+    /// the one-op encoding for one that does not, and opens each segment as its own ciphertext.
+    #[test]
+    fn a_segmented_compaction_names_exactly_its_segments() {
+        let superseded = [dummy_op(1), dummy_op(2)];
+        let whole = SealedCompaction::new(&superseded, vec![7]).unwrap();
+        let encoded = whole.encode().unwrap();
+        assert_eq!(encoded.first(), Some(&SEALED_COMPACTION_VERSION));
+        let payloads: Vec<Vec<u8>> = [vec![8], vec![9]]
+            .into_iter()
+            .map(|ciphertext| SealedCompactionSegment::new(ciphertext).encode().unwrap())
+            .collect();
+        let segmented = whole.segmented(&payloads);
+        let head = sealed_op(
+            segmented.encode().unwrap(),
+            OpKind::Compaction,
+            ContentRetention::Checkpoint,
+        );
+        assert_eq!(SealedCompaction::parse(&head).unwrap(), segmented);
+        assert!(is_compaction_piece(&head) && !is_compaction_segment(&head));
+        let segment = |payload: &Vec<u8>, retention| {
+            let mut op = sealed_op(payload.clone(), OpKind::Compaction, retention);
+            op.author = head.author;
+            op.seq = head.seq;
+            op.artifact = head.artifact;
+            op.encryption = head.encryption.map(|meta| {
+                crate::op::EncryptionMetadata::content_key(meta.epoch, meta.channel, retention)
+            });
+            op
+        };
+        let first = segment(&payloads[0], ContentRetention::Delta);
+        let second = segment(&payloads[1], ContentRetention::Delta);
+        assert!(is_compaction_segment(&first) && is_compaction_piece(&first));
+        assert!(segmented.names_segment(&head, 0, &first));
+        assert!(segmented.names_segment(&head, 1, &second));
+        assert!(!segmented.names_segment(&head, 0, &second), "out of order");
+        assert!(
+            !segmented.names_segment(
+                &head,
+                0,
+                &segment(&payloads[0], ContentRetention::Checkpoint)
+            ),
+            "a segment follows its compaction as a delta"
+        );
+        assert_eq!(sealed_ciphertext(&second).unwrap().as_ref(), &[9]);
+        let mut other = first;
+        other.seq += 1;
+        assert!(
+            !segmented.names_segment(&head, 0, &other),
+            "another sequence"
         );
     }
 

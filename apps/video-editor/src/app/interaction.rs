@@ -1270,7 +1270,7 @@ pub(super) fn goto_field(initial: &str) -> ui::widget::TextInput {
         .with_kind(ui::widget::TextInputKind::Number)
         .with_text_role(TextRole::Title)
         .with_placeholder("0:00")
-        .with_accessible_name("Timecode")
+        .with_accessible_name(crate::resource::CATALOG.t("video-editor-a11y-timecode"))
         .with_initial_value(initial);
     field.set_focus(true);
     field

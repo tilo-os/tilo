@@ -10,7 +10,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use tilo_clock::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 use crate::journal::{EncryptedJournal, Owner, Status};

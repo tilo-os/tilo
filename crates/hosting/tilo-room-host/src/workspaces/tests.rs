@@ -12,8 +12,10 @@ pub(crate) use super::fixtures::{
     test_host, test_host_with_grants,
 };
 
+pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
-mod bots;
+pub(crate) mod bots;
+pub(crate) mod large_record;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
@@ -61,14 +63,13 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let mut proofs = Vec::new();
+    let mut redemptions = Vec::new();
     let mut people = Vec::new();
     for index in 0..6_u8 {
         let token = [index + 1; 8];
@@ -84,35 +85,39 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
             )
             .await
             .unwrap();
-        let (device, device_cert) = guest_device();
+        let (_, device_cert) = guest_device();
         people.push(device_cert.user_public_key);
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation,
-                device_cert,
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
         // The last guest presents someone else's token.
         let token = if index == 5 { [1; 8] } else { token };
-        proofs.push(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Guest {index}"),
-            token: token.to_vec(),
-        });
+        redemptions.push((
+            issued.signed_invitation,
+            device_cert,
+            format!("Guest {index}"),
+            token,
+        ));
     }
     let before = workspaces
         .summary(&created.workspace)
         .await
         .unwrap()
         .generation;
-    let answers =
-        n0_future::join_all(proofs.into_iter().map(|proof| workspaces.page_join(proof))).await;
+    let answers = n0_future::join_all(redemptions.into_iter().map(
+        |(invitation, device_cert, name, token)| {
+            let workspaces = workspaces.clone();
+            async move {
+                workspaces
+                    .admit_proven(
+                        invitation,
+                        device_cert,
+                        rand::random(),
+                        &name,
+                        Some(token.as_slice()),
+                    )
+                    .await
+            }
+        },
+    ))
+    .await;
     for answer in answers.iter().take(5) {
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
@@ -132,16 +137,27 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
         assert!(members.contains(person));
     }
     assert!(!members.contains(&people[5]));
+    // Each is named as they named themself coming in, in that same change.
+    for (index, person) in people.iter().take(5).enumerate() {
+        let member = summary
+            .members
+            .iter()
+            .find(|member| member.user_public_key == *person)
+            .unwrap();
+        assert_eq!(
+            member.display_name.as_deref(),
+            Some(format!("Guest {index}").as_str())
+        );
+    }
     relay.shutdown().await;
 }
 
-/// Concurrent pre-admissions and challenges share their workspace's writes, and
-/// every one of them is written before it is answered: after a restart each
-/// guest still proves its challenge and is admitted.
+/// Concurrent pre-admissions share their workspace's writes, and every one of
+/// them is written before it is answered: after a restart each invitation
+/// still admits its guest.
 #[tokio::test]
-async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_a_restart() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -168,32 +184,19 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     }))
     .await;
     let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
-    let asked = n0_future::join_all(issued.iter().zip(&guests).map(
-        |(issued, (_, device_cert))| {
-            workspaces.page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation.clone(),
-                device_cert: device_cert.clone(),
-                request_id: rand::random(),
-            })
-        },
-    ))
-    .await;
     relay.shutdown().await;
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
-    for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
-        let JoinReply::Challenge { challenge } = asked else {
-            panic!("no challenge: {asked:?}");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+    for (index, (issued, (_, device_cert))) in issued.iter().zip(&guests).enumerate() {
         let token = u8::try_from(index + 1).unwrap();
         let answer = workspaces
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: format!("Guest {index}"),
-                token: vec![token; 8],
-            })
+            .admit_proven(
+                issued.signed_invitation.clone(),
+                device_cert.clone(),
+                rand::random(),
+                &format!("Guest {index}"),
+                Some(&[token; 8][..]),
+            )
             .await;
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
@@ -457,6 +460,80 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     relay.shutdown().await;
 }
 
+/// What a workspace's records service answers an agent with follows from who
+/// the workspace admits: a member's agent, asking as the member on their
+/// device, reads the workspace; a stranger and a revoked device read nothing.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
+    use tilo_actions::remote::Caller;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let created = workspaces.create("A workspace's people").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[5; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    // The member's agent asks as the member, on the member's own device.
+    let agent = Caller::authenticated(member.user_public_key, member.device_public_key);
+    assert!(
+        workspaces.admits(created.workspace_id, &agent).await,
+        "a member's agent reads the workspace its person is in"
+    );
+    for stranger in [
+        Caller::authenticated([9; 32], member.device_public_key),
+        Caller::authenticated(member.user_public_key, [9; 32]),
+        Caller::local_agent("agent-with-no-delegation"),
+        Caller::local_app("so.tilo.chat"),
+    ] {
+        assert!(
+            !workspaces.admits(created.workspace_id, &stranger).await,
+            "{:?} is nobody this workspace admits",
+            stranger.principal()
+        );
+    }
+    assert!(
+        !workspaces.admits(0, &agent).await,
+        "a workspace this host does not govern admits nobody"
+    );
+    // Revoking the device ends it, though the workspace still lists its
+    // certificate: the authority a member holds here is checked, not the list.
+    let identity_key = SigningKey::from_bytes(&[1; 32]);
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: member.user_public_key,
+        revoked_device_public_key: member.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &identity_key).unwrap();
+    let state = workspaces.workspace(&created.workspace).await.unwrap();
+    {
+        let mut workspace = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = workspace.peer().clone();
+        candidate
+            .governance_mut()
+            .publish_governed_revocations(&[revoked], &key, now)
+            .unwrap();
+        let collaboration = workspace.collaboration().clone();
+        workspace
+            .commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    drop(state);
+    assert!(
+        !workspaces.admits(created.workspace_id, &agent).await,
+        "a revoked device reads nothing, its certificate in the list or not"
+    );
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
 /// The workspace's default record a host seeds is the one every member's first
 /// window opens: it names the default id, or members refuse it.
 #[cfg(feature = "agents")]
@@ -522,7 +599,14 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     };
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let due = || async {
+        let current = workspaces.workspace(&created.workspace).await.unwrap();
+        starts_over(&current.lock().await.record.outgoing)
+    };
     for index in 1..=MAX_PUBLICATION_TAIL {
+        if due().await {
+            break;
+        }
         let app = std::collections::BTreeSet::from([format!("so.tilo.rollover-fixture-{index}")]);
         assert!(
             workspaces
@@ -536,20 +620,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
                 .unwrap()
         );
     }
-    let current = workspaces.workspace(&created.workspace).await.unwrap();
-    let tail = current
-        .lock()
-        .await
-        .record
-        .outgoing
-        .iter()
-        .rev()
-        .take_while(|publication| !publication.checkpoint)
-        .count();
-    assert!(
-        tail >= MAX_PUBLICATION_TAIL,
-        "real governance writes reach rollover"
-    );
+    assert!(due().await, "real governance writes reach rollover");
     workspaces
         .author_application(
             &created.workspace,
@@ -593,104 +664,6 @@ fn a_created_room_restores_with_its_governance_and_publication() {
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
     assert!(restored.peer().has_governance());
-}
-
-/// A record's large state is a file of its own: a governance change that
-/// does not touch it writes the workspace file alone, a change of it replaces
-/// its file, and the workspace opens to what it committed.
-#[test]
-fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
-    use automerge::transaction::Transactable as _;
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let mut workspace =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
-    // Incompressible text, so the saved record stays large.
-    let mut text = vec![0u8; 48 * 1024];
-    blake3::Hasher::new()
-        .update(b"large record")
-        .finalize_xof()
-        .fill(&mut text);
-    let large = || {
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "text", hex::encode(&text))
-            .unwrap();
-        doc.save()
-    };
-    let state = workspace.collaboration().clone();
-    let mut candidate = workspace.peer().clone();
-    candidate
-        .publication_mut()
-        .publish_document("notes", "plan", large(), &key, SystemTime::now())
-        .unwrap();
-    workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
-        .unwrap();
-    let stored = |workspace: &GovernedWorkspace| {
-        workspace
-            .record
-            .peer
-            .iter()
-            .filter(|part| matches!(part, peer_parts::PeerPart::Stored { .. }))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let first = stored(&workspace);
-    assert_eq!(first.len(), 1, "the large record is stored apart");
-    assert_eq!(workspace.parts.files(), 1);
-    let modified = |workspace: &GovernedWorkspace| {
-        std::fs::read_dir(workspace.path.with_extension("parts"))
-            .unwrap()
-            .map(|entry| entry.unwrap().metadata().unwrap().modified().unwrap())
-            .collect::<Vec<_>>()
-    };
-    let written = modified(&workspace);
-
-    // A change that leaves the record alone does not write it again.
-    let candidate = workspace.peer().clone();
-    workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
-        .unwrap();
-    assert_eq!(stored(&workspace), first);
-    assert_eq!(modified(&workspace), written);
-
-    // Changing it stores it anew and removes what no workspace file names.
-    let mut candidate = workspace.peer().clone();
-    let mut edited =
-        automerge::AutoCommit::load(&workspace.peer().document("notes", "plan").unwrap()).unwrap();
-    edited.put(automerge::ROOT, "edited", true).unwrap();
-    candidate
-        .publication_mut()
-        .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
-        .unwrap();
-    workspace
-        .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
-        .unwrap();
-    let second = stored(&workspace);
-    assert_eq!(second.len(), 1);
-    assert_ne!(second, first);
-    assert_eq!(workspace.parts.files(), 1, "the replaced part is removed");
-
-    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, None).unwrap();
-    assert_eq!(
-        restored.peer().document("notes", "plan"),
-        workspace.peer().document("notes", "plan")
-    );
-    assert_eq!(restored.record.generation, workspace.record.generation);
-
-    // A stored part that does not match its hash refuses to open.
-    let peer_parts::PeerPart::Stored { digest, .. } = &second[0] else {
-        unreachable!()
-    };
-    let path = workspace
-        .path
-        .with_extension("parts")
-        .join(hex::encode(digest));
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[0] ^= 1;
-    std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, None).is_err());
 }
 
 /// A workspace is restored by the device that governs it, which the record
@@ -746,7 +719,7 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     workspace.record.published = workspace.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         workspace.record.outgoing.push(Publication {
-            bytes: vec![u8::try_from(index % 200).unwrap()],
+            bytes: vec![u8::try_from(index % 200).unwrap()].into(),
             checkpoint: false,
         });
     }
@@ -767,6 +740,41 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
         "the fresh checkpoint is republished"
     );
     assert_eq!(workspace.record.generation, 2);
+}
+
+/// A few changes weighing half the workspace's base start it over, however
+/// few they are; many light ones do not until they weigh as much.
+#[test]
+fn a_heavy_tail_compacts_and_a_light_one_does_not() {
+    let base = Publication {
+        bytes: vec![0; 4 * MIN_PUBLICATION_TAIL_BYTES].into(),
+        checkpoint: true,
+    };
+    let change = |len: usize| Publication {
+        bytes: vec![1; len].into(),
+        checkpoint: false,
+    };
+    let light: Vec<Publication> = std::iter::once(base.clone())
+        .chain((0..100).map(|_| change(1024)))
+        .collect();
+    assert!(!starts_over(&light), "100 KiB of changes on a 256 KiB base");
+    let heavy = vec![
+        base,
+        change(MIN_PUBLICATION_TAIL_BYTES),
+        change(MIN_PUBLICATION_TAIL_BYTES),
+    ];
+    assert!(starts_over(&heavy), "two changes as heavy as half the base");
+    let small = vec![
+        Publication {
+            bytes: vec![0; 1024].into(),
+            checkpoint: true,
+        },
+        change(2048),
+    ];
+    assert!(
+        !starts_over(&small),
+        "a small workspace starts over no more often than its floor"
+    );
 }
 
 #[tokio::test]
@@ -1461,6 +1469,15 @@ struct AskedForAChannel {
 /// a member device of the person, and hand the workspace that device's MLS
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+    a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
+}
+
+/// [`a_member_asks_for_a_channel`], the request reaching the host as `carried`
+/// says.
+async fn a_member_asks_for_a_channel_through(
+    capabilities: DeviceCapabilities,
+    carried: super::Carried,
+) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
@@ -1480,7 +1497,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
     let request = channel_crypto::ChannelPeer::waiting(
-        Some(&member_dir),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(&member_dir))),
         channel,
         Box::new(member_key.clone()),
         &vault,
@@ -1497,7 +1514,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     })
     .unwrap();
     workspaces
-        .absorb(&created.workspace, member.device_public_key, &body)
+        .absorb_carried(&created.workspace, member.device_public_key, &body, carried)
         .await
         .unwrap();
     AskedForAChannel {
@@ -1568,6 +1585,21 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     asked.shut_down().await;
 }
 
+/// A member's request that reached the host over the member's relay session
+/// is kept there already, as the member's own write: the host keeps no copy of
+/// its own. Each request a crowd sent was kept twice, a second job on the
+/// workspace's one-at-a-time queue for every one.
+#[tokio::test]
+async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
+    let asked =
+        a_member_asks_for_a_channel_through(DeviceCapabilities::host(), super::Carried::Kept).await;
+    assert!(
+        !asked.retains_the_request().await,
+        "the host kept a second copy of a request its relay keeps as the member's"
+    );
+    asked.shut_down().await;
+}
+
 /// A decision does not wait for workspace in its workspace owner's queue. With
 /// the owner stalled on the workspace's first change and more changes behind it
 /// than its queue holds, every decision still settles and answers, and a
@@ -1629,7 +1661,7 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
             .outgoing
             .iter()
             .filter(|publication| !publication.checkpoint)
-            .map(|publication| publication.bytes.clone())
+            .map(|publication| publication.bytes.to_vec())
             .collect()
     };
     assert!(
@@ -2596,26 +2628,47 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     relay.shutdown().await;
 }
 
-/// Whether `workspace`'s publication was just started over (every entry a
-/// checkpoint) rather than added to (its last entry a change), and how
-/// many entries it holds.
-async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> (bool, usize) {
+/// `workspace`'s publication as it stands: whether it was just started over
+/// (every entry a checkpoint) rather than added to (its last entry a change),
+/// how many entries it holds, and the bytes of its base and of the changes
+/// after it.
+struct Shape {
+    started_over: bool,
+    entries: usize,
+    base_bytes: usize,
+    tail_bytes: usize,
+}
+
+async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
     let governed = workspaces.workspace(workspace).await.unwrap();
     let governed = governed.lock().await;
     let outgoing = &governed.record.outgoing;
-    let shape = (
-        outgoing.iter().all(|publication| publication.checkpoint),
-        outgoing.len(),
-    );
+    let (base, changes) = based(outgoing);
+    let bytes = |publications: &[Publication]| -> usize {
+        publications
+            .iter()
+            .map(|publication| publication.bytes.len())
+            .sum()
+    };
+    let shape = Shape {
+        started_over: changes.is_empty(),
+        entries: outgoing.len(),
+        base_bytes: bytes(base),
+        tail_bytes: bytes(changes),
+    };
     drop(governed);
     shape
 }
 
 /// A crowd arriving through the door costs the workspace one change each, added
 /// to what it publishes, not the whole workspace rebuilt, written and sent to
-/// every member once per arrival. Anything other than an arrival in between
-/// starts the workspace over at the next one, as before: a newcomer is never
-/// given what was taken back before they came.
+/// every member once per arrival. A change that takes something back starts
+/// the workspace over at the next arrival, so a newcomer is never given what
+/// was withdrawn before they came. Otherwise the workspace starts over from a
+/// fresh base only once the changes since its last one weigh half as much as
+/// that base, and the base holds its state in one compressed change: what a
+/// newcomer fetches stays near the size of the workspace as it stands, not of
+/// its history.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the relay stays held through the assertions; Relay::shutdown consumes it"
@@ -2629,42 +2682,91 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     let created = workspaces.create("Lounge").await.unwrap();
     let workspace = created.workspace.clone();
 
-    // The first arrival starts the workspace over: nothing says yet that what it
-    // published since its last start holds only arrivals.
+    // The first arrival starts the workspace over: nothing says yet that what
+    // it published since its last start takes nothing back.
+    let mut arrivals = Vec::new();
     let (first, first_cert) = guest_device();
     door_join(&workspaces, &cert, &workspace, (&first, &first_cert), 1).await;
-    let (started_over, mut entries) = publication_shape(&workspaces, &workspace).await;
-    assert!(started_over, "the first arrival starts the room over");
-
+    arrivals.push(first_cert);
+    let shape = publication_shape(&workspaces, &workspace).await;
+    assert!(shape.started_over, "the first arrival starts the room over");
+    let mut entries = shape.entries;
     for seed in 2..=8 {
         let (guest, guest_cert) = guest_device();
         door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
-        let (started_over, now) = publication_shape(&workspaces, &workspace).await;
+        arrivals.push(guest_cert);
+        let shape = publication_shape(&workspaces, &workspace).await;
         assert!(
-            !started_over,
+            !shape.started_over,
             "arrival {seed} after only arrivals adds to the publication"
         );
-        assert!(now > entries, "arrival {seed} added its change");
-        entries = now;
+        assert!(shape.entries > entries, "arrival {seed} added its change");
+        entries = shape.entries;
     }
 
-    // A change that is not an arrival: the next arrival starts over.
+    // A change that takes something back (the room's name) is added, and the
+    // next arrival starts over.
     workspaces.rename(&workspace, "Lounge II").await.unwrap();
+    let renamed = publication_shape(&workspaces, &workspace).await;
+    assert!(!renamed.started_over && renamed.entries > entries);
     let (late, late_cert) = guest_device();
     door_join(&workspaces, &cert, &workspace, (&late, &late_cert), 30).await;
+    arrivals.push(late_cert);
     assert!(
-        publication_shape(&workspaces, &workspace).await.0,
-        "an arrival after another kind of change starts the room over"
+        publication_shape(&workspaces, &workspace)
+            .await
+            .started_over,
+        "an arrival after a change that took something back starts the room over"
     );
+    let mut before = publication_shape(&workspaces, &workspace).await;
 
-    // And arrivals after that start add to it again.
-    let (next, next_cert) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&next, &next_cert), 31).await;
-    assert!(!publication_shape(&workspaces, &workspace).await.0);
+    // Arrivals go on until the changes since the base weigh half of it.
+    let mut started = None;
+    for seed in 31..=250 {
+        let (guest, guest_cert) = guest_device();
+        door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
+        arrivals.push(guest_cert);
+        let shape = publication_shape(&workspaces, &workspace).await;
+        if shape.started_over {
+            started = Some(before);
+            break;
+        }
+        before = shape;
+    }
+    let before = started.expect("the room starts over once its changes weigh half its base");
+    assert!(
+        before.tail_bytes >= (before.base_bytes / 2).max(MIN_PUBLICATION_TAIL_BYTES),
+        "the room started over before its changes weighed half its base: {} B of changes on a \
+         {} B base",
+        before.tail_bytes,
+        before.base_bytes
+    );
+    let governed = workspaces.workspace(&workspace).await.unwrap();
+    let base = governed
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .find_map(|publication| {
+            match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&publication.bytes) {
+                Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) => Some(changes),
+                _ => None,
+            }
+        })
+        .expect("the base carries the workspace's document");
+    // Its state in one change, and the receipts a start over records in one more.
+    assert!(base.len() <= 2, "the base is {} changes", base.len());
+    let state = base.iter().max_by_key(|change| change.len()).unwrap();
+    assert_eq!(
+        state.get(8),
+        Some(&2),
+        "the base's state is sent as a compressed change chunk"
+    );
 
     // Every arrival is a member.
     let members = workspaces.summary(&workspace).await.unwrap().members;
-    for device in [&first_cert, &late_cert, &next_cert] {
+    for device in &arrivals {
         assert!(
             members
                 .iter()

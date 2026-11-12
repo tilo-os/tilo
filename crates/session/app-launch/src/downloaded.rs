@@ -61,8 +61,6 @@ pub const RESOURCE: &str = wire::RESOURCE;
 pub const KIND: &str = "so.tilo.downloaded-apps";
 /// The kind of one app's resource, [`wire::app`].
 pub const APP_KIND: &str = "so.tilo.downloaded-app";
-/// What the registry and its apps are called wherever a person reads them.
-pub const LABEL: &str = "Downloaded apps";
 
 /// Where a program an `AppImage` is moved into goes: a folder in the
 /// person's home they can see in their files.
@@ -779,8 +777,12 @@ impl Service for Downloaded {
             })
             .collect();
         vec![
-            offer::<DownloadedAppsAction>(ResourceSpec::new(RESOURCE, KIND, LABEL))
-                .with_children(apps),
+            offer::<DownloadedAppsAction>(ResourceSpec::new(
+                RESOURCE,
+                KIND,
+                crate::i18n::name(KIND, "Downloaded apps"),
+            ))
+            .with_children(apps),
         ]
     }
 

@@ -1263,9 +1263,10 @@ mod unix {
         let revoked =
             device_admin::revoke(&context.fleets(), &identity.id, &target.key_hex, reason)
                 .map_err(anyhow::Error::msg)
-                .context("revoke the device")?;
+                .context("revoke the device")?
+                .revoked_device_public_key;
         context.emit(
-            &json!({ "device": revoked, "label": target.label, "revoked": true }),
+            &json!({ "device": hex::encode(revoked), "label": target.label, "revoked": true }),
             &format!("Revoked '{}'.", target.label),
         );
         Ok(())

@@ -14,9 +14,11 @@ use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostIme, HostKey, HostLayer, HostTextInput, LayoutPoint, LayoutRect,
-    SurfaceHost, TouchSample, WindowInfo, WindowPolicy, WindowRequest,
+    Arrangement, GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPolicy,
+    WindowRequest,
 };
+use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
+
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
 use tilo_desktop_policy::{DesktopPolicy, Window};
@@ -38,15 +40,9 @@ pub enum DeskGesture {
     /// Those fingers lifted (or the hand was taken back): the strip coasts
     /// on the velocity they let go at, or stays where it was.
     StripDragEnd { cancelled: bool },
-    /// Three fingers up or down: the strip `steps` on.
+    /// Three fingers up or down lifted past the threshold: the strip
+    /// `steps` on, sliding as a finger's change does.
     StepStrip(i32),
-    /// Three fingers landed on the deck: it follows them from here. `travel`
-    /// is their signed travel in pixels since they landed, positive toward
-    /// the strips below.
-    StripDeckDrag { travel: f64 },
-    /// Those fingers lifted, having carried the deck `travel`: the strip
-    /// `steps` on from it, or none when they came back.
-    StepStripFrom { travel: f64, steps: i32 },
     /// Four fingers up or down: the workspace `delta` on.
     SwitchWorkspace(i32),
     /// A pinch in opens the overview (`true`), out closes it.
@@ -78,6 +74,23 @@ pub(crate) struct GestureReader {
 }
 
 impl GestureReader {
+    /// Whether the desk takes `gesture`, handing what it asks to `asked`.
+    pub(crate) fn take(
+        &mut self,
+        gesture: &GestureEvent,
+        config: Option<GestureConfig>,
+        asked: impl FnOnce(DeskGesture),
+    ) -> bool {
+        match self.read(gesture, config) {
+            Reading::Clients => false,
+            Reading::Taken => true,
+            Reading::Asked(desk) => {
+                asked(desk);
+                true
+            }
+        }
+    }
+
     /// `gesture` as the desk's, when `config` reads gestures (the person asked
     /// for them) and it has three or more fingers.
     pub(crate) fn read(
@@ -115,15 +128,11 @@ impl GestureReader {
             }
         };
         let asked = match action {
-            // A vertical deck drag hands its travel to the desk on every
-            // update, so the strips are under the fingers; so does the
-            // horizontal one, which carries the shown strip with them.
-            Some(GestureAction::StripDeckUpdate { travel, began }) => {
+            // Up and down, the travel decides at the lift; sideways, every
+            // update carries the shown strip with the fingers.
+            Some(GestureAction::StripDeckUpdate { travel, .. }) => {
                 self.travel = travel;
-                if began {
-                    return Reading::Asked(DeskGesture::StripDeckDrag { travel });
-                }
-                Some(DeskGesture::StripDeckDrag { travel })
+                None
             }
             Some(GestureAction::StripPanUpdate { travel, began }) => {
                 self.travel = travel;
@@ -133,25 +142,15 @@ impl GestureReader {
                 Some(DeskGesture::StripDragEnd { cancelled })
             }
             Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                Some(DeskGesture::StepStripFrom {
-                    travel: self.travel,
-                    steps: step(self.travel).unwrap_or(0),
-                })
+                step(self.travel).map(DeskGesture::StepStrip)
             }
             Some(GestureAction::SwitchWorkspace(delta)) => {
                 Some(DeskGesture::SwitchWorkspace(delta))
             }
             Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
             Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
-            // A cancelled deck drag is the hand coming back: the strip
-            // returns the way it went.
-            Some(GestureAction::StripDeckEnd { cancelled: true }) => {
-                Some(DeskGesture::StepStripFrom {
-                    travel: self.travel,
-                    steps: 0,
-                })
-            }
-            None => None,
+            // A cancelled deck drag is the hand coming back: nothing moves.
+            Some(GestureAction::StripDeckEnd { cancelled: true }) | None => None,
         };
         match asked {
             Some(asked) => Reading::Asked(asked),
@@ -286,13 +285,12 @@ fn round(value: f64) -> i32 {
 
 /// `rect` of the surface, as it stands in the logical layout where the desk's origin is
 /// `(ox, oy)`.
-fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> LayoutRect {
-    LayoutRect::new(
-        LayoutPoint::from((
-            ox.saturating_add(round(rect.x0)),
-            oy.saturating_add(round(rect.y0)),
-        )),
-        (round(rect.width()).max(1), round(rect.height()).max(1)).into(),
+fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> (i32, i32, i32, i32) {
+    (
+        ox.saturating_add(round(rect.x0)),
+        oy.saturating_add(round(rect.y0)),
+        round(rect.width()).max(1),
+        round(rect.height()).max(1),
     )
 }
 
@@ -558,12 +556,6 @@ impl DesktopHost {
         self.with_policy(DesktopPolicy::take_launches)
     }
 
-    /// The tabs the desk made for windows apps asked it for since the last
-    /// call, oldest first: the session starts each window beside its tab.
-    pub fn take_held_launches(&self) -> Vec<tilo_desktop_policy::HeldLaunch> {
-        self.with_policy(DesktopPolicy::take_held_launches)
-    }
-
     /// The desk's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
@@ -599,13 +591,17 @@ impl crate::Published for DesktopHost {
     }
 
     fn revision(&self) -> Option<u64> {
-        // What the desk publishes — the windows it holds and what can be done
-        // with them — is the desk model's, so it is the model's revision that
-        // says it changed. The hosted tree's own revision counts the frames it
-        // drew, and the desk draws every frame of a drag or a resize: read as
-        // that, everything publishing here was read again every frame of
-        // every gesture.
-        Some(self.desk.borrow().policy.handle().revision())
+        // What the desk publishes is its tree's as drawn — the windows, its fields and its
+        // controls — and its search, which the host above the windows moves as the person types
+        // there and the rows come in. A frame it drew may have moved any of them, and the door
+        // tells a frame that moved nothing it publishes from one that did.
+        let desk = self.desk.borrow();
+        let handle = desk.policy.handle();
+        crate::Published::revision(&desk.host).map(|drawn| {
+            drawn
+                .wrapping_add(handle.navigation_revision())
+                .wrapping_add(handle.search_revision())
+        })
     }
 
     fn invoke(
@@ -655,16 +651,12 @@ impl crate::Published for DesktopHost {
     /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         let mut shown = crate::Published::controls(&mut self.desk.borrow_mut().host);
-        let chrome: std::collections::BTreeSet<String> =
-            shown.iter().map(|(name, _)| name.clone()).collect();
+        // Every window's own controls stand where they stand, beside the desk's: two windows go
+        // by the same names — each window's sidebar toggle, each window's "More actions" — and
+        // each is named where it is drawn. A window's control is never the desk's because they
+        // share a name; a press by name reaches the window in front ([`Self::press_action`]).
         for (name, rect) in self.desk.borrow().policy.handle().window_controls() {
-            // A name the desk's own chrome shows keeps meaning there: what a
-            // window adds are the names the desk does not have. Two windows of
-            // an app describe controls by the same names, and each is listed
-            // where it stands, so a window floating over the desk is as
-            // readable as one in its strip: a press by name reaches the first
-            // window that shows it ([`Self::press_action`]).
-            if !chrome.contains(&name) {
+            if !shown.iter().any(|(seen, at)| seen == &name && *at == rect) {
                 shown.push((name, rect));
             }
         }
@@ -681,23 +673,54 @@ impl crate::Published for DesktopHost {
         action: ui::window_targets::TargetAction,
     ) -> Result<(), String> {
         let mut desk = self.desk.borrow_mut();
-        // A name the desk's own chrome shows keeps meaning there, as
-        // `controls` says.
-        if crate::Published::controls(&mut desk.host)
-            .iter()
-            .any(|(shown, _)| shown == name)
-        {
+        // Where the window in front stands, and whether it draws a control of that name itself:
+        // taken before the desk's own tree is built, which changes it.
+        let (front, front_window, front_draws_it, a_window_draws_it) = {
+            let handle = desk.policy.handle();
+            let front = handle.window_in_front();
+            (
+                front,
+                front.and_then(|tab| handle.window_rect(tab)),
+                front.is_some_and(|tab| handle.window_offers(tab, name)),
+                handle
+                    .window_controls()
+                    .iter()
+                    .any(|(shown, _)| shown == name),
+            )
+        };
+        let chrome = crate::Published::controls(&mut desk.host);
+        // A control the desk draws in the front window's own chrome — its bar's buttons — is that
+        // window's: it answers for it as its app's content does.
+        let in_fronts_chrome = front_window.is_some_and(|window| {
+            chrome.iter().any(|(shown, rect)| {
+                let (x, y, width, height) = *rect;
+                let (centre_x, centre_y) = (x + width / 2.0, y + height / 2.0);
+                shown == name
+                    && centre_x >= window.x0
+                    && centre_x < window.x1
+                    && centre_y >= window.y0
+                    && centre_y < window.y1
+            })
+        });
+        if in_fronts_chrome {
+            return crate::Published::press_action(&mut desk.host, name, action);
+        }
+        // The window in front answers for its own content: a person pointing at a control there
+        // presses that window's, never one behind it that goes by the same name — another
+        // window's sidebar toggle.
+        if front_draws_it && let Some(front) = front {
+            return desk
+                .policy
+                .handle()
+                .press_window_control_in(front, name, action);
+        }
+        if chrome.iter().any(|(shown, _)| shown == name) {
             return crate::Published::press_action(&mut desk.host, name, action);
         }
         // The control is one a window's app draws: the press reaches it as its
         // own assistive technology's activation does.
-        let handle = desk.policy.handle();
-        if handle
-            .window_controls()
-            .iter()
-            .any(|(shown, _)| shown == name)
-        {
-            return handle.press_window_control(name, action);
+        if a_window_draws_it {
+            return desk.policy.handle().press_window_control(name, action);
         }
         Err(format!("no control named {name}"))
     }
@@ -732,7 +755,7 @@ impl SurfaceHost for DesktopHost {
         true
     }
 
-    fn drawn_over_windows(&self) -> Vec<(u64, LayoutRect)> {
+    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
         // The desk draws a floating window's bar and lift itself, under the windows, so the windows
         // it covers are drawn around it.
         let desk = self.desk.borrow();
@@ -740,7 +763,10 @@ impl SurfaceHost for DesktopHost {
         desk.policy
             .float_covers()
             .into_iter()
-            .map(|(window, cover)| (window, placed(cover, (ox, oy))))
+            .map(|(window, cover)| {
+                let (x, y, width, height) = placed(cover, (ox, oy));
+                (window, (x, y, width, height))
+            })
             .collect()
     }
 
@@ -811,7 +837,7 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow_mut().host.set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         // The desk draws at the scale of the first display there is, the one
         // it covers: its strips and the windows' bars paint the pixels that
         // display shows, rather than one scale's worth stretched over a
@@ -826,15 +852,15 @@ impl SurfaceHost for DesktopHost {
         }
     }
 
-    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+    fn window_pictures(&self) -> Vec<tilo_session_core::surface::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         self.desk.borrow().host.backdrops()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.desk.borrow_mut().host.set_backdrops(images);
     }
 }
@@ -932,6 +958,7 @@ impl StripPolicy {
                 parent: window.parent,
                 min_size: window.min_size,
                 max_size: window.max_size,
+                pid: window.pid,
             });
             if let Err(error) = mapped {
                 tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
@@ -939,6 +966,8 @@ impl StripPolicy {
             }
             self.mapped.push(window.id);
             desk.host.relayout();
+            // A window launched into a workspace not in front goes there once its tab is made.
+            desk.policy.carry_launched();
         }
         self.followers.mapped(window);
     }
@@ -1035,6 +1064,8 @@ impl WindowPolicy for StripPolicy {
         windows: &[(WindowInfo, LayoutRect)],
         outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
+        // A launched window whose tab came with the last layout goes to its own workspace.
+        self.desk.borrow_mut().policy.carry_launched();
         // A window the compositor lists has shown its buffer.
         self.pending
             .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
@@ -1134,14 +1165,10 @@ impl WindowPolicy for StripPolicy {
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
         let config = self.desk.borrow().gesture_config;
-        match self.gestures.read(gesture, config) {
-            Reading::Clients => false,
-            Reading::Taken => true,
-            Reading::Asked(asked) => {
-                self.desk.borrow_mut().gestures.push(asked);
-                true
-            }
-        }
+        let desk = &self.desk;
+        self.gestures.take(gesture, config, |asked| {
+            desk.borrow_mut().gestures.push(asked);
+        })
     }
 
     fn take_close_requests(&mut self) -> Vec<u64> {
@@ -1264,7 +1291,7 @@ mod tests {
         let (mut desk, mut policy) = desktop(7, 1.0);
         SurfaceHost::outputs_changed(
             &mut desk,
-            &[tilo_compositor::HostedOutput {
+            &[tilo_session_core::surface::HostedOutput {
                 rect: (0, 0, 1280, 800),
                 scale: 1.0,
             }],
@@ -1326,7 +1353,7 @@ mod hidpi {
         let (mut desk, _policy) = desktop(7, 1.0);
         SurfaceHost::outputs_changed(
             &mut desk,
-            &[tilo_compositor::HostedOutput {
+            &[tilo_session_core::surface::HostedOutput {
                 rect: (0, 0, 1472, 920),
                 scale: 2.0,
             }],

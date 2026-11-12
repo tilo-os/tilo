@@ -11,17 +11,17 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
-use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent, WindowWidth, Workspace};
+use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Route, Verb};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
 };
 use ui::search::Scope;
 use ui::widget::TileHost;
+
+mod support;
+
+use support::{chrome_at, key_search, settle_search, type_search};
 
 struct Notices(Rc<Cell<usize>>);
 
@@ -34,7 +34,7 @@ impl TileSource for Notices {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         if app.starts_with(NODE_APP) {
             // Opened on the node; its window arrives from there.
             NODE_LAUNCHES.with(|launches| launches.borrow_mut().push(app.into()));
@@ -141,113 +141,6 @@ fn widgets(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
     out.push(node.widget.clone());
     for child in &node.children {
         widgets(child, out);
-    }
-}
-
-/// What the chrome over the desk asks the person they may change.
-struct ChromeRules {
-    handle: DesktopHandle,
-}
-
-impl DesktopRules for ChromeRules {
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
-    }
-
-    fn author(&self) -> String {
-        "Ada".into()
-    }
-
-    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn may_create_workspace(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// The chrome the session hosts over the windows, over the desk `handle` holds: search's palette is
-/// drawn and answered there, so a test that searches drives this beside the desk.
-fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::FrameHarness {
-    let chrome = DesktopChrome::new(
-        handle.clone(),
-        "g".into(),
-        Rc::new(ChromeRules {
-            handle: handle.clone(),
-        }),
-        TopBarChrome::from_tree(&handle.read(Clone::clone)),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
-        false,
-    );
-    let mut frame = ui::headless::FrameHarness::for_root(
-        ui::state::State::new(),
-        chrome,
-        size,
-        ui::Theme::dark(),
-    );
-    frame.set_caller_palette_enabled(false);
-    frame.relayout();
-    frame
-}
-
-/// What the person types into the open palette's field: search's card is the chrome's, over the
-/// windows, so the keys go there, and the desk takes up what the card asked before the card draws
-/// it again. The search's sources answer on workers, so what they answered is in before the test
-/// reads a row.
-fn type_search(
-    desk: &mut ui::headless::FrameHarness,
-    chrome: &mut ui::headless::FrameHarness,
-    handle: &DesktopHandle,
-    text: &str,
-) {
-    chrome.type_text(text);
-    chrome.relayout();
-    desk.relayout();
-    chrome.relayout();
-    settle_search(desk, chrome, handle);
-}
-
-/// A key pressed in the open palette's field, taken up as [`type_search`] is.
-fn key_search(
-    desk: &mut ui::headless::FrameHarness,
-    chrome: &mut ui::headless::FrameHarness,
-    handle: &DesktopHandle,
-    key: &str,
-) {
-    settle_search(desk, chrome, handle);
-    chrome.key(key);
-    chrome.relayout();
-    desk.relayout();
-    chrome.relayout();
-    settle_search(desk, chrome, handle);
-}
-
-/// Draw the desk's and the card's frames until every source of the open search has answered. A
-/// source answers on a worker, and its answer wakes the desk: a test pumps what the wake asks for
-/// and draws the frame it brings, as a host does.
-///
-/// A source still out does not make the search "still searching" once the rows that are ready are
-/// shown ([`DesktopHandle::search_searching`]), so this waits on the sources themselves
-/// ([`DesktopHandle::search_expecting`]): a row a later answer brings is drawn before the test
-/// reads what the card holds.
-fn settle_search(
-    desk: &mut ui::headless::FrameHarness,
-    chrome: &mut ui::headless::FrameHarness,
-    handle: &DesktopHandle,
-) {
-    let background = ui::background::Background::current();
-    let now = ui::time::now();
-    let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
-    loop {
-        desk.relayout();
-        chrome.relayout();
-        if !handle.search_expecting() {
-            return;
-        }
-        assert!(ui::time::now() < deadline, "the search never finished");
-        let now = ui::time::now();
-        background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
     }
 }
 
@@ -2171,8 +2064,8 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
 }
 
 /// Search over everything answers what is not a name, as the native shell's does: a sum and a unit
-/// conversion lead and are copied, and any query can be searched on the web, which opens where the
-/// host opens addresses (a new tab of the browser the web desktop runs in).
+/// conversion lead and are copied, and the web search offered beside a match opens where the host
+/// opens addresses (a new tab of the browser the web desktop runs in).
 #[test]
 fn search_works_out_sums_and_conversions_and_searches_the_web() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -2198,13 +2091,15 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
         settle_search(&mut driver, &mut chrome, &handle);
         choose_row(&mut driver, &mut chrome, &handle, "3.1069 mi");
 
-        handle.open_search(Scope::Workspace, Some("tilo desktop".into()));
+        // The web search is offered beside what matched, never alone: a query that names
+        // nothing says so instead. So the query names the window on the desk.
+        handle.open_search(Scope::Workspace, Some("notes".into()));
         settle_search(&mut driver, &mut chrome, &handle);
         choose_row(
             &mut driver,
             &mut chrome,
             &handle,
-            "Search the web for tilo desktop",
+            "Search the web for notes",
         );
         assert!(!handle.search_open());
     });
@@ -2223,7 +2118,7 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
     while recorder.opened_uris().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert_eq!(recorder.opened_uris(), ["web+search:tilo%20desktop"]);
+    assert_eq!(recorder.opened_uris(), ["web+search:notes"]);
 }
 
 #[test]
@@ -2959,3 +2854,6 @@ fn a_windows_bar_is_in_the_accessibility_tree_once() {
 
 #[path = "surface/wheel.rs"]
 mod wheel;
+
+#[path = "surface/search.rs"]
+mod search;

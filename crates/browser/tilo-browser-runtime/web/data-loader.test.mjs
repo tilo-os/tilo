@@ -2,13 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, webcrypto} from 'node:crypto';
 import {createDataLoader} from './data-loader.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const font=new Uint8Array([1,2,3,4]);
 const manifest={schema:1,assets:[{name:'typst/Font.otf',bytes:font.byteLength,sha256:createHash('sha256').update(font).digest('hex')}]};
 
 function fixture(files){
   const requests=[],installed=new Map(),failed=new Map(),fetched=[];
-  const runtime={data_requests:()=>JSON.stringify(requests.splice(0)),install_data:(name,bytes)=>installed.set(name,bytes),data_failed:(name,reason)=>failed.set(name,reason)};
+  const runtime=runtimeFake({data_requests:()=>JSON.stringify(requests.splice(0)),install_data:(name,bytes)=>installed.set(name,bytes),data_failed:(name,reason)=>failed.set(name,reason)});
   const fetch=async url=>{
     const path=new URL(url).pathname.replace('/bundle/','');fetched.push(path);
     const body=files[path];

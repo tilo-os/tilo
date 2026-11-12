@@ -105,9 +105,11 @@ type Arguments<I> =
 /// Type-safe adapter from a control's input value to an exported action.
 ///
 /// Construction requires the real [`ResourceSpec`] and [`ActionSpec`], rather
-/// than parallel string constants. Emission pre-validates arguments against a
-/// clone of that spec; the host nevertheless re-resolves and validates again
-/// at dispatch time because this object is convenience, not authority.
+/// than parallel string constants. Construction and emission validate the
+/// arguments against the parameters of a clone of that spec and never run its
+/// encoder, which may plan the whole action: a binding is made for each control
+/// a frame reads. The host re-resolves, validates and encodes at dispatch time
+/// because this object is convenience, not authority.
 #[derive(Clone)]
 pub struct ActionBinding<I> {
     address: ActionAddress,
@@ -172,13 +174,7 @@ impl<I> ActionBinding<I> {
     /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input).map_err(ActionBindingError::Unbindable)?;
-        if self.spec.deferred_invocation_type().is_some()
-            || matches!(self.spec.input(), ActionInput::Deferred { .. })
-        {
-            self.spec.validate_json(&arguments)?;
-        } else {
-            self.spec.build_json(&arguments)?;
-        }
+        self.spec.validate_json(&arguments)?;
         Ok(ControlInvocation {
             address: self.address.clone(),
             arguments,
@@ -195,13 +191,7 @@ impl ActionBinding<()> {
     pub fn unit(resource: &ResourceSpec, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
-        if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
-        {
-            binding.spec.validate_json(&serde_json::Map::new())?;
-        } else {
-            binding.spec.build_json(&serde_json::Map::new())?;
-        }
+        binding.spec.validate_json(&serde_json::Map::new())?;
         Ok(binding)
     }
 
@@ -226,17 +216,9 @@ impl ActionBinding<()> {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, move |()| arguments.clone())?;
-        if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
-        {
-            binding
-                .spec
-                .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
-        } else {
-            binding
-                .spec
-                .build_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
-        }
+        binding
+            .spec
+            .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         Ok(binding)
     }
 
@@ -1482,6 +1464,45 @@ impl ActionSpec {
         self
     }
 
+    /// The bound argument `name`, stated in what this action publishes: an
+    /// optional parameter whose only accepted value is the one this action
+    /// is bound to, described as `description`. A row of a person's own
+    /// window invokes it without naming anything — it is bound here — while
+    /// a caller reading the published action learns which item this one is
+    /// bound to, and answers that one among several a page or a list
+    /// publishes side by side. Calling it again for another name states that
+    /// one beside the first, so a row can state every value it is bound to.
+    ///
+    /// Nothing an invocation carries changes: the value invocations run is
+    /// still the bound one ([`Self::with_bound`]), and naming it is how a
+    /// caller says which of several bound rows it means.
+    #[must_use]
+    pub fn stating_bound(mut self, name: &str, description: &str) -> Self {
+        let Some((_, value)) = self.bound().iter().find(|(bound, _)| bound == name) else {
+            return self;
+        };
+        let value = match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        let ty = Arc::make_mut(&mut self.ty);
+        let stated = crate::ActionParam {
+            name: name.to_owned().into(),
+            ty: crate::ParamType::Text,
+            required: false,
+            entry: false,
+            description: description.to_owned().into(),
+            choices: vec![value.into()],
+            schema: None,
+            nullable: false,
+        };
+        match ty.params.iter_mut().find(|param| param.name == name) {
+            Some(param) => *param = stated,
+            None => ty.params.push(stated),
+        }
+        self
+    }
+
     /// `supplied` without the bound arguments it repeats
     /// ([`Self::with_bound`]).
     fn without_bound<'a>(
@@ -2150,6 +2171,21 @@ impl ActionSpec {
         push_tag(
             &mut self.type_mut().contract,
             crate::contract::DOCUMENT_READ_TAG,
+        );
+        self
+    }
+
+    /// Declare this view as a read of what its record holds that takes
+    /// arguments (a version, a review of one): recorded as
+    /// [`RECORD_READ_TAG`](crate::RECORD_READ_TAG), it moves nothing, anyone
+    /// who may read the record may run it, and it discloses the record to
+    /// them. Call after [`with_contract`](Self::with_contract), which replaces
+    /// the tags.
+    #[must_use]
+    pub fn reads_record(mut self) -> Self {
+        push_tag(
+            &mut self.type_mut().contract,
+            crate::contract::RECORD_READ_TAG,
         );
         self
     }

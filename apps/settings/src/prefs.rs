@@ -107,6 +107,7 @@ mod tests {
     /// The settings of the profile at `root` with every leaf of `value`
     /// written to its section: what a check enumerating the leaves needs,
     /// since a store writes only what differs from what is read.
+    #[cfg(feature = "tilo-os")]
     fn store_whole<T: SettingsSchema + serde::Serialize>(
         root: &std::path::Path,
         value: &T,
@@ -146,6 +147,7 @@ mod tests {
     }
 
     /// Every default is sensible and every owned leaf has a continuity policy.
+    #[cfg(feature = "tilo-os")]
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
         let dir = tempfile::tempdir().unwrap();

@@ -13,6 +13,14 @@ impl TopBarChrome {
         self
     }
 
+    /// The device shows its own time at phone width (a phone, above the page this bar is drawn
+    /// in): there the bar draws no clock of its own, and the workspace name takes the lane.
+    #[must_use]
+    pub fn with_device_clock(mut self) -> Self {
+        self.device_clock = true;
+        self
+    }
+
     /// The menu the mark opens is shown or gone; the mark reads as pressed while it is.
     pub fn set_tilo_menu_open(&mut self, open: bool) {
         if let Some(shown) = self.tilo_mark.as_mut() {

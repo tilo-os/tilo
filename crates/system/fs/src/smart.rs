@@ -444,7 +444,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn open_prediction_hydrates_a_real_sibling_and_drains_accounting() {
-        let server_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let server_endpoint = test_relay::direct_endpoint().await;
         let server_store = ContentStore::memory();
         let sibling = Bytes::from_static(b"the next image's exact bytes");
         let sibling_hash = server_store.write_content(&sibling).await.unwrap().unwrap();
@@ -452,7 +452,7 @@ mod tests {
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
 
-        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let client_endpoint = test_relay::direct_endpoint().await;
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store.clone()));
         hydrator.add_peer(server_endpoint.addr());

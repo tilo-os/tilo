@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fs;
 
 use std::io::{BufRead as _, Write as _};
@@ -32,11 +30,13 @@ use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, 
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_session::app_tabs::ServiceLinks;
+use tilo_session::apps::Apps;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-use tilo_session::mount::app_tabs::ServiceLinks;
-use tilo_session::mount::apps::Apps;
-use tilo_session::{AppActions, AppLists, Launches, Lists, Options, SearchOptions, Session};
-use ui::floating_surface::{FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage};
+use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
+use ui::floating_surface::{
+    FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+};
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// the entry declaring `lines` besides its name and command, and the path
@@ -81,35 +81,44 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
     host_app_claiming(home, desktop_id, body, None)
 }
 
-/// The desk's search as these tests find apps in it: the fixture's own host app, resolved through
+/// This device's lists as these tests find apps in it: the fixture's own host app, resolved through
 /// the entry the session's scan reads.
-fn host_search() -> SearchOptions {
-    SearchOptions {
-        apps: Some(std::sync::Arc::new(Lists::fixed(AppLists {
-            host_apps: vec![HostAppEntry {
-                desktop_id: "org.example.Probe".into(),
-                name: "Probe".into(),
-                ..HostAppEntry::default()
-            }],
-            ..AppLists::default()
-        }))),
-        ..SearchOptions::default()
-    }
+fn host_lists() -> Lists {
+    Lists::fixed(AppLists {
+        host_apps: vec![HostAppEntry {
+            desktop_id: "org.example.Probe".into(),
+            name: "Probe".into(),
+            ..HostAppEntry::default()
+        }],
+        ..AppLists::default()
+    })
 }
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
-fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+/// The first resource `accepts`, searching each resource before its children.
+fn find(
+    resources: &[ResourceSpec],
+    accepts: impl Fn(&ResourceSpec) -> bool + Copy,
+) -> Option<ResourceSpec> {
     resources.iter().find_map(|resource| {
-        if resource.id.as_str() == id {
+        if accepts(resource) {
             Some(resource.clone())
         } else {
-            find(&resource.children, id)
+            find(&resource.children, accepts)
         }
     })
+}
+
+/// The resource publishing `action` among everything the session publishes.
+fn publisher(session: &Session, action: &str) -> Option<String> {
+    find(&session.resources(), |resource| {
+        resource.actions.iter().any(|offered| offered.id == action)
+    })
+    .map(|resource| resource.id.as_str().to_owned())
 }
 
 fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_json::Value) {
@@ -131,19 +140,24 @@ fn choose(session: &mut Session, query: &str, title: &str) {
         serde_json::json!({"query": query}),
     );
     until(session, "search shows the app", |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| {
+        find(&session.resources(), |resource| {
+            resource.id.as_str() == SEARCH_RESOURCE
+        })
+        .is_some_and(|search| {
             search
                 .children
                 .iter()
                 .any(|row| row.label.starts_with(title))
         })
     });
-    let row = find(&session.resources(), SEARCH_RESOURCE)
-        .expect("search")
-        .children
-        .into_iter()
-        .find(|row| row.label.starts_with(title))
-        .expect("the row");
+    let row = find(&session.resources(), |resource| {
+        resource.id.as_str() == SEARCH_RESOURCE
+    })
+    .expect("search")
+    .children
+    .into_iter()
+    .find(|row| row.label.starts_with(title))
+    .expect("the row");
     invoke(
         session,
         row.id.as_str(),
@@ -232,7 +246,10 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the notice is shown", |session| {
-        find(&session.resources(), DESK_RESOURCE).is_some_and(|desk| {
+        find(&session.resources(), |resource| {
+            resource.id.as_str() == DESK_RESOURCE
+        })
+        .is_some_and(|desk| {
             desk.children
                 .iter()
                 .any(|child| child.kind == WINDOW_KIND && child.label.contains("Probe"))
@@ -525,7 +542,7 @@ fn session_through(
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
     let session = crate::common::headless(Options {
-        search: host_search(),
+        lists: host_lists(),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
         launches: Arc::clone(&started),
@@ -550,13 +567,13 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::WindowTargets {
             targets: vec![WindowTarget {
                 role: "ListItem".to_owned(),
@@ -599,50 +616,14 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
 
     // The press reaches the app on the connection that described it, as the control's own context
     // menu, not as a point aimed at.
-    connection
-        .set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
-    let mut seen = Vec::new();
-    let mut pressed = false;
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).unwrap();
-        let mut chunk = [0u8; 512];
-        match std::io::Read::read(&mut connection, &mut chunk) {
-            Ok(read) => seen.extend_from_slice(&chunk[..read]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("the connection broke: {error}"),
-        }
-        if seen.contains(&b'\n') {
-            let whole = seen
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(&seen[..0], |end| &seen[..end]);
-            pressed = String::from_utf8(whole.to_vec())
-                .expect("frames are text")
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .any(|line| {
-                    serde_json::from_str::<ui::floating_surface::FloatingSurfaceHostMessage>(
-                        line.trim(),
-                    )
-                    .is_ok_and(|frame| {
-                        frame
-                            == ui::floating_surface::FloatingSurfaceHostMessage::PressTarget {
-                                name: "Documents".to_owned(),
-                                role: "ListItem".to_owned(),
-                                action: TargetAction::ShowContextMenu,
-                            }
-                    })
-                });
-            if pressed {
-                break;
-            }
-            seen.clear();
-        }
-    }
+    let told = host_frames(&mut session, &mut connection, 400);
     assert!(
-        pressed,
-        "the app is told which of its controls was pressed, and how"
+        told.contains(&FloatingSurfaceHostMessage::PressTarget {
+            name: "Documents".to_owned(),
+            role: "ListItem".to_owned(),
+            action: TargetAction::ShowContextMenu,
+        }),
+        "the app is told which of its controls was pressed, and how: {told:?}"
     );
 }
 
@@ -652,7 +633,7 @@ fn host_frames(
     session: &mut Session,
     connection: &mut UnixStream,
     steps: usize,
-) -> Vec<ui::floating_surface::FloatingSurfaceHostMessage> {
+) -> Vec<FloatingSurfaceHostMessage> {
     connection
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();
@@ -666,7 +647,12 @@ fn host_frames(
             Err(error) => panic!("the connection broke: {error}"),
         }
     }
-    String::from_utf8(seen)
+    // A frame still arriving is not one yet: only the lines the session finished are read.
+    let whole = seen
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(&seen[..0], |end| &seen[..end]);
+    String::from_utf8(whole.to_vec())
         .expect("frames are text")
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -679,13 +665,12 @@ fn host_frames(
 #[test]
 fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     use ui::PaintedActionMarker;
-    use ui::floating_surface::FloatingSurfaceHostMessage;
 
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let interaction = tilo_actions::SemanticInteraction {
         version: tilo_actions::INTERACTION_VERSION,
@@ -713,8 +698,8 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::ActionMarkers {
             markers: vec![PaintedActionMarker {
                 interaction,
@@ -744,20 +729,18 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
 /// answer that will not come.
 #[test]
 fn a_message_the_session_cannot_answer_is_said_so() {
-    use ui::floating_surface::FloatingSurfaceHostMessage;
-
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // An app's card is the app's own window: the session mirrors no region of a floating surface.
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::UpdateRegion {
             id: "primary".to_owned(),
             region: [0.0, 0.0, 320.0, 240.0],
@@ -825,7 +808,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
         "the person who made the workspace owns it"
     );
 
-    let (_pid, launched_into) = probe_showing(&mut session, &apps, &started);
+    let (_pid, launched_into, _tab) = probe_showing(&mut session, &apps, &started);
     assert_eq!(
         launched_into, workspace,
         "the app runs in the workspace the person made"
@@ -864,6 +847,173 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     capture_to(&mut session, "fresh-workspace-new-note");
 }
 
+/// A workspace this desk joined, as a join leaves it: the id it is shared under, the slot derived
+/// from that id, and no strip of this desk's own — its strips are the workspace's, which come from
+/// the workspace's record. A person standing in it who opens an app gets that app's window there,
+/// never in the workspace of their own they came from: once for the first workspace they join, and
+/// again for a second one.
+#[test]
+fn an_app_opened_in_a_joined_workspace_opens_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (_identity, _person) = this_computer(&mut home);
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (their_own, _) = front_workspace(&session);
+    assert!(!their_own.is_empty(), "this desk starts in a workspace");
+    assert!(!apps_in(&session, &their_own).contains(&PROBE.to_owned()));
+
+    // Where the person starts: the app they open in their own workspace runs there, so what a join
+    // changes is read against a desk the same press already worked on.
+    open_from_the_desk(&session, PROBE);
+    until(&mut session, "the app is started", |_| {
+        starts(&arguments) > 0
+    });
+    assert_eq!(handed(&arguments, "--workspace-id"), their_own);
+    assert!(
+        apps_in(&session, &their_own).contains(&PROBE.to_owned()),
+        "the app's tab stands in the workspace the person opened it in"
+    );
+
+    // What a join hands the desk, through the desk's own verb: the workspace's id, and nothing
+    // else of this desk's.
+    for (joined, name) in [
+        ("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", "Studio"),
+        ("7d3b6c1e-2f4a-4c8e-9d1b-5a6e7f8c9d0e", "Garden"),
+    ] {
+        invoke(
+            &mut session,
+            CHROME_RESOURCE,
+            "new-workspace",
+            serde_json::json!({"workspace": joined, "name": name}),
+        );
+        until(
+            &mut session,
+            "the desk stands in the workspace",
+            |session| front_workspace(session).0 == joined,
+        );
+        assert_ne!(joined, their_own, "the person left their own workspace");
+
+        // The person opens the app from the desk's own launchpad, which holds the tab its window
+        // takes from the frame they pressed it in.
+        let before = starts(&arguments);
+        open_from_the_desk(&session, PROBE);
+        until(&mut session, "the app is started", |_| {
+            starts(&arguments) > before
+        });
+        assert_eq!(
+            handed(&arguments, "--workspace-id"),
+            joined,
+            "the app runs in the workspace the person stands in"
+        );
+        until(&mut session, "the window's tab stands there", |session| {
+            apps_in(session, joined).contains(&PROBE.to_owned())
+        });
+        assert_eq!(
+            front_workspace(&session).0,
+            joined,
+            "the desk stays where the person stood"
+        );
+    }
+}
+
+/// How many starts the launcher at `records` has made: one line per start.
+fn starts(records: &Path) -> usize {
+    fs::read_to_string(records).map_or(0, |lines| lines.lines().count())
+}
+
+/// Open `app` from the desk, as a press on its tile there does: the desk makes the tab the app's
+/// window takes, in the workspace the person is in, and queues the launch the session starts.
+fn open_from_the_desk(session: &Session, app: &str) {
+    session
+        .handle()
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: app.to_owned(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .expect("the desk takes the open");
+}
+
+/// The tab the desk made for an app's window decides where the app runs: a person who opens an app
+/// and whose desk moves on before the pass that starts it — a switch of theirs, a workspace that
+/// arrived — gets the app in the workspace they opened it in, with that workspace's records and
+/// grants, never in the one the desk stands in by then.
+#[test]
+fn an_app_runs_in_the_workspace_the_desk_made_its_tab_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let (_identity, _person) = this_computer(&mut home);
+    let started = home.home().join("started");
+    let arguments = home.home().join("arguments");
+    installed_probe_package(&mut home);
+    let launcher = recording_launcher(&home, &started, &arguments);
+    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (their_own, _) = front_workspace(&session);
+
+    // Another workspace of theirs, made through the desk's own verb and left for last.
+    invoke(
+        &mut session,
+        CHROME_RESOURCE,
+        "new-workspace",
+        serde_json::json!({"name": "Elsewhere"}),
+    );
+    until(
+        &mut session,
+        "the desk stands in the workspace made",
+        |session| front_workspace(session).0 != their_own,
+    );
+    let (elsewhere, _) = front_workspace(&session);
+    stand_in(&session, &their_own);
+    until(&mut session, "the desk stands there again", |session| {
+        front_workspace(session).0 == their_own
+    });
+
+    // The person opens the app where they stand, and their desk moves on to the other workspace
+    // before the desk's next pass — the pass that starts the app.
+    open_from_the_desk(&session, PROBE);
+    stand_in(&session, &elsewhere);
+    until(&mut session, "the app is started", |_| {
+        starts(&arguments) > 0
+    });
+    assert_eq!(
+        front_workspace(&session).0,
+        elsewhere,
+        "the desk stands where the person switched to"
+    );
+    assert_eq!(
+        handed(&arguments, "--workspace-id"),
+        their_own,
+        "the app runs in the workspace whose tab the desk made for its window"
+    );
+}
+
+/// Go to the workspace `workspace` , by its id, as a person switching to it does.
+fn stand_in(session: &Session, workspace: &str) {
+    let slot = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .find(|held| held.id().to_string() == workspace)
+            .map(|held| held.slot.0.to_string())
+    });
+    let slot = slot.unwrap_or_else(|| panic!("the desk holds the workspace {workspace}"));
+    session
+        .handle()
+        .dispatch(
+            tilo_desktop_surface::navigation::ChromeEffect::SwitchWorkspace {
+                workspace: Some(slot),
+                delta: None,
+            },
+        )
+        .expect("the desk takes the switch");
+}
+
 /// What the projection says about the app's own new-note action: the question a window bar asks to
 /// offer New note.
 fn may_make_a_note(
@@ -894,6 +1044,19 @@ fn groups(session: &Session) -> Vec<Vec<String>> {
     })
 }
 
+/// The apps whose windows the workspace `workspace` holds on this desk, by app id, wherever the
+/// desk stands: the tabs it keeps, each named by the app its window belongs to.
+fn apps_in(session: &Session, workspace: &str) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|held| held.id().to_string() == workspace)
+            .flat_map(tilo_desktop_model::Workspace::tabs)
+            .filter_map(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .collect()
+    })
+}
+
 /// The window each tab of the workspace in front shows, in order.
 fn shown_windows(session: &Session) -> Vec<Option<u64>> {
     session.handle().read(|tree| {
@@ -913,8 +1076,10 @@ fn shown_windows(session: &Session) -> Vec<Option<u64>> {
 }
 
 /// Open [`PROBE`] as the desk does, then its window as the compositor would,
-/// and hand back the process it runs in and the workspace it runs in.
-fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, String) {
+/// and hand back the process it runs in, the workspace it runs in, and the tab
+/// its window took: the instance the session names that window's own
+/// connections by.
+fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, String, u64) {
     let workspace = session
         .desktop()
         .with_policy(|policy| {
@@ -932,13 +1097,17 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
         &apps.workspace_named(&workspace),
     )
     .expect("the app starts");
-    until(session, "the app runs", |_| started.exists());
-    let pid = fs::read_to_string(started)
-        .unwrap()
-        .lines()
-        .next()
-        .expect("the app's pid")
-        .trim()
+    // The launcher records its pid with a redirect that makes the file before it writes the
+    // number, so a file that is there is not yet a file that says anything.
+    let recorded = || {
+        fs::read_to_string(started)
+            .ok()
+            .and_then(|text| text.lines().next().map(str::trim).map(str::to_owned))
+            .filter(|pid| !pid.is_empty())
+    };
+    until(session, "the app runs", |_| recorded().is_some());
+    let pid = recorded()
+        .expect("the launcher recorded its pid")
         .parse()
         .expect("a pid");
     session
@@ -947,22 +1116,26 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
     until(session, "the app's window is on the desk", |session| {
         groups(session) == vec![vec![PROBE_NAME.to_owned()]]
     });
-    (pid, workspace)
+    let tab = session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(11))
+        .expect("the tab the window stands in");
+    (pid, workspace, tab)
 }
 
-/// Ask the session what `app` asks over a window's own shell-ui connection: the connection the
-/// session makes for a window of an app it runs, which the service answers for that app's tab. The
-/// connection stays open for the caller.
+/// Ask the session what `app` asks over the shell-ui connection of its window
+/// in `tab`: the connection the session makes for a window of an app it runs,
+/// which the service answers for that window's tab. The connection stays open
+/// for the caller.
 fn ask(
     launches: &Arc<Launches>,
     app: &str,
-    workspace: &str,
     pid: u32,
+    tab: u64,
     message: &FloatingSurfaceClientMessage,
 ) -> UnixStream {
-    let connections = ServiceLinks::new(Arc::clone(launches)).window(app, workspace, 7, Some(pid));
-    let mut stream: UnixStream = connections
-        .shell_ui
+    let mut stream: UnixStream = ServiceLinks::new(Arc::clone(launches))
+        .shell_ui(app, tab, Some(pid))
         .expect("the app's shell-ui connection")
         .into();
     let frames = [
@@ -986,13 +1159,13 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::OpenTabBeside {
             target: None,
             background: false,
@@ -1041,15 +1214,15 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // The window in front describes a control of its content, so where it stands on the desk is
     // something this test reads.
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::WindowTargets {
             targets: vec![WindowTarget {
                 role: "ListItem".to_owned(),
@@ -1142,13 +1315,13 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::OpenTabBeside {
             target: Some("https://example.invalid/notes".into()),
             background: false,
@@ -1231,7 +1404,7 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
     let toolbar = WindowToolbar {
         location: Some(ToolbarLocation {
             label: "Home".to_owned(),
@@ -1244,8 +1417,8 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::Toolbar {
             toolbar: Some(toolbar),
             instance: None,
@@ -1268,59 +1441,15 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let mut asking = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
     );
-    asking
-        .set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
-    // The session answers on its own pass, so the answer arrives while it steps; nothing waits on a
-    // read while the desk stands still.
-    let mut seen = Vec::new();
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).unwrap();
-        let mut chunk = [0u8; 512];
-        match std::io::Read::read(&mut asking, &mut chunk) {
-            Ok(read) => seen.extend_from_slice(&chunk[..read]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("the connection broke: {error}"),
-        }
-        if seen.contains(&b'\n') {
-            break;
-        }
-    }
-    let whole = seen
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(&seen[..0], |end| &seen[..end]);
-    let frames: Vec<ui::floating_surface::FloatingSurfaceHostMessage> =
-        String::from_utf8(whole.to_vec())
-            .expect("frames are text")
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line.trim()).expect("a shell-ui frame"))
-            .collect();
+    let told = host_frames(&mut session, &mut asking, 400);
     assert!(
-        frames.contains(
-            &ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }
-        ),
-        "the app is told the target stays closed: {frames:?}"
+        told.contains(&FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }),
+        "the app is told the target stays closed: {told:?}"
     );
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 /// Answer `effect` on the portal sheet's door for `handle` .
@@ -1348,7 +1477,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     let bus = tilo_test_env::PrivateBus::start();
     let (mut session, apps, launches, _launcher) =
         probe_session_with_services(&mut home, &started, &bus);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // The runtime's supervisor stands where the session dials it, and records the allow it is
     // handed.
@@ -1379,8 +1508,8 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     let mut asking = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
     );
     until(&mut session, "the question is on the sheet", |session| {
@@ -1402,7 +1531,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     // The answer reaches the app on a turn of the session's; a counted number of turns is not the
     // answer arriving, so the wait is for the answer itself.
     let mut seen = Vec::new();
-    let heard = common::wait_maybe(&mut session, |session| {
+    let heard = crate::common::wait_maybe(&mut session, |session| {
         session.step(Duration::from_millis(1)).unwrap();
         let mut chunk = [0u8; 512];
         match std::io::Read::read(&mut asking, &mut chunk) {
@@ -1505,7 +1634,7 @@ fn an_app_closes_only_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
     session
         .desktop()
         .with_policy(|policy| policy.map(window(12, "org.example.Other")).unwrap());
@@ -1516,8 +1645,8 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::CloseTab { instance: None },
     );
     until(&mut session, "the app's own tab is closed", |session| {
@@ -1536,8 +1665,8 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
+        tab,
         &FloatingSurfaceClientMessage::ReopenClosedTab,
     );
     until(&mut session, "the closed tab is back", |session| {
@@ -1554,7 +1683,7 @@ fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, _launches, launcher) = probe_session(&mut home, &started);
-    let (pid, _room) = probe_showing(&mut session, &apps, &started);
+    let (pid, _room, _tab) = probe_showing(&mut session, &apps, &started);
 
     // The session goes while its app runs, as when a test fails part-way: the launcher it started
     // goes with it, though the test is still here.

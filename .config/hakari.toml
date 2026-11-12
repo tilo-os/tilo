@@ -108,7 +108,7 @@ third-party = [
     { name = "iroh-base" },
     { name = "iroh-dns" },
     { name = "iroh-metrics" },
-    { name = "iroh-relay" },
+    { name = "iroh-relay", path = "vendor/iroh-relay" },
     # A vendored YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
     { name = "rustypipe", path = "vendor/rustypipe" },

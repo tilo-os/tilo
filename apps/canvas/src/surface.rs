@@ -19,13 +19,14 @@ use ui::tilo_resource::Invoke;
 use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
+use ui::i18n::ArgValue;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::tilo_actions::ActionOutput;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
+    AppModel, Edits, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -40,6 +41,7 @@ use crate::gesture::points::Editable;
 use crate::gesture::read::{Sampled, Sampling};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
+use crate::locales::CATALOG;
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
 use crate::resource::ViewOp;
@@ -188,6 +190,12 @@ pub struct CanvasSurface {
     finding: Rc<Cell<bool>>,
     /// What a click is reading off a picture of the artwork.
     sampling: Option<Sampling>,
+    /// What this frame writes, taken up between frames (a click's reading, a
+    /// chooser's picture, a view's answer): applied by the frame's
+    /// [`settle`](Widget::settle), never by its paint, so a write lands
+    /// before the frame reads the document again and never after the frame
+    /// decided it was quiet.
+    writes: Vec<Invoke<Artwork>>,
     /// Views whose pictures the frame loop is rendering, answered once
     /// they came.
     due: Vec<views::Due>,
@@ -264,6 +272,7 @@ impl CanvasSurface {
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
             sampling: None,
+            writes: Vec::new(),
             due: Vec::new(),
             tools,
             tool,
@@ -507,14 +516,20 @@ impl CanvasSurface {
 
     /// A picture the chooser answered with: the artwork, when the sheet is
     /// empty; else placed on it, fitted inside and selected.
-    fn take_picked(&mut self) {
+    ///
+    /// What it answers with is a write, so it is not made here: the frame
+    /// that takes the answer up writes it in its [`settle`](Widget::settle)
+    /// pass, so the picture reaches the artwork in the frame it arrived in.
+    /// Answers whether it took an answer up, so the frame that did syncs and
+    /// shows it.
+    fn take_picked(&mut self) -> bool {
         let answer = {
             let picking = self.tools.picking.borrow();
             let Some(channel) = picking.as_ref() else {
-                return;
+                return false;
             };
             match channel.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
                 Ok(answer) => Some(answer),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
             }
@@ -524,35 +539,41 @@ impl CanvasSurface {
         // is said beside the title, as Files' answers are: never silence.
         let notice = self.tools.notice.clone();
         let said = move |why: String| {
-            notice.set(Some(ui::i18n::I18nManager::format(
-                "canvas-picture-failed",
-                &[("why", why.into())],
-            )));
+            notice.set(Some(
+                crate::locales::CATALOG.t_args("canvas-picture-failed", &[("why", why.into())]),
+            ));
         };
         let files = match answer {
             Some(ui::portal::ContentsOutcome::Picked(files)) => files,
-            Some(ui::portal::ContentsOutcome::Cancelled) => return,
-            Some(ui::portal::ContentsOutcome::Failed(why)) => return said(why),
-            None => return said(ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone")),
+            Some(ui::portal::ContentsOutcome::Cancelled) => return true,
+            Some(ui::portal::ContentsOutcome::Failed(why)) => {
+                said(why);
+                return true;
+            }
+            None => {
+                said(crate::locales::CATALOG.t("canvas-chooser-gone"));
+                return true;
+            }
         };
         let Some(file) = files.into_iter().next() else {
-            return;
+            return true;
         };
         if self.art.marks.is_empty() {
             match crate::resource::open_picture(&file.name, &file.bytes) {
                 Ok(open) => {
-                    self.dispatch(&open);
+                    self.writes.push(open);
                     self.select_made(vec!["picture".into()]);
                     self.tools.tool.set(Tool::Select);
                 }
                 Err(error) => said(error),
             }
-            return;
+            return true;
         }
         match crate::resource::keep_picture_bytes(&file.name, &file.bytes) {
             Ok((src, size)) => self.place_picture(src, size),
             Err(error) => said(error),
         }
+        true
     }
 
     /// The picture at `src` placed on the artwork: as large as fits inside
@@ -574,7 +595,7 @@ impl CanvasSurface {
         };
         let id = edit::fresh_id(&self.art, "picture", &[]);
         let ink = self.ink();
-        self.dispatch(&Artwork::DRAW.with(Draw {
+        self.writes.push(Artwork::DRAW.with(Draw {
             layer: ink.layer,
             marks: vec![NewMark {
                 id: Some(id.clone()),
@@ -769,6 +790,9 @@ impl CanvasSurface {
         let patch =
             view_ops::colour_patch(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
         self.sampling = Some(Sampling::Colour(patch.request()));
+        // The picture is asked for now, of the artwork the person clicked:
+        // where the thread can wait for it, the colour is taken up here and
+        // the frame's settle writes what it comes to.
         self.take_sampled();
     }
 
@@ -776,19 +800,31 @@ impl CanvasSurface {
     /// the colour, the wand selects the area, the bucket fills it. A canvas
     /// that cannot draw a picture of itself says why beside the title
     /// rather than ignoring the click.
-    fn take_sampled(&mut self) {
+    ///
+    /// What it reads is a write, so it is not made here: the frame that
+    /// takes the reading up writes it in its
+    /// [`settle`](Widget::settle) pass, before it reads the document again.
+    /// Answers whether it took a reading up, so the frame that did syncs and
+    /// shows what came of it.
+    fn take_sampled(&mut self) -> bool {
         let Some(sampling) = self.sampling.as_mut() else {
-            return;
+            return false;
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let Some(read) = sampling.poll(&mut self.tools.renderer.borrow_mut(), text, &self.art)
         else {
-            return;
+            return false;
         };
         self.sampling = None;
         let (found, fill, mode) = match read {
-            Err(why) => return self.tools.notice.set(Some(why)),
-            Ok(Sampled::Colour(colour)) => return self.tools.pick(colour),
+            Err(why) => {
+                self.tools.notice.set(Some(why));
+                return true;
+            }
+            Ok(Sampled::Colour(colour)) => {
+                self.tools.pick(colour);
+                return true;
+            }
             Ok(Sampled::Area { found, fill, mode }) => (found, fill, mode),
         };
         let action = if fill {
@@ -802,8 +838,9 @@ impl CanvasSurface {
             Some(area::found(&found, mode))
         };
         if let Some(action) = action {
-            self.dispatch(&action);
+            self.writes.push(action);
         }
+        true
     }
 
     /// How a new area meets the selection, from the held keys.
@@ -853,18 +890,15 @@ impl CanvasSurface {
             within,
             ..crate::author::ColourQuery::default()
         };
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let search = crate::author::ColourSearch::start(
-            &mut self.tools.renderer.borrow_mut(),
-            text,
-            &self.art,
-            query,
-        );
+        let search = crate::author::ColourSearch::start(&self.art, query);
         self.sampling = Some(Sampling::Area {
             search: Box::new(search),
             fill,
             mode,
         });
+        // The picture is asked for now, of the artwork the person clicked:
+        // where the thread can wait for it, the area is found here and the
+        // frame's settle fills or selects it.
         self.take_sampled();
     }
 
@@ -2260,7 +2294,7 @@ impl CanvasSurface {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
-            return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
+            return Err(crate::locales::CATALOG.t("canvas-finding-busy"));
         }
         if let Some(layer) = &select.layer
             && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
@@ -2271,7 +2305,7 @@ impl CanvasSurface {
         let content = crate::content::store();
         let sampled = art.clone();
         let request = select.clone();
-        let phase = ui::i18n::I18nManager::lookup_plain(if select.subject == Some(true) {
+        let phase = crate::locales::CATALOG.t(if select.subject == Some(true) {
             "canvas-finding-subject"
         } else {
             "canvas-refining-edge"
@@ -3047,12 +3081,8 @@ impl Widget for CanvasSurface {
     ) {
         self.advance_zoom();
         self.follow_tool();
-        self.follow_keys();
         self.follow_view();
         self.follow_crop();
-        self.take_picked();
-        self.take_sampled();
-        self.take_due();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3221,15 +3251,19 @@ impl Widget for CanvasSurface {
         Some(
             AccessNode::new(Role::Image)
                 .with_name(if self.art.title.is_empty() {
-                    "Artwork".to_owned()
+                    CATALOG.t("canvas-resource-artwork")
                 } else {
                     self.art.title.clone()
                 })
-                .with_description(format!(
-                    "{} by {} units, {layers} layers, {marks} marks, {} selected; inspect lists them and look shows them",
-                    self.art.width,
-                    self.art.height,
-                    self.selection.len()
+                .with_description(CATALOG.t_args(
+                    "canvas-a11y-artwork",
+                    &[
+                        ("width", ArgValue::Text(self.art.width.to_string())),
+                        ("height", ArgValue::Text(self.art.height.to_string())),
+                        ("layers", ArgValue::Text(layers.to_string())),
+                        ("marks", ArgValue::Text(marks.to_string())),
+                        ("selected", ArgValue::Text(self.selection.len().to_string())),
+                    ],
                 )),
         )
     }
@@ -3268,6 +3302,10 @@ impl Widget for CanvasSurface {
         // asking for frames alone does not declare an unfinished placeholder.
         let renderer = self.tools.renderer.borrow();
         self.finding.get()
+            // A click waits for the picture it reads before it writes what
+            // it finds.
+            || self.sampling.is_some()
+            || !self.writes.is_empty()
             || renderer.pictures.decoding()
             || renderer.detail_pending()
             || renderer.settling()
@@ -3283,6 +3321,8 @@ impl Widget for CanvasSurface {
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
             || self.sampling.is_some()
+            // A reading is owed the write its frame makes.
+            || !self.writes.is_empty()
             || !self.due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
@@ -3329,6 +3369,45 @@ impl Widget for CanvasSurface {
             | Tool::Wand
             | Tool::Bucket => CursorIcon::Crosshair,
         })
+    }
+
+    /// Between frames: take up what a surface answered since the last one — a
+    /// click's reading, a chooser's picture, a view's answer. The frame that
+    /// does syncs and writes it, so the reading, the picture or the area
+    /// reaches the artwork in the frame it arrived in, never a frame after it
+    /// and never after the frame decided to rest.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // A reading taken up here, or one the click already had because the
+        // thread could wait for its picture, is this frame's to write.
+        let sampled = self.take_sampled();
+        let picked = self.take_picked();
+        let answered = self.take_due();
+        // Keys a menu or a panel pressed for the person, and what a press
+        // picked from under it: the frame's sync carries them out.
+        let waiting = self.tools.waiting();
+        !self.writes.is_empty() || sampled || picked || answered || waiting
+    }
+
+    /// Write what the frame's update took up, through the one door every
+    /// canvas edit goes through, before this frame reads the document again:
+    /// what the person's click, chooser or view answered with reaches the
+    /// artwork in one frame.
+    fn settle(&mut self, edits: &mut Edits<'_>, _path: &ui::automerge::ObjId) {
+        let writes = std::mem::take(&mut self.writes);
+        if writes.is_empty() || self.read_only {
+            return;
+        }
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        for action in writes {
+            if let Err(refused) = dispatcher.submit_now(edits, action) {
+                self.tools.notice.set(Some(CATALOG.t_args(
+                    "canvas-write-refused",
+                    &[("why", refused.to_string().into())],
+                )));
+            }
+        }
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

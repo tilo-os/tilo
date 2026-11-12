@@ -43,7 +43,6 @@ pub use grants::{FsOwner, FsRight};
 #[cfg(unix)]
 mod entry_name;
 #[cfg(unix)]
-pub mod external_history;
 #[cfg(unix)]
 pub mod selected_client;
 #[cfg(unix)]

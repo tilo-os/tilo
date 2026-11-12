@@ -24,10 +24,16 @@ pub(super) enum NoticeAction {
 impl NoticeAction {
     fn button(self) -> ToolbarAction {
         match self {
-            Self::ChooseMedia => {
-                ToolbarAction::new(CHOOSE_MEDIA_ACTION, "file-plus", "Choose media…")
-            }
-            Self::Undo => ToolbarAction::new(UNDO_OPEN_ACTION, "undo-2", "Undo"),
+            Self::ChooseMedia => ToolbarAction::new(
+                CHOOSE_MEDIA_ACTION,
+                "file-plus",
+                crate::resource::CATALOG.t("video-editor-choose-media"),
+            ),
+            Self::Undo => ToolbarAction::new(
+                UNDO_OPEN_ACTION,
+                "undo-2",
+                crate::resource::CATALOG.t("video-editor-shortcut-undo"),
+            ),
         }
     }
 }

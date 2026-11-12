@@ -1101,7 +1101,7 @@ mod tests {
             "Insert table here",
             "Insert page break",
             "Align paragraph",
-            "Add or change hyperlink",
+            "Set hyperlink",
             "Accept change",
             "Accept all changes",
         ],

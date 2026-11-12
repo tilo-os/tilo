@@ -79,7 +79,7 @@ too. The script writes the provenance record itself, so P01 reads the tree's com
 swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is
 up, session components and apps into the run's slot, VM-wide ones into `vm`; `all` swaps
 every userspace component in `os/components.toml`, or name a list (`--input
-swap=shell,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
+swap=tilo-session,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
 and fails unless every requested swap is the layer its slot runs.
 
 `vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
@@ -142,11 +142,42 @@ tree and keeping every line the server writes beside it. The person answers on t
 pressing its controls (`list-targets`, `click_named`), and stops an agent with the desk's
 `stop-agent`. The checks: each environment names its workspace and environment, its `~` is
 its workspace's tree and the other's is unreadable (E01); both agents are asked about and
-admitted at once, with distinct ids naming their environments (E02); each one's note lands in
-its own workspace only (E03); an environment's agent asking for the other workspace is
-refused before anyone is asked (E04); "Always allow" admits a second session there without
-the sheet, as the next instance (E05); Stop on one leaves the other working (E06); a program
-of the login outside the environments is refused on an environment's door (E07).
+admitted at once, with distinct ids naming their environments, the ids the door told them (E02);
+each one's tools work in its own workspace: it lists that workspace's apps, finds the note the
+person made there and not the other's, and the desk shows it no window of the other (E03); an
+environment's agent asking for the other workspace is refused before anyone is asked (E04);
+"Always allow" admits a second session there without the sheet, as the next instance (E05);
+Stop on one leaves the other working (E06); a program of the login outside the environments is
+refused on an environment's door (E07). E08 is an agent's own change, a note through
+`notes#new-note` taken in the run the door starts for its connection, landing in its workspace
+and not the other's. E09 is one that asks first, a file through `terminal#run`: its run puts the
+question to the person on the desk's sheet (Allow once, Always allow the agent, Deny), the harness
+allows it once by its named control, and the file lands in the agent's own workspace's tree.
+
+### A workspace branched (WB01-WB06, `e2e-ws-branch`)
+
+WB01-WB06 (`checks/ws_branch_e2e.py`) prove that a workspace set up once branches into
+workspaces that start with everything the person set up and then change apart: a research
+workspace branched per question, a development workspace per customer. They run only when named,
+as E01-E09 do: t's dispatch-only `e2e-ws-branch` check (`tools/ci/vm-acceptance.sh
+e2e-ws-branch`, `t test e2e-ws-branch`; `--test hold` keeps a failed run's VM up an hour).
+
+The person makes a workspace, a note in it through Notes, a Terminal environment, and from its
+shell a question, a tool in `~/.local/bin` and a git checkout where the environment has git;
+a few hundred megabytes of data go into its tree beside them (WB01). They branch it twice
+through the desk's `workspace.branch` and once with `tilo workspace branch`; each branch is
+timed to its data in its own tree while a thread times the desk's answers, and an answer slower
+than `DESK_STALL_S` fails the branch as blocking the desk (WB02). Each branch holds the note, the
+files, the environment (opened from Terminal there, the tool runs, the checkout reads, and
+`TILO_WORKSPACE`, `TILO_ENVIRONMENT` and `~` are the branch's own), the desk's windows; its owner
+is its only member and the source's chat stayed behind (WB03). An edit in the first branch (a
+note, a line and a file in its tree, its tool, a new environment) shows neither in the source nor
+the second branch, and one in the source not in the branches (WB04), also after the session
+restarts, when Chat in the first branch still holds none of the source's chat, takes a line of its
+own, and its history is not held back (WB05). The tool runs as `~/.local/bin/e2e-tool` itself, and
+the question is a `.md` whose bytes read back as written. An agent started in the first branch's environment (`guest/mcp_agent.sh`) is
+admitted there, finds that branch's notes and not the source's later one, and its environment
+reads neither the source's nor the sibling's tree (WB06).
 
 `TILO_ACCEPTANCE_HOLD_S=N` keeps a run's VM up N seconds after a check failed, to reach it
 (`t vm ssh`, then `tilo-vm` as the run's user) before it goes.
@@ -400,10 +431,10 @@ Retain these **canonical `run.json` receipts** under the names below (the CLI's
 | File | Production operation captured |
 | --- | --- |
 | `create-run.json` | `tilo-vm --json slot create SLOT --headless`, with `created=true`, empty generation 0 |
-| `before-run.json` | `slot show SLOT` after selecting the working shell and matched runtime |
-| `activate-run.json` | `swap shell --from layer:CANDIDATE` targeting SLOT, with successful session restart |
+| `before-run.json` | `slot show SLOT` after selecting the working session and matched runtime |
+| `activate-run.json` | `swap tilo-session --from layer:CANDIDATE` targeting SLOT, with successful session restart |
 | `active-run.json` | `slot show SLOT` after candidate readiness succeeds |
-| `fail-run.json` | `swap shell --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
+| `fail-run.json` | `swap tilo-session --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
 | `recovered-run.json` | `slot show SLOT` after recovery; generation, layers, inventory and provenance must match the active capture |
 | `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
 

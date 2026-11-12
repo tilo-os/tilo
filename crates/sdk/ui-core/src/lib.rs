@@ -154,6 +154,8 @@ pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
 pub mod caps_lock;
+/// Who the keyboard belongs to, which is who paints a caret.
+pub mod caret_owner;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
@@ -163,7 +165,9 @@ pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};
 pub mod component;
+pub mod component_inputs;
 pub mod component_lifecycle;
+pub mod composition;
 pub mod content;
 pub mod content_layout;
 mod cpu_raster;
@@ -233,6 +237,7 @@ pub mod keycaps;
 pub mod keys;
 pub mod latin_chord;
 pub mod launch;
+pub mod lift;
 pub mod live_activity;
 pub mod live_collaboration;
 pub mod local_identity;
@@ -284,7 +289,7 @@ pub mod desk_widgets {
     };
 }
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
-pub mod deferred;
+pub use tilo_lock::{deferred, lazy_code};
 pub mod lazy_code;
 pub mod personal_dictionary;
 pub mod text_assistance;
@@ -325,6 +330,9 @@ pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
 pub mod richtext;
+/// Rich text as a component shows it: paragraphs with their marks, and how each reference in
+/// them reads (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
+pub use tilo_ui_graph::rich;
 pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
@@ -440,12 +448,16 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
+/// The one image codec: sniff, decode, encode and transform pixels, with the
+/// browser's own codecs on the web. Apps decode and encode only through it.
+pub use tilo_image_codec as image_codec;
 // What a session lends the windows it draws its content addresses with: a process that draws no
 // native window (`native` off) holds none.
 #[cfg(feature = "native")]
 pub use pictures::lend_content;
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
+    spell_shortcut_keycaps,
 };
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
@@ -470,9 +482,7 @@ pub use search::{
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
-pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
-#[cfg(feature = "lazy-hyphenation")]
-pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
+pub use text_break::{HYPHENATION, Hyphenate, builtin_hyphenation, hyphenation_generation};
 pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
     workspace_hue,
@@ -546,6 +556,7 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
+pub use history_source::sentence::{author_line, wire_author_line};
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
@@ -557,6 +568,7 @@ pub use live_collaboration::{
     Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
     PresenceVisibility, StatusOrigin, StatusSharing,
 };
+pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};
@@ -613,8 +625,6 @@ pub use widget::ParticipantPresence;
 
 pub mod application;
 pub mod application_view;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod host_worker;
 pub mod invocation_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;

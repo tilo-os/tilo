@@ -72,6 +72,7 @@ use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 mod schema;
 mod summary;
 mod wait;
+pub mod web;
 
 pub use schema::argument_lines_compact;
 
@@ -906,6 +907,8 @@ pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
         describe_operation_definition(),
         invoke_definition(),
         crate::pages::read_result_definition(),
+        web::search_definition(),
+        web::read_page_definition(),
         crate::programs::definition(),
         finish_definition(),
     ]
@@ -2110,18 +2113,17 @@ mod tests {
 
     /// The opens of everything installed, host applications included, do
     /// not crowd what a running application can do out of the summary:
-    /// a web search started beside the agent stays listed however many
-    /// applications could be opened, and Tilo's opens come before the
-    /// host's.
+    /// Notes' page stays listed however many applications could be opened,
+    /// and Tilo's opens come before the host's.
     #[test]
     fn opens_do_not_crowd_out_what_is_running() {
         let mut catalogue = Catalogue {
             offers: vec![offer(
-                "so.tilo.web-search",
-                "web.search:default",
-                "web.search",
-                "search",
-                "Search the web",
+                "so.tilo.notes",
+                "notes.page:1",
+                "notes.page",
+                "read",
+                "Read the page",
                 InputSpec::None,
             )],
             facts: Vec::new(),
@@ -2144,7 +2146,7 @@ mod tests {
         }
         catalogue.offers.push(open("so.tilo.notes"));
         let summary = catalogue_summary(&catalogue, &mut Revealed::new(), 10);
-        assert!(summary.contains("web.search:default#search"), "{summary}");
+        assert!(summary.contains("notes.page:1#read"), "{summary}");
         assert!(
             summary.contains("desktop:app:so.tilo.notes#open"),
             "{summary}"
@@ -2176,7 +2178,7 @@ mod tests {
             facts: Vec::new(),
             held: Vec::new(),
         };
-        let request = "find it by web search and put it in writer";
+        let request = "find it on the web and put it in writer";
         assert_eq!(
             named_applications(&catalogue, request),
             vec![("so.tilo.word-processor", "Writer")]
@@ -2781,6 +2783,8 @@ mod tests {
                 DESCRIBE_OPERATION,
                 INVOKE,
                 crate::pages::READ_RESULT,
+                crate::tools::web::SEARCH_WEB,
+                crate::tools::web::READ_PAGE,
                 crate::programs::TILO,
                 PLAN
             ]

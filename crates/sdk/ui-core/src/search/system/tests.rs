@@ -432,3 +432,67 @@ fn an_actions_word_typed_whole_counts_as_its_title_begun() {
     );
     assert!(partial < begun);
 }
+
+/// Every built-in kind answers to a catalogue entry in every language the
+/// toolkit ships, so a German desk's group headers and chips read German.
+#[test]
+fn every_builtin_kind_is_named_in_the_desktops_language() {
+    const SOURCE: &str = include_str!("../../../locales/en-US.ftl");
+    const GERMAN: &str = include_str!("../../../locales/de-DE.ftl");
+    let kinds = [
+        ResourceKind::Action,
+        ResourceKind::Application,
+        ResourceKind::Note,
+        ResourceKind::Record,
+        ResourceKind::File,
+        ResourceKind::Folder,
+        ResourceKind::Creator,
+        ResourceKind::Video,
+        ResourceKind::Playlist,
+        ResourceKind::Tab,
+        ResourceKind::WindowGroup,
+    ];
+    let labels = || -> Vec<String> { kinds.iter().map(ResourceKind::display_label).collect() };
+    crate::i18n::I18nManager::install("en-US", "en-US", &[("en-US", SOURCE)])
+        .expect("the source catalogue parses");
+    assert_eq!(
+        labels(),
+        [
+            "Actions",
+            "Apps",
+            "Notes",
+            "Records",
+            "Files",
+            "Folders",
+            "Creators",
+            "Videos",
+            "Playlists",
+            "Tabs",
+            "Window groups",
+        ]
+    );
+    crate::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", SOURCE), ("de-DE", GERMAN)])
+        .expect("both catalogues parse");
+    assert_eq!(
+        labels(),
+        [
+            "Aktionen",
+            "Apps",
+            "Notizen",
+            "Datensätze",
+            "Dateien",
+            "Ordner",
+            "Creator",
+            "Videos",
+            "Wiedergabelisten",
+            "Tabs",
+            "Fenstergruppen",
+        ]
+    );
+    // A kind a provider minted carries the provider's own words.
+    assert_eq!(
+        ResourceKind::Custom("Antworten".into()).display_label(),
+        "Antworten"
+    );
+    crate::i18n::I18nManager::set_locale("en-US");
+}

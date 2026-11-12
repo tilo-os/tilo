@@ -8,7 +8,9 @@
 use std::time::{Duration, Instant};
 
 use crate::{Session, import_readiness, quick_settings};
-use tilo_compositor::{Compositor, Error};
+use tilo_compositor::Compositor;
+
+use crate::Error;
 
 /// How long the desk's own bookkeeping may wait for a turn that draws nothing: a desk that keeps
 /// drawing is read this often all the same.
@@ -63,6 +65,9 @@ impl Session {
         if let Some(plane) = &self.action_plane {
             plane.link.serve(&mut services);
         }
+        // What the answers wrote (an agent's record of its work) reaches the workspace in this
+        // pass, not in the next one's.
+        self.shared.records.write();
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
@@ -99,34 +104,35 @@ impl Session {
         // once.
         let launch = self.shared.launch.clone();
         if let Some(launch) = &launch {
+            launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
             launch.start_asked_now();
         }
-        // What search reads of the desk is read in turns that have nothing to draw. What arrived
-        // above is drawn first: a window committing the frame it was configured for is answered by
-        // this turn's frame rather than by a turn the index is read in first. A desk that keeps
-        // drawing is still read, every tenth of a second.
-        if !self.compositor.owes_frame() || self.kept_at.elapsed() >= KEEP_INTERVAL {
-            self.kept_at = Instant::now();
-            self.shared.observe();
-        }
-        // What a tool handed the desk's input since the last pass is taken here, where a device's
-        // own input reaches the desk: the frame below carries it, as it carries a key the person
-        // pressed.
-        self.serve_tool_input();
+        // What a tool handed the desk's input is taken where a device's own input reaches the desk:
+        // here, and each time the wait for the frame below is woken, so the frame carries it as it
+        // carries a key the person pressed.
+        let mut tool_input = serve_tool_input(&self.control, &self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the desk below is laid out once per refresh however
         // fast events come.
-        self.compositor.await_frame_arrivals(|| {
+        self.compositor.await_frame_arrivals(|compositor| {
             if let Some(launch) = &launch {
                 launch.start_waiting();
             }
+            tool_input = tool_input.saturating_add(serve_tool_input(
+                &self.control,
+                &self.shared,
+                compositor,
+            ));
         })?;
+        self.tool_input = tool_input;
         self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps and the overlays this
         // pass lays out.
         let pass = Instant::now();
         // The person's language, before this pass resolves any of its words.
         self.follow_language();
+        // The dates, clocks and weeks they write, as their region now says them.
+        self.follow_formats();
         // Add folders: answered whether the identity ceremony is over, and the review the person
         // left opens once it is.
         self.follow_folder_import();
@@ -136,7 +142,6 @@ impl Session {
         // What each window shows, as its app holds the record: the note this pass's desk, layout
         // and arrangement are read from.
         self.read_window_notes();
-        self.follow_session_actions();
         self.shared.follow_arrangement(underway);
         self.follow_controllers()?;
         self.follow_displays()?;
@@ -149,6 +154,8 @@ impl Session {
         self.follow_update();
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
+        // A due event the apps published is announced once, on the pass it arrived in.
+        self.shared.activities.announce(&*self.shared.telling());
         self.follow_readout();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what their devices did, so a
@@ -157,23 +164,13 @@ impl Session {
         self.surfaces.serve(&mut self.shared.doors);
         // The windows shared with the workspaces: what the person asked,
         // what the plane brought, and the frames of the ones on screen.
-        {
-            let sync = self.shared.sync.clone();
-            let displays = &self.displays_service;
-            self.shared.window_shares.borrow_mut().step(
-                &mut self.compositor,
-                &self.shared.handle,
-                displays,
-                sync.as_deref(),
-                std::time::Instant::now(),
-            );
-        }
+        self.follow_window_shares();
         self.follow_text_inputs();
         self.follow_notifications();
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();
-        self.shared.follow_switcher(&self.compositor);
+        self.follow_switcher();
         self.follow_shell()?;
         self.follow_slot_views()?;
         // The toolkit's clock, which a capture pins the frame's instant on.
@@ -181,23 +178,12 @@ impl Session {
         self.windows.step(&mut self.compositor, now);
         // The overview's windows fly between the desk and the overview: its panel names them, the
         // desk says where each stands, and the compositor draws their own pixels.
-        self.shared.overview.step(&self.shared, now);
+        self.shared
+            .overview
+            .step(&self.shared.handle, &self.shared.desktop, now);
         // The desk this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the desk the frame about to be presented shows, not the one before it.
-        crate::test_control::publish(
-            &self.control,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked: self.compositor.locked(),
-                lock_screen_drawn: self.compositor.lock_drawn(),
-                lock: &self.shared.lock,
-            },
-        );
+        self.control.publish(&desk(&self.shared, &self.compositor));
         self.compositor.mark_pump(pass.elapsed());
         // The desk's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
@@ -225,31 +211,62 @@ impl Session {
         self.first_frame_presented();
         self.serve_drawn_frame();
         self.follow_desk_over_frame()?;
+        // What search and the session's steps read of what the desk publishes is read once the
+        // frame is out: a key's turn draws what it opens before anything is read, and the reading
+        // never delays a frame. A desk that keeps drawing is still read, every tenth of a second.
+        if !self.compositor.owes_frame() || self.kept_at.elapsed() >= KEEP_INTERVAL {
+            self.kept_at = Instant::now();
+            self.shared.observe();
+            self.follow_session_actions();
+        }
         self.compositor.end_tick();
         Ok(())
     }
 
-    /// The desk's input a tool handed the loop since the last pass, served where a device's input
-    /// is: before the pass lays its frame out, so the frame carries it.
-    fn serve_tool_input(&mut self) {
-        let answering = Instant::now();
-        let (locked, lock_screen_drawn) = (self.compositor.locked(), self.compositor.lock_drawn());
-        crate::test_control::serve_input(
-            &self.control,
+    /// The windows shared with the workspaces: what the person asked, what the plane brought, and
+    /// the frames of the ones on screen.
+    fn follow_window_shares(&mut self) {
+        let sync = self.shared.sync.clone();
+        let displays = &self.displays_service;
+        self.shared.window_shares.borrow_mut().step(
             &mut self.compositor,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked,
-                lock_screen_drawn,
-                lock: &self.shared.lock,
-            },
+            &self.shared.handle,
+            displays,
+            sync.as_deref(),
+            &self.shared.pages,
+            Instant::now(),
         );
-        self.tool_input = answering.elapsed();
+    }
+
+    /// What the desk's walk reached this pass, handed to the panel that shows it: whether the
+    /// session is locked, and where each of the desk's windows stands.
+    fn follow_switcher(&self) {
+        // Each window's size in logical pixels, as the desk lays it out: the shape a card of the
+        // panel takes, so the window's picture fills it.
+        let sizes = self
+            .compositor
+            .windows()
+            .into_iter()
+            .filter_map(|(window, (_, _, width, height))| {
+                Some((
+                    window.id,
+                    (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
+                ))
+            })
+            .filter(|(_, (width, height))| *width > 0 && *height > 0)
+            .collect();
+        let shared = &self.shared;
+        if crate::switcher::show(
+            &shared.handle,
+            &shared.desk_overlays,
+            &shared.switcher,
+            self.compositor.locked(),
+            &sizes,
+        ) {
+            // The panel stands over the desk's windows: the chrome lays itself out again for what
+            // it now shows, as it does for any surface of the desk's going up or down.
+            crate::platform::surfaces::Desk::relayout(&shared.desktop);
+        }
     }
 
     /// What the frame just drawn asked of the session: the control socket's answer, what assistive
@@ -257,23 +274,8 @@ impl Session {
     fn serve_drawn_frame(&mut self) {
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
-        let locked = self.compositor.locked();
-        let lock_screen_drawn = self.compositor.lock_drawn();
-        crate::test_control::serve(
-            &self.control,
-            &mut self.compositor,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked,
-                lock_screen_drawn,
-                lock: &self.shared.lock,
-            },
-        );
+        let desk = desk(&self.shared, &self.compositor);
+        self.control.serve(&mut self.compositor, &desk);
         self.compositor
             .mark_testctl(answering.elapsed().saturating_add(self.tool_input));
         // What assistive technology reads of the frame just drawn, and what it asked of it.
@@ -297,22 +299,26 @@ impl Session {
         // made by this turn's layout goes with it.
         self.shared.keep_desk();
         // The picture is the workspace in front's, which a change covering one workspace lands on.
-        let active = self
-            .shared
-            .handle
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
+        let active = self.shared.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| (workspace.slot.0, workspace.id()))
+        });
+        let active_slot = active.map(|(slot, _)| slot);
         self.shared
             .wallpapers
-            .set_active(active.map(|workspace| workspace.to_string()));
+            .set_active(active_slot.map(|workspace| workspace.to_string()));
+        // A command the person starts here joins the workspace in front: the file is written on
+        // the switch, never read for on a clock of its own.
+        self.published_workspace.follow(active.map(|(_, id)| id));
         // A workspace in front that changed is a switch the person made; its frames are timed until
         // the desk rests.
         if self
             .active_workspace
-            .is_some_and(|before| Some(before) != active)
+            .is_some_and(|before| Some(before) != active_slot)
         {
             self.compositor.workspace_switched();
         }
-        self.active_workspace = active;
+        self.active_workspace = active_slot;
         Ok(())
     }
 
@@ -360,6 +366,9 @@ impl Session {
             // nothing draws before it.
             self.shared.desk_overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
+            // A branch being copied off the loop is looked at again soon, so it goes on the desk
+            // once it is there.
+            self.shared.branches.next_deadline(now),
             self.shared.waking.next_deadline(),
             // Quick settings is this session's own layer: its app drew the
             // panel once and the pose the compositor grows it by is set here,
@@ -374,7 +383,15 @@ impl Session {
             self.portal
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
-            crate::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            // The caret the clipboard panel waits for stops being waited for on the compositor's
+            // clock.
+            self.shared
+                .pending_paste
+                .get()
+                .then(|| self.compositor.caret_deadline())
+                .flatten(),
+            self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
         ];
         deadlines.into_iter().flatten().min()
@@ -382,22 +399,41 @@ impl Session {
 
     /// Run until `stop` holds or the backend is done.
     ///
+    /// A run asked to last a measured interval (`TILO_RUN_SECONDS`, as the frame instrumentation
+    /// documents it) ends by itself, cleanly, once it is over: the trace and the summary of the
+    /// run are written on the way out.
+    ///
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         // Everything from here to the first frame is what the person waits for after the desk is
         // built.
         tilo_startup_metrics::mark("render-worker-start");
-        while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
+        let measured = tilo_frame_metrics::run_seconds_from_env()
+            .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
+        let measured_over = || measured.is_some_and(|over| std::time::Instant::now() >= over);
+        while !self.ended
+            && !self.compositor.closed()
+            && !measured_over()
+            && !stop(&self.compositor)
+        {
             // Whatever comes first: a client, a device, a due frame of the compositor's own, or an
             // instant something of the session's needs a pass for. With nothing due, the loop waits
-            // for the person.
+            // for the person — or for the end of a measured run.
             let timeout = match (self.compositor.next_wait(), self.next_deadline()) {
                 (Some(frame), Some(due)) => {
                     Some(frame.min(due.saturating_duration_since(std::time::Instant::now())))
                 }
                 (frame, due) => frame.or_else(|| {
                     due.map(|due| due.saturating_duration_since(std::time::Instant::now()))
+                }),
+            };
+            let timeout = match (timeout, measured) {
+                (Some(due), Some(over)) => {
+                    Some(due.min(over.saturating_duration_since(std::time::Instant::now())))
+                }
+                (due, over) => due.or_else(|| {
+                    over.map(|over| over.saturating_duration_since(std::time::Instant::now()))
                 }),
             };
             self.step(timeout)?;
@@ -502,19 +538,30 @@ impl Session {
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered pass: what was asked, in the order the desk, its panels and its hosted surfaces must see it"
+    )]
     pub(super) fn settle(&mut self) -> Result<(), Error> {
         // What the history wrote back reaches the desk before anything reads it, and what the
         // person opened from it starts from here.
         self.shared.serve_activity();
+        self.shared.serve_mentions();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_records();
+        // The person's list is kept on the hosts of their workspaces through the sessions the
+        // broker reaches them on.
+        let hosted = self
+            .action_plane
+            .as_ref()
+            .and_then(crate::plane::Plane::action_broker)
+            .and_then(|broker| broker.hosted_workspaces());
+        self.shared.follow_records(hosted.as_deref());
+        // What was sent since the last look, by a box, an agent or a script.
+        self.shared.deliver_sends();
         // The community this computer is configured for is joined on its own,
         // once, as the session starts.
         self.shared.follow_community();
-        // Who each workspace on the desk is whose, after the workspaces this pass brought: the
-        // person's own are theirs, and one joined keeps its host's owner.
-        self.shared.own_workspaces();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();
@@ -525,8 +572,6 @@ impl Session {
         // The engine of the active source, after the on-screen keyboard gave up the seat: one input
         // method owns it.
         self.follow_input_method();
-        // Quick settings runs while the stack has its slot up, where the stack placed it.
-        self.follow_quick_settings();
         if let Some(captures) = &mut self.captures {
             captures.serve(
                 &mut self.compositor,
@@ -556,7 +601,7 @@ impl Session {
         // person pastes it into any app.
         if let Some(plane) = &self.action_plane {
             for files in plane.file_clipboard.take_published() {
-                crate::mount::clipboard::offer_files(&mut self.compositor, &files);
+                crate::clipboard::offer_files(&mut self.compositor, &files);
             }
         }
         // What the apps copied since the last pass joins the history; a copy chosen in it is pasted
@@ -565,12 +610,9 @@ impl Session {
         // The question about a display change, before the sheets are placed: one that just opened
         // stands on this pass's displays.
         if let Some(confirm) = self.shared.display_confirm.as_ref() {
-            self.confirmation.follow(
-                &mut self.compositor,
-                confirm,
-                &self.displays,
-                &self.shared.notices,
-            );
+            let notices = self.shared.telling();
+            self.confirmation
+                .follow(&mut self.compositor, confirm, &self.displays, &*notices);
         }
         self.display_sheet.follow(
             &self.compositor.outputs(),
@@ -578,7 +620,29 @@ impl Session {
             &self.shared.invocations,
         );
         self.place_sheets();
+        // What the async work this session started answered since the last pass.
+        self.shared.landings.land();
         self.settle_asks()?;
+        // Who each workspace on the desk is whose, once this pass has opened the ones it was asked
+        // for: the person's own are theirs, and one joined keeps its host's owner. A workspace the
+        // desk shows is claimed in the pass that shows it, never a pass later — a person's action in
+        // it is decided against that ownership.
+        self.shared.own_workspaces();
+        // The broker decides a person's own action against the copy of the desk taken here, which
+        // follows every change this pass made, so a workspace the person just came into is theirs
+        // there too when their first action in it arrives.
+        self.publish_desk();
+        // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
+        // the clipboard panel a key asked for goes up beside the caret: the desk this pass lays out
+        // and publishes names them, not the one after. Under the shell the chrome draws nothing:
+        // the desk's search it runs for the launcher is no surface the person sees, and standing in
+        // the stack it would take the launcher down.
+        if !self.shared.surfaces.shell {
+            self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
+        }
+        self.follow_pending_paste();
+        // Quick settings runs while the stack has its slot up, where the stack placed it.
+        self.follow_quick_settings();
         // Which apps stopped answering reaches the desk, and the person's Wait or Force quit
         // reaches the compositor.
         self.follow_app_liveness();
@@ -590,11 +654,11 @@ impl Session {
         self.follow_window_menu();
         // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
-        self.shared.clipboard.serve_asks(&mut self.compositor);
+        self.serve_clipboard_asks();
         // A paste of files runs on its own thread; the loop only asks whether it is over and tells
         // the person how it went.
         for notice in self.shared.clipboard.step_files() {
-            self.shared.notifications.borrow().tell(notice);
+            self.shared.notifications.borrow().tell(&notice);
         }
         // What was copied here reaches the person's other devices, and what they copied there joins
         // the clipboard here.
@@ -642,5 +706,34 @@ impl Session {
             }
         }
         Ok(())
+    }
+}
+
+/// The desk's input a tool handed the loop since it last looked, served where a device's input is:
+/// before the pass lays its frame out, so the frame carries it. How long answering it took.
+fn serve_tool_input(
+    control: &crate::test_control::Control,
+    shared: &crate::Shared,
+    compositor: &mut Compositor,
+) -> std::time::Duration {
+    let answering = Instant::now();
+    let desk = desk(shared, compositor);
+    control.serve_input(compositor, &desk);
+    answering.elapsed()
+}
+
+/// The session as the control socket's answers read it now.
+fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_control::Desk<'a> {
+    crate::test_control::Desk {
+        doors: &shared.doors,
+        handle: &shared.handle,
+        overlays: &shared.overlays,
+        overview: shared.overview.open_cell(),
+        engine: shared.engine.as_deref(),
+        seats: &shared.seats,
+        sync: shared.sync.as_deref(),
+        locked: compositor.locked(),
+        lock_screen_drawn: compositor.lock_drawn(),
+        lock: &shared.lock,
     }
 }

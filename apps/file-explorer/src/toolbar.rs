@@ -55,6 +55,7 @@ use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::t;
 use crate::model::ViewMode;
 use crate::path_bar::PathBar;
+use ui::widget::DrawChild;
 
 /// Which history and hierarchy moves the current location allows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -525,9 +526,10 @@ impl Widget for FileToolbar {
         presence: &PresenceCtx,
     ) {
         for c in &mut self.left {
-            c.draw(scene, transform, tr, theme, presence);
+            c.draw_child(scene, transform, tr, theme, presence);
         }
-        self.path_bar.draw(scene, transform, tr, theme, presence);
+        self.path_bar
+            .draw_child(scene, transform, tr, theme, presence);
         self.controls
             .shared
             .published
@@ -682,7 +684,7 @@ impl Widget for ToolbarActions {
         presence: &PresenceCtx,
     ) {
         for c in &mut self.right {
-            c.draw(scene, transform, tr, theme, presence);
+            c.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

@@ -5,23 +5,22 @@
 //! A site's `entry.json` names its home workspace and its directory of public
 //! ones; the directory then lists every public workspace it serves with what
 //! it is, who is in it now and how lively it is
-//! ([`tilo_relay_protocol::directory`]). Joining one asks its door to admit
-//! this person ([`tilo_relay_protocol::directory::DoorAnswer`]) and verifies
-//! the invitation the door answers with for them: the workspace that
-//! invitation grants, and nothing the directory claims, is the workspace
-//! joined ([`join`]).
+//! ([`tilo_relay_protocol::directory`]). Joining one enters it through its
+//! door ([`through_door`]): the device asks its door on the session it opens
+//! with the door's host ([`tilo_relay_protocol::entering`]), as every device
+//! enters a workspace, so nothing is asked of the door here.
 //!
 //! Every step of a join is logged at `info` under
 //! [`tilo_startup_metrics::JOIN_FLOW_TARGET`], which the session's log keeps
-//! whatever `RUST_LOG` says: the directory read, the door asked, the person
-//! the invitation is presented for, the host's answer in its own words, the
-//! workspace slot made for it, and that slot taken away with why — so a join
-//! that lands nowhere says where it stopped, in the log the device keeps.
+//! whatever `RUST_LOG` says: the directory read, the door chosen, the host's
+//! answer in its own words, the workspace slot made for it, and that slot
+//! taken away with why — so a join that lands nowhere says where it stopped,
+//! in the log the device keeps.
 
 use std::time::Duration;
 
 use serde::Deserialize;
-use tilo_net::{Client, NetError};
+use tilo_net::Client;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 
 /// How long establishing a connection to a site may take.
@@ -101,20 +100,46 @@ pub struct Person {
     pub name: String,
 }
 
-/// What a door granted this person: the workspace it let them into, and the
-/// invitation that admits this device.
+/// A workspace a join chose, and the way this device comes into it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Granted {
-    /// The workspace the door's invitation grants: the one joined.
+    /// The workspace joined.
     pub workspace: String,
-    /// The invitation itself, which this device enrolls into the workspace's
-    /// state with.
-    pub invitation: String,
-    /// The one-time token a page redeems the invitation with at the door's
-    /// host; empty when the invitation came without a door (a pasted link).
-    pub admission_token: String,
-    /// Where a page redeems it; the door's own origin when absent.
-    pub origin: Option<String>,
+    /// How this device comes into it.
+    pub way: Way,
+}
+
+/// How a device comes into the workspace a join chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Way {
+    /// An invitation for this person, in its text (a pasted or sealed link),
+    /// redeemed at the host it names.
+    Invitation(String),
+    /// The workspace's door (its base address, `…/directory/<workspace>/`):
+    /// the device enters through it on the session it opens with the door's
+    /// host, whose origin is the door's own, and the workspace's own rules
+    /// decide there whether the person is let in.
+    Door(url::Url),
+}
+
+impl Granted {
+    /// The invitation this device redeems, when it holds one.
+    #[must_use]
+    pub fn invitation(&self) -> Option<&str> {
+        match &self.way {
+            Way::Invitation(text) => Some(text),
+            Way::Door(_) => None,
+        }
+    }
+
+    /// The door this device enters through, when it enters through one.
+    #[must_use]
+    pub fn door(&self) -> Option<&url::Url> {
+        match &self.way {
+            Way::Door(door) => Some(door),
+            Way::Invitation(_) => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -248,39 +273,52 @@ pub async fn fetch_directory(
     })
 }
 
-/// Ask `door` to admit this person, and verify the invitation it answers
-/// with for them. The workspace that invitation grants is the workspace
-/// joined: what a directory said about it is not what makes it so.
-pub async fn join(client: &Client, door: &url::Url, person: &Person) -> Result<Granted, String> {
-    let url = door
-        .join("join")
-        .map_err(|_| "that is not a web address".to_owned())?;
-    let asking = Asking::of(&url, person);
-    let (status, bytes) = asking.ask(client).await?;
-    if !(200..300).contains(&status) {
-        let reason = door_refusal(status, &bytes);
-        asking.refused(status, &reason);
-        return Err(reason);
-    }
-    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&bytes)
-        .map_err(|error| {
-            let reason = format!("the workspace did not let you in: {error}");
-            asking.refused(status, &reason);
-            reason
-        })?;
-    asking.granted(&answer)
+/// The workspace `door` (its base address, `…/directory/<workspace>/`, below
+/// a host's API prefix or at a site's own path) lets people into, as its path
+/// names it.
+#[must_use]
+pub fn door_workspace(door: &url::Url) -> Option<String> {
+    let mut segments = door.path_segments()?.filter(|segment| !segment.is_empty());
+    segments.find(|segment| *segment == "directory")?;
+    let workspace = segments.next()?;
+    tilo_desktop_model::WorkspaceId::parse(workspace).map(|_| workspace.to_owned())
 }
 
-/// The home workspace of the community `site`, joined as `person`: the name
-/// the site calls it, and what its door granted. `None` when the site serves
+/// Join through `door`: the workspace its path names, entered on the session
+/// this device opens with the door's host. Nothing is asked here; the door
+/// decides on that session whether the person is let in.
+///
+/// # Errors
+/// The door names no workspace.
+pub fn through_door(door: &url::Url) -> Result<Granted, String> {
+    let workspace = door_workspace(door).ok_or_else(|| {
+        said(
+            "a door names no workspace",
+            door,
+            "directory-error-no-workspace",
+        )
+    })?;
+    tracing::info!(
+        target: JOIN_FLOW_TARGET,
+        door = %door,
+        workspace = %workspace,
+        "join: the workspace is entered through its door"
+    );
+    Ok(Granted {
+        workspace,
+        way: Way::Door(door.clone()),
+    })
+}
+
+/// The home workspace of the community `site`: the name the site calls it,
+/// and the door this device enters it through. `None` when the site serves
 /// no home workspace of its own, which is nothing to join.
 ///
-/// This is the door a listing's Join asks and the same verified invitation:
-/// a community is joined as a public workspace is.
+/// This is the door a listing's Join enters through: a community is joined
+/// as a public workspace is.
 pub(crate) async fn join_home(
     client: &Client,
     site: &url::Url,
-    person: &Person,
 ) -> Result<Option<(String, Granted)>, String> {
     let Some(home) = read_site(client, site).await?.home else {
         return Ok(None);
@@ -288,7 +326,7 @@ pub(crate) async fn join_home(
     let Some(door) = home.admission else {
         return Ok(None);
     };
-    let granted = join(client, &door, person).await?;
+    let granted = through_door(&door)?;
     Ok(Some((home.name, granted)))
 }
 
@@ -298,9 +336,33 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
     let workspace = verify_workspace(text, person.user)?;
     Ok(Granted {
         workspace,
-        invitation: text.trim().to_owned(),
-        admission_token: String::new(),
-        origin: None,
+        way: Way::Invitation(text.trim().to_owned()),
+    })
+}
+
+/// Seal `invitation`, the signed bytes of one, under a fresh key and leave it
+/// on `site`'s shelf until `expires_at_ns`, naming `host`, the origin it
+/// admits into: the short link a person hands over
+/// (`https://<site>/i/<handle>#<key>`) and what takes it back. The desk's
+/// sheet ([`crate::Store::shelve`]) and a door that invites for a person
+/// leave it the same way.
+///
+/// # Errors
+/// No randomness to seal with, or why the site kept nothing.
+pub async fn shelve(
+    client: &Client,
+    site: &url::Url,
+    host: Option<&str>,
+    invitation: &[u8],
+    expires_at_ns: u64,
+) -> Result<crate::Shelved, String> {
+    let sealed = tilo_workspace_join::sealed::seal(invitation)?;
+    let link = leave(client, site, host, &sealed, expires_at_ns).await?;
+    Ok(crate::Shelved {
+        link,
+        site: site.clone(),
+        handle: sealed.handle,
+        delete: sealed.delete,
     })
 }
 
@@ -309,10 +371,7 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
 ///
 /// The site is given the ciphertext, when the invitation lapses, and the
 /// secret that takes it back — never the key, which is in the link alone.
-///
-/// # Errors
-/// Why the site did not keep it: it could not be reached, or refused.
-pub(crate) async fn leave(
+async fn leave(
     client: &Client,
     site: &url::Url,
     host: Option<&str>,
@@ -527,168 +586,6 @@ fn verify_workspace(text: &str, user: [u8; 32]) -> Result<String, String> {
     Ok(workspace)
 }
 
-/// One join as the log keeps it: the door asked and the person it asks as.
-struct Asking<'a> {
-    url: &'a url::Url,
-    person: &'a Person,
-    person_hex: String,
-}
-
-impl<'a> Asking<'a> {
-    fn of(url: &'a url::Url, person: &'a Person) -> Self {
-        let asking = Self {
-            url,
-            person,
-            person_hex: hex::encode(person.user),
-        };
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %asking.url,
-            person = %asking.person_hex,
-            name = %person.name,
-            "join: asking the door to admit this person"
-        );
-        asking
-    }
-
-    /// Ask the door, and read what it answered.
-    async fn ask(&self, client: &Client) -> Result<(u16, Vec<u8>), String> {
-        let response = client
-            .post(self.url.as_str())
-            .timeout(ANSWER_TIMEOUT)
-            .json(&serde_json::json!({
-                "userPublicKey": hex::encode(self.person.user),
-                "displayName": self.person.name,
-            }))
-            .send()
-            .await
-            .map_err(|error| {
-                let reason = said(
-                    "a door could not be reached",
-                    error,
-                    "directory-error-unreachable",
-                );
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    door = %self.url,
-                    person = %self.person_hex,
-                    %reason,
-                    outcome = "door unreachable",
-                    "join: the door could not be reached"
-                );
-                reason
-            })?;
-        let status = response.status();
-        let bytes = response
-            .bytes_limited(MAX_ANSWER_BYTES)
-            .await
-            .map_err(|error| {
-                let reason = match error {
-                    NetError::TooLarge { .. } => said(
-                        "a door answered more than a door says",
-                        error,
-                        "directory-error-unreadable",
-                    ),
-                    _ => said(
-                        "a door could not be read",
-                        error,
-                        "directory-error-unreachable",
-                    ),
-                };
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    door = %self.url,
-                    person = %self.person_hex,
-                    status = status.as_u16(),
-                    %reason,
-                    outcome = "refused",
-                    "join: the door's answer could not be read"
-                );
-                reason
-            })?;
-        Ok((status.as_u16(), bytes.to_vec()))
-    }
-
-    /// The door refused: keep its reason, in its own words, in the log.
-    fn refused(&self, status: u16, reason: &str) {
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %self.url,
-            person = %self.person_hex,
-            status,
-            %reason,
-            outcome = "refused",
-            "join: the door refused"
-        );
-    }
-
-    /// The door let this person in: verify its invitation for them, and
-    /// answer what it granted.
-    fn granted(
-        &self,
-        answer: &tilo_relay_protocol::directory::DoorAnswer,
-    ) -> Result<Granted, String> {
-        let workspace =
-            verify_workspace(&answer.invitation, self.person.user).map_err(|error| {
-                let reason = format!("the workspace did not let you in: {error}");
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    door = %self.url,
-                    person = %self.person_hex,
-                    %reason,
-                    outcome = "invitation refused",
-                    "join: the invitation the door answered with is not for this person"
-                );
-                reason
-            })?;
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            door = %self.url,
-            workspace = %workspace,
-            person = %self.person_hex,
-            outcome = "granted",
-            "join: the door granted this person an invitation to its workspace"
-        );
-        Ok(Granted {
-            workspace,
-            invitation: answer.invitation.clone(),
-            admission_token: answer.admission_token.clone(),
-            origin: answer.origin.clone(),
-        })
-    }
-}
-
-/// What a door that refused said, in the person's words: its own reason when
-/// it gave one, a sentence of the sheet's when it did not, and the site
-/// being unreachable when the host failed rather than refused.
-fn door_refusal(status: u16, bytes: &[u8]) -> String {
-    let refusal = serde_json::from_slice::<DoorRefusal>(bytes)
-        .inspect_err(|error| {
-            tracing::warn!(%error, status, "a door's refusal does not read back");
-        })
-        .ok()
-        .and_then(|refusal| refusal.error)
-        .unwrap_or_else(|| tilo_sheets::word("directory-error-status"));
-    // A 5xx is a host that is full or failing: worth trying again.
-    if (500..600).contains(&status) {
-        said(
-            "a door's site could not be reached",
-            &refusal,
-            "directory-error-unreachable",
-        )
-    } else {
-        // The door said why in its own words: those are the ones a person
-        // reads.
-        refusal
-    }
-}
-
-/// A door's refusal, when it says why.
-#[derive(Deserialize)]
-struct DoorRefusal {
-    error: Option<String>,
-}
-
 /// What joining the pasted `text` got: the name the workspace goes by, when
 /// what was pasted says it, and what it was granted.
 pub(crate) struct Taken {
@@ -743,9 +640,8 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
                         .as_ref()
                         .map_or_else(|| host_of(&entry), |home| home.name.clone());
                     let granted = match read.home.and_then(|home| home.admission) {
-                        Some(door) => join(client, &door, person)
-                            .await
-                            .and_then(|granted| match workspace {
+                        Some(door) => {
+                            through_door(&door).and_then(|granted| match workspace {
                                 Some(workspace) if workspace.to_string() != granted.workspace => {
                                     Err(
                                         "that link is for another workspace on this site: ask whoever shared it for an invitation"
@@ -753,7 +649,8 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
                                     )
                                 }
                                 _ => Ok(granted),
-                            }),
+                            })
+                        }
                         None => Err(said(
                             "a site's home workspace has no door",
                             &entry,
@@ -1148,7 +1045,8 @@ mod tests {
         let granted = taken.granted.expect("a granted join");
         assert_eq!(granted.workspace, WORKSPACE);
         assert_eq!(
-            granted.invitation, text,
+            granted.invitation(),
+            Some(text.as_str()),
             "what the sheet joins with is the invitation the site never read"
         );
     }

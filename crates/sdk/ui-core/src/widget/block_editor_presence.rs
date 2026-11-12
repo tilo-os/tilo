@@ -26,6 +26,8 @@ impl BlockEditor {
         let key = self.presence_key_for(&b.id);
         let line = &b.line;
         let brect = line.get_rect();
+        // A caret's name chip ends before the text's own right edge.
+        let text_right = brect.x1 - line.text_inset(ctx.theme);
         let _tr_rect = {
             let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
             let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
@@ -69,6 +71,9 @@ impl BlockEditor {
         // What an invocation writes here glows in its actor's colour, exactly
         // the characters it wrote, with its caret where they end: the marks a
         // person's typing leaves, from an action rather than from keys.
+        // Whose action caret stands on this line: the one tag it wears says who and what, so their
+        // own caret here draws no second one.
+        let mut acting: Vec<crate::permissions::UserId> = Vec::new();
         for interaction in ctx.presence.visible_interactions(now) {
             let Some((start, end)) = written_in(&interaction, &b.id, line.value()) else {
                 continue;
@@ -77,6 +82,7 @@ impl BlockEditor {
                 continue;
             };
             let user = crate::permissions::UserId(interaction.actor.id.clone());
+            acting.push(user.clone());
             let rect = line.selection_rect(ctx.theme, start, end);
             let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
             let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
@@ -89,8 +95,9 @@ impl BlockEditor {
             // The characters are the mark: the activity rail leaves this
             // invocation out rather than naming it a second time.
             ctx.presence.note_shown(interaction.invocation);
-            let name = ctx.presence.interaction_status_label(&interaction);
-            ctx.presence.draw_peer_caret_labeled_in(
+            ctx.presence.note_drawn(interaction.invocation, now);
+            let name = ctx.presence.interaction_status_label_written(&interaction);
+            ctx.presence.draw_action_caret_labeled_in(
                 ctx.scene,
                 ctx.theme,
                 ctx.text_renderer,
@@ -102,7 +109,8 @@ impl BlockEditor {
                     self.blocks
                         .first()
                         .map_or(brect.y0, |first| first.line.get_rect().y0),
-                ),
+                )
+                .among(self.ink_around(i, ctx.theme), text_right),
             );
         }
         if let Some(list) = ctx.presence.carets.get(&key) {
@@ -112,7 +120,7 @@ impl BlockEditor {
                 .blocks
                 .first()
                 .map_or(brect.y0, |first| first.line.get_rect().y0);
-            for (user, byte_pos) in list {
+            for (user, byte_pos) in list.iter().filter(|(user, _)| !acting.contains(user)) {
                 let name = ctx.presence.display_name(user);
                 ctx.presence.draw_peer_caret_labeled_in(
                     ctx.scene,
@@ -124,7 +132,8 @@ impl BlockEditor {
                     crate::presence::LabeledCaret::within(
                         line.caret_rect(ctx.theme, *byte_pos),
                         top,
-                    ),
+                    )
+                    .among(self.ink_around(i, ctx.theme), text_right),
                 );
             }
         }
@@ -159,6 +168,22 @@ impl BlockEditor {
                 line.selection_rect(ctx.theme, start, end),
             );
         }
+    }
+}
+
+impl BlockEditor {
+    /// Where block `i` and the blocks either side of it have glyphs, one rect
+    /// per visual line: what a peer's caret chip in block `i` must not cover.
+    fn ink_around(&self, i: usize, theme: &crate::theme::Theme) -> Vec<Rect> {
+        let last = self.blocks.len().saturating_sub(1);
+        (i.saturating_sub(1)..=(i + 1).min(last))
+            .filter_map(|j| self.blocks.get(j))
+            .flat_map(|block| {
+                let line = &block.line;
+                line.mark_rects(theme, 0..line.value().len())
+            })
+            .filter(|glyphs| glyphs.width() > 0.0 && glyphs.height() > 0.0)
+            .collect()
     }
 }
 

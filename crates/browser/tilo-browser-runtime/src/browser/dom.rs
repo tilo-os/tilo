@@ -1,15 +1,15 @@
 //! A mount shown as HTML (`mountDesktop(el, {dom: true})`): each frame's
-//! scene goes to the page's DOM presenter (`web/dom-present.mjs`) as DOM
-//! operations instead of to the GPU. Layout, input, semantics and records
-//! take the same paths as a frame drawn on the canvas.
+//! composition ([`ui::composition`]) goes to the page's presenter
+//! (`web/view-present.mjs`), which renders it as elements, instead of the
+//! scene going to the GPU. Layout, input, semantics and records take the same
+//! paths as a frame drawn on the canvas.
 //!
 //! Three things differ from a drawn frame:
-//! - widgets mark their draws with keys (`ui::scene_parts::key_widgets`,
-//!   with the code that comes with the presenter's), so
-//!   the page keeps one element per widget from frame to frame;
-//! - the scroll regions the frame drew go along, and the page shows each as
-//!   a native scroll container; where the person scrolls it comes back
-//!   through [`dom_scrolled`];
+//! - the page renders what the widgets are and how they are laid out, not
+//!   what they painted; a widget that is its paint (an icon, a chart) is
+//!   shown as its picture, which the page asks for ([`dom_picture`]);
+//! - the page scrolls a widget's scroll region natively, and where the
+//!   person scrolls comes back through [`dom_scrolled`];
 //! - a frame an input asks for is presented before the browser's next
 //!   paint, in a task right after the input's own
 //!   ([`Mount::present_after_input`]), not at the next animation frame.
@@ -50,6 +50,27 @@ thread_local! {
     static QUEUED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     /// What presents them: one function for the page's whole life.
     static RUN_QUEUED: Closure<dyn FnMut()> = Closure::new(present_queued);
+    /// Whether an input's frame is drawn in the input's own task
+    /// (`__tiloDomInputSync`, read once): the measurement the change was
+    /// judged by compares it with drawing it in the task after.
+    static INPUT_SYNC: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether an input's frame is drawn in the input's own task. A page that
+/// sets `__tiloDomInputSync` before it mounts says which; the default is to.
+fn input_sync() -> bool {
+    INPUT_SYNC.with(|sync| {
+        if let Some(value) = sync.get() {
+            return value;
+        }
+        let value =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("__tiloDomInputSync"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+        sync.set(Some(value));
+        value
+    })
 }
 
 /// Present the frame of every mount an input queued one for.
@@ -58,8 +79,7 @@ fn present_queued() {
     for id in ids {
         let result = with_mount_quietly(id, |m| {
             if let Err(error) = m.draw_dom() {
-                m.error = Some(error);
-                m.publish(id);
+                m.frame_failed(id, error);
             }
             Ok(())
         });
@@ -79,6 +99,17 @@ struct Presenter {
     present: Function,
 }
 
+/// What the frame about to be drawn was asked for by
+/// ([`Mount::note_dom_frame_wanted`]).
+struct Want {
+    /// A peer's change arrived since the last frame.
+    replica: bool,
+    /// The theme changed since the last frame.
+    theme_changed: bool,
+    /// What asked for it, for the frame metrics; empty unless they are on.
+    reasons: Vec<String>,
+}
+
 /// What one mount shown as HTML keeps between frames.
 struct Shown {
     presenter: Presenter,
@@ -89,12 +120,14 @@ struct Shown {
 }
 
 /// Show the next mount made as HTML rather than on a WebGPU canvas: each
-/// frame calls `present(meta, ops, fonts)` with the frame's DOM operations
-/// (`tilo_cpu_raster::dom`), and text in the scene carries its characters.
+/// frame calls `present(meta, composition)` with the frame's composition
+/// ([`ui::composition`]) as JSON.
+///
+/// The theme is the page's, whichever way a mount shows it
+/// ([`crate::page_theme`]): the page starts following the browser's light
+/// or dark before anything mounts, so no theme is set here.
 #[wasm_bindgen]
 pub fn present_as_dom(present: Function) {
-    ui::text_render::present_text(true);
-    crate::page_theme::follow_browser_scheme();
     PRESENTER.with_borrow_mut(|slot| *slot = Some(Presenter { present }));
 }
 
@@ -130,31 +163,38 @@ pub(super) fn forget(id: u64) {
     QUEUED.with_borrow_mut(|queued| queued.remove(&id));
 }
 
-/// The person scrolled the region keyed `key` (16 hex digits) of mount
-/// `id` to `offset` CSS pixels: the widget that drew it scrolls there, and
-/// the next frame draws what came into view. Returns whether the region is
-/// still there.
+/// The person scrolled the scroller of the widget at `path` of mount `id`
+/// to `offset` CSS pixels: the widget scrolls there, and the next frame
+/// composes what came into view. Returns whether the widget took it.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn dom_scrolled(id: u64, key: &str, offset: f64) -> Result<bool, JsValue> {
-    let Ok(key) = u64::from_str_radix(key, 16) else {
-        return Ok(false);
-    };
+pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
     with_mount(id, |m| {
-        let found = MOUNTS.with_borrow(|mounts| {
-            mounts
-                .get(&id)
-                .and_then(|shown| shown.code.as_ref())
-                .is_some_and(|code| code.scrolled(m.frame.root_widget_mut(), key, offset))
-        });
-        if found {
+        let scrolled = m.frame.scroll_composed(path, offset);
+        if scrolled {
             m.pending = true;
             m.window.request_redraw();
         }
-        Ok(found)
+        Ok(scrolled)
+    })
+}
+
+/// The picture of the widget at `path` of mount `id`, which shows its own
+/// paint ([`ui::composition::Own::Painted`]), at `scale` device pixels per
+/// CSS pixel: `[width, height, straight RGBA]`, or null.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn dom_picture(id: u64, path: &str, scale: f64) -> Result<JsValue, JsValue> {
+    with_mount(id, |m| {
+        Ok(crate::dom_code::DOM_CODE
+            .get()
+            .map_or(JsValue::NULL, |code| (code.paint)(m, path, scale)))
     })
 }
 
@@ -166,15 +206,34 @@ impl Mount {
     }
 
     /// Present the frame an input just asked for before the browser paints
-    /// again: in a task right after the input's own, so that the key and
-    /// the text it commits (two events of one task) share one frame. A
-    /// mount drawn on the canvas waits for its animation frame.
+    /// again, inside the input's own task: the browser lays out and paints
+    /// the elements this writes when the task ends, as it does for a plain
+    /// page that changes its own DOM in the handler, and nothing waits for an
+    /// animation frame. A mount drawn on the canvas waits for its animation
+    /// frame.
     pub(super) fn present_after_input(&mut self) {
-        self.pending = true;
         if !shows(self.id) {
+            self.pending = true;
             self.window.request_redraw();
             return;
         }
+        if input_sync() {
+            // The task after this one is not the next thing the browser does:
+            // a rendering update may come first, and then the frame drawn
+            // here shows a frame later than the key that asked for it.
+            //
+            // Nothing is drawn that the frame does not have to show: one key
+            // reaches the app twice (its keydown, then the text the page's own
+            // field committed), and the second of the two usually changed
+            // nothing the first had not. Drawing each cost two frames' work
+            // before the browser could paint either.
+            match self.draw_dom() {
+                Ok(()) if !self.pending => {}
+                _ => self.window.request_redraw(),
+            }
+            return;
+        }
+        self.pending = true;
         let first = QUEUED.with_borrow_mut(|queued| {
             let first = queued.is_empty();
             queued.insert(self.id);
@@ -225,7 +284,7 @@ impl Mount {
         }
         self.save_desktop();
         if let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
         }
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {
@@ -239,8 +298,9 @@ impl Mount {
     }
 
     /// Whether a frame is due, noted in `pending`; returns whether a peer's
-    /// change arrived and whether the theme changed since the last frame.
-    fn note_dom_frame_wanted(&mut self) -> (bool, bool) {
+    /// change arrived, whether the theme changed since the last frame, and
+    /// what asked for the frame, for the frame metrics.
+    fn note_dom_frame_wanted(&mut self) -> Want {
         let schedule = self.frame.frame_schedule();
         let due = schedule
             .next_wake_deadline
@@ -248,7 +308,45 @@ impl Mount {
         let theme_changed = self.theme_seen != crate::page_theme::generation();
         let replica = self.replica_changed.replace(false);
         if let Some(peer) = self.peer {
-            crate::replication::follow_answers(peer);
+            crate::replicated::follow_answers(peer);
+        }
+        let asked = self.pending;
+        let mut reasons = Vec::new();
+        if self.metrics.borrow().enabled() {
+            if asked {
+                reasons.push("input or host".to_owned());
+            }
+            if self.viewport.needs_present() {
+                reasons.push("viewport".into());
+            }
+            if schedule.queued_work {
+                let sources = self.frame.queued_work_sources();
+                if sources.is_empty() {
+                    reasons.push("queued work".into());
+                }
+                reasons.extend(
+                    sources
+                        .into_iter()
+                        .map(|source| format!("queued: {source}")),
+                );
+            }
+            if schedule.needs_animation_frame || due {
+                reasons.extend(
+                    self.frame
+                        .frame_requesters()
+                        .into_iter()
+                        .map(|(path, demand)| match demand {
+                            ui::headless::FrameDemand::Animation => format!("animation: {path}"),
+                            ui::headless::FrameDemand::Deadline => format!("deadline: {path}"),
+                        }),
+                );
+            }
+            if theme_changed {
+                reasons.push("theme".into());
+            }
+            if replica {
+                reasons.push("a peer's change".into());
+            }
         }
         self.pending |= self.viewport.needs_present()
             || schedule.queued_work
@@ -256,7 +354,11 @@ impl Mount {
             || due
             || theme_changed
             || replica;
-        (replica, theme_changed)
+        Want {
+            replica,
+            theme_changed,
+            reasons,
+        }
     }
 
     /// Lay out and present one frame as HTML, with the presentation's code
@@ -272,9 +374,8 @@ impl Mount {
     }
 }
 
-/// Lay out and present one frame of `m` as HTML: the scene goes to the
-/// page's DOM presenter as operations ([`tilo_cpu_raster::dom`]) instead of
-/// to the GPU. Input, semantics and records take the same paths as a drawn
+/// Lay out and present one frame of `m` as HTML: its composition goes to
+/// the page's presenter instead of its scene to the GPU. Input, semantics and records take the same paths as a drawn
 /// frame. Part of the presentation's code (`crate::dom_code`), reached only
 /// through it.
 pub(crate) fn draw_dom_frame(m: &mut Mount) -> Result<(), String> {
@@ -282,23 +383,29 @@ pub(crate) fn draw_dom_frame(m: &mut Mount) -> Result<(), String> {
 }
 
 impl Mount {
+    /// The mount's frame, for the presentation's code.
+    pub(crate) fn frame_mut(&mut self) -> &mut ui::headless::FrameHarness {
+        &mut self.frame
+    }
+}
+
+impl Mount {
     fn draw_dom_frame(&mut self) -> Result<(), String> {
-        let (replica, theme_changed) = self.note_dom_frame_wanted();
+        let want = self.note_dom_frame_wanted();
+        let (replica, theme_changed) = (want.replica, want.theme_changed);
         if !self.pending {
             self.held = "nothing to draw";
             return Ok(());
-        }
-        if !ui::scene_parts::keys_widgets() {
-            ui::scene_parts::key_widgets(Some(ui::scene_parts::keyer()));
         }
         let started = web_time::Instant::now();
         if !self.lay_out_dom(replica, theme_changed)? {
             return Ok(());
         }
         let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let input = self.frame.frame_render_input();
+        let background = self.frame.frame_render_input().background;
         let theme_generation = self.theme_seen;
-        let viewport = self.viewport.requested().logical_size();
+        let composition =
+            serde_json::to_string(&self.frame.composition()).map_err(|error| error.to_string())?;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
@@ -309,9 +416,8 @@ impl Mount {
                 .present(crate::dom_code::Frame {
                     present: &shown.presenter.present,
                     id: self.id,
-                    scene: input.scene,
-                    background: input.background,
-                    viewport,
+                    composition,
+                    background,
                     layout_ms,
                     theme: publish_theme.then(|| self.frame.theme()),
                 });
@@ -324,6 +430,7 @@ impl Mount {
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
+        self.metrics.borrow_mut().presented(want.reasons);
         self.presentation.set(true);
         self.publish_frame(0, FrameChange::Other, true);
         self.presentation.set(false);

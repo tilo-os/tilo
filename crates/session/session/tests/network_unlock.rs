@@ -20,8 +20,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -31,14 +29,14 @@ use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
-use tilo_device_fabric::link::{FabricLink as _, SharedLink};
-use tilo_device_fabric::unlock::{UnlockEnrolment, UnlockFabricState};
-use tilo_device_fabric::{DeviceId, FabricStamp};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::HostIdentity;
 use tilo_service::{Answer, Question, Questions};
-use tilo_session::fabric::Continuity;
+use tilo_session::platform::fabric::Continuity;
+use tilo_session::platform::fabric::{DeviceId, FabricStamp};
+use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
+use tilo_session::platform::fabric::{UnlockEnrolment, UnlockFabricState};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{
@@ -89,7 +87,7 @@ fn person() -> Person {
         .load_reconciled_cached()
         .expect("the registry reads");
     let profile = registry
-        .person_identity()
+        .certified_identity()
         .expect("this device's person is known");
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
@@ -101,7 +99,7 @@ fn person() -> Person {
             now.saturating_add(3_600_000_000_000),
         )
         .expect("this device may enroll another of the person's");
-    let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+    let phone_key = test_relay::signing_key(0x52);
     let phone_cert = store
         .complete_enrollment(
             &profile.id,
@@ -200,6 +198,8 @@ impl Devices {
                     hosts: Vec::new(),
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
+                    fabric: None,
+                    relays: test_relay::loopback(),
                 },
                 None,
                 Some(questions.clone()),
@@ -213,17 +213,16 @@ impl Devices {
         let phone = Rc::new(
             Client::start(
                 Entry {
-                    identity: Some(HostIdentity {
-                        device_cert: person.phone_cert.clone(),
-                        device_signing_key: person.phone_key.clone(),
-                        workspace_device_certs: std::collections::HashMap::default(),
-                        workspace_revocations: std::collections::HashMap::default(),
-                        identity_paths: None,
-                    }),
+                    identity: Some(HostIdentity::kept(
+                        person.phone_cert.clone(),
+                        person.phone_key.clone(),
+                    )),
                     own: OwnPresence::default(),
                     hosts: Vec::new(),
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
+                    fabric: None,
+                    relays: test_relay::loopback(),
                 },
                 None,
                 None,

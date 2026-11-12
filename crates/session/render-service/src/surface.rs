@@ -10,7 +10,7 @@
 //! a buffer two frames old gets two frames of damage — and the app attaches
 //! it.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use tilo_render_protocol::control::DmabufFormat;
 use tilo_render_protocol::frame::{Frame, LayerChange};
@@ -22,61 +22,9 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use vello::wgpu;
 
-use crate::buffers::{BufferSet, Memory};
+pub use crate::buffers::Region;
+use crate::buffers::{BufferSet, History, Memory};
 use crate::gpu::Gpu;
-
-/// Frames of damage a surface remembers, for buffers that missed them.
-const HISTORY: usize = 8;
-
-/// A rectangle of the surface, in pixels, inside it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Region {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Region {
-    fn whole(width: u32, height: u32) -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        }
-    }
-
-    /// `rect` rounded outward and clipped to a `width` × `height` surface;
-    /// `None` when nothing of it is inside.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to the surface's u32 extent before narrowing"
-    )]
-    fn clipped(rect: Rect, width: u32, height: u32) -> Option<Self> {
-        let x0 = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
-        let y0 = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
-        (x1 > x0 && y1 > y0).then(|| Self {
-            x: x0,
-            y: y0,
-            width: x1.saturating_sub(x0),
-            height: y1.saturating_sub(y0),
-        })
-    }
-
-    pub fn as_wire(self) -> [i32; 4] {
-        let wide = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
-        [
-            wide(self.x),
-            wide(self.y),
-            wide(self.width),
-            wide(self.height),
-        ]
-    }
-}
 
 struct Layer {
     content: Scene,
@@ -124,9 +72,7 @@ pub struct Surface {
     size: (u32, u32),
     pub buffers: Option<BufferSet>,
     generations: u32,
-    /// Damage of the last frames, newest last, by frame index.
-    history: VecDeque<(u64, Vec<Region>)>,
-    frame_index: u64,
+    history: History,
     pub pending: Option<Pending>,
     composed: Scene,
 }
@@ -145,8 +91,7 @@ impl Surface {
             size: (0, 0),
             buffers: None,
             generations: 0,
-            history: VecDeque::new(),
-            frame_index: 0,
+            history: History::default(),
             pending: None,
             composed: Scene::new(),
         }
@@ -310,11 +255,7 @@ impl Surface {
                 }))
                 .collect()
         };
-        self.frame_index = self.frame_index.saturating_add(1);
-        self.history.push_back((self.frame_index, changed.clone()));
-        while self.history.len() > HISTORY {
-            self.history.pop_front();
-        }
+        self.history.push(changed.clone());
         Ok(changed)
     }
 
@@ -380,65 +321,22 @@ impl Surface {
             return Ok(None);
         };
         let (width, height) = (set.width, set.height);
-        let frame_index = self.frame_index;
+        let frame_index = self.history.latest();
         let Some(buffer) = set.buffers.get_mut(index) else {
             return Ok(None);
         };
-        // What changed since the buffer last held a frame; all of it when it
-        // never did or that frame left the history.
-        let copy: Vec<Region> = match buffer.holds {
-            Some(held)
-                if self
-                    .history
-                    .front()
-                    .is_some_and(|(first, _)| *first <= held.saturating_add(1)) =>
-            {
-                self.history
-                    .iter()
-                    .filter(|(index, _)| *index > held)
-                    .flat_map(|(_, regions)| regions.iter().copied())
-                    .collect()
-            }
-            _ => vec![Region::whole(width, height)],
-        };
+        let copy = self
+            .history
+            .missed(buffer.holds, Region::whole(width, height));
         match (&mut buffer.memory, self.target.as_ref()) {
             #[cfg(target_os = "linux")]
             (Memory::Dmabuf(dmabuf), Some(target)) => {
-                let imported = &dmabuf.target;
                 let mut encoder =
                     gpu.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("render-service-deliver"),
                         });
-                for region in &copy {
-                    encoder.copy_texture_to_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &target.texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d {
-                                x: region.x,
-                                y: region.y,
-                                z: 0,
-                            },
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &imported.texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d {
-                                x: region.x,
-                                y: region.y,
-                                z: 0,
-                            },
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::Extent3d {
-                            width: region.width,
-                            height: region.height,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-                }
+                dmabuf.copy_from(&mut encoder, &target.texture, &copy);
                 gpu.queue.submit([encoder.finish()]);
             }
             (Memory::Shm(memory), Some(target)) => {

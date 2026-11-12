@@ -18,7 +18,7 @@
 struct EncodeParams {
     // Luminance SDR white (sRGB 1.0) maps to; 203 is the BT.2408 reference.
     sdr_white_nits: f32,
-    // `shell::render::orientation::shader_code` of the output's transform.
+    // `tilo_compositor::render::orientation::shader_code` of the output's transform.
     orientation: u32,
     _pad1: f32,
     _pad2: f32,

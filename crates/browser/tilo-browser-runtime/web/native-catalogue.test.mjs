@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createNativeCatalogueBridge, invokeMembershipAction, governanceResource, runRecordAction} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeMembershipAction, governanceResource} from './native-catalogue.mjs';
 /** The shared hang bound: a wait this long means the code under test is stuck. */
 const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 async function until(check,what){
@@ -10,24 +10,6 @@ async function until(check,what){
     await new Promise(done=>setImmediate(done));
   }
 }
-
-test('the desktop asks the workspace host to run a workspace record action by its app and action alone', async () => {
-  const calls = [];
-  const connection = {invoke(target, argument) {
-    calls.push({target, argument});
-    const update = target.address.action === 'link-account'
-      ? {state: 'succeeded', output: {value: {code: 'ABCDEFGHJKLM'}}}
-      : {state: 'failed', error: {code: 'unknown_action', message: 'no such action'}};
-    return {done: Promise.resolve({terminal: true, update}), status: async () => ({terminal: true, update})};
-  }};
-  assert.deepEqual(await runRecordAction(connection, {id: 1, app: 'so.tilo.discord', action: 'link-account', arguments: {}}),
-    {ok: {code: 'ABCDEFGHJKLM'}});
-  assert.deepEqual(calls[0], {target: {provider: 'record:so.tilo.discord:', address: {resource: '', action: 'link-account'}}, argument: 'None'});
-  assert.deepEqual(await runRecordAction(connection, {id: 2, app: 'so.tilo.chat', action: 'my-link', arguments: {}}),
-    {error: 'no such action'});
-  assert.deepEqual(await runRecordAction(undefined, {id: 3, app: 'so.tilo.discord', action: 'my-link'}),
-    {error: 'this page reaches no workspace host'});
-});
 
 test('native requests preserve their correlation and exact query through the certified catalogue', async () => {
   const query = {provider:'record:so.tilo.chat:', view_resource:{id:'chat.message:fixture', kind:'chat.message'}};

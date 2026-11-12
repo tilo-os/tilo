@@ -87,44 +87,23 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
         .collect()
 }
 
-/// Whether the transcript's "New messages" divider stands over each row. The list is told the
-/// item the person stopped reading before (`unseen_from`, off `first_unseen`), and the toolkit
-/// stands the divider over that item's row as it builds, so the view's tree names the item and
-/// the row that presents it; a row of that unseen part carries no mark of its own.
-fn dividers(view: &mut ViewInstance) -> Vec<bool> {
-    view.poll_patches().unwrap();
-    let tree = view.tree().clone();
-    let list = list_nodes(&tree).into_iter().next().expect("a transcript");
-    let Some(Value::Ref(unseen)) = list.props.get("unseen_from") else {
-        return vec![false; rows(view).len()];
-    };
-    rows(view)
-        .iter()
-        .map(|row| row_shows_item(row, &unseen.target))
-        .collect()
+/// The item the transcript is told the person's unread part starts at (`unseen_from`): the list
+/// draws its "New messages" divider over the row that shows it. `None` when nothing is unseen.
+fn unseen_from(view: &mut ViewInstance) -> Option<String> {
+    rows(view);
+    let list = find(view.tree(), "ui.VirtualList").expect("a transcript");
+    match list.props.get("unseen_from") {
+        Some(Value::Ref(unseen)) => unseen.target.item.clone(),
+        _ => None,
+    }
 }
 
-/// Every `ui.VirtualList` under `node`, outermost first.
-fn list_nodes(node: &UiNode) -> Vec<&UiNode> {
-    let mut out = Vec::new();
-    if node.kind == "ui.VirtualList" {
-        out.push(node);
+/// The item a resource value names.
+fn item_of(value: &Value) -> Option<String> {
+    match value {
+        Value::Ref(r) => r.target.item.clone(),
+        _ => None,
     }
-    for child in &node.children {
-        out.extend(list_nodes(child));
-    }
-    out
-}
-
-/// Whether `row` presents `at`: its `ui.ListItem` names it (`item:`), which is the item the
-/// list compares against its `unseen_from` to stand the divider over the row.
-fn row_shows_item(row: &UiNode, at: &ResourceRef) -> bool {
-    find(row, "ui.ListItem")
-        .and_then(|item| item.props.get("item"))
-        .is_some_and(|shown| match shown {
-            Value::Ref(shown) => shown.target.id_string() == at.id_string(),
-            _ => false,
-        })
 }
 
 /// What each row of the transcript says: its rich text.
@@ -707,7 +686,7 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     ada.commit();
     let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     ben.host.sync_from(&ben.doc);
-    call(
+    let first = call(
         &ben,
         "send",
         vec![design.clone(), rich("The build is up."), Value::none()],
@@ -757,8 +736,8 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     };
     assert_eq!(marked(&mut channel), [false, false]);
     assert_eq!(
-        dividers(&mut channel),
-        [true, false],
+        unseen_from(&mut channel),
+        item_of(&first),
         "the divider stands over the first message Ada had not seen"
     );
     post(&mut ada, &channel, "Thanks.");
@@ -773,9 +752,9 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
     ada.commit();
     let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
     assert_eq!(
-        dividers(&mut reopened),
-        [false, false, false],
-        "opening the channel saw it"
+        unseen_from(&mut reopened),
+        None,
+        "opening the channel saw it, and no divider stands"
     );
     let sidebar = ada.view(APP);
     let mut all = Vec::new();
@@ -802,6 +781,91 @@ fn a_channels_new_messages_are_unseen_in_the_sidebar_until_the_person_opens_it()
         Some(Value::Int(1)),
         "random's is its own"
     );
+}
+
+/// The number a place in the sidebar shows, on the row `key` names.
+fn badge_of(view: &mut ViewInstance, key: &str) -> Option<i64> {
+    view.poll_patches().unwrap();
+    let mut places = Vec::new();
+    find_all(view.tree(), "ui.NavItem", &mut places);
+    let place = places
+        .into_iter()
+        .find(|item| item.props.get("key") == Some(&Value::text(key)))
+        .unwrap_or_else(|| panic!("no place {key}"));
+    match place.props.get("live") {
+        Some(Value::Int(count)) => Some(*count),
+        _ => None,
+    }
+}
+
+/// The number a window's header says is new of what it shows, if it marks anything.
+fn header_count(view: &mut ViewInstance) -> Option<i64> {
+    view.poll_patches().unwrap();
+    let mut marks = Vec::new();
+    find_all(view.tree(), "ui.ChangeMark", &mut marks);
+    let mark = marks
+        .into_iter()
+        .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))?;
+    match mark.props.get("count") {
+        Some(Value::Int(count)) => Some(*count),
+        other => panic!("a window's mark counts what is new: {other:?}"),
+    }
+}
+
+/// A channel's row in the sidebar and the header of its window count one thing: the messages of
+/// it the person has not read. A thread branched off a message is not a message the transcript
+/// shows and is not counted beside them, and reading the channel clears the row and the header
+/// alike — one number, read from one place.
+#[test]
+fn a_channels_row_and_its_header_count_the_same_messages() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let first = call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("The build is up."), Value::none()],
+    );
+    call(
+        &ben,
+        "start_thread",
+        vec![design.clone(), first, Value::text("Which machines")],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("On all three."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("And the old one."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // Three messages are new: the thread started from the first is not one of them, and both
+    // places say the same number.
+    let badge = badge_of(&mut ada.view(APP), "/design");
+    let mut channel = ada.host.open_resource(&target(&design), None).unwrap();
+    let header = header_count(&mut channel);
+    assert_eq!(badge, Some(3), "three messages wait in design");
+    assert_eq!(header, badge, "the row and the header say one number");
+
+    // Ada reads to the end: the row says nothing new and the header marks nothing.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    assert_eq!(badge_of(&mut ada.view(APP), "/design"), None, "read");
+    let mut read = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(header_count(&mut read), None, "and the header agrees");
 }
 
 /// Every text the window of the Chat before channels shows, in order: that Chat's messages were
@@ -918,7 +982,7 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
     ada.commit();
     let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     ben.host.sync_from(&ben.doc);
-    call(
+    let one = call(
         &ben,
         "send",
         vec![design.clone(), rich("One."), Value::none()],
@@ -932,14 +996,9 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
     ben.host.sync_from(&ben.doc);
     ada.sync_with(&mut ben);
 
-    // The rows the list shows, each with whether the "New messages" divider stands over it: the
-    // list is told the item reading stopped before (`unseen_from`) and draws its divider over
-    // that item's row.
-    let marked = dividers;
-
     // Ada's view stands the divider over the first of the two, and not over the second.
     let mut view = ada.host.open_resource(&target(&design), None).unwrap();
-    assert_eq!(marked(&mut view), [true, false], "over the first");
+    assert_eq!(unseen_from(&mut view), item_of(&one), "over the first");
 
     // She reads: opening the channel marks what it showed seen, and nothing is left unread.
     ada.host
@@ -948,19 +1007,88 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
         .unwrap();
     ada.commit();
     let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
-    assert_eq!(marked(&mut reopened), [false, false], "nothing unseen");
+    assert_eq!(unseen_from(&mut reopened), None, "nothing unseen");
 
     // A message from Ben afterwards is what is new, alone.
     ben.host.sync_from(&ada.doc);
-    call(&ben, "send", vec![design, rich("Any time."), Value::none()]);
+    let answer = call(&ben, "send", vec![design, rich("Any time."), Value::none()]);
     ben.commit();
     ben.host.sync_from(&ben.doc);
     ada.sync_with(&mut ben);
     assert_eq!(
-        marked(&mut reopened),
-        [false, false, true],
+        unseen_from(&mut reopened),
+        item_of(&answer),
         "his answer is what is new"
     );
+}
+
+/// Who has read to a line is each member's own read mark: the transcript asks `seen_by(c, m)`
+/// and shows that person's face on the one line their reading ends at. A reader's mark moves
+/// their face down the conversation, and the person looking never sees their own.
+#[test]
+fn a_readers_face_stands_where_their_read_mark_ends() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let first = call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("One."), Value::none()],
+    );
+    let second = call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Two."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // Ben read to the second message: his mark is the one that made it.
+    let read_to = tilolang_runtime::seen::SeenMark::of(
+        &ben.host
+            .store()
+            .versions(&target(&second))
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("the second message has a version"),
+    );
+    let runtime = ada.host.runtime();
+    // The workspace's membership reaches her window, and his mark of the channel with it.
+    runtime.set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "editor"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+    runtime.set_seen("ben", &target(&design).id_string(), Some(read_to));
+
+    // Ada's window says he read to the second line, and names him nowhere else.
+    let seen_by = |at: &Value| {
+        runtime
+            .seen_by("ada", &target(&design), &target(at))
+            .unwrap()
+            .into_iter()
+            .map(|who| who.0)
+            .collect::<Vec<_>>()
+    };
+    assert!(seen_by(&first).is_empty(), "he read past the first");
+    assert_eq!(
+        seen_by(&second),
+        ["ben".to_owned()],
+        "he read to the second"
+    );
+    // Her own reading is no receipt: the marks she reads are everyone's but hers.
+    let hers = runtime.seen("ben", &target(&design).id_string());
+    runtime.set_seen("ada", &target(&design).id_string(), hers);
+    assert_eq!(seen_by(&second), ["ben".to_owned()], "her own face aside");
+    ada.commit();
 }
 
 /// A direct message is a conversation in the same model as a channel: it stands in the sidebar
@@ -1117,51 +1245,87 @@ fn a_conversation_says_who_is_typing_from_presence() {
     assert!(typing(&mut view).is_empty(), "he stopped");
 }
 
-/// With no channels yet, the workspace offers one way to make the first: the empty state's
-/// "New channel" button. The window's bar names the same action, and steps aside for the call
-/// to action the page draws itself (the host's header rules), so the person is offered one
-/// button; once a channel exists the empty state is gone and the bar keeps its primary.
+/// With no channels yet, the workspace offers one way to make the first: the window bar's
+/// "New channel" primary, which stands on the screen a window opens on at every width. The
+/// places say the workspace has no channels where its channels would stand, and draw no call
+/// to action of their own: a second one would stand beside the bar's on a wide window, and at
+/// a narrow width the two screens of the stack would offer one each, so no width is left with
+/// none or with two. The window shows that one state alone while the places hold nothing and
+/// nothing is open, with the line the app says a channel is for; once a channel exists the
+/// state is gone and the bar keeps its primary.
 #[test]
 fn an_empty_workspace_offers_one_new_channel_button() {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     ada.commit();
 
-    let labelled = |view: &ViewInstance, label: &str| {
-        let mut buttons = Vec::new();
-        find_all(view.tree(), "ui.Button", &mut buttons);
-        buttons
+    // What the view offers: the bar's primary the host reads off the action's declaration, and
+    // each empty state's own call to action. The host's header rules only ever drop a control
+    // that repeats one the content or the sidebar offers, so a view offering this action once
+    // offers it once at every width, on every screen of the stack.
+    let offered = |view: &ViewInstance| -> Vec<String> {
+        let mut nodes: Vec<&UiNode> = Vec::new();
+        find_all(view.tree(), "ui.Button", &mut nodes);
+        find_all(view.tree(), "ui.EmptyState", &mut nodes);
+        nodes
+            .into_iter()
+            .filter_map(|node| {
+                let named = if node.kind == "ui.EmptyState" {
+                    node.props.get("action")
+                } else {
+                    node.props.get("label")
+                };
+                match named {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+    let new_channel = |view: &ViewInstance| -> usize {
+        offered(view)
             .iter()
-            .filter(|b| b.props.get("label") == Some(&Value::text(label)))
+            .filter(|label| label.as_str() == "New channel")
             .count()
     };
     let sidebar = ada.view(APP);
-    let empty = find(sidebar.tree(), "ui.EmptyState").expect("the empty state");
+    let mut states = Vec::new();
+    find_all(sidebar.tree(), "ui.EmptyState", &mut states);
     assert_eq!(
-        empty.props.get("action"),
-        Some(&Value::text("New channel")),
-        "the empty state is where the first channel is made"
+        states.first().and_then(|state| state.props.get("title")),
+        Some(&Value::text("No channels yet")),
+        "the places say the workspace has no channels where they would stand"
     );
-    // The bar's primary comes from the declaration the view no longer reads back; the empty
-    // state's action is the page's own. The host drops the bar's while both would stand
-    // (`tilo_ui_host::shell::header_rules`, its own test), leaving one button on the page.
     assert!(
-        labelled(&sidebar, "New channel") >= 1,
-        "the action is offered: the empty state's, and the bar's until the host composes it"
+        states
+            .first()
+            .is_some_and(|state| state.props.contains_key("message")),
+        "with the line that says what a channel is for"
+    );
+    assert!(
+        states
+            .iter()
+            .all(|state| !state.props.contains_key("action")),
+        "no empty state draws a call to action beside the bar's"
+    );
+    assert_eq!(
+        new_channel(&sidebar),
+        1,
+        "the window offers the way to make the first channel once"
     );
 
-    // A channel made, the sidebar's "no channels" empty state goes and the bar is the place
-    // to make another.
+    // A channel made, the places' "no channels" state goes and the bar is the place to make
+    // another.
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     let _ = call(&ada, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
     let sidebar = ada.view(APP);
     assert!(
         find(sidebar.tree(), "ui.EmptyState")
-            .is_none_or(|state| state.props.get("action") != Some(&Value::text("New channel"))),
-        "no empty state offering New channel once a channel exists"
+            .is_none_or(|state| state.props.get("title") != Some(&Value::text("No channels yet"))),
+        "no empty state saying the workspace has no channels once one exists"
     );
     assert_eq!(
-        labelled(&sidebar, "New channel"),
+        new_channel(&sidebar),
         1,
         "the bar keeps its primary once the empty state is gone"
     );

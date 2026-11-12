@@ -23,24 +23,27 @@ pub mod navigation;
 pub mod notifications;
 pub mod now_playing;
 pub mod outcome;
+pub mod page_code;
+pub mod page_view;
 pub mod session;
 mod shared_tree;
 pub mod surface;
 mod wake;
 pub mod warmth;
 pub mod window;
+pub mod window_input;
 
+pub use page_view::{PageStream, PageView};
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub use surface::peer_view::{
     NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,
     PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId,
 };
-pub use surface::slide::Slides;
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
-    DesktopSurface, HistorySource, HostAction, HostActionSource, LivenessChoice,
-    NotificationOutcome, OpenActivity, PALETTE_EDGE, PersonalAsk, SearchHost, SearchHostFeed,
-    SearchRow, TileSource, TypedField, TypedInsertion, TypedRefusal, host_action_key, is_escape,
-    is_host_offer, is_search_chord, open_activity, published_selection, search_chord_keys,
-    seed_tree, tile_app_kind,
+    DesktopSurface, DockedCard, HistorySource, HostAction, HostActionSource, LivenessChoice,
+    NotificationLayer, NotificationOutcome, OpenActivity, PALETTE_EDGE, PersonalAsk, SearchHost,
+    SearchHostFeed, SearchRow, TileSource, TypedField, TypedInsertion, TypedRefusal,
+    host_action_key, is_escape, is_host_offer, is_search_chord, open_activity, published_selection,
+    search_chord_keys, seed_tree, seed_tree_in, tile_app_kind,
 };

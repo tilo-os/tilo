@@ -30,7 +30,9 @@ mod smooth;
 #[cfg(test)]
 mod tests;
 
-pub use board::{Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point, without_clock};
+pub use board::{
+    Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point, SILENT_MS, Status, without_clock,
+};
 pub use place::{Tile, anchor, tile};
 pub use publish::{KEEPALIVE_MS, MIN_INTERVAL_MS, REPEATS_MS};
 pub use shown::{own_shown, shown};

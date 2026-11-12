@@ -2,7 +2,9 @@
 //! writes every resource in the chunk the record's manifest places it in, and derives each index
 //! row from the chunk that holds it.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use automerge::AutoCommit;
 use serde_json::Value as Json;
@@ -13,10 +15,12 @@ use tilo_resource::{Edit, EditOp, Model as _, Segment};
 use tilolang_runtime::Principal;
 use tilolang_runtime::Value;
 use tilolang_runtime::meta::Meta;
+use tilolang_runtime::place::{Place, Placement as Placed};
 use tilolang_runtime::store::NewRecord;
+use tilolang_runtime::value::ResourceRef;
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
-use tilolang_tilo::host::Host;
+use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::items::{self, Items};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::reads;
@@ -236,26 +240,34 @@ pub(crate) const BOARD_APP: &str = "so.tilo.board";
 
 /// The documents of a workspace, one per chunk: a replica applies each edit of an action to the
 /// chunk it is addressed to, as the door does, and commits each document its own change.
+///
+/// It holds them as the door does ([`Chunks`]), so handing them to the store hands the same
+/// documents the record keeps: a fill writes one chunk per action and copies none of them.
 #[derive(Clone)]
-pub(crate) struct Docs(BTreeMap<ChunkNo, AutoCommit>);
+pub(crate) struct Docs(Chunks);
 
 impl Docs {
     pub(crate) fn of(record: AutoCommit) -> Self {
-        Self(BTreeMap::from([(chunk::FIRST, record)]))
+        Self(Chunks::of(record))
     }
 
     pub(crate) fn doc(&mut self, chunk: ChunkNo) -> &mut AutoCommit {
-        self.0.entry(chunk).or_default()
+        self.0.open(chunk)
     }
 
     /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
     /// the record's manifest places its resource.
     pub(crate) fn apply(&mut self, action: &DynAction) {
         let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
+        let placement = self
+            .0
+            .first()
+            .map(chunk::Placement::read)
+            .unwrap_or_default();
         for edit in &action.edits {
-            let chunk = edit.chunk().unwrap_or_else(|| {
-                chunk::Placement::read(&self.0[&chunk::FIRST]).chunk(edit.resource())
-            });
+            let chunk = edit
+                .chunk()
+                .unwrap_or_else(|| placement.chunk(edit.resource()));
             edits
                 .entry(chunk)
                 .or_default()
@@ -274,42 +286,40 @@ impl Docs {
             };
             apply_recorded(self.doc(chunk), &one);
         }
-        for doc in self.0.values_mut() {
-            doc.commit();
+        let held: Vec<ChunkNo> = self.0.numbers().collect();
+        for chunk in held {
+            self.0.open(chunk).commit();
         }
     }
 
     /// Send every document to the store, as the workspace hands them over.
     pub(crate) fn sync(&self, host: &Host) {
-        host.sync(&self.chunks());
+        host.sync(&self.0);
     }
 
     /// The documents forked: a replica of the workspace whose own changes are its own.
     fn fork(&mut self) -> Self {
-        Self(
-            self.0
-                .iter_mut()
-                .map(|(number, doc)| (*number, doc.fork()))
-                .collect(),
-        )
+        let numbers: Vec<ChunkNo> = self.0.numbers().collect();
+        let mut forked = Chunks::default();
+        for number in numbers {
+            let forked_doc = self.0.open(number).fork();
+            forked.insert(number, forked_doc);
+        }
+        Self(forked)
     }
 
     /// The documents as a set of chunks, to read a record's items across them.
     pub(crate) fn chunks(&self) -> Chunks {
-        let mut chunks = Chunks::default();
-        for (number, doc) in &self.0 {
-            chunks.insert(*number, doc.clone());
-        }
-        chunks
+        self.0.clone()
     }
 }
 
 /// Merge `other` into `into` as sync does, document by document.
 fn merge(into: &mut Docs, other: &Docs) {
     let mut every: BTreeMap<ChunkNo, AutoCommit> = BTreeMap::new();
-    for (number, doc) in into.0.iter().chain(&other.0) {
+    for (number, doc) in into.0.docs().chain(other.0.docs()) {
         every
-            .entry(*number)
+            .entry(number)
             .or_default()
             .merge_incoming(&mut doc.clone())
             .expect("the documents merge");
@@ -317,7 +327,11 @@ fn merge(into: &mut Docs, other: &Docs) {
     for doc in every.values_mut() {
         doc.commit();
     }
-    into.0 = every;
+    into.0 = Chunks::default();
+    for (number, doc) in every {
+        into.0.insert(number, doc);
+    }
+    into.0.reread_placement();
 }
 
 /// The board of [`BOARD`], its root made in the record's own chunk, and the store over it.
@@ -474,7 +488,7 @@ fn five_thousand_cards_live_in_three_chunks_in_order() {
     docs.sync(&host);
 
     let size = usize::try_from(chunk::ITEMS).unwrap();
-    assert_eq!(docs.0.keys().copied().collect::<Vec<_>>(), [0, 1, 2]);
+    assert_eq!(docs.chunks().numbers().collect::<Vec<_>>(), [0, 1, 2]);
     let chunks = docs.chunks();
     let schema = lookup(&meta.types.iter().find(|t| t.name == "Board").unwrap().id).unwrap();
     assert_eq!(
@@ -717,4 +731,420 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
         _ => false,
     };
     assert!(some(&right) ^ some(&other), "one copy, in one collection");
+}
+
+/// The cards `n` of the board, written in one action per run as an import would: the board a
+/// test measures a card's cost on, made without paying that cost `n` times.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "index arithmetic over the cards a test made"
+)]
+fn fill_bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
+    let field = field_id(meta, "Board", "left");
+    let ty = meta
+        .types
+        .iter()
+        .find(|declared| declared.name == "Card")
+        .unwrap()
+        .id
+        .clone();
+    let schema = lookup(&ty).unwrap();
+    let per = usize::try_from(chunk::ITEMS).unwrap();
+    let ids: Vec<String> = (0..n).map(|index| format!("c{index}")).collect();
+    for (round, run) in ids.chunks(per).enumerate() {
+        let number = chunk::FIRST + u64::try_from(round).unwrap();
+        let edits: Vec<DynEdit> = run
+            .iter()
+            .enumerate()
+            .map(|(at, id)| {
+                DynEdit::Insert {
+                    id: root.to_owned(),
+                    item: id.clone(),
+                    record: DynRecord::empty(schema).unwrap().to_json(),
+                    at: Placed::At {
+                        place: Place {
+                            parent: None,
+                            field: field.clone(),
+                            key: format!("{:010}", round * per + at),
+                        },
+                        was: None,
+                    }
+                    .encode(),
+                }
+                .in_chunk(number)
+            })
+            .collect();
+        docs.apply(&DynAction {
+            app: BOARD_APP.to_owned(),
+            kind: ty.clone(),
+            action_id: "add".to_owned(),
+            args: json!({}),
+            authorship: Authorship::default(),
+            edits,
+        });
+        let last = format!("{:010}", round * per + run.len() - 1);
+        let len = u64::try_from(run.len()).unwrap();
+        let record = docs.doc(chunk::FIRST);
+        chunk::run(record, root, &field, number, &last, len).unwrap();
+        record.commit();
+    }
+    ids
+}
+
+/// The chunk a collection's first run is in, and of the cards the store reads before the chunk
+/// above it arrives: the record's own.
+fn first_run() -> usize {
+    usize::try_from(chunk::ITEMS).unwrap()
+}
+
+/// The cards of the board `root` as the store lists them, read whole.
+fn cards_in(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
+    left(host, root, &field_id(meta, "Board", "left"))
+}
+
+/// A chunk that holds cards of the board and that the source cannot give: it is not on this
+/// device yet, or the peer holding it is away. The store asks for it once and waits for the sync
+/// that brings it, a window reads the cards it has meanwhile and says its count is not the
+/// board's, and the frame the chunk arrives in reads it, so the index is whole.
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+#[test]
+fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
+    let (earlier, mut docs, meta, root, ids) = board();
+    drop(earlier);
+    let cards = fill_bulk(&mut docs, &meta, &root, 3_000);
+    let per_run = first_run();
+    assert!(
+        cards.len() > per_run,
+        "the cards fill the record's own run and one above it"
+    );
+
+    // This replica's source holds the record alone: the chunk the rest of the cards are in has
+    // not reached this device, and asking for it answers nothing.
+    let record = docs.doc(chunk::FIRST).clone();
+    let replica: Rc<RefCell<Chunks>> = Rc::new(RefCell::new(Chunks::of(record.clone())));
+    let host = Host::open(
+        Opening {
+            record: Some(&record),
+            chunks: None,
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.sync_chunks(&replica.borrow());
+    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
+    {
+        let (source, asked) = (Rc::clone(&replica), Rc::clone(&asked));
+        host.set_chunk_loader(Box::new(move |number| {
+            asked.borrow_mut().push(number);
+            source.borrow().mirror(number).cloned()
+        }));
+    }
+    host.load_builtin(BOARD, &ids).unwrap();
+    host.wait_index();
+
+    // The window reads the cards the store has, and its count is not the board's yet.
+    assert_eq!(cards_in(&host, &meta, &root), cards[..per_run]);
+    assert!(host.index_answers(), "the store answers rows");
+    assert!(
+        !host.store().index_whole(),
+        "the chunk above holds cards the store has not read"
+    );
+    // It was asked for once, and nothing is owed: a frame rests while the chunk is away.
+    assert_eq!(*asked.borrow(), [1], "the chunk is asked for once");
+    assert!(
+        !host.index_pending(),
+        "the store waits for the chunk rather than reading it again"
+    );
+    for _ in 0..3 {
+        host.sync_chunks(&replica.borrow());
+        host.poll_index();
+    }
+    assert_eq!(
+        *asked.borrow(),
+        [1],
+        "frames that bring no chunk ask for it no more"
+    );
+    assert_eq!(held(&host).len(), 1, "the store starts no chunk empty");
+
+    // A card a person renames while the chunk is away keeps the name: it is written where the
+    // card is, and read back there.
+    let type_id = |name: &str| {
+        meta.types
+            .iter()
+            .find(|declared| declared.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let at = ResourceRef::root(&root, type_id("Board")).item(&cards[7], type_id("Card"));
+    let card = at.id_string();
+    let rename = act(
+        &host,
+        &meta,
+        ("Card", &card),
+        "retitle",
+        json!({ "text": "renamed" }),
+    );
+    docs.apply(&rename);
+    let record = docs.doc(chunk::FIRST).clone();
+    host.sync_from(&record);
+    let text_field = field_id(&meta, "Card", "text");
+    let text = |host: &Host| match host.store().record_at(&at).unwrap().get(&text_field) {
+        Some(DynValue::Text(text)) => text.clone(),
+        other => panic!("no text: {other:?}"),
+    };
+    assert_eq!(text(&host), "renamed");
+    assert!(
+        !host.index_pending(),
+        "the card's change is taken in while the chunk is still away"
+    );
+
+    // An edit that belongs in the chunk that is away is refused, never written where the store
+    // holds nothing of it: a card made there would be lost when the chunk reached this device.
+    let add = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "add")
+        .unwrap()
+        .id
+        .clone();
+    let board = host.root_of(BOARD_APP).unwrap();
+    let refused = host.runtime().invoke_action(
+        &Principal::new("ada"),
+        (
+            add.as_str(),
+            vec![Value::resource(&board), Value::text("away")],
+        ),
+    );
+    assert!(
+        refused.is_err(),
+        "the store refuses an edit it would write into a chunk it does not hold"
+    );
+    assert_eq!(held(&host).len(), 1, "and starts no chunk empty");
+    assert_eq!(
+        cards_in(&host, &meta, &root),
+        cards[..per_run],
+        "the refused edit left the board as it was"
+    );
+
+    // The chunk arrives through the sync: it is read once, and the board is whole.
+    let second = docs.doc(1).clone();
+    replica.borrow_mut().insert(1, second);
+    host.sync_chunks(&replica.borrow());
+    assert_eq!(
+        *asked.borrow(),
+        [1, 1],
+        "one ask while it was away, and one the source answers"
+    );
+    assert!(host.store().index_whole(), "the index covers the board");
+    assert!(host.index_ready(), "and is read from, not built");
+    assert_eq!(cards_in(&host, &meta, &root), cards, "every card in order");
+    assert_eq!(
+        text(&host),
+        "renamed",
+        "the card keeps the name it was given while the chunk was away"
+    );
+}
+
+/// What one card added to a board of `cards` costs, counted per insert over `samples` inserts:
+/// what the store did, what it read, and the work automerge did taking the change into the
+/// mirror. Counts, so neither the machine nor its load decides them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "counts a test read, divided by its samples"
+)]
+fn insert_costs(
+    host: &Host,
+    docs: &mut Docs,
+    meta: &Meta,
+    root: &str,
+    cards: usize,
+    samples: usize,
+) -> Vec<(&'static str, u64)> {
+    fill_bulk(docs, meta, root, cards);
+    docs.sync(host);
+    let stats = host.store().stats();
+    let reads = host.store().read_stats();
+    let work = automerge::work();
+    for i in cards..cards.saturating_add(samples) {
+        let action = act(
+            host,
+            meta,
+            ("Board", root),
+            "add",
+            json!({ "text": format!("s{i}") }),
+        );
+        docs.apply(&action);
+        docs.sync(host);
+    }
+    let now = host.store().stats();
+    let reads_now = host.store().read_stats();
+    let work_now = automerge::work();
+    let per = |all: u64| all / u64::try_from(samples).unwrap_or(1).max(1);
+    let delta = |before: u64, after: u64| per(after.saturating_sub(before));
+    vec![
+        (
+            "syncs",
+            delta(stats.incremental_syncs, now.incremental_syncs),
+        ),
+        ("full syncs", delta(stats.full_syncs, now.full_syncs)),
+        ("index writes", delta(stats.index_writes, now.index_writes)),
+        ("catch-ups", delta(stats.catch_ups, now.catch_ups)),
+        ("builds", delta(stats.builds, now.builds)),
+        ("located", delta(reads.doc.located, reads_now.doc.located)),
+        ("fields", delta(reads.doc.fields, reads_now.doc.fields)),
+        (
+            "listings",
+            delta(reads.doc.listings, reads_now.doc.listings),
+        ),
+        ("entries", delta(reads.doc.entries, reads_now.doc.entries)),
+        ("dirs", delta(reads.index.dirs, reads_now.index.dirs)),
+        ("pages", delta(reads.index.pages, reads_now.index.pages)),
+        (
+            "index fields",
+            delta(reads.index.fields, reads_now.index.fields),
+        ),
+        ("evaluated", delta(reads.evaluated, reads_now.evaluated)),
+        ("versions", delta(reads.versions, reads_now.versions)),
+        (
+            "version changes",
+            delta(reads.version_changes, reads_now.version_changes),
+        ),
+        ("walked ops", delta(work.walked_ops, work_now.walked_ops)),
+        (
+            "searched slabs",
+            delta(work.searched_slabs, work_now.searched_slabs),
+        ),
+        (
+            "visited changes",
+            delta(work.visited_changes, work_now.visited_changes),
+        ),
+        (
+            "renumbered objects",
+            delta(work.renumbered_objects, work_now.renumbered_objects),
+        ),
+    ]
+}
+
+/// A card added to a board that already holds four thousand costs what one added to a board of a
+/// thousand costs: the store derives the card and writes the one index the change reached, reads
+/// nothing that grows with the board, and automerge applies the change without walking the chunk
+/// it lands in or renumbering the objects it holds.
+#[test]
+fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
+    let samples = 25;
+    let (small_host, mut small_docs, small_meta, small_root, _) = board();
+    let small = insert_costs(
+        &small_host,
+        &mut small_docs,
+        &small_meta,
+        &small_root,
+        1_000,
+        samples,
+    );
+    let (large_host, mut large_docs, large_meta, large_root, _) = board();
+    let large = insert_costs(
+        &large_host,
+        &mut large_docs,
+        &large_meta,
+        &large_root,
+        4_000,
+        samples,
+    );
+    // The documents an insert writes are the chunk its card lands in, and the record, whose
+    // manifest names the run it went into: one document while a board fits the record's own
+    // chunk, two once its cards live in a chunk above it. The shape, not work that grows.
+    let count = |costs: &[(&'static str, u64)], name: &str| {
+        costs
+            .iter()
+            .find(|(held, _)| *held == name)
+            .map_or_else(|| panic!("no count named {name}"), |(_, count)| *count)
+    };
+    assert_eq!(count(&small, "syncs"), 1, "one document at 1000 cards");
+    assert_eq!(
+        count(&large, "syncs"),
+        2,
+        "the card's chunk and the record at 4000"
+    );
+    // A card's change reached the board's package, so it writes that package's index: a store
+    // that writes every loaded package's index for every change would pay a commit of nothing
+    // here, and one per package a workspace holds.
+    assert_eq!(count(&small, "index writes"), 1, "one index per card");
+    assert_eq!(count(&large, "index writes"), 1, "one index per card");
+    // A change by an actor that sorts before others renumbers the objects those others made in
+    // each document it reaches: a handful the record's own writer made, never one per card.
+    assert!(
+        count(&large, "renumbered objects") <= 2 * count(&small, "renumbered objects").max(8),
+        "an insert renumbers objects that grow with the board: {small:?} against {large:?}"
+    );
+    let mut misses: Vec<String> = Vec::new();
+    for ((name, at_small), (_, at_large)) in small.iter().zip(&large) {
+        if !matches!(*name, "syncs" | "renumbered objects") && at_small != at_large {
+            misses.push(format!(
+                "{name}: {at_small} per insert at 1000, {at_large} at 4000"
+            ));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+/// A window whose record the framework keeps as one document — no chunk above the record's own is
+/// held apart — keeps a card added past a full run: the door writes it into that document, and the
+/// board reads it there, in its place after the others, in the window and once opened again.
+#[test]
+fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
+    let (earlier, mut docs, meta, root, ids) = board();
+    drop(earlier);
+    let mut cards = fill_bulk(&mut docs, &meta, &root, first_run());
+    let mut record = docs.doc(chunk::FIRST).clone();
+    let open = |record: &AutoCommit| {
+        let host = Host::open(
+            Opening {
+                record: Some(record),
+                chunks: None,
+                index_dir: None,
+                device: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(BOARD, &ids).unwrap();
+        host.wait_index();
+        host
+    };
+    let host = open(&record);
+    assert_eq!(cards_in(&host, &meta, &root), cards);
+
+    let add = act(
+        &host,
+        &meta,
+        ("Board", &root),
+        "add",
+        json!({ "text": "one more" }),
+    );
+    assert!(
+        add.edits
+            .iter()
+            .any(|edit| edit.chunk() == Some(chunk::FIRST + 1)),
+        "the card goes past the full run"
+    );
+    cards.push(made(&add));
+    apply_recorded(&mut record, &add);
+    host.sync_from(&record);
+    host.wait_index();
+    assert_eq!(
+        cards_in(&host, &meta, &root),
+        cards,
+        "the window reads the card"
+    );
+    drop(host);
+    assert_eq!(
+        cards_in(&open(&record), &meta, &root),
+        cards,
+        "and so does a window opened on the record again"
+    );
 }

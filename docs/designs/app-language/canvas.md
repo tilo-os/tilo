@@ -38,6 +38,10 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
 - **Nothing modal.** The caret and an answer in progress never block the rest of the canvas.
 - **Stable layout.** An answer arriving doesn't move what's already there; it takes free space
   near the anchor.
+- **What just arrived is in view.** A window a person opens, or one an ask opens for them, that
+  takes free space past the edge of the screen is shown the way the strips desk shows a new
+  window: the camera pans the least it takes, animated, and no place on the canvas moves. The
+  camera is the person's lens, so it also survives the places on the canvas changing.
 - **Touch parity.** Tap empty space puts the caret there and raises the keyboard; long-press is
   right-click; drag to select works with a finger.
 - **Native refresh rate** while typing, panning and zooming.

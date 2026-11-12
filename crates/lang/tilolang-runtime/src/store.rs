@@ -71,6 +71,20 @@ impl FieldRead {
     }
 }
 
+/// What `value` is, as the read `read` compares it: a rich text field as the text it is written
+/// as, which is what search finds it by (search.md §2), and every other field as [`FieldRead::lit`]
+/// reads it.
+///
+/// # Errors
+///
+/// As [`lit_of`].
+pub fn field_lit_of(read: &FieldRead, value: FieldValue) -> Result<Lit, StoreError> {
+    if let FieldValue::Rich(rich) = &value {
+        return Ok(Lit::Text(rich.written_text()));
+    }
+    read.lit(value)
+}
+
 /// What the field `id` holds, `value` being what the store holds of it and `absent` what an
 /// unwritten one reads as, as a predicate compares it: a set as its members, a collection as
 /// how many items it has.
@@ -433,6 +447,11 @@ pub struct Version {
     /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
     /// action applied to many items at once.
     pub count: u32,
+    /// The gesture the change is one of, when several of them are one act of the person's (the
+    /// keystrokes of one burst of typing): history lists them as one entry, and undo takes them
+    /// back as one step. `None` for a change that is an act of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<String>,
 }
 
 impl Version {
@@ -584,6 +603,12 @@ impl LinkHow {
 /// them is told of, and what a store with an index keeps to answer them from.
 pub const LINKS: &str = "$links";
 
+/// The pseudo-field of a reading of another app's resource that says what the person it was
+/// read for has not seen of the items it holds: `{"first": <the first unseen item's id, or
+/// null>, "count": <how many>}`. The seen marks and versions that answer it are kept where
+/// that app runs, so they come in the reading, as [`LINKS`] do.
+pub const UNSEEN: &str = "$unseen";
+
 /// What the pseudo-field holding when a field of a resource last changed begins with; the
 /// field's id follows, so `$changed.done` holds the version that last changed `done`
 /// ([`Store::field_changed`]).
@@ -683,6 +708,7 @@ pub fn versions_in<'c>(
                 from: made.then(|| note.from.clone()).flatten(),
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
+                gesture: None,
             }
         })
         .collect();
@@ -703,30 +729,6 @@ pub fn last_change_of(versions: Vec<Version>, field: &str) -> Option<Version> {
             version.action != STEP_ACTION && version.fields.iter().any(|held| held == field)
         })
         .or(made)
-}
-
-/// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
-/// ([`Store::recent_authors`]).
-pub fn recent_authors_in<'n>(
-    newest_first: impl Iterator<Item = &'n ChangeNote>,
-    at: &ResourceRef,
-    limit: usize,
-) -> Vec<String> {
-    let id = at.id_string();
-    let mut out: Vec<String> = Vec::new();
-    for note in newest_first {
-        if out.len() >= limit {
-            break;
-        }
-        let touches = note
-            .touched
-            .iter()
-            .any(|touched| *touched == id || crate::value::flat_id(touched) == id);
-        if touches && !out.contains(&note.invoker) {
-            out.push(note.invoker.clone());
-        }
-    }
-    out
 }
 
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
@@ -806,6 +808,14 @@ pub trait PagedItems: std::fmt::Debug {
     fn position(&self, id: &str) -> Option<Option<usize>> {
         let _ = id;
         None
+    }
+
+    /// Whether the listing holds the item `id`: `None` when it cannot say. A listing that
+    /// checks its items one by one as it reads them answers from the item's own entries, never
+    /// by reading the entries before it, so what it holds costs the item, not the listing
+    /// ([`Self::position`], which counts the items before it).
+    fn holds(&self, id: &str) -> Option<bool> {
+        self.position(id).map(|at| at.is_some())
     }
 }
 
@@ -887,6 +897,16 @@ impl Listing {
         match &self.paged {
             Some(paged) => paged.position(id),
             None => Some(self.held.iter().position(|held| &**held == id)),
+        }
+    }
+
+    /// Whether the listing holds the item `id`, `None` when it cannot say: [`Self::position`]
+    /// where the listing answers that without reading the items before it, as a listing that
+    /// checks its items one by one as it reads them does.
+    pub fn holds(&self, id: &str) -> Option<bool> {
+        match &self.paged {
+            Some(paged) => paged.holds(id),
+            None => Some(self.held.iter().any(|held| &**held == id)),
         }
     }
 
@@ -1432,6 +1452,17 @@ pub trait Store {
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
 
+    /// The field `read` names of `at`, as a predicate compares it: a rich text field as the
+    /// text it is written as, which is what search finds it by (search.md §2), and every other
+    /// field as [`lit_of`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read`] and [`lit_of`].
+    fn field_lit(&self, at: &ResourceRef, read: &FieldRead) -> Result<Lit, StoreError> {
+        field_lit_of(read, self.read(at, &read.spec)?)
+    }
+
     /// The types every loaded package declares, as the runtime loads and reloads them: the
     /// fields a record has, which a store that reads a record's links by its type finds in
     /// them. A store that keeps an index is told them when its schema is registered.
@@ -1493,8 +1524,7 @@ pub trait Store {
         let mut items = Vec::new();
         for id in all.iter() {
             let target = at.item(&id, item.clone());
-            let holds =
-                pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
+            let holds = pred.eval(&mut |read: &FieldRead| self.field_lit(&target, read))?;
             if holds {
                 items.push(id);
             }
@@ -1787,26 +1817,6 @@ pub trait Store {
         Err(StoreError::Invalid(format!(
             "this store keeps no log to read what the change {change} wrote"
         )))
-    }
-
-    /// Who made the latest versions of `at`, newest first and each once: at most `limit` of
-    /// them, from at most the last `window` changes of its document. What a rich input's `@`
-    /// drawer offers first; its cost is bounded by `window`, never by how long the history is.
-    ///
-    /// # Errors
-    ///
-    /// As [`Store::history`].
-    fn recent_authors(
-        &self,
-        at: &ResourceRef,
-        limit: usize,
-        window: usize,
-    ) -> Result<Vec<String>, StoreError> {
-        Ok(recent_authors_in(
-            self.history(&at.doc)?.iter().rev().take(window),
-            at,
-            limit,
-        ))
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;

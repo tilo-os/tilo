@@ -9,7 +9,8 @@
 //! timer, no read.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use tilo_clock::time::Instant;
 
 use crate::apps::EndPolicy;
 use crate::collect::Collector;
@@ -261,7 +262,7 @@ impl Hub {
             id,
             spec,
             grants,
-            due: Instant::now(),
+            due: tilo_clock::now(),
             sink,
         });
         state.generation = state.generation.wrapping_add(1);
@@ -349,7 +350,7 @@ impl Hub {
                 self.collector().reset();
                 return;
             }
-            let now = Instant::now();
+            let now = tilo_clock::now();
             let next = state.entries.iter().map(|e| e.due).min().unwrap_or(now);
             if next > now {
                 let generation = state.generation;
@@ -402,7 +403,5 @@ impl Hub {
 }
 
 fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    tilo_clock::unix_now_ms()
 }

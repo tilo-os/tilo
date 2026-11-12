@@ -2,6 +2,7 @@
 
 use crate::page;
 use crate::page::Frame;
+use crate::resource::CATALOG;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use ui::widget::TaffyTreeExt;
@@ -27,6 +28,10 @@ use super::folders;
 use super::import_actions::{
     self, ContinuationProjection, FolderProjection, ImportEffect, ImportProjection,
     ImportStatusPhase, IssueProjection, OperationProjection, SelectionProjection,
+};
+use super::import_rows::{
+    choice_mode_key, issue_row, items_phrase, operation_details, operation_state_key,
+    operation_state_label, shown_path, state_summary,
 };
 use super::view::system_folder_reason;
 use imager_backend::migration_store::{
@@ -252,7 +257,10 @@ impl ImportApp {
             picker_launcher: folders::pick_folder,
             identity_checker: desktop_continuation::trusted_identity_complete,
             commands: Rc::new(RefCell::new(Vec::new())),
-            status: format!("Folder imports are unavailable: {error}"),
+            status: super::strings::t_args(
+                "imager-import-status-unavailable",
+                &[("error", error.into())],
+            ),
             status_is_error: true,
             composed: ui::widget::Composed::default(),
             expanded_details: HashSet::new(),
@@ -279,9 +287,7 @@ impl ImportApp {
             .path()
             .canonicalize()
             .map_err(|error| error.to_string())?;
-        SHOT_PATH_ALIAS.with(|alias| {
-            *alias.borrow_mut() = Some((base.clone(), PathBuf::from("/home/ada")));
-        });
+        super::import_rows::set_shot_path_alias(base.clone(), PathBuf::from("/home/ada"));
         let source = base.join("Documents");
         let destination_parent = base.join("Tilo files");
         std::fs::create_dir(&source).map_err(|error| error.to_string())?;
@@ -397,7 +403,7 @@ impl ImportApp {
                 {
                     *operation = snapshot;
                 }
-                self.status = "Copying and checking files…".into();
+                self.status = super::strings::t("imager-import-status-copying");
                 self.status_is_error = false;
                 return Ok(());
             }
@@ -471,7 +477,7 @@ impl ImportApp {
                 {
                     *operation = snapshot;
                 }
-                self.status = "Continuing copy from checked progress…".into();
+                self.status = super::strings::t("imager-import-status-continuing");
                 self.status_is_error = false;
                 return Ok(());
             }
@@ -510,7 +516,7 @@ impl ImportApp {
         conflict.approve();
         conflict.mark_running()?;
         Self::run_shot_worker(&mut conflict, retry)?;
-        self.status = state_summary(conflict.state()).into();
+        self.status = state_summary(conflict.state());
         self.status_is_error = true;
         self.operations = vec![conflict];
         Ok(())
@@ -574,11 +580,11 @@ impl ImportApp {
         for operation in &mut operations {
             operation.compact();
         }
-        let status = if operations.is_empty() {
-            "Choose a source folder and destination to prepare a one-time copy.".into()
+        let status = super::strings::t(if operations.is_empty() {
+            "imager-import-status-choose-paths"
         } else {
-            "Previous imports reopened. Interrupted work requires an explicit retry.".into()
-        };
+            "imager-import-status-reopened"
+        });
         Ok(Self {
             dirty: true,
             continuation,
@@ -1291,7 +1297,7 @@ impl ImportApp {
         }
         self.source = None;
         self.destination_parent = None;
-        self.status = "Review the source, destination, and one-time copy.".into();
+        self.status = super::strings::t("imager-import-status-review-copy");
         self.status_is_error = false;
         self.composed.invalidate();
         Ok(())
@@ -1392,7 +1398,7 @@ impl ImportApp {
             })
             .map_err(|e| e.to_string())?;
         self.review_request = Some((index, receiver));
-        self.status = "Reviewing source changes and the destination…".into();
+        self.status = super::strings::t("imager-import-status-reviewing");
         Ok(())
     }
 
@@ -1414,7 +1420,7 @@ impl ImportApp {
         {
             pending.cancelled = true;
             pending.finished = true;
-            self.status = "Folder review stopped before it was saved.".into();
+            self.status = super::strings::t("imager-import-status-review-stopped");
             self.composed.invalidate();
             return true;
         }
@@ -1439,8 +1445,7 @@ impl ImportApp {
         }
         match result {
             Ok(()) => {
-                self.status =
-                    "Review both paths below. Copy starts only when you choose Copy.".into();
+                self.status = super::strings::t("imager-import-status-review-both");
                 self.status_is_error = false;
             }
             Err(error) => {
@@ -1480,7 +1485,7 @@ impl ImportApp {
             })
             .map_err(|e| e.to_string())?;
         self.gate_request = Some((command, rx));
-        self.status = "Checking whether Tilo identity setup is complete…".into();
+        self.status = super::strings::t("imager-import-status-checking-identity");
         Ok(())
     }
 
@@ -1548,7 +1553,7 @@ impl ImportApp {
         match MigrationWorker::start_persisted(job, writer, self.operations.clone(), index) {
             Ok(worker) => {
                 self.worker = Some((index, worker));
-                self.status = "Copying and checking files…".into();
+                self.status = super::strings::t("imager-import-status-copying");
                 self.status_is_error = false;
                 self.composed.invalidate();
                 Ok(())
@@ -1613,7 +1618,7 @@ impl ImportApp {
         match MigrationWorker::start_persisted(job, writer, self.operations.clone(), index) {
             Ok(worker) => {
                 self.worker = Some((index, worker));
-                self.status = "Continuing after checking saved progress…".into();
+                self.status = super::strings::t("imager-import-status-continuing-after-check");
                 self.status_is_error = false;
                 self.composed.invalidate();
                 Ok(())
@@ -1636,12 +1641,12 @@ impl ImportApp {
         };
         if worker.cancel() {
             self.batch.clear();
-            self.status = "Stopping at the next safe copy boundary…".into();
+            self.status = super::strings::t("imager-import-status-stopping");
             self.status_is_error = false;
             self.composed.invalidate();
             true
         } else {
-            self.status = "File checks are finished; waiting for the final result.".into();
+            self.status = super::strings::t("imager-import-status-checks-finished");
             self.status_is_error = false;
             self.composed.invalidate();
             false
@@ -1660,14 +1665,16 @@ impl ImportApp {
                 false
             }
             Ok(Err(error)) => {
-                self.status = format!("Local copy state could not be saved: {error}");
+                self.status = super::strings::t_args(
+                    "imager-import-status-state-unsaved",
+                    &[("error", error.into())],
+                );
                 self.status_is_error = true;
                 *changed = true;
                 false
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.status =
-                    "Local copy state writer stopped before confirming its checkpoint.".into();
+                self.status = super::strings::t("imager-import-status-state-writer-stopped");
                 self.status_is_error = true;
                 *changed = true;
                 false
@@ -1677,9 +1684,9 @@ impl ImportApp {
         if let Some((index, receiver)) = &self.detail_request {
             let result = match receiver.try_recv() {
                 Ok(result) => Some(result),
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("Copy details could not be loaded.".into()))
-                }
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(super::strings::t(
+                    "imager-import-error-details-load-failed",
+                ))),
                 Err(mpsc::TryRecvError::Empty) => None,
             };
             if let Some(result) = result {
@@ -1702,7 +1709,9 @@ impl ImportApp {
         if let Some((command, rx)) = &self.gate_request {
             let result = match rx.try_recv() {
                 Ok(r) => Some(r),
-                Err(mpsc::TryRecvError::Disconnected) => Some(Err("Session check stopped".into())),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(super::strings::t(
+                    "imager-import-error-session-check-stopped",
+                ))),
                 Err(mpsc::TryRecvError::Empty) => None,
             };
             if let Some(result) = result {
@@ -1786,9 +1795,9 @@ impl ImportApp {
                     Ok(outcome) => Some((*target, outcome)),
                     Err(mpsc::TryRecvError::Disconnected) => Some((
                         *target,
-                        ui::PortalOutcome::Failed(
-                            "Folder dialog stopped before responding.".into(),
-                        ),
+                        ui::PortalOutcome::Failed(super::strings::t(
+                            "imager-import-error-dialog-stopped",
+                        )),
                     )),
                     Err(mpsc::TryRecvError::Empty) => None,
                 });
@@ -1813,9 +1822,7 @@ impl ImportApp {
                             }
                         }
                     }
-                    self.status =
-                        "Folder selected. Review is required after both locations are chosen."
-                            .into();
+                    self.status = super::strings::t("imager-import-status-folder-selected");
                     self.status_is_error = false;
                 }
                 ui::PortalOutcome::Cancelled => {
@@ -1826,11 +1833,14 @@ impl ImportApp {
                     {
                         pending.cancelled = true;
                     }
-                    self.status = "No folder was selected.".into();
+                    self.status = super::strings::t("imager-import-status-no-folder");
                     self.status_is_error = false;
                 }
                 ui::PortalOutcome::Failed(error) => {
-                    self.status = format!("The folder dialog could not open: {error}");
+                    self.status = super::strings::t_args(
+                        "imager-import-status-dialog-failed",
+                        &[("error", error.into())],
+                    );
                     self.status_is_error = true;
                     if let Some(pending) = &mut self.pending_review_invocation {
                         pending.failure = Some(self.status.clone());
@@ -1868,15 +1878,24 @@ impl ImportApp {
                 WorkerEvent::Progress(progress) => {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_progress(&progress);
-                        self.status = format!(
-                            "Verified {} in {} {}.",
-                            ui::format::size(progress.verified_bytes),
-                            progress.verified_files,
+                        self.status = super::strings::t_args(
                             if progress.verified_files == 1 {
-                                "file"
+                                "imager-import-status-verified-file"
                             } else {
-                                "files"
-                            }
+                                "imager-import-status-verified-files"
+                            },
+                            &[
+                                (
+                                    "size",
+                                    ui::i18n::ArgValue::Text(ui::format::size(
+                                        progress.verified_bytes,
+                                    )),
+                                ),
+                                (
+                                    "count",
+                                    ui::i18n::ArgValue::Number(progress.verified_files as f64),
+                                ),
+                            ],
                         );
                     }
                 }
@@ -1885,8 +1904,7 @@ impl ImportApp {
                         *operation = *saved;
                         self.status = operation
                             .failure()
-                            .unwrap_or_else(|| state_summary(operation.state()))
-                            .into();
+                            .map_or_else(|| state_summary(operation.state()), str::to_owned);
                         self.status_is_error = !matches!(
                             operation.state(),
                             OperationState::Complete | OperationState::Cancelled
@@ -1898,7 +1916,7 @@ impl ImportApp {
                 WorkerEvent::Finished(outcome) => {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_outcome(outcome);
-                        self.status = state_summary(operation.state()).into();
+                        self.status = state_summary(operation.state());
                         self.status_is_error = !matches!(
                             operation.state(),
                             OperationState::Complete | OperationState::Cancelled
@@ -1989,15 +2007,13 @@ impl ImportApp {
 
     fn apply_authorized_command(&mut self, command: ImportCommand) {
         if self.review_request.is_some() {
-            self.status = "Wait for the folder review to finish.".into();
+            self.status = super::strings::t("imager-import-status-wait-review");
             self.status_is_error = true;
             return;
         }
         let result = match command {
             ImportCommand::CheckIdentity => {
-                self.status =
-                    "Identity setup is complete. Review your folder destinations to continue."
-                        .into();
+                self.status = super::strings::t("imager-import-status-identity-complete");
                 Ok(())
             }
             ImportCommand::ResolveContinued(index) => self.resolve_continued(index),
@@ -2034,7 +2050,7 @@ impl ImportApp {
                     Err(super::strings::t("imager-import-error-picker-unavailable"))
                 } else {
                     self.picker = Some((PickTarget::Source, (self.picker_launcher)()));
-                    self.status = "Choose the source folder to copy.".into();
+                    self.status = super::strings::t("imager-import-status-choose-source");
                     Ok(())
                 }
             }
@@ -2043,7 +2059,7 @@ impl ImportApp {
                     Err(super::strings::t("imager-import-error-picker-unavailable"))
                 } else {
                     self.picker = Some((PickTarget::DestinationParent, (self.picker_launcher)()));
-                    self.status = "Choose where Tilo should create the copied folder.".into();
+                    self.status = super::strings::t("imager-import-status-choose-destination");
                     Ok(())
                 }
             }
@@ -2060,7 +2076,7 @@ impl ImportApp {
             ImportCommand::ClearSelection => {
                 self.source = None;
                 self.destination_parent = None;
-                self.status = "Selection cleared.".into();
+                self.status = super::strings::t("imager-import-status-cleared");
                 Ok(())
             }
             ImportCommand::NextIssues(index) => self.load_next_issue_page(index),
@@ -2099,9 +2115,9 @@ impl ImportApp {
         changed
     }
 
-    fn button(&self, id: &str, label: &str, command: ImportCommand) -> Button {
+    fn button(&self, id: &str, key: &str, command: ImportCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label)
+        Button::new(id, &super::strings::t(key))
             .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
@@ -2137,12 +2153,13 @@ impl ImportApp {
     }
 
     fn selection_card(&self) -> Section {
+        let not_chosen = crate::setup::strings::t("imager-import-not-chosen");
         let source = self
             .source
             .as_ref()
-            .map_or_else(|| "Not chosen yet".to_string(), |path| shown_path(path));
+            .map_or_else(|| not_chosen.clone(), |path| shown_path(path));
         let destination = self.destination_parent.as_ref().map_or_else(
-            || "Not chosen yet".to_string(),
+            || not_chosen.clone(),
             |parent| {
                 self.source
                     .as_ref()
@@ -2153,46 +2170,51 @@ impl ImportApp {
         let mut actions = Row::new()
             .push(Box::new(self.button(
                 "import.pick-source",
-                "Choose folder…",
+                "imager-import-action-choose-source",
                 ImportCommand::PickSource,
             )))
             .push(Box::new(self.button(
                 "import.pick-destination",
-                "Choose destination…",
+                "imager-import-action-choose-destination",
                 ImportCommand::PickDestination,
             )));
         if self.source.is_some() || self.destination_parent.is_some() {
             actions = actions.push(Box::new(
                 self.button(
                     "import.clear-selection",
-                    "Clear",
+                    "imager-import-action-clear-selection",
                     ImportCommand::ClearSelection,
                 )
                 .role(ButtonRole::Plain),
             ));
         }
         actions = actions.push(Box::new(Spacer::new())).push(Box::new(
-            self.button("import.review", "Review copy", ImportCommand::PrepareReview)
-                .role(if self.continuation.is_some() {
-                    ButtonRole::Secondary
-                } else {
-                    ButtonRole::Primary
-                })
-                .with_enabled(self.can_prepare_review()),
+            self.button(
+                "import.review",
+                "imager-import-action-prepare-review",
+                ImportCommand::PrepareReview,
+            )
+            .role(if self.continuation.is_some() {
+                ButtonRole::Secondary
+            } else {
+                ButtonRole::Primary
+            })
+            .with_enabled(self.can_prepare_review()),
         ));
         let body = page::related()
             .push(Box::new(PropertyList::new(vec![
-                Property::new("Folder", source).with_kind(TextKind::Identifier),
-                Property::new("Copy to", destination).with_kind(TextKind::Identifier),
+                Property::new(CATALOG.t("imager-import-folder"), source)
+                    .with_kind(TextKind::Identifier),
+                Property::new(CATALOG.t("imager-import-copy-to"), destination)
+                    .with_kind(TextKind::Identifier),
             ])))
             .push(Box::new(
-                Text::new(
-                    "Tilo copies the folder once and checks every file. Your originals stay where they are.",
-                )
-                .dimmed(),
+                Text::new(&crate::setup::strings::t("installer-import-copy-note")).dimmed(),
             ))
             .push(Box::new(actions));
-        Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading("Copy a folder"))
+        Section::new(vec![Box::new(body)]).with_header(SectionHeader::heading(
+            CATALOG.t("imager-import-section-copy"),
+        ))
     }
 
     /// The loaded page of a copy's issues, one row each, then what else
@@ -2206,7 +2228,10 @@ impl ImportApp {
             }
             notes.extend(operation.metadata_limitations().iter().cloned());
             if let Some(failure) = operation.failure() {
-                notes.push(format!("The copy could not continue: {failure}"));
+                notes.push(super::strings::t_args(
+                    "imager-import-error-copy-cannot-continue",
+                    &[("failure", failure.into())],
+                ));
             }
         } else {
             let (details, limitations) = operation_details(operation);
@@ -2231,28 +2256,32 @@ impl ImportApp {
     }
 
     fn issue_page_button(&self, index: usize) -> Button {
-        let (label, command, enabled) = if self.detail_request.is_some() {
-            ("Loading…", ImportCommand::NextIssues(index), false)
+        let (key, command, enabled) = if self.detail_request.is_some() {
+            (
+                "imager-import-loading",
+                ImportCommand::NextIssues(index),
+                false,
+            )
         } else if self
             .detail_pages
             .get(&index)
             .is_some_and(|page| page.offset > 0 && page.next.is_none())
         {
             (
-                "First issue page",
+                "imager-import-action-first-issues",
                 ImportCommand::FirstIssues(index),
                 self.can_load_first_issues(index),
             )
         } else {
             (
-                "Next issue page",
+                "imager-import-action-next-issues",
                 ImportCommand::NextIssues(index),
                 self.can_load_next_issues(index),
             )
         };
         self.button(
             &format!("import.operation.{index}.next-issues"),
-            label,
+            key,
             command,
         )
         .role(ButtonRole::Plain)
@@ -2270,10 +2299,11 @@ impl ImportApp {
                 path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
             })
-            .unwrap_or_else(|| operation_state_label(state).to_string());
+            .unwrap_or_else(|| operation_state_label(state));
+        let summary = state_summary(state);
         let mut row = ListRow::new(format!("import.operation.{index}.summary"), folder)
             .icon(Icon::Folder)
-            .secondary(state_summary(state))
+            .secondary(&summary)
             .meta(ui::format::size(operation.verified_bytes()));
         row = match state {
             OperationState::Running => row.active(),
@@ -2288,21 +2318,21 @@ impl ImportApp {
         }
         let mut facts = vec![
             Property::new(
-                "From",
+                CATALOG.t("imager-import-from"),
                 operation
                     .source()
                     .map_or_else(|error| error, |path| shown_path(&path)),
             )
             .with_kind(TextKind::Identifier),
             Property::new(
-                "To",
+                CATALOG.t("imager-import-to"),
                 operation
                     .destination()
                     .map_or_else(|error| error, |path| shown_path(&path)),
             )
             .with_kind(TextKind::Identifier),
             Property::new(
-                "Checked",
+                CATALOG.t("imager-import-checked"),
                 format!(
                     "{} in {} {}",
                     ui::format::size(operation.verified_bytes()),
@@ -2320,13 +2350,16 @@ impl ImportApp {
             && !path.as_os_str().is_empty()
         {
             facts.push(
-                Property::new("Now copying", path.display().to_string())
-                    .with_kind(TextKind::Identifier),
+                Property::new(
+                    CATALOG.t("imager-import-copying"),
+                    path.display().to_string(),
+                )
+                .with_kind(TextKind::Identifier),
             );
         }
         if operation.issue_count() > 0 {
             facts.push(Property::new(
-                "Needs attention",
+                CATALOG.t("imager-import-attention"),
                 items_phrase(operation.issue_count() as u64),
             ));
         }
@@ -2347,7 +2380,11 @@ impl ImportApp {
             actions = actions.push(Box::new(
                 self.button(
                     &format!("import.operation.{index}.toggle-details"),
-                    if expanded { "Hide details" } else { "Details" },
+                    if expanded {
+                        "imager-import-hide-details"
+                    } else {
+                        "installer-details"
+                    },
                     ImportCommand::ToggleDetails(index),
                 )
                 .role(ButtonRole::Plain),
@@ -2361,7 +2398,7 @@ impl ImportApp {
             OperationState::AwaitingReview => Some(
                 self.button(
                     &format!("import.operation.{index}.start"),
-                    "Start copy",
+                    "imager-import-action-start",
                     ImportCommand::Start(index),
                 )
                 .with_enabled(self.can_start_copy(index)),
@@ -2374,7 +2411,7 @@ impl ImportApp {
             {
                 Some(self.button(
                     &format!("import.operation.{index}.cancel"),
-                    "Stop copy",
+                    "imager-import-action-cancel",
                     ImportCommand::Cancel,
                 ))
             }
@@ -2384,7 +2421,7 @@ impl ImportApp {
             | OperationState::Failed => Some(
                 self.button(
                     &format!("import.operation.{index}.retry"),
-                    "Continue copy",
+                    "imager-import-action-retry",
                     ImportCommand::Retry(index),
                 )
                 .with_enabled(self.worker.is_none() && operation.retry_job().is_ok()),
@@ -2429,10 +2466,10 @@ impl ImportApp {
     /// and, for a copy, where it goes.
     fn continuation_card(&self, c: &Continuation) -> Section {
         let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
-            Text::new(if self.identity_ready {
-                "Review where each folder goes, then copy. Your originals stay unchanged."
+            Text::new(&if self.identity_ready {
+                crate::setup::strings::t("installer-import-review-note")
             } else {
-                "Finish setting up your Tilo identity, then review where each folder goes. Your originals stay unchanged."
+                crate::setup::strings::t("installer-import-review-note-identity")
             })
             .with_id("import.continuation.explanation"),
         )];
@@ -2440,7 +2477,7 @@ impl ImportApp {
             items.push(Box::new(
                 self.button(
                     "import.continued.check-identity",
-                    "Continue after identity setup",
+                    "imager-import-action-check-identity",
                     ImportCommand::CheckIdentity,
                 )
                 .with_enabled(self.gate_request.is_none()),
@@ -2454,15 +2491,18 @@ impl ImportApp {
                     |e| e,
                     |p| {
                         p.map_or_else(
-                            || "Destination not reviewed yet".into(),
-                            |p| format!("Copies to {}", shown_path(&p)),
+                            || CATALOG.t("imager-destination-not-reviewed"),
+                            |p| {
+                                CATALOG.t_args(
+                                    "imager-copies-to",
+                                    &[("path", ui::i18n::ArgValue::Text(shown_path(&p)))],
+                                )
+                            },
                         )
                     },
                 ),
-                ChoiceMode::Later => "Decide later. It stays in Add folders.".into(),
-                ChoiceMode::Connected => {
-                    "Connected folders are not available. Nothing was synced or copied.".into()
-                }
+                ChoiceMode::Later => CATALOG.t("imager-choice-later"),
+                ChoiceMode::Connected => CATALOG.t("imager-connected-folders-unavailable"),
             };
             let can_review = self
                 .operations
@@ -2480,7 +2520,10 @@ impl ImportApp {
             // How the folder comes over and where it goes sit under it, on
             // the page's edge, so a long path is never cut short.
             let mode = ToggleGroup::new(
-                vec![Segment::new("Copy"), Segment::new("Later")],
+                vec![
+                    Segment::new(super::strings::t("imager-import-scope-copy")),
+                    Segment::new(super::strings::t("imager-import-scope-later")),
+                ],
                 usize::from(f.mode != ChoiceMode::Copy),
             )
             .with_id(format!("import.continued.{index}.mode"))
@@ -2508,7 +2551,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             &format!("import.continued.{index}.review"),
-                            "Review destination",
+                            "imager-import-action-review-destination",
                             ImportCommand::ResolveContinued(index),
                         )
                         .role(ButtonRole::Plain)
@@ -2518,7 +2561,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             &format!("import.continued.{index}.destination"),
-                            "Choose another…",
+                            "imager-import-action-choose-folder-destination",
                             ImportCommand::PickContinuedDestination(index),
                         )
                         .role(ButtonRole::Plain)
@@ -2536,17 +2579,21 @@ impl ImportApp {
                     .push(Box::new(controls)),
             ));
         }
-        Section::new(items).with_header(SectionHeader::heading("From your Desktop setup"))
+        Section::new(items).with_header(SectionHeader::heading(
+            CATALOG.t("imager-import-section-desktop"),
+        ))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut body = page::body("Add folders to Tilo");
+        let mut body = page::body(&crate::setup::strings::t("imager-import-page"));
         if let Err(error) = durable_copy_available() {
             body = body.push(Box::new(
                 Section::new(vec![Box::new(
                     Text::new(&error).with_live(Politeness::Assertive),
                 )])
-                .with_header(SectionHeader::heading("Folders can't be copied right now")),
+                .with_header(SectionHeader::heading(
+                    CATALOG.t("imager-import-section-unavailable"),
+                )),
             ));
         }
         if let Some(c) = &self.continuation {
@@ -2565,9 +2612,9 @@ impl ImportApp {
             })
             .collect();
         if !copies.is_empty() {
-            body = body.push(Box::new(
-                Section::new(copies).with_header(SectionHeader::heading("Copies")),
-            ));
+            body = body.push(Box::new(Section::new(copies).with_header(
+                SectionHeader::heading(CATALOG.t("imager-import-section-copies")),
+            )));
         }
         if self.continuation.is_some() {
             body = body.push(Box::new(self.journey_choices()));
@@ -2591,7 +2638,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             "import.continued.later",
-                            "Decide later for all",
+                            "imager-import-action-later-all",
                             ImportCommand::LaterAll,
                         )
                         .with_enabled(self.continuation_idle()),
@@ -2600,7 +2647,7 @@ impl ImportApp {
                     .push(Box::new(
                         self.button(
                             "import.continued.start",
-                            "Copy folders",
+                            "imager-import-action-start-reviewed-folders",
                             ImportCommand::StartBatch,
                         )
                         .role(ButtonRole::Primary)
@@ -2609,106 +2656,6 @@ impl ImportApp {
             );
         }
         frame.build()
-    }
-}
-
-/// One issue a copy found: the item and why it needs attention.
-fn issue_row(path: &Path, reason: &str) -> ListRow {
-    let shown = if path.as_os_str().is_empty() {
-        "The folder itself".to_string()
-    } else {
-        path.display().to_string()
-    };
-    ListRow::new(format!("import.issue.{}", path.display()), shown)
-        .icon(Icon::TriangleAlert)
-        .secondary(reason.to_string())
-}
-
-/// "1 item", "3 items".
-fn items_phrase(count: u64) -> String {
-    if count == 1 {
-        "1 item".to_string()
-    } else {
-        format!("{count} items")
-    }
-}
-
-thread_local! {
-    /// A screenshot fixture runs real copies in a disposable directory; its
-    /// pages show that directory as the home folder it stands for.
-    static SHOT_PATH_ALIAS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// A path as the page shows it.
-fn shown_path(path: &Path) -> String {
-    SHOT_PATH_ALIAS.with(|alias| {
-        alias
-            .borrow()
-            .as_ref()
-            .and_then(|(from, to)| path.strip_prefix(from).ok().map(|rest| to.join(rest)))
-            .unwrap_or_else(|| path.to_path_buf())
-            .display()
-            .to_string()
-    })
-}
-
-/// A copy's issues and what else it reports, before a page of them loads.
-fn operation_details(operation: &OperationRecord) -> (Vec<(PathBuf, String)>, Vec<String>) {
-    let issues = operation.issues().unwrap_or_default();
-    let mut notes = operation.metadata_limitations().to_vec();
-    if let Some(failure) = operation.failure() {
-        notes.push(format!("The copy could not continue: {failure}"));
-    }
-    (issues, notes)
-}
-
-fn operation_state_label(state: OperationState) -> &'static str {
-    match state {
-        OperationState::AwaitingReview => "Review required",
-        OperationState::Ready => "Ready",
-        OperationState::Running => "Copying",
-        OperationState::Interrupted => "Interrupted",
-        OperationState::Cancelled => "Stopped",
-        OperationState::Incomplete => "Incomplete",
-        OperationState::Failed => "Could not start",
-        OperationState::Complete => "Complete",
-    }
-}
-
-const fn operation_state_key(state: OperationState) -> &'static str {
-    match state {
-        OperationState::AwaitingReview => "awaiting_review",
-        OperationState::Ready => "ready",
-        OperationState::Running => "running",
-        OperationState::Interrupted => "interrupted",
-        OperationState::Cancelled => "cancelled",
-        OperationState::Incomplete => "incomplete",
-        OperationState::Failed => "failed",
-        OperationState::Complete => "complete",
-    }
-}
-
-const fn choice_mode_key(mode: ChoiceMode) -> &'static str {
-    match mode {
-        ChoiceMode::Copy => "copy",
-        ChoiceMode::Connected => "connected",
-        ChoiceMode::Later => "later",
-    }
-}
-
-fn state_summary(state: OperationState) -> &'static str {
-    match state {
-        OperationState::AwaitingReview => "Waiting for your review before anything is copied.",
-        OperationState::Ready => "Reviewed and ready to start.",
-        OperationState::Running => "Copying and checking files",
-        OperationState::Interrupted => {
-            "The copy was interrupted. Check the folders, then continue when ready."
-        }
-        OperationState::Cancelled => "Copy stopped. Checked files were kept.",
-        OperationState::Incomplete => "Some items need review before the copy can finish.",
-        OperationState::Failed => "The copy could not start. Open Details before trying again.",
-        OperationState::Complete => "Copy checked and complete.",
     }
 }
 
@@ -2826,7 +2773,10 @@ impl ImportApp {
                     self.source.get_or_insert(pending.source);
                     self.destination_parent
                         .get_or_insert(pending.destination_parent);
-                    self.status = format!("Folder review could not be saved: {message}");
+                    self.status = super::strings::t_args(
+                        "imager-import-status-review-unsaved",
+                        &[("error", message.clone().into())],
+                    );
                     self.status_is_error = true;
                     self.composed.invalidate();
                     JobOutcome::Failed {
@@ -2902,7 +2852,10 @@ impl ImportApp {
                 }
             }
             if let Some(Err(message)) = &save_result {
-                self.status = format!("Folder review could not be saved: {message}");
+                self.status = super::strings::t_args(
+                    "imager-import-status-review-unsaved",
+                    &[("error", message.clone().into())],
+                );
                 self.status_is_error = true;
                 self.composed.invalidate();
             }
@@ -3245,6 +3198,7 @@ mod tests {
     use super::*;
 
     include!("journey_import_tests.rs");
+    include!("import_buttons_language_tests.rs");
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
         let temp = super::disposable_fixture_dir().unwrap();
@@ -4528,7 +4482,9 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("import.operation.0.next-issues")
-                        .name_contains("First issue page")
+                        .name_contains(&super::super::strings::t(
+                            "imager-import-action-first-issues",
+                        ))
                         .enabled(true),
                 )
                 .unwrap();

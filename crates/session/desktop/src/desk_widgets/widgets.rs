@@ -193,6 +193,12 @@ struct Painted {
 }
 
 impl DeskWidgets {
+    /// Queue `ask` for the host, and ask it for the pass that answers it
+    /// ([`crate::desktop_host::ask`]).
+    fn ask(&self, asked: DesktopAsk) {
+        crate::desktop_host::ask(&self.handle, &self.asks, asked);
+    }
+
     /// The desk's widgets, showing what `prefs` says.
     #[must_use]
     pub fn new(
@@ -781,11 +787,8 @@ impl DeskWidgets {
             Part::Pin => self.toggle_pin(id),
             Part::Remove => self.remove(id),
             Part::Collapse => self.board.close(),
-            Part::Person(person) => self
-                .asks
-                .borrow_mut()
-                .push(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
-            Part::Music(action) => self.asks.borrow_mut().push(DesktopAsk::Music(action)),
+            Part::Person(person) => self.ask(DesktopAsk::Intent(ChromeIntent::ShowPerson(person))),
+            Part::Music(action) => self.ask(DesktopAsk::Music(action)),
             Part::Body if form == Form::Glance => self.board.open(id),
             // A resize ends where the hand lets go; a click on the handle does nothing, as does a
             // tap on an open card.
@@ -831,7 +834,6 @@ impl DeskWidgets {
         .with_icon_kind(NotificationIconKind::Generic);
         toast.dismiss_after = CLEAR_UNDO_WINDOW;
         toast.actions = vec![("default".into(), crate::i18n::t("desk-widget-undo"))];
-        toast.bypass_dnd = true;
         toast.show_on_lock_screen = false;
         let posted = self.notices.post(toast);
         self.undo.borrow_mut().insert(posted, id);
@@ -1634,6 +1636,7 @@ fn lerp_rect(a: Rect, b: Rect, t: f64) -> Rect {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use ui::widget::DrawChild;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2605,7 +2608,7 @@ mod tests {
 
     /// Draw the desk once, as the frame does, at the clock the caller holds.
     fn paint(widgets: &mut DeskWidgets) {
-        widgets.draw(
+        widgets.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),

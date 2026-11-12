@@ -66,7 +66,9 @@ pub fn standalone(msg: &NeighbourMsg) -> bool {
             !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis)
         }
         NeighbourMsg::AppDocument { envelope, .. } => {
-            envelope.encryption.is_some() && envelope.kind == collab_types::OpKind::Compaction
+            envelope.encryption.is_some()
+                && envelope.kind == collab_types::OpKind::Compaction
+                && !collab_types::is_compaction_segment(envelope)
         }
         NeighbourMsg::MlsAccessRequest { .. }
         | NeighbourMsg::MlsRoutedAccessRequest { .. }

@@ -30,6 +30,7 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::publish::{Planner, Publications};
 use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
+use ui::widget::DrawChild;
 use ui::widget::Widget as _;
 
 /// The package and what it uses, compiled once for every instance.
@@ -51,6 +52,14 @@ impl Publication for Published {
 
     fn pending(&self) -> bool {
         self.publications.borrow().is_building()
+    }
+
+    fn settle(&self) -> bool {
+        !self
+            .publications
+            .borrow_mut()
+            .settle(&self.host, &self.planner)
+            .is_empty()
     }
 }
 
@@ -157,7 +166,7 @@ fn show(end: End, text: &mut ui::TextRenderer, theme: &ui::Theme) -> Shown {
     window.receive();
     lay_out(&mut window, theme);
     let mut scene = ui::vello::Scene::new();
-    window.draw(
+    window.draw_child(
         &mut scene,
         ui::kurbo::Affine::IDENTITY,
         text,

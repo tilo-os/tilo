@@ -571,3 +571,128 @@ fn a_reply_is_a_field_under_the_text() {
         "the typed reply paints over the placeholder"
     );
 }
+
+/// On a phone a notice's title is the whole news ("Claude Code finished: 8 changes in Workspace")
+/// and wraps to a second line rather than eliding: every letter of it is painted at a phone's
+/// banner width, and the card grows by the line it took.
+#[test]
+fn a_title_too_long_for_a_phone_wraps_to_a_second_line() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::light();
+    let title = "Claude Code finished: 8 changes in Workspace";
+    let card = ToastCard::new(title, ToastKind::Info)
+        .body("Working in Notes")
+        .time("just now")
+        .actionable(true);
+    let card = ToastCard {
+        primary_action: "Open card",
+        ..card
+    };
+    let wide = card_height(&mut tr, &theme, &card, 1200.0);
+    let width = 358.0;
+    let narrow = card_height(&mut tr, &theme, &card, width);
+    assert!(
+        narrow > wide,
+        "the phone's card is a line taller: {narrow} over {wide}"
+    );
+    let mut scene = Scene::new();
+    paint_card(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        Rect::new(0.0, 0.0, width, narrow),
+        &card,
+    );
+    let painted: String = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.glyphs.len().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let glyphs: usize = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.glyphs.len())
+        .sum();
+    let must_paint = [title, "Working in Notes", "just now", "Open card"]
+        .concat()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count();
+    assert!(
+        glyphs >= must_paint,
+        "{glyphs} glyphs for {must_paint} letters ({painted}): the title was elided"
+    );
+}
+
+/// A card from an agent leads with the agent's own face, the square agent mark in its client's
+/// hue, as the bar, who is here and its card draw it; a person's card keeps their avatar.
+#[test]
+fn an_agents_card_leads_with_its_own_face() {
+    let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
+        .agent("Claude Code", "publisher-1");
+    let face = agent_or_person_face(&card, "Claude Code", "publisher-1");
+    let expected = crate::widget::AvatarFace::new("Claude Code", "publisher-1")
+        .hue(crate::tokens::colors::PresenceHue::Orange)
+        .agent();
+    assert_eq!(format!("{face:?}"), format!("{expected:?}"));
+
+    let person = card.person("Ada", "ada");
+    assert!(!person.person_agent, "a person's card is theirs again");
+    let face = agent_or_person_face(&person, "Ada", "ada");
+    assert_eq!(
+        format!("{face:?}"),
+        format!("{:?}", crate::widget::AvatarFace::new("Ada", "ada"))
+    );
+}
+
+/// Without an app's name over the title, how long ago a card arrived follows its body instead of
+/// standing alone on a line of its own, at the end of a text column an action cuts short.
+#[test]
+fn a_time_without_an_app_follows_the_body() {
+    let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
+        .body("Launch notes")
+        .time("just now");
+    let text = CardText::of(&card);
+    assert!(
+        !text.has_header(),
+        "no line over the title for the time alone"
+    );
+    assert_eq!(text.body, "Launch notes \u{b7} just now");
+    let bare = CardText::of(&ToastCard::new("Done", ToastKind::Info).time("just now"));
+    assert_eq!(bare.body, "just now");
+    let attributed = CardText::of(&card.caption("Notes"));
+    assert!(
+        attributed.has_header(),
+        "beside an app's name it stays on its line"
+    );
+    assert_eq!(attributed.time, "just now");
+    assert_eq!(attributed.body, "Launch notes");
+}
+
+/// A card's action stands off the card as a secondary button stands off the window: on the dark
+/// card's ground, the window's raised tier is all but the ground itself, so the face is stepped
+/// off the card's own ground instead.
+#[test]
+fn a_card_action_stands_off_the_card_in_dark() {
+    use crate::a11y::relative_luminance;
+    for theme in [Theme::dark(), Theme::light()] {
+        let colors = &theme.tokens.colors;
+        let window = (relative_luminance(colors.surfaces.raised)
+            - relative_luminance(colors.surfaces.content))
+        .abs();
+        let ground = crate::widget::floating_surface::card_ground(&theme);
+        let (fill, _, _) = ButtonFace::new(Rect::ZERO, "Open card").colors(&on_card(&theme));
+        let card = (relative_luminance(fill) - relative_luminance(ground)).abs();
+        assert!(
+            card >= window * 0.75,
+            "the action's face stands off the card ({card:.4}) about as a secondary button \
+             stands off the window ({window:.4})"
+        );
+    }
+}

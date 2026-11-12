@@ -23,7 +23,9 @@
 //! - **`pasta`** (the passt project; what rootless podman uses) as the only
 //!   route out: it terminates the VM's TCP and UDP and opens a socket of
 //!   the host's for each. It forwards nothing inwards and maps no host
-//!   loopback. Nothing is routed or address-translated on the host, so the host needs no
+//!   loopback, unless the relay is on the host's own loopback: then it maps
+//!   [`HOST_LOOPBACK`] there, so a workspace's browser session reaches a
+//!   local stack. Nothing is routed or address-translated on the host, so the host needs no
 //!   forwarding, no `iptables` rules of its own, and in Kubernetes the pod's
 //!   network policy applies to VM traffic as to the pod's own.
 //! - **A bridge filter** ([`tilo_egress::nft::GuestFilter`]) on `br0`: ARP
@@ -32,6 +34,11 @@
 //!   `169.254.169.254`), loopback, multicast and reserved networks, Azure's
 //!   platform address `168.63.129.16`, and whatever the host adds
 //!   ([`blocked_networks`]), are dropped. IPv6 is off.
+//! - **One endpoint besides the internet** ([`Endpoint`]): the browser
+//!   session in a workspace's VM joins its workspace through the relay,
+//!   which is a cluster-internal address on a hosted stack, so every VM is
+//!   given exactly the relay's address and port to reach and nothing else
+//!   of the host's.
 //! - **Bandwidth limits** in Firecracker's own rate limiters on the
 //!   VM's network device, per direction ([`interface_json`]).
 //!
@@ -39,7 +46,7 @@
 //! service does not have: [`super::jail`] does it in the privileged helper
 //! before it starts the jailer.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use serde_json::json;
 
@@ -49,6 +56,10 @@ pub const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
 pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
 /// Its resolver: `pasta`'s forwarder to the host's chosen resolver.
 pub const DNS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 3);
+/// Where the VM reaches the host's own loopback, when the relay is there (a
+/// local stack): `pasta` maps this address to it ([`pasta_args`]), and the
+/// filter allows it ([`guest_filter`]). A host neither binds nor routes it.
+pub const HOST_LOOPBACK: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 4);
 pub const PREFIX: u8 = 24;
 /// The VM's MAC address, fixed so a restored VM's ARP entries hold.
 pub const GUEST_MAC: &str = "06:00:0a:00:02:0f";
@@ -96,6 +107,68 @@ pub fn blocked_networks(extra: &[(Ipv4Addr, u8)]) -> Vec<(Ipv4Addr, u8)> {
     all
 }
 
+/// The one destination a VM reaches besides the internet: the relay the
+/// browser session in it joins its workspace through, as the host reaches
+/// it. The relay's device plane is QUIC over UDP; TCP is allowed
+/// too, since the port is the relay's either way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Endpoint {
+    pub address: Ipv4Addr,
+    pub port: u16,
+}
+
+impl Endpoint {
+    /// `ADDR:PORT`, with the address written as four numbers: a host that
+    /// names its relay resolves nothing.
+    ///
+    /// # Errors
+    ///
+    /// The words saying what this should be.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let wrong = || format!("{text:?} is not ADDR:PORT, with ADDR an IPv4 address");
+        let (address, port) = text.trim().split_once(':').ok_or_else(wrong)?;
+        let address: Ipv4Addr = address.parse().map_err(|_| wrong())?;
+        let port: u16 = port
+            .parse()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(wrong)?;
+        Ok(Self { address, port })
+    }
+
+    /// Where a VM reaches this endpoint: the same address, unless the relay
+    /// is on the host's own loopback (a local stack), where `pasta` maps
+    /// [`HOST_LOOPBACK`] to it.
+    #[must_use]
+    pub fn guest(self) -> Self {
+        if self.address.is_loopback() {
+            Self {
+                address: HOST_LOOPBACK,
+                port: self.port,
+            }
+        } else {
+            self
+        }
+    }
+
+    /// Whether `pasta` maps [`HOST_LOOPBACK`] to the host's loopback for it.
+    #[must_use]
+    pub fn on_host_loopback(self) -> bool {
+        self.address.is_loopback()
+    }
+
+    #[must_use]
+    pub fn socket(self) -> SocketAddr {
+        SocketAddr::from((self.address, self.port))
+    }
+}
+
+impl std::fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.address, self.port)
+    }
+}
+
 /// `a.b.c.d/len`.
 pub fn parse_network(text: &str) -> Result<(Ipv4Addr, u8), String> {
     let (address, prefix) = text.split_once('/').unwrap_or((text, "32"));
@@ -112,13 +185,20 @@ pub fn parse_network(text: &str) -> Result<(Ipv4Addr, u8), String> {
 
 #[cfg(target_os = "linux")]
 /// The bridge filter of every VM on a host blocking `extra` besides
-/// [`ALWAYS_BLOCKED`].
+/// [`ALWAYS_BLOCKED`], and reaching `endpoint` when it is given one.
 #[must_use]
-pub fn guest_filter(extra: &[(Ipv4Addr, u8)]) -> tilo_egress::nft::GuestFilter {
+pub fn guest_filter(
+    extra: &[(Ipv4Addr, u8)],
+    endpoint: Option<Endpoint>,
+) -> tilo_egress::nft::GuestFilter {
     tilo_egress::nft::GuestFilter {
         guest: TAP.to_string(),
         uplink: UPLINK.to_string(),
         dns: DNS,
+        endpoint: endpoint.map(|endpoint| {
+            let guest = endpoint.guest();
+            (guest.address, guest.port)
+        }),
         blocked: blocked_networks(extra),
     }
 }
@@ -137,10 +217,20 @@ pub fn kernel_ip_arg() -> String {
 
 /// `pasta` for the namespace process `holder` is in, writing its pid to
 /// `pid_file` once the namespace is connected, and sending DNS to
-/// `resolver`. Nothing is forwarded inwards, no host loopback is mapped,
-/// IPv4 only.
+/// `resolver`. Nothing is forwarded inwards, no host loopback is mapped
+/// unless `endpoint` is on it (then [`HOST_LOOPBACK`] maps there), IPv4
+/// only.
 #[must_use]
-pub fn pasta_args(holder: u32, pid_file: &str, resolver: Ipv4Addr) -> Vec<String> {
+pub fn pasta_args(
+    holder: u32,
+    pid_file: &str,
+    resolver: Ipv4Addr,
+    endpoint: Option<Endpoint>,
+) -> Vec<String> {
+    let loopback = match endpoint {
+        Some(endpoint) if endpoint.on_host_loopback() => HOST_LOOPBACK.to_string(),
+        _ => "none".to_string(),
+    };
     let args: Vec<String> = [
         "--quiet",
         "--netns",
@@ -162,7 +252,7 @@ pub fn pasta_args(holder: u32, pid_file: &str, resolver: Ipv4Addr) -> Vec<String
         "--mtu",
         &MTU.to_string(),
         "--map-host-loopback",
-        "none",
+        &loopback,
         "--ipv4-only",
         "--no-dhcp",
         "-t",
@@ -238,7 +328,7 @@ mod tests {
             kernel_ip_arg(),
             "ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off:10.0.2.3"
         );
-        let args = pasta_args(42, "/j/net/vm-3/pasta.pid", Ipv4Addr::new(1, 1, 1, 1));
+        let args = pasta_args(42, "/j/net/vm-3/pasta.pid", Ipv4Addr::new(1, 1, 1, 1), None);
         let after = |flag: &str| {
             args.iter()
                 .position(|arg| arg == flag)
@@ -259,5 +349,81 @@ mod tests {
             interface["tx_rate_limiter"]["bandwidth"]["refill_time"],
             100
         );
+    }
+
+    #[test]
+    fn an_endpoint_is_an_address_and_a_port_and_a_loopback_one_is_reached_through_pastas_map() {
+        let endpoint = Endpoint::parse("127.0.0.1:7704").unwrap();
+        assert_eq!(endpoint.socket(), "127.0.0.1:7704".parse().unwrap());
+        assert_eq!(endpoint.to_string(), "127.0.0.1:7704");
+        // A relay on the host's loopback is dialled at the address `pasta`
+        // maps there.
+        assert!(endpoint.on_host_loopback());
+        assert_eq!(
+            endpoint.guest(),
+            Endpoint {
+                address: HOST_LOOPBACK,
+                port: 7704
+            }
+        );
+        // Everywhere else (a public address, a cluster address) the VM dials
+        // the endpoint itself.
+        for address in ["10.0.2.4", "1.2.3.4"] {
+            let endpoint = Endpoint::parse(&format!("{address}:7704")).unwrap();
+            assert!(!endpoint.on_host_loopback(), "{address}");
+            assert_eq!(endpoint.guest(), endpoint);
+        }
+        for wrong in [
+            "127.0.0.1",
+            "127.0.0.1:",
+            ":7704",
+            "127.0.0.1:0",
+            "relay:7704",
+            "fe80::1:7704",
+        ] {
+            assert!(Endpoint::parse(wrong).is_err(), "{wrong:?}");
+        }
+        // `pasta` maps the host's loopback only for a relay that is on it.
+        let after = |args: Vec<String>, flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .and_then(|at| args.get(at + 1))
+                .cloned()
+        };
+        let loopback = Endpoint::parse("127.0.0.1:7704").unwrap();
+        let args = pasta_args(
+            42,
+            "/j/pasta.pid",
+            Ipv4Addr::new(1, 1, 1, 1),
+            Some(loopback),
+        );
+        assert_eq!(
+            after(args, "--map-host-loopback").as_deref(),
+            Some("10.0.2.4"),
+            "a local relay is reached at the mapped address"
+        );
+        let cluster = Endpoint::parse("10.0.0.9:7704").unwrap();
+        let args = pasta_args(42, "/j/pasta.pid", Ipv4Addr::new(1, 1, 1, 1), Some(cluster));
+        assert_eq!(
+            after(args, "--map-host-loopback").as_deref(),
+            Some("none"),
+            "a cluster address is dialled as it is"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_vm_is_allowed_the_address_its_browser_session_dials_the_relay_at() {
+        let relay = Endpoint::parse("10.0.0.9:7704").unwrap();
+        let filter = guest_filter(&[], Some(relay));
+        assert_eq!(filter.endpoint, Some((relay.address, relay.port)));
+        // A relay on the host's loopback is allowed where the VM dials it.
+        let local = Endpoint::parse("127.0.0.1:7704").unwrap();
+        assert_eq!(
+            guest_filter(&[], Some(local)).endpoint,
+            Some((HOST_LOOPBACK, 7704))
+        );
+        // A Linux VM is allowed nothing private: untouched by this.
+        assert_eq!(guest_filter(&[], None).endpoint, None);
     }
 }

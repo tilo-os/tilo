@@ -15,6 +15,9 @@ use crate::types::{Ty, TypeKey};
 /// The module a draw is asked of: `random.int(lo, hi)`.
 const RANDOM: &str = "random";
 
+/// The module a file is asked of a person with: `file.choose(a)`, `file.save(a, name:)`.
+const FILE: &str = "file";
+
 impl Checker<'_> {
     pub(super) fn call(
         &mut self,
@@ -23,11 +26,20 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // `Map<Text>()`: a map the code fills while it runs, as against one a record keeps.
+        if let ExprKind::Ident(name) = &callee.kind
+            && name == "Map"
+            && self.lookup(name).is_none()
+            && self.own_callable(name).is_none()
+            && self.env.own_type(name).is_none()
+        {
+            return self.builtin_map(types, args, span);
+        }
         if !types.is_empty() && !names_json(callee) {
             self.err(
                 "E022",
                 span,
-                "only `json.decode<T>(text)` takes a type between `<` and `>`",
+                "only `json.decode<T>(text)` and `Map<T>()` take a type between `<` and `>`",
             );
         }
         match &callee.kind {
@@ -71,6 +83,15 @@ impl Checker<'_> {
                     && self.env.find_import("json").is_none()
                 {
                     return self.builtin_json(name, types, args, span);
+                }
+                // `file.choose` and `file.save`: the person's own chooser, which hands an
+                // action a file it picked, or takes what an action made and puts it where they
+                // choose (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == FILE)
+                    && self.lookup(FILE).is_none()
+                    && self.env.find_import(FILE).is_none()
+                {
+                    return self.builtin_file(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -178,6 +199,7 @@ impl Checker<'_> {
             "lenses" => return self.builtin_lenses(args, span),
             "delivery" => return self.builtin_delivery(args, span),
             "members" => return self.builtin_members(args, span),
+            "speakers" => return self.builtin_speakers(args, span),
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
@@ -186,6 +208,7 @@ impl Checker<'_> {
             "linked" => return self.builtin_links(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
+            "seen_by" => return self.builtin_seen_by(args, span),
             "mentions" => return self.builtin_mentions(args, span),
             "undo" => return self.builtin_undo(args, span),
             "steps" => return self.builtin_steps(args, span),
@@ -193,6 +216,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "say" => return self.builtin_say(args, span),
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
@@ -366,15 +390,23 @@ impl Checker<'_> {
             }
         }
         // An action a view applies may leave out its last parameters: running it opens its
-        // form, which asks the person for them.
+        // form, which asks the person for them. A parameter of type `File` is no form's, and a
+        // chooser fills it: the action `file.choose(a)` runs, whose person's file it is.
+        let choosing = self.st.choosing;
+        let trailing_none = |rest: &[Option<Ex>]| rest.iter().all(Option::is_none);
+        let filled_by_a_chooser = |at: usize| {
+            choosing
+                && params.get(at).is_some_and(|p| p.ty == Ty::File)
+                && slots.get(at..).is_some_and(trailing_none)
+        };
         let asked = |at: usize| {
-            at_press
+            (at_press || filled_by_a_chooser(at))
                 && slots
                     .get(at..)
                     .is_some_and(|rest| rest.iter().all(Option::is_none))
                 && params.get(at..).is_some_and(|rest| {
                     rest.iter()
-                        .all(|p| p.default.is_some() || p.ty.asked_by_form())
+                        .all(|p| p.default.is_some() || p.ty.asked_by_form() || p.ty == Ty::File)
                 })
         };
         let missing: Vec<&str> = params
@@ -399,19 +431,24 @@ impl Checker<'_> {
                         .get(*at..)
                         .is_some_and(|rest| rest.iter().all(Option::is_none))
                     && !p.ty.asked_by_form()
+                    && !filled_by_a_chooser(*at)
             })
             .map(|(_, (p, _))| p)
             .collect();
         if let Some(param) = unaskable.first() {
-            self.err(
-                "E022",
-                span,
+            let said = if param.ty == Ty::File {
+                format!(
+                    "`{name}` cannot be asked for `{}`: a file is the person's to choose, so the action run from a control with `file.choose({name}(…))` gets it, and a call written as it is must give it one",
+                    param.name
+                )
+            } else {
                 format!(
                     "`{name}` cannot be asked for `{}` of type `{}`: a form asks for text,                      numbers, flags, days, moments, lengths of time, accounts, people, resources                      and enum cases, so give it here or give the parameter a default",
                     param.name,
                     param.ty.display(&self.env.app)
-                ),
-            );
+                )
+            };
+            self.err("E022", span, said);
         } else if !missing.is_empty() {
             self.err(
                 "E022",
@@ -1253,6 +1290,123 @@ impl Checker<'_> {
         fits.then(|| c.id.clone())
     }
 
+    /// `file.choose(a, accept: [...])`: the action `a`, run with the file the person picks in
+    /// their own chooser as the argument it still needs. `file.save(a, name: "...")`: the
+    /// action `a` run, and what it made — text, or a file — put in a file the person picks.
+    /// Both stand on a control, as `open` does: they are a request to the person, and what the
+    /// person does in their chooser is what runs the action.
+    fn builtin_file(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "`file.{}` is applied from a view, on a control: it asks the person at the window; {who} cannot",
+                    name.name
+                ),
+            );
+            return Ex::error();
+        }
+        let choosing = match name.name.as_str() {
+            "choose" => true,
+            "save" => false,
+            other => {
+                self.err(
+                    "E026",
+                    name.span,
+                    format!("`file` has `choose` and `save`, not `{other}`"),
+                );
+                return Ex::error();
+            }
+        };
+        let mut action = None;
+        let mut accept = None;
+        let mut called = None;
+        for a in args {
+            match a.name.as_ref().map(|n| n.name.as_str()) {
+                None if action.is_none() => {
+                    // The action the chooser runs is applied with the file it fills: its first
+                    // parameter left out that is one.
+                    self.st.choosing |= choosing;
+                    let applied = self.expr_as(&a.value, &Ty::Action);
+                    self.st.choosing = false;
+                    action = Some(applied);
+                }
+                None => {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        format!(
+                            "`file.{}` takes one action, the one it runs: `file.{}({})`",
+                            name.name,
+                            name.name,
+                            if choosing {
+                                "insert_image(n)"
+                            } else {
+                                "export(n)"
+                            }
+                        ),
+                    );
+                }
+                Some(kind @ ("accept" | "name")) if (kind == "accept") == choosing => {
+                    if choosing {
+                        accept = Some(self.expr_as(&a.value, &Ty::List(Box::new(Ty::Text))));
+                    } else {
+                        called = Some(self.expr_as(&a.value, &Ty::Text));
+                    }
+                }
+                Some(other) => {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        format!(
+                            "`file.{}` takes {}; not `{other}:`",
+                            name.name,
+                            if choosing { "`accept:`" } else { "`name:`" }
+                        ),
+                    );
+                }
+            }
+        }
+        let Some(action) = action else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`file.{}` takes the action it runs: `file.{}({})`",
+                    name.name,
+                    name.name,
+                    if choosing {
+                        "insert_image(n)"
+                    } else {
+                        "export(n)"
+                    }
+                ),
+            );
+            return Ex::error();
+        };
+        if choosing {
+            let accept = accept.unwrap_or_else(|| {
+                Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(Ty::Text)))
+            });
+            Ex::host(Imp::ActChoose, vec![action, accept], Ty::Action)
+        } else {
+            let called = match called {
+                Some(called) => called,
+                None => {
+                    self.err(
+                        "E022",
+                        span,
+                        "`file.save` says what the file is called: `file.save(export(n), name: \"Notes.md\")`",
+                    );
+                    Ex::str("")
+                }
+            };
+            Ex::host(Imp::ActSave, vec![action, called], Ty::Action)
+        }
+    }
+
     /// `notify(to: who, title: text, body: text, opens: r)`: tell the person `to` something on
     /// their device, and open the resource `r` when they choose it. The invocation records it,
     /// so a run replayed after waiting tells them no more than the first time.
@@ -1431,6 +1585,72 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
         }
         false
+    }
+
+    /// The arguments `wanted` of a call that names them, each once: the form a method takes when
+    /// what it is given needs a word of its own (`r.markdown(links: pages, from: folder)`).
+    fn named_args<'a>(
+        &mut self,
+        args: &'a [ast::Arg],
+        wanted: &[&str],
+        form: &str,
+        span: Span,
+    ) -> Option<Vec<&'a ast::Arg>> {
+        let mut held: Vec<Option<&ast::Arg>> = vec![None; wanted.len()];
+        let mut whole = args.len() == wanted.len();
+        for a in args {
+            match a
+                .name
+                .as_ref()
+                .and_then(|n| wanted.iter().position(|w| *w == n.name))
+            {
+                Some(at) if held[at].is_none() => held[at] = Some(a),
+                _ => whole = false,
+            }
+        }
+        if whole && held.iter().all(Option::is_some) {
+            return held.into_iter().collect();
+        }
+        self.err("E022", span, format!("`{form}`"));
+        for a in args {
+            let _ = self.expr(&a.value, None);
+        }
+        None
+    }
+
+    /// `Map<Text>()`: a map the code fills while it runs, as against one a record keeps as a
+    /// field. What it is handed to reads what was put in it, and a function that fills one the
+    /// caller declared leaves it filled: a notebook's export names its notes once, in a map it
+    /// then gives the walk that writes them.
+    fn builtin_map(&mut self, types: &[ast::TypeExpr], args: &[ast::Arg], span: Span) -> Ex {
+        if !args.is_empty() {
+            self.err(
+                "E022",
+                span,
+                "`Map<T>()` starts empty and takes nothing: `Map<Text>()`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let Some(written) = types.first() else {
+            self.err(
+                "E022",
+                span,
+                "`Map()` says what its keys lead to: `Map<Text>()`, a text by each key",
+            );
+            return Ex::error();
+        };
+        let mut diags = Vec::new();
+        let held = crate::resolve::resolve_type_expr(self.env, written, &mut diags);
+        for diagnostic in diags {
+            self.err(&diagnostic.code, diagnostic.span, diagnostic.message);
+        }
+        if held.is_error() {
+            return Ex::error();
+        }
+        Ex::host(Imp::MapNew, Vec::new(), Ty::Map(Box::new(held)))
     }
 
     fn container_method(
@@ -1771,6 +1991,41 @@ impl Checker<'_> {
                 return Ex::error();
             }
             return Ex::host(Imp::MapKeysValue, vec![m], Ty::List(Box::new(Ty::Text)));
+        }
+        // `m.put(key, value)` and `m.remove(key)`: what the code fills the map with, which the
+        // code it hands the map to reads. A view draws what a map holds, it never fills one.
+        if matches!(name.name.as_str(), "put" | "remove") {
+            if !matches!(self.st.ctx, Ctx::Action | Ctx::Fn) {
+                let who = self.st.ctx.word();
+                self.err(
+                    "E040",
+                    span,
+                    format!(
+                        "{who} cannot change the entries of a map; only an action or a fn fills one"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+            let puts = name.name == "put";
+            if !self.arity(name, args, if puts { 2 } else { 1 }, span) {
+                return Ex::error();
+            }
+            let Some(k) = args.first() else {
+                return Ex::error();
+            };
+            let key = self.expr_as(&k.value, &Ty::Text);
+            if !puts {
+                return Ex::host(Imp::MapRemoveValue, vec![m, key], Ty::Unit);
+            }
+            let Some(v) = args.get(1) else {
+                return Ex::error();
+            };
+            let held = self.expr_as(&v.value, value);
+            let held = Self::handle_of(held);
+            return Ex::host(Imp::MapPutValue, vec![m, key, held], Ty::Unit);
         }
         if !self.arity(name, args, 1, span) {
             return Ex::error();
@@ -2146,9 +2401,17 @@ impl Checker<'_> {
 
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
-    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
+    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone;
+    /// `RichText.from_markdown(text)`, the document a Markdown text says; and `File`'s, which
+    /// make a file of what an action holds (`File.of_text(name, text)`).
     fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let t = self.show(&ty);
+        if ty == Ty::RichText {
+            return self.rich_type_method(name, args, span);
+        }
+        if ty == Ty::File {
+            return self.file_type_method(name, args, span);
+        }
         if name.name != "parse" {
             self.err(
                 "E027",
@@ -2204,6 +2467,155 @@ impl Checker<'_> {
         Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
     }
 
+    /// `RichText.from_markdown(text)`, the document a Markdown text says, and `RichText.embed(r)`,
+    /// the text whose one paragraph projects the resource `r`: the type's methods of its own. They
+    /// read nothing but what they are given, so they are as pure as a value's method.
+    fn rich_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        // `RichText.embed(r)`: the text whose one paragraph projects the resource `r`, which is
+        // what a card of it shows where the text is drawn.
+        if name.name == "embed" {
+            let Some(r) = self.resource_arg("RichText.embed", args, span) else {
+                return Ex::error();
+            };
+            return Ex::host(Imp::RichEmbed, vec![r], Ty::RichText);
+        }
+        if name.name != "from_markdown" {
+            self.err(
+                "E027",
+                name.span,
+                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        // The text it reads, then — for the pages of a bundle that link to each other — the
+        // address each page stands at, by the note it is, and the folder this one is written in:
+        // a link to a page reads as the reference to it, which every reader reads as it reads now
+        // and what links to it lists.
+        let mut text: Option<Ex> = None;
+        let mut links: Option<Ex> = None;
+        let mut from: Option<Ex> = None;
+        for a in args {
+            match a.name.as_ref().map(|n| n.name.as_str()) {
+                None => {
+                    if text.replace(self.expr_as(&a.value, &Ty::Text)).is_some() {
+                        self.err(
+                            "E022",
+                            span,
+                            "`.from_markdown` reads one text, the first it takes: \
+                             `RichText.from_markdown(text)`",
+                        );
+                    }
+                }
+                Some("links") => {
+                    let held = self.expr_as(&a.value, &Ty::Map(Box::new(Ty::Text)));
+                    links = Some(held);
+                }
+                Some("from") => from = Some(self.expr_as(&a.value, &Ty::Text)),
+                Some(other) => self.err(
+                    "E022",
+                    a.value.span,
+                    format!(
+                        "`.from_markdown` takes the text, `links: pages` and `from: folder`; not \
+                         `{other}:`"
+                    ),
+                ),
+            }
+        }
+        let Some(text) = text else {
+            self.err(
+                "E022",
+                span,
+                "`.from_markdown` takes the text it reads: `RichText.from_markdown(text)`",
+            );
+            return Ex::error();
+        };
+        let links =
+            links.unwrap_or_else(|| Ex::host(Imp::MapNew, Vec::new(), Ty::Map(Box::new(Ty::Text))));
+        let from = from.unwrap_or_else(|| Ex::str(""));
+        let app = Ex::str(&self.env.app);
+        Ex::host(
+            Imp::RichFromMarkdown,
+            vec![text, links, from, app],
+            Ty::RichText,
+        )
+    }
+    /// `File`'s methods, which make a file of what an action holds:
+    /// `File.of_text(name, text)` the file `name` holding `text`, `File.of_bytes(name, bytes)`
+    /// the file holding `bytes`, `File.at(name, address)` the file whose content the device
+    /// holds at `address` (a `tilo-blob://` address, as a picture of a record reads), and
+    /// `File.zip(name, files)` the archive `name` holding each of `files` under its own name.
+    fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let (held, imp, what, of) = match name.name.as_str() {
+            "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
+            "of_bytes" => (Ty::Bytes, Imp::FileOfBytes, "the bytes it holds", "bytes"),
+            "at" => (
+                Ty::Text,
+                Imp::FileAt,
+                "the address of the content it holds",
+                "a `tilo-blob://` address",
+            ),
+            "zip" => (
+                Ty::List(Box::new(Ty::File)),
+                Imp::FileZip,
+                "the files it holds",
+                "files",
+            ),
+            other => {
+                self.err(
+                    "E027",
+                    name.span,
+                    format!(
+                        "`File` has `of_text`, `of_bytes`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let [named, content] = args else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`.{}` takes the file's name and {}: `File.{}(\"{}\", {})`",
+                    name.name,
+                    what,
+                    name.name,
+                    if name.name == "zip" {
+                        "Notes.zip"
+                    } else {
+                        "Notes.md"
+                    },
+                    of
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        for arg in [named, content] {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!(
+                        "`.{}` takes the name and {} by position: `File.{}(…, …)`",
+                        name.name, what, name.name
+                    ),
+                );
+            }
+        }
+        let named = self.expr_as(&named.value, &Ty::Text);
+        let content = self.expr_as(&content.value, &held);
+        Ex::host(imp, vec![named, content], Ty::File)
+    }
+
     pub(super) fn value_method(
         &mut self,
         r: Ex,
@@ -2229,14 +2641,56 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
+            // to a page of `links` — the notes of a bundle, by the address each stands at — a
+            // link to that page, at the path from the folder the page is written in. Two notes
+            // of one title are two files, and the link is the one its note stands at.
+            (Ty::RichText, "markdown") => {
+                let form = "markdown(links: pages, from: folder)`: the document as Markdown, a \
+                            reference to a page of `links` (an address by each resource) written \
+                            as the link to it from the folder `from";
+                let Some(named) = self.named_args(args, &["links", "from"], form, span) else {
+                    return Ex::error();
+                };
+                let links = self.expr_as(&named[0].value, &Ty::Map(Box::new(Ty::Text)));
+                let from = self.expr_as(&named[1].value, &Ty::Text);
+                Ex::host(Imp::RichMarkdown, vec![r, links, from], Ty::Text)
+            }
             // The body of a response, and bytes, read as the text they decode as; bytes counted.
             (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
             }
             (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
-            // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
-            // keys, and the value one key holds.
-            (Ty::Map(t), "get" | "keys") => {
+            // A file: what it is called, the media type it holds, how many bytes it is, where
+            // its bytes are (a `tilo-blob://` address a picture takes), and its content read as
+            // text, which answers what went wrong when it is not text or too large.
+            (Ty::File, "name" | "media" | "url") if args.is_empty() => {
+                let part = match m {
+                    "name" => 0,
+                    "media" => 1,
+                    _ => 2,
+                };
+                let part = Ex::new(Ek::I32(part), Ty::Bool);
+                Ex::host(Imp::FilePart, vec![r, part], Ty::Text)
+            }
+            (Ty::File, "size") if args.is_empty() => Ex::host(Imp::FileSize, vec![r], Ty::Int),
+            (Ty::File, "text") if args.is_empty() => Ex::host(
+                Imp::FileText,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // The files an archive holds, each kept in the device's content store under the name
+            // it has inside it: what an import of a package reads its pages and their nesting
+            // from, and refuses with why when the archive is not one or holds too much.
+            (Ty::File, "files") if args.is_empty() => Ex::host(
+                Imp::FileFiles,
+                vec![r],
+                Ty::Result(Box::new(Ty::List(Box::new(Ty::File))), Box::new(Ty::Text)),
+            ),
+            // A map read as a value (a `json.Value`'s object, one `json.decode` read, or the
+            // `Map<T>()` a function fills): its keys, the value one key holds, and — in the code
+            // that runs — the entry put there or taken out.
+            (Ty::Map(t), "get" | "keys" | "put" | "remove") => {
                 let value = t.clone();
                 self.map_value_method(r, &value, name, args, span)
             }
@@ -2266,6 +2720,12 @@ impl Checker<'_> {
             (Ty::Time, "time_of_day") if args.is_empty() => {
                 self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
+            }
+            // The time of day it falls at, as the person reads a clock in the style they chose
+            // in Settings: `10:41` or `10:41 AM`.
+            (Ty::Time, "clock") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`clock`");
+                Ex::host(Imp::TimeClock, vec![r], Ty::Text)
             }
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
@@ -2444,11 +2904,13 @@ impl Checker<'_> {
 }
 
 /// The type a text names, where it is written before a method instead of a value:
-/// `Date.parse(...)`, `Time.parse(...)`.
+/// `Date.parse(...)`, `Time.parse(...)`, `RichText.from_markdown(...)`, `File.of_text(...)`.
 fn parse_ty(name: &str) -> Option<Ty> {
     match name {
         "Date" => Some(Ty::Date),
         "Time" => Some(Ty::Time),
+        "RichText" => Some(Ty::RichText),
+        "File" => Some(Ty::File),
         _ => None,
     }
 }

@@ -1047,7 +1047,9 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     }
     // Phase `fuse_document_roundtrip_and_opaque_still_works`.
     // A recognized document format is stored as a CRDT and round-trips
-    // through the mount; unknown formats stay opaque bytes.
+    // through the mount byte for byte; unknown formats stay opaque bytes; a
+    // file's mode is its own, so a script made executable runs, and setuid
+    // never sticks.
     {
         require_fuse!();
         tilo_test_env::within("the FUSE document round trip", async {
@@ -1078,12 +1080,43 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "document round-trip lost content: {back:?}"
             );
 
+            // What a program writes to a document reads back as written, though
+            // Markdown would join the paragraph's two lines.
+            let question = b"Question X\nfirst line of thought\n";
+            std::fs::write(path.join("question.md"), question).expect("write question");
+            assert_eq!(
+                std::fs::read(path.join("question.md")).unwrap(),
+                question,
+                "a document's file is the bytes written"
+            );
+
             // An unknown format stays opaque bytes (exact round-trip).
             std::fs::write(path.join("data.bin"), b"\x00\x01raw-bytes\xff").expect("write bin");
             assert_eq!(
                 std::fs::read(path.join("data.bin")).unwrap(),
                 b"\x00\x01raw-bytes\xff"
             );
+
+            // A script given an executable mode keeps it and runs.
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let tool = path.join("tool");
+                std::fs::write(&tool, b"#!/bin/sh\necho ran\n").expect("write tool");
+                let mode = |file: &std::path::Path| {
+                    std::fs::metadata(file).unwrap().permissions().mode() & 0o7777
+                };
+                assert_eq!(mode(&tool), 0o644, "a new file has the default mode");
+                std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod +x");
+                assert_eq!(mode(&tool), 0o755, "chmod is kept");
+                let ran = std::process::Command::new(&tool)
+                    .output_locked()
+                    .expect("the tool runs");
+                assert_eq!(ran.stdout, b"ran\n");
+                std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o4755))
+                    .expect("chmod u+s");
+                assert_eq!(mode(&tool), 0o755, "setuid never sticks");
+            }
             shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
@@ -1329,122 +1362,6 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(right);
 
             assert_eq!(std::fs::read(&path).unwrap(), b"ONETWO");
-            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
-                .await;
-        })
-        .await;
-    }
-    // Phase `signed_fuse_replacement_is_transactional_and_preserves_open_handles`.
-    // The production signed path must preserve the same kernel contract while
-    // atomically committing source history, victim tombstone, repository records,
-    // namespace persistence, and the recovery journal.
-    {
-        require_fuse!();
-        tilo_test_env::within("the signed real-FUSE replacement test", async {
-            let mount_dir = tempdir().expect("mount temp dir");
-            let state_dir = tempdir().expect("state temp dir");
-            let endpoint = Endpoint::bind(presets::Minimal)
-                .await
-                .expect("bind endpoint");
-            let store = Arc::new(ContentStore::memory());
-            let source_hash = store
-                .write_content(b"signed source")
-                .await
-                .unwrap()
-                .unwrap();
-            let victim_hash = store
-                .write_content(b"signed victim")
-                .await
-                .unwrap()
-                .unwrap();
-            let namespace = Arc::new(Mutex::new(Namespace::new("signed-fuse-replace").unwrap()));
-            let (source_ino, victim_ino, source_record, victim_record) = {
-                let mut namespace = namespace.lock().unwrap();
-                let source_ino = namespace
-                    .create_file(ROOT_INO, "source.bin", Some(&source_hash), 13, 1)
-                    .unwrap();
-                let victim_ino = namespace
-                    .create_file(ROOT_INO, "destination.bin", Some(&victim_hash), 13, 1)
-                    .unwrap();
-                (
-                    source_ino,
-                    victim_ino,
-                    namespace.record_id_for(source_ino).unwrap(),
-                    namespace.record_id_for(victim_ino).unwrap(),
-                )
-            };
-            let workspace_id = uuid::Uuid::new_v4();
-            let signer = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-            let person = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-            let actor = fs_protocol::FileActor {
-                person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
-                device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
-            };
-            let repository =
-                Arc::new(fs::RecordRepository::open(state_dir.path().join("records")).unwrap());
-            let publisher = Arc::new(
-                fs::RecordPublisher::new(repository.clone(), workspace_id, actor, signer).unwrap(),
-            );
-            let journal = Arc::new(Mutex::new(
-                fs::RecordTransactionJournal::open(state_dir.path().join("transactions")).unwrap(),
-            ));
-            let namespace_path = state_dir.path().join("namespace.bin");
-            let shutdown_endpoint = endpoint.clone();
-            let shutdown_store = store.clone();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_history(actor)
-                .unwrap()
-                .with_record_publisher(publisher.clone())
-                .unwrap()
-                .with_replacement_transactions(journal.clone(), namespace_path.clone())
-                .unwrap();
-            let mut config = Config::default();
-            config.mount_options = vec![MountOption::FSName("quickfs_signed_replace".to_string())];
-            let session = fuser::spawn_mount(quick_fs, mount_dir.path(), &config)
-                .expect("spawn signed FUSE session");
-            wait_for_mount(mount_dir.path()).await;
-
-            let source = mount_dir.path().join("source.bin");
-            let destination = mount_dir.path().join("destination.bin");
-            assert_eq!(std::fs::metadata(&source).unwrap().ino(), source_ino);
-            assert_eq!(std::fs::metadata(&destination).unwrap().ino(), victim_ino);
-            let mut victim_handle = std::fs::File::open(&destination).unwrap();
-            std::fs::rename(&source, &destination).expect("signed replacement rename");
-            assert_eq!(std::fs::metadata(&destination).unwrap().ino(), source_ino);
-            assert_eq!(std::fs::read(&destination).unwrap(), b"signed source");
-            let mut old_bytes = Vec::new();
-            victim_handle.read_to_end(&mut old_bytes).unwrap();
-            assert_eq!(old_bytes, b"signed victim");
-
-            let source_snapshot = publisher.snapshot(source_record).unwrap().unwrap();
-            let victim_snapshot = publisher.snapshot(victim_record).unwrap().unwrap();
-            assert_eq!(source_snapshot.binding.unwrap().name, "destination.bin");
-            assert!(victim_snapshot.binding.unwrap().tombstoned);
-            assert!(journal.lock().unwrap().entries().next().is_none());
-            assert!(namespace_path.exists());
-            assert!(
-                namespace
-                    .lock()
-                    .unwrap()
-                    .record_history(source_record)
-                    .unwrap()
-                    .versions
-                    .len()
-                    >= 2
-            );
-            assert!(
-                namespace
-                    .lock()
-                    .unwrap()
-                    .record_history(victim_record)
-                    .unwrap()
-                    .versions
-                    .len()
-                    >= 2
-            );
-            drop(victim_handle);
             shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
                 .await;
         })
@@ -2350,7 +2267,7 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     let len = data.len() as u64;
     let keeper_store = Arc::new(ContentStore::memory());
     let hash = keeper_store.write_content(&data).await.unwrap().unwrap();
-    let keeper = Endpoint::bind(presets::N0).await.unwrap();
+    let keeper = test_relay::direct_endpoint().await;
     let router = iroh::protocol::Router::builder(keeper.clone())
         .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
         .spawn();

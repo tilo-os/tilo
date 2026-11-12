@@ -30,6 +30,7 @@ use crate::present::Shown;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// The name of the window's output.
 pub const OUTPUT_NAME: &str = "NESTED-1";
@@ -363,8 +364,8 @@ impl Backend for NestedBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         crate::backdrop::draw(
             self.inner.borrow_mut().window.renderer(),
             state,

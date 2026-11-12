@@ -25,7 +25,7 @@ use tilo_actions::door::{ActionAddress, DoorError};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus,
+    InvokeRequest, Pending, ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
 };
 use tilo_actions::{
     ActionContext, ActionFailure, ActionInvoker, ActionOutput, ActorKind, InvocationId,
@@ -41,9 +41,16 @@ use tilo_lock::MutexRecover as _;
 pub trait DoorParticipant: Send {
     fn workspace(&self) -> &str;
     /// The held records and what each offers the bot now.
-    fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)>;
+    /// Every operation of each held record, each in the row of the resource
+    /// holding it: what a caller listing one resource of a record reads its
+    /// children by.
+    fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)>;
     /// Whether the record at `route` is held.
     fn holds(&self, route: &DocumentRoute) -> bool;
+    /// The record at `route` as the bot may read it now: its whole document,
+    /// `None` for one the workspace holds none of, the refusal for one the
+    /// bot may not read.
+    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String>;
     /// Invoke as `invoker` within `context` and commit the change.
     /// `confirmed`: the run confirmed it, from the grant's advance consent,
     /// for an action whose contract asks for confirmation.
@@ -222,7 +229,7 @@ impl<P: DoorParticipant> BotDoor<P> {
     }
 
     fn its_own(&self, caller: &Caller) -> bool {
-        matches!(caller.principal(), CallerPrincipal::Bot(id) if *id == self.installation)
+        is_bot(caller, &self.installation)
     }
 
     fn invoker(&self) -> ActionInvoker {
@@ -256,8 +263,10 @@ impl<P: DoorParticipant> BotDoor<P> {
                 record_id: route.record.clone(),
                 browsable: false,
             });
-            rows.extend(offered.into_iter().map(|descriptor| {
-                CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
+            rows.extend(offered.into_iter().map(|mut row| {
+                row.provider.clone_from(&provider);
+                row.app_id.clone_from(&route.app_id);
+                row
             }));
         }
         drop(participant);
@@ -469,6 +478,66 @@ impl<P: DoorParticipant> BotDoor<P> {
     }
 }
 
+/// Whether `caller` is the bot of `installation`.
+fn is_bot(caller: &Caller, installation: &str) -> bool {
+    matches!(caller.principal(), CallerPrincipal::Bot(id) if id == installation)
+}
+
+/// The bot's record reads: what its runs read of the records it follows,
+/// from the copies it holds ([`DoorParticipant::record`]). A run reads the
+/// records as they were brought up to before it, with its own changes since.
+struct BotReads<P: DoorParticipant> {
+    participant: Arc<Mutex<P>>,
+    installation: String,
+}
+
+impl<P: DoorParticipant + 'static> RecordReads for BotReads<P> {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+    ) -> Result<RecordCopy, ActionHostError> {
+        if !is_bot(caller, &self.installation) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let participant = self.participant.lock_recover();
+        let route = DocumentRoute {
+            app_id: address.app.clone(),
+            cluster_id: participant.workspace().to_owned(),
+            record: address.record.clone(),
+        };
+        match participant.record(&route) {
+            Ok(Some(document)) => Ok(RecordCopy::Document(document)),
+            Ok(None) => Ok(RecordCopy::Absent),
+            Err(reason) => Err(ActionHostError::Refused { reason }),
+        }
+    }
+
+    /// Nothing but the run itself writes the copies while it reads them, so
+    /// there is no write to wait for.
+    fn watch(
+        &self,
+        caller: &Caller,
+        _: &RecordAddress,
+        _: &RecordWake,
+    ) -> Result<(), ActionHostError> {
+        if is_bot(caller, &self.installation) {
+            Ok(())
+        } else {
+            Err(ActionHostError::NotPermitted)
+        }
+    }
+}
+
 /// A door refusal as what `invoke` answers: a rejection is the call's
 /// error, a failure its receipt.
 fn status_or_rejection(status: ReceiptStatus) -> Result<ReceiptStatus, ActionHostError> {
@@ -543,6 +612,13 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
         // again ([`RunStep`]); the ledger knows this door's own.
         let status = self.ledger.lock_recover().get(id).cloned()?;
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
+    }
+
+    fn record_reads(&self) -> Option<Arc<dyn RecordReads>> {
+        Some(Arc::new(BotReads {
+            participant: Arc::clone(&self.participant),
+            installation: self.installation.clone(),
+        }))
     }
 
     fn cancel(

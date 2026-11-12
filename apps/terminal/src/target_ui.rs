@@ -5,6 +5,7 @@
 use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, SessionTarget};
+use ui::widget::DrawChild;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,7 +214,8 @@ impl TerminalWidget {
 
     fn record_target(&mut self, target: &SessionTarget) {
         self.recorded_target = Some(target.clone());
-        self.submit(crate::resource::Terminal::RECORD_TARGET.with(target.encode()));
+        let device = self.here_device();
+        self.submit(crate::resource::Terminal::RECORD_TARGET.with((target.encode(), device)));
     }
 
     /// Keep (or forget) the relay session this session re-attaches to.
@@ -238,6 +240,16 @@ impl TerminalWidget {
 
         if self.sessions.state != OpenState::Unopened {
             self.poll_allow();
+            return;
+        }
+        // A session set up in another window (another device's, or another
+        // participant's) is joined, not started again: opening it writes
+        // nothing to its record, and its runs still reach the process that
+        // runs it. The person starts a shell here with Restart shell.
+        if self.runs_elsewhere {
+            self.sessions.target.clone_from(&self.recorded_target);
+            self.sessions.state = OpenState::Joined;
+            self.show_status(&t("terminal-runs-elsewhere"));
             return;
         }
         let target = if let Some(target) = self.recorded_target.clone() {
@@ -1000,7 +1012,7 @@ impl TerminalWidget {
             transform,
             tr,
             theme,
-            &ButtonFace::icon_only(close, Icon::X, "Close")
+            &ButtonFace::icon_only(close, Icon::X, &t("terminal-a11y-close"))
                 .control_size(size)
                 .hovered(close.contains(p)),
         );
@@ -1182,7 +1194,7 @@ impl TerminalWidget {
                 submit.x0 - gap,
                 field_y + button_h,
             ));
-            input.draw(scene, transform, tr, theme, presence);
+            input.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

@@ -280,3 +280,20 @@ agent-provider-where = Where it runs
 agent-endpoint-fill-in = Put { $what }, then save the details.
 agent-key-unencrypted = This key is sent unencrypted on your network: the endpoint uses http, not https.
 agent-model-tools-in-use = { $agents } plans with this model. Choose another model for it first.
+
+## Actions
+
+model-providers-root = Model providers
+settings-effect-list-presets = List providers to add
+settings-effect-add-provider = Add provider
+settings-effect-set-provider-model = Use model
+settings-effect-set-provider-protocol = Set protocol
+settings-effect-set-provider-enabled = Enable provider
+settings-effect-set-provider-details = Edit provider
+settings-effect-set-model-request-limits = Set request limits
+settings-effect-inspect-model-request-limits = Show request limits
+settings-effect-set-model-capabilities = Set model capabilities
+settings-effect-set-agent-model = Choose agent model
+settings-effect-set-interaction-model = Choose interaction model
+settings-effect-save-provider-key = Save API key
+settings-effect-remove-provider-key = Remove API key

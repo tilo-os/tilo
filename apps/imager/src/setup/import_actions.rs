@@ -24,6 +24,7 @@ pub enum ImportEffect {
     ///
     /// For the person at this computer it includes the chosen folders.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-read-status")]
     ReadStatus,
     /// Open Accounts to explicitly connect providers after trusted identity setup.
     #[effect(view, returns, kind = "read")]
@@ -33,75 +34,91 @@ pub enum ImportEffect {
     OpenStore,
     /// Choose source folder.
     #[effect(attended, returns, kind = "read")]
+    #[effect(label = "imager-import-action-choose-source")]
     ChooseSource,
     /// Choose destination folder.
     #[effect(attended, returns, kind = "read")]
+    #[effect(label = "imager-import-action-choose-destination")]
     ChooseDestination,
     /// Clear folder selection.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-clear-selection")]
     ClearSelection,
     /// Prepare copy review.
     #[effect(job)]
+    #[effect(label = "imager-import-action-prepare-review")]
     PrepareReview,
     /// Check identity setup.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-check-identity")]
     CheckIdentity,
     /// Copy reviewed folders.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-start-reviewed-folders")]
     StartReviewedFolders,
     /// Decide later for all folders.
     #[effect(returns)]
+    #[effect(label = "imager-import-action-later-all")]
     LaterAll,
     /// Start copy.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-start")]
     StartCopy {
         #[param("Id of the reviewed copy")]
         operation_id: String,
     },
     /// Continue copy.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-retry")]
     RetryCopy {
         #[param("Id of the copy to continue")]
         operation_id: String,
     },
     /// Request to stop copy.
     #[effect(returns)]
+    #[effect(label = "installer-recovery-cancel")]
     CancelCopy {
         #[param("Id of the running copy")]
         operation_id: String,
     },
     /// Show or hide copy details.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-toggle-details")]
     ToggleDetails {
         #[param("Id of the copy")]
         operation_id: String,
     },
     /// Load next issue page.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-next-issues")]
     NextIssues {
         #[param("Id of the copy")]
         operation_id: String,
     },
     /// Return to first issue page.
     #[effect(returns, kind = "read")]
+    #[effect(label = "imager-import-action-first-issues")]
     FirstIssues {
         #[param("Id of the copy")]
         operation_id: String,
     },
     /// Review destination.
     #[effect(job, cancellable)]
+    #[effect(label = "imager-import-action-review-destination")]
     ReviewFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
     /// Choose another destination.
     #[effect(attended, job, cancellable)]
+    #[effect(label = "imager-import-action-choose-folder-destination")]
     ChooseFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
     /// Choose how one saved folder comes over: copied once, or decided later.
     #[effect(returns)]
+    #[effect(label = "imager-import-action-folder-mode")]
     SetFolderMode {
         #[param("Id of the saved folder choice")]
         folder_id: String,
@@ -640,29 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn import_action_presentation_uses_the_active_host_locale_catalog() {
-        ui::I18nManager::install(
-            "en-US",
-            "fr",
-            &[
-                ("en-US", "test-fallback = fallback"),
-                (
-                    "fr",
-                    r"
-imager-import-resource-root = FR imports
-imager-import-badge-root = FR badge
-imager-import-detail-root = FR phase { $phase } { $operations } { $error }
-imager-import-action-read-status = FR lire
-imager-import-action-first-issues = FR première page
-imager-import-action-choose-source = FR source
-imager-import-action-choose-destination = FR destination
-imager-import-action-clear-selection = FR clear
-imager-import-action-prepare-review = FR review
-",
-                ),
-            ],
-        )
-        .unwrap();
+    fn import_action_presentation_reads_the_crates_catalog() {
+        // A test build pins the catalogue's source language, so the words the
+        // row and its actions publish are the shipped ones on every machine;
+        // the languages beside that source are the crate's own (see the
+        // strings tests).
+        assert_eq!(ui::I18nManager::current_locale(), "en-US");
         let projection = ImportProjection {
             phase: ImportStatusPhase::Ready,
             status_is_error: false,
@@ -698,7 +698,10 @@ imager-import-action-prepare-review = FR review
 
         let published = row(&projection).into_resource();
 
-        assert_eq!(published.label, "FR imports");
+        // Every word is a message: the row and its actions name keys the
+        // catalogue carries, in the language the catalogue resolved.
+        assert_eq!(published.label, strings::t("imager-import-resource-root"));
+        assert_ne!(published.label, "imager-import-resource-root");
         assert_eq!(
             published.children[0]
                 .actions
@@ -706,17 +709,25 @@ imager-import-action-prepare-review = FR review
                 .find(|action| action.id == "first-issues")
                 .unwrap()
                 .label,
-            "FR première page"
+            strings::t("imager-import-action-first-issues")
         );
         let statuses = statuses(&projection);
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::READ_STATUS,
-            "FR lire"
+            strings::t("imager-import-action-read-status")
         )));
         assert!(statuses.contains(&EffectStatus::labelled(
             ImportEffect::CHOOSE_SOURCE,
-            "FR source"
+            strings::t("imager-import-action-choose-source")
         )));
-        assert_eq!(ui::I18nManager::current_locale(), "fr");
+        // The crate's other language ships beside its source and says the
+        // same sentence there.
+        assert!(
+            crate::resource::CATALOG
+                .every_value("imager-import-resource-root")
+                .len()
+                > 1,
+            "the row's name is written in more than the source language"
+        );
     }
 }

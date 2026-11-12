@@ -146,7 +146,7 @@ impl Outline {
         Self {
             drawer: SidebarDrawer::new().left().closed(),
             list: NavList::new(Vec::new())
-                .with_accessible_name("Outline")
+                .with_accessible_name(crate::resource::CATALOG.t("typst-editor-a11y-outline"))
                 .on_view("typst.outline", move |id| *pick.borrow_mut() = Some(id)),
             chosen,
             headings: Vec::new(),
@@ -231,7 +231,7 @@ impl Outline {
             return;
         }
         let panel = self.drawer.paint_panel(scene, transform, theme);
-        Widget::draw(&mut self.list, scene, transform, tr, &panel, presence);
+        ui::widget::DrawChild::draw_child(&mut self.list, scene, transform, tr, &panel, presence);
     }
 
     /// A floating drawer gets out of the way once a heading was chosen.

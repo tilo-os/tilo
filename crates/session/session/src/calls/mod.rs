@@ -410,15 +410,8 @@ fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>>
 
 /// The workspace planes this session is in now: a call's voice and pictures run on the one its
 /// workspace is in, and are no longer carried once this device leaves the workspace.
-fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
-    sync.live()
-        .map(|live| {
-            live.planes()
-                .into_iter()
-                .map(|(workspace, plane)| (workspace.to_string(), plane))
-                .collect()
-        })
-        .unwrap_or_default()
+pub(crate) fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
+    sync.planes()
 }
 
 /// Keep `heard` with the newest voice `bucket` holds: a call reads only what arrived since its last
@@ -481,7 +474,7 @@ impl Carried {
 /// What voice channel `channel` is called, as the app that holds it published the row its call is
 /// joined from: its label, empty when the app publishes no such row.
 pub(crate) fn channel_name(
-    surfaces: &[tilo_action_broker::collab_app_broker::PublishedSurface],
+    surfaces: &[tilo_broker_core::published::PublishedSurface],
     (workspace, app, record): (&str, &str, &str),
     channel: &str,
 ) -> Option<String> {
@@ -510,7 +503,7 @@ pub(crate) struct Sources {
     /// transport, which carries no call.
     pub(crate) endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
     /// This device's channel keys: the ones a call in the channel seals its audio with.
-    pub(crate) keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    pub(crate) keys: Option<tilo_channels::ChannelKeyProvider>,
     /// The devices `workspace` admits, which a call's roster names.
     pub(crate) roster: Option<Admitted>,
     /// The person's prompts: the microphone is asked for through them.
@@ -543,7 +536,7 @@ impl Sources {
     pub(crate) fn carrier(
         calls: Arc<Calls>,
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-        keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+        keys: Option<tilo_channels::ChannelKeyProvider>,
         roster: Admitted,
         questions: Option<tilo_service::Questions>,
         person: Option<String>,
@@ -672,7 +665,7 @@ fn call_keys(
     channel: collab_types::ChannelId,
 ) -> Result<
     (
-        tilo_action_broker::channel_encryption::ChannelKeyAccess,
+        tilo_channels::ChannelKeyAccess,
         Option<channel_crypto::ChannelContentKeys>,
     ),
     Issue,
@@ -680,11 +673,11 @@ fn call_keys(
     let access = sources
         .keys
         .as_ref()
-        .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
+        .and_then(tilo_channels::ChannelKeyProvider::get)
         .ok_or(Issue::Unavailable)?;
     let keys = match access.access(workspace_id, channel).0 {
-        tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
-        tilo_action_broker::channel_encryption::ChannelAccess::Waiting => None,
+        tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
+        tilo_channels::ChannelAccess::Waiting => None,
         _ => return Err(Issue::Unavailable),
     };
     Ok((access, keys))
@@ -822,7 +815,7 @@ struct Shared {
     /// This device's key: whose pictures the app's are.
     own: [u8; 32],
     /// Where the channel's keys come from when its membership moves.
-    access: tilo_action_broker::channel_encryption::ChannelKeyAccess,
+    access: tilo_channels::ChannelKeyAccess,
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: WorkspaceId,
     channel: collab_types::ChannelId,
@@ -900,7 +893,7 @@ impl Shared {
             let handle = format!("call-microphone:{}", self.call);
             let question = tilo_portal::consent::AccessQuestion {
                 capability: MICROPHONE.to_owned(),
-                reason: Some("to be heard in the call".to_owned()),
+                reason: Some(crate::i18n::t("call-microphone-reason")),
                 may_remember: false,
                 text: None,
             };
@@ -998,7 +991,7 @@ impl Shared {
             self.side.lock_recover().camera = None;
             return Ok(());
         }
-        if !self.ask(CAMERA, "call-camera", "to be seen in the call") {
+        if !self.ask(CAMERA, "call-camera", &crate::i18n::t("call-camera-reason")) {
             return Err(Issue::PermissionDenied);
         }
         let device = self.camera.device().ok_or(Issue::CameraLost)?;
@@ -1047,7 +1040,7 @@ impl Shared {
             self.screen.set_sharing(false);
             return Ok(());
         }
-        if !self.ask(SCREEN, "call-screen", "to share this screen in the call") {
+        if !self.ask(SCREEN, "call-screen", &crate::i18n::t("call-screen-reason")) {
             return Err(Issue::PermissionDenied);
         }
         let sending = Arc::new(
@@ -1060,8 +1053,9 @@ impl Shared {
     }
 
     /// Ask the person through the session's own prompt for `capability` : whether they already
-    /// allowed it for this call. A question that was not answered yet is not asked again; the
-    /// service refuses the second.
+    /// allowed it for this call. `reason` is what the sheet says the call wants it for, in the
+    /// person's language. A question that was not answered yet is not asked again; the service
+    /// refuses the second.
     fn ask(&self, capability: &str, handle: &str, reason: &str) -> bool {
         let Some(consents) = &self.consents else {
             return true;
@@ -1261,9 +1255,9 @@ impl Shared {
             .map(|admitted| LiveRoster::new(admitted(&self.workspace)));
         let (granted, _) = self.access.access(self.workspace_id, self.channel);
         let keys = match granted {
-            tilo_action_broker::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+            tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
             // Keys still on their way keep a joining call joining.
-            tilo_action_broker::channel_encryption::ChannelAccess::Waiting => None,
+            tilo_channels::ChannelAccess::Waiting => None,
             // A channel this device may no longer read, or has no store for,
             // carries no call: one that held its keys ends, and one that
             // never did says it cannot be carried here.

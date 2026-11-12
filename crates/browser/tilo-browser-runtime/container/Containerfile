@@ -7,10 +7,8 @@
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS compress
 RUN microdnf install -y --setopt=install_weak_deps=0 brotli zstd findutils && microdnf clean all
 COPY site/ /site/
-# Precompressed beside each text-like file, served by Content-Encoding to
-# browsers that accept it; fonts and images are compressed already.
-RUN find /site -type f \( -name '*.wasm' -o -name '*.mjs' -o -name '*.js' -o -name '*.json' -o -name '*.html' -o -name '*.css' -o -name '*.svg' -o -name '*.txt' -o -name '*.ttf' -o -name '*.otf' \) -size +1k \
-      -exec brotli -q 11 -k {} \; -exec zstd -q -19 -k {} \;
+# Precompressed beside each text-like file (compress.sh).
+RUN --mount=type=bind,source=compress.sh,target=/run/compress.sh,ro sh /run/compress.sh /site
 
 # 2.11: 2.10 answers every precompressed response with 206 Partial Content,
 # which CDNs do not cache.

@@ -21,10 +21,30 @@ use crate::model::{Snippet, Snippets};
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-#[resource(kind = "snippets.library", label = "Snippets", children = Snippets::places)]
+impl Snippets {
+    /// What the record holds: the snippets, with their language, folder and tags.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "snippets.library",
+    label = "snippets-library",
+    children = Snippets::places,
+    read_content = Snippets::read_document
+)]
 impl Snippets {
     /// Create a snippet.
-    #[action]
+    #[action(label = "snippets-new")]
     pub fn new_snippet(
         &mut self,
         cx: &mut ActionCx,

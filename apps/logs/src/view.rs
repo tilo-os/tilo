@@ -35,8 +35,10 @@ use ui::widget::{
 use ui::{LocalState, TextRole};
 
 use crate::journal::JournalLoadError;
+use crate::locales::CATALOG;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::Logs;
+use ui::widget::DrawChild;
 
 /// The dropdown value that means "no constraint" on a facet.
 const ALL: &str = "all";
@@ -166,7 +168,7 @@ fn journal_table() -> DataTable<JournalRow> {
         .compact()
         .fill_height()
         .with_id("logs.entries")
-        .with_accessible_name("Journal entries")
+        .with_accessible_name(crate::locales::CATALOG.t("logs-a11y-entries"))
         .selectable(true)
         .with_row_key(|row: &JournalRow| row.key)
 }
@@ -219,11 +221,21 @@ impl JournalPane {
     /// edits through `actions`.
     pub(crate) fn new(shared: Shared, actions: &Actions<Logs>) -> Self {
         let paths = Logs::paths();
-        let unit = Self::facet(actions, "logs.unit", "Unit", paths.unit);
-        let boot = Self::facet(actions, "logs.boot", "Boot", paths.boot);
+        let unit = Self::facet(
+            actions,
+            "logs.unit",
+            &CATALOG.t("logs-facet-unit"),
+            paths.unit,
+        );
+        let boot = Self::facet(
+            actions,
+            "logs.boot",
+            &CATALOG.t("logs-facet-boot"),
+            paths.boot,
+        );
         let severity = Dropdown::from_state(Vec::new(), &LocalState::new(String::new()))
             .with_id("logs.severity")
-            .caption("Severity");
+            .caption(crate::locales::CATALOG.t("logs-severity"));
         let mut severity = match actions.set_binding(paths.severity, |value: String| {
             value
                 .parse::<i64>()
@@ -588,14 +600,14 @@ impl Widget for JournalPane {
     ) {
         if self.shows_filters() {
             self.unit
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.boot
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.severity
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.body_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -703,15 +715,22 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
         return Box::new(EmptyState::new("No entry selected"));
     };
     // The unit is the inspector's title.
-    let mut properties =
-        vec![Property::new("Program", entry.identifier.clone()).with_kind(TextKind::Identifier)];
+    let mut properties = vec![
+        Property::new(CATALOG.t("logs-program"), entry.identifier.clone())
+            .with_kind(TextKind::Identifier),
+    ];
     if let Some(pid) = entry.pid {
-        properties.push(Property::new("Process ID", pid.to_string()).with_kind(TextKind::Numeric));
+        properties.push(
+            Property::new(CATALOG.t("logs-process-id"), pid.to_string())
+                .with_kind(TextKind::Numeric),
+        );
     }
     properties.extend([
-        Property::new("Host", entry.hostname.clone()).with_kind(TextKind::Identifier),
-        Property::new("Transport", entry.transport.clone()),
-        Property::new("Boot ID", entry.boot_id.clone()).with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("logs-host"), entry.hostname.clone())
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("logs-transport"), entry.transport.clone()),
+        Property::new(CATALOG.t("logs-boot-id"), entry.boot_id.clone())
+            .with_kind(TextKind::Identifier),
     ]);
     for (key, value) in &entry.extra {
         if !value.trim().is_empty() {
@@ -741,7 +760,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
             ui::widget::Button::icon_only(
                 "logs.copy-message",
                 ui::icons::Icon::Copy,
-                "Copy message",
+                &CATALOG.t("logs-copy-message"),
             )
             .control_size(ui::widget::ControlSize::Small)
             .on_view(move || {
@@ -752,7 +771,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
             ui::widget::Button::icon_only(
                 "logs.copy-entry",
                 ui::icons::Icon::ClipboardPaste,
-                "Copy entry",
+                &CATALOG.t("logs-copy-entry"),
             )
             .control_size(ui::widget::ControlSize::Small)
             .on_view(move || {

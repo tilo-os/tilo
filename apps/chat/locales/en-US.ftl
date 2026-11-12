@@ -98,17 +98,12 @@ chat-start-call = Start a call
 chat-start-video-call = Start a video call
 
 # Durable evidence attached to an agent's reply; availability comes from presence.
-chat-agent-work-taken = Request accepted
-chat-agent-work-waiting = Last reported: waiting for app state: { $app }
-chat-agent-work-intent = Latest intent: { $action }
-chat-agent-work-intent-about = Latest intent: { $action }: { $about }
-chat-agent-work-done = Completed: { $action }
+chat-agent-work-waiting = Waiting for { $app }
+chat-agent-work-did = { $count ->
+    [one] Did one thing
+   *[other] Did { $count } things
+}
 chat-agent-work-refused = Could not complete this request
-chat-agent-work-model-rationale = Model rationale
-chat-agent-work-rule-match = Rule match
-chat-agent-work-model-choice = Chosen by the configured model
-chat-agent-work-rule-choice = Matched against exported action vocabulary
-chat-agent-work-rationale = { $route }: { $why }
 chat-agent-work-step-requested = Requested: { $target }
 chat-agent-work-step-applied = Applied: { $target }
 chat-agent-work-step-no-change = No change: { $target }
@@ -151,12 +146,16 @@ chat-header-call-open = Open call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
+chat-member-in-channel = In { $channel }
 
-chat-resource-copy-link = Copy resource link
+chat-resource-copy-link = Copy link
 chat-resource-not-opened = Could not open
 chat-agent-kind = Agent
 chat-channel-empty-message = Say hello. Everyone in #{ $channel } sees it.
 chat-send = Send
+chat-voice-channel = Voice channel
+chat-quote-caption = In reply to
+chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't open that conversation yet: this device hasn't loaded the workspace's chat.
 chat-person-unknown = There's nobody in this workspace to message there.
@@ -295,84 +294,10 @@ chat-sheet-topic-placeholder = What this channel is for (optional)
 # feedback picker ("Message in Chat").
 chat-message-kind = Message
 
-## A filed feedback report as its channel shows it
-# One picked part of the screen: its place, what it was, and the app.
-chat-feedback-pick = { $index }. { $what } in { $app }
-# One picked part from an app whose name is not known: its place and what it
-# was, never the app's id.
-chat-feedback-pick-alone = { $index }. { $what }
-# What a picked part was, when the app said what kind of thing it is.
-chat-feedback-part-kind = { $kind }
-# What a picked part was, by the app's own name for it and its role.
-chat-feedback-part-named = The “{ $name }” { $role ->
-    [Button] button
-    [ToggleButton] button
-    [Link] link
-    [Tab] tab
-    [MenuItem] menu item
-    [Checkbox] checkbox
-    [Switch] switch
-    [TextInput] field
-    [MultilineTextInput] field
-    [Heading] heading
-   *[other] { $role }
-}
-# What a picked part was, known only by its role.
-chat-feedback-part-role = { $role ->
-    [ListItem] A list item
-    [Row] A row
-    [Cell] A cell
-    [Button] A button
-    [ToggleButton] A button
-    [Link] A link
-    [Image] A picture
-    [TextInput] A field
-    [MultilineTextInput] A field
-    [StaticText] A text
-    [Paragraph] A paragraph
-    [Heading] A heading
-    [List] A list
-    [Group] A group
-    [Window] A window
-    [Toolbar] A toolbar
-    [Menu] A menu
-    [MenuItem] A menu item
-    [Tab] A tab
-   *[other] A part
-}
-chat-feedback-note = “{ $note }”
-# One text a picked part showed, as reviewed.
-chat-feedback-text = { $text }
-# One of the reporter's last actions, by the label its app gives it;
-# $outcome is done, refused or failed.
-chat-feedback-action = { $outcome ->
-    [refused] { $label } (refused)
-    [failed] { $label } (failed)
-   *[done] { $label }
-}
-# An action whose app gave it no label, by its id and resource kind.
-chat-feedback-action-unnamed = { $action } on { $resource }
-chat-feedback-recent = Just before: { $actions }
-# The recording a report carries: the app whose record it recorded, the
-# times it starts and ends, and how many changes it steps through.
-chat-feedback-recording = Recording of { $app } from { $from } to { $to }, { $steps ->
-    [one] one change
-   *[other] { $steps } changes
-}
+## A filed feedback report's recording
 chat-feedback-replay = Replay the recording
 chat-feedback-replay-failed = The recording did not open
 chat-feedback-replay-description = Open the recording in { $app } and step through it
-chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
-# A hidden span of a reported text, by what it hid.
-chat-feedback-hidden = { $kind ->
-    [name] ‹name›
-    [email] ‹email›
-    [phone] ‹phone›
-    [address] ‹address›
-    [account] ‹account number›
-    [credential] ‹credential›
-   *[personal] ‹personal›
-}
 
 ## The conversation's own controls and labels
 chat-surface = Chat
@@ -385,6 +310,7 @@ chat-composer = Message composer
 chat-send-message = Send message
 chat-undo = Undo
 chat-retry = Retry
+chat-failure-details = Details
 chat-close = Close
 # A message that did not reach the workspace; $reason says why.
 chat-not-sent = Not sent: { $reason }
@@ -392,6 +318,9 @@ chat-message-deleted = Message deleted
 chat-message-edited = Edited
 # Beside a pinned message's time.
 chat-message-pinned-marker = Pinned
+# Where a message's time stands while the conversation it goes to is still
+# arriving on this device; it is written once it arrived.
+chat-message-sending = Sending…
 chat-empty-title = No messages yet
 chat-empty-title-read-only = Nothing has been said here yet
 chat-jump-latest = Jump to latest
@@ -484,3 +413,44 @@ chat-menu-report-sender = Report sender
 chat-menu-ban = Ban from the workspace
 chat-menu-volume = Volume
 chat-attach-share = Share a file
+chat-channel-composer-placeholder = Message #{ $channel }
+
+## What the window shows
+chat-writing = Writing…
+chat-voice-channel-unnamed = The voice channel could not be named
+
+## Actions
+
+chat-effects-model-control = Ask about this message
+chat-effects-show-agent-reasoning = Show reasoning
+chat-effects-open-channel = Open conversation
+chat-effects-open-category = Open category
+chat-effects-toggle-category = Fold category
+chat-effects-reveal-message = Reveal message
+chat-effects-reveal-message-range = Reveal messages
+chat-effects-open-person = Open person
+chat-effects-open-agent = Open agent conversation
+chat-effects-open-direct-conversation = Open direct conversation
+chat-effects-send-direct-message = Send direct message
+chat-effects-send = Send message
+chat-effects-export-content = Export conversation
+chat-effects-attach-file = Attach file
+chat-effects-share-live-context = Share live context
+chat-effects-stop-sharing-live-context = Stop sharing live context
+chat-effects-live-context-status = Live context status
+chat-effects-open-slack-channel = Open Slack channel in browser
+chat-effects-open-discord-channel = Open Discord channel in browser
+chat-effects-join-call = Join call
+chat-effects-leave-call = Leave call
+chat-effects-mute = Mute
+chat-effects-unmute = Unmute
+chat-effects-deafen = Deafen
+chat-effects-undeafen = Undeafen
+chat-effects-camera-on = Turn camera on
+chat-effects-camera-off = Turn camera off
+chat-effects-share-screen = Share screen
+chat-effects-stop-sharing-screen = Stop sharing screen
+chat-effects-call-status = Call status
+chat-effects-start-call = Start a call
+chat-effects-start-video-call = Start a video call
+chat-effects-select-input = Select microphone

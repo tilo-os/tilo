@@ -2,14 +2,14 @@
 //!
 //! An agent has no filesystem access of its own. It invokes an app's action,
 //! and the app, or the session for a clipboard transfer, writes through the
-//! mount, so the version is this device's, signed for its person like any
-//! other write. The session knows from its authenticated action context which
-//! agent the action ran for. Over the session-only document media socket
+//! mount, so the version is this device's, for its person like any other
+//! write. The session knows from its authenticated action context which agent
+//! the action ran for. Over the session-only document media socket
 //! (`SessionBlobs.attributeWrites`, which no sandbox reaches) it grants a short
 //! lease naming the paths the action writes and that agent. Each version this
-//! device then makes of one of those paths carries a signed
-//! [`crate::record_replication::RecordOperationV1::AttributeVersion`], so
-//! Files' history names the agent, on behalf of the person, on every device.
+//! device then makes of one of those paths records the agent in the tree
+//! document beside the version, so Files' history names the agent, on behalf
+//! of the person, on every device.
 //!
 //! A lease grants nothing: it changes who a version is shown as, never what
 //! anybody may write, and only ever names an agent of this device's person.

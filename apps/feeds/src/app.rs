@@ -20,6 +20,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, Live, ViewCx};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
@@ -44,6 +45,7 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::chrome::reader_settings_panel;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker, RefreshFailure};
+use crate::i18n::CATALOG;
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
@@ -207,7 +209,11 @@ fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
             "Open original article",
         )
         .enabled(!article.url.is_empty()),
-        action("feeds.reader-settings", Icon::Settings2, "Reading settings"),
+        action(
+            "feeds.reader-settings",
+            Icon::Settings2,
+            &crate::i18n::t("feeds-reading-settings"),
+        ),
         action(
             "feeds.toggle-read",
             Icon::Mail,
@@ -227,16 +233,9 @@ fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
     ]
 }
 
-/// Which menu is open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MenuKind {
-    Feed(Id),
-}
-
 /// The open menu and what each of its rows does.
 pub(crate) struct OpenMenu {
     pub(crate) menu: ContextMenu,
-    pub(crate) kind: MenuKind,
     pub(crate) actions: Vec<MenuAction>,
 }
 
@@ -278,8 +277,8 @@ impl FeedsModal {
 
     fn add_subscription() -> Self {
         let body = ModalBody::input(
-            "Paste the address of an RSS, Atom or Gemini feed, or of a website that has one.",
-            "Feed URL",
+            &CATALOG.t("feeds-add-caption"),
+            &CATALOG.t("feeds-add-label"),
             "",
             "https://example.com/feed.xml",
             TextInputKind::Url,
@@ -294,10 +293,10 @@ impl FeedsModal {
 
     fn add_folder() -> Self {
         let body = ModalBody::input(
-            "Folders group your subscriptions in the sidebar.",
-            "Folder name",
+            &CATALOG.t("feeds-folder-caption"),
+            &CATALOG.t("feeds-folder-label"),
             "",
-            "Newsletters",
+            &CATALOG.t("feeds-folder-placeholder"),
             TextInputKind::Name,
         );
         Self::new(ModalIntent::AddFolder, "New folder", body, "Create folder")
@@ -305,10 +304,10 @@ impl FeedsModal {
 
     fn rename(feed_id: Id, title: &str) -> Self {
         let body = ModalBody::input(
-            "Choose the name this feed shows in the sidebar.",
-            "Feed name",
+            &CATALOG.t("feeds-rename-caption"),
+            &CATALOG.t("feeds-rename-label"),
             title,
-            "Feed name",
+            &CATALOG.t("feeds-rename-label"),
             TextInputKind::Name,
         );
         Self::new(
@@ -321,8 +320,8 @@ impl FeedsModal {
 
     fn edit_tags(article_id: Id, tags: &[String]) -> Self {
         let body = ModalBody::input(
-            "Separate tags with commas.",
-            "Tags",
+            &CATALOG.t("feeds-tags-caption"),
+            &CATALOG.t("feeds-tags-label"),
             &tags.join(", "),
             "design, research",
             TextInputKind::Prose,
@@ -380,21 +379,30 @@ impl RefreshState {
     /// One sentence for the progress line.
     pub(crate) fn status(&self) -> String {
         if self.in_progress() {
-            return format!("Refreshing {} of {} feeds", self.done, self.total);
+            return crate::i18n::t_args(
+                "feeds-status-refreshing",
+                &[
+                    ("done", ArgValue::Number(self.done as f64)),
+                    ("total", ArgValue::Number(self.total as f64)),
+                ],
+            );
         }
         let mut parts: Vec<String> = Vec::new();
         if self.new_items > 0 {
-            parts.push(plural(self.new_items, "new article", "new articles"));
+            parts.push(crate::i18n::t_args(
+                "feeds-status-new",
+                &[("count", ArgValue::Number(self.new_items as f64))],
+            ));
         }
         if self.failed_feeds > 0 {
-            parts.push(format!(
-                "{} could not be refreshed",
-                plural(self.failed_feeds, "feed", "feeds")
+            parts.push(crate::i18n::t_args(
+                "feeds-status-failed",
+                &[("count", ArgValue::Number(self.failed_feeds as f64))],
             ));
         }
         // Each part opens with its count, so the sentence starts with one.
         if parts.is_empty() {
-            "All feeds are up to date".to_string()
+            crate::i18n::t("feeds-status-up-to-date")
         } else {
             parts.join(", ")
         }
@@ -590,23 +598,23 @@ impl Core {
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
         match &self.filter {
-            Filter::All => "All articles".to_string(),
-            Filter::Unread => "Unread".to_string(),
-            Filter::Starred => "Starred".to_string(),
+            Filter::All => crate::i18n::t("feeds-filter-all"),
+            Filter::Unread => crate::i18n::t("feeds-filter-unread"),
+            Filter::Starred => crate::i18n::t("feeds-filter-starred"),
             Filter::Folder(id) => self
                 .store
                 .folder(id)
-                .map_or_else(|| "Folder".into(), |f| f.name.clone()),
+                .map_or_else(|| crate::i18n::t("feeds-filter-folder"), |f| f.name.clone()),
             Filter::Feed(id) => self
                 .store
                 .feed(id)
-                .map_or_else(|| "Feed".into(), |f| f.title.clone()),
+                .map_or_else(|| crate::i18n::t("feeds-filter-feed"), |f| f.title.clone()),
             Filter::Tag(key) => self
                 .store
                 .tags()
                 .into_iter()
                 .find(|tag| crate::model::tag_key(tag) == *key)
-                .unwrap_or_else(|| "Tag".into()),
+                .unwrap_or_else(|| crate::i18n::t("feeds-filter-tag")),
         }
     }
 
@@ -1050,13 +1058,7 @@ impl Core {
     }
 
     /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
-    fn open_menu(
-        &mut self,
-        kind: MenuKind,
-        anchor: Rect,
-        row: Option<Rect>,
-        items: Vec<(MenuItem, MenuAction)>,
-    ) {
+    fn open_menu(&mut self, anchor: Rect, row: Option<Rect>, items: Vec<(MenuItem, MenuAction)>) {
         let mut menu = ContextMenu::new();
         let mut actions = Vec::new();
         for (item, action) in items {
@@ -1067,11 +1069,7 @@ impl Core {
             menu.anchor_row(row);
         }
         menu.open_anchored(anchor, self.menu_bounds());
-        self.menu = Some(OpenMenu {
-            menu,
-            kind,
-            actions,
-        });
+        self.menu = Some(OpenMenu { menu, actions });
     }
 
     /// Where menus may open: the window; a menu keeps its own air from its
@@ -1098,7 +1096,6 @@ impl Core {
         }
         let unread = self.store.unread_for_feed(&feed_id) > 0;
         self.open_menu(
-            MenuKind::Feed(feed_id.clone()),
             anchor,
             Some(row),
             vec![
@@ -1430,11 +1427,11 @@ impl Core {
                 _ => false,
             })
         else {
-            self.set_toast(ui::i18n!("feeds-open-link-invalid"));
+            self.set_toast(crate::i18n::t("feeds-open-link-invalid"));
             return;
         };
         self.open_link_rx = Some(ui::portal::send_open_uri(url.as_str()));
-        self.set_toast(ui::i18n!("feeds-open-link-started"));
+        self.set_toast(crate::i18n::t("feeds-open-link-started"));
     }
 
     fn drain_open_link(&mut self) {
@@ -1450,7 +1447,10 @@ impl Core {
         };
         self.open_link_rx = None;
         if let LaunchOutcome::Failed(error) = outcome {
-            self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
+            self.set_toast(format!(
+                "{}: {error}",
+                crate::i18n::t("feeds-open-link-failed")
+            ));
         }
     }
 
@@ -1944,7 +1944,7 @@ impl FeedsApp {
                 &self.requests,
                 actions.as_ref(),
             ))
-            .with_label("Reading settings")
+            .with_label(crate::i18n::t("feeds-reading-settings"))
             .anchored(anchor)
             .side(PopoverSide::Below)
             .with_viewport(window)
@@ -2362,7 +2362,7 @@ impl ui::widget::Decorator for FeedsApp {
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
         self.take_toast();
-        Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(
@@ -2527,9 +2527,7 @@ impl ui::widget::Decorator for FeedsApp {
                 .collect();
             children.push(
                 AccessNode::new(Role::Menu)
-                    .with_name(match open.kind {
-                        MenuKind::Feed(_) => "Feed actions",
-                    })
+                    .with_name(crate::i18n::t("feeds-feed-actions"))
                     .with_children(items),
             );
         }
@@ -2549,7 +2547,7 @@ impl ui::widget::Decorator for FeedsApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Feeds")
+                .with_name(crate::i18n::t("feeds-window-name"))
                 .with_semantic_key("feeds.application")
                 .with_bounds(core.window)
                 .with_children(children),

@@ -55,6 +55,7 @@ impl ContextMenu {
                 MenuAction::Archive => Icon::Archive,
                 MenuAction::PinMessage => Icon::Pin,
                 MenuAction::CopyText => Icon::Copy,
+                MenuAction::CopyLink => Icon::Link,
                 MenuAction::AddReaction => Icon::SmilePlus,
                 MenuAction::ReplyInThread => Icon::Reply,
                 MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
@@ -125,6 +126,8 @@ pub(crate) enum MenuAction {
     DeleteMessage,
     /// Put a message's text on the clipboard.
     CopyText,
+    /// Put the link of the resource a message's chip shows on the clipboard.
+    CopyLink,
     /// Report someone else's message to the workspace's moderators.
     ReportMessage,
     /// Report a message's author to the workspace's moderators.
@@ -160,6 +163,7 @@ impl MenuAction {
             MenuAction::PinMessage => "chat-menu-pin-message",
             MenuAction::DeleteMessage => "chat-menu-delete-message",
             MenuAction::CopyText => "chat-menu-copy-text",
+            MenuAction::CopyLink => "chat-resource-copy-link",
             MenuAction::ReportMessage => "chat-menu-report-message",
             MenuAction::ReportAuthor => "chat-menu-report-sender",
             MenuAction::BanAuthor => "chat-menu-ban",

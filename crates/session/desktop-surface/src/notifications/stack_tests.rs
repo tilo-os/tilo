@@ -396,9 +396,9 @@ fn compact_viewport_keeps_notification_inside_both_edges() {
     let mut stack = NotificationStack::new();
     stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
     let width = stack.toast_width();
-    let x0 = stack.viewport.x1 - CORNER_INSET - width;
-    assert_eq!(width, 272.0);
-    assert_eq!(x0, CORNER_INSET);
+    let (x0, _) = banner_span(stack.viewport);
+    assert_eq!(width, 320.0 - NARROW_GUTTER * 2.0);
+    assert_eq!(x0, NARROW_GUTTER);
 }
 
 fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
@@ -502,6 +502,53 @@ fn banners_keep_clear_of_the_window_bars_under_the_corner() {
     assert!((stack.first_top() - corner).abs() < f64::EPSILON);
 }
 
+/// A page draws a frame when the layer asks for one, and draws nothing between. A banner coming on
+/// screen must keep that asking going until it stands where it rests, at a phone's width as at a
+/// desktop's: a page that stopped asking early would leave it half in — faint, off its corner,
+/// cut off by the edge of the screen — for as long as nothing else happened to need a frame.
+#[test]
+fn a_banner_keeps_the_page_drawing_until_it_stands_at_every_width() {
+    for width in [390.0, 1280.0] {
+        let host = TestHost::default();
+        host.push(Notification::new(
+            "Claude Code finished: 8 changes in Workspace",
+            "Edited Launch notes",
+        ));
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(Rect::new(0.0, 0.0, width, 844.0));
+        let theme = Theme::light();
+        let began = Instant::now();
+        let mut frames = 0;
+        loop {
+            draw(&mut stack, &host, &theme);
+            frames += 1;
+            if !act(&mut stack, &host, |s| s.needs_animation_frame()) {
+                break;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(2),
+                "{width} wide: the banner still asks for frames {frames} in"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert!(frames > 2, "{width} wide: the entry took {frames} frames");
+        // Each width stands the card where its span says (the corner, or centred on a narrow
+        // desk): the page draws the same entry, whole.
+        let (x0, card_width) = banner_span(Rect::new(0.0, 0.0, width, 800.0));
+        assert_eq!(
+            stack.rect(),
+            Rect::new(x0, stack.first_top(), x0 + card_width, stack.rect().y1),
+            "{width} wide: the banner stands at rest in its place"
+        );
+        let n = host.log().active()[0].clone();
+        assert_eq!(
+            NotificationStack::animation_state(&n, Instant::now(), (false, false), card_width),
+            (1.0, 0.0),
+            "{width} wide: the banner stands whole, neither faint nor slid"
+        );
+    }
+}
+
 #[test]
 fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
     let host = TestHost::default();
@@ -598,8 +645,8 @@ fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
         let ids: Vec<u64> = (0..super::super::MAX_NOTIFICATIONS)
             .map(|i| host.push(Notification::new(format!("Banner {i}"), "Body")))
             .collect();
-        // Three stand at most, and this corner has room for two of them.
-        let viewport = Rect::new(0.0, 0.0, 800.0, 240.0);
+        // Three stand at most, and this corner has room for one of them.
+        let viewport = Rect::new(0.0, 0.0, 800.0, 180.0);
         let mut stack = NotificationStack::new();
         stack.set_viewport(viewport);
         draw(&mut stack, &host, &theme);
@@ -1225,5 +1272,82 @@ fn a_reply_can_be_given_up_and_is_only_offered_when_it_can_be_carried() {
             .iter()
             .any(|ask| matches!(ask, BannerAsk::Reply { .. })),
         "Escape sends nothing"
+    );
+}
+
+/// An agent's own notice ("Claude Code finished: 8 changes in Workspace", sent in its name) leads
+/// with its face and says nothing over its title repeating that name; an app's notice about a
+/// person keeps the app as its source line.
+#[test]
+fn a_notice_in_its_senders_own_name_has_no_source_line_repeating_it() {
+    let own = Notification::new(
+        "Claude Code finished: 8 changes in Workspace",
+        "Working in Notes",
+    )
+    .with_agent_from("Claude Code", "agent-key")
+    .with_app_name("Claude Code");
+    assert_eq!(NotificationStack::source_line(&own), "");
+    let about = Notification::new("Ada sent a message", "Lunch?")
+        .with_from("Ada", "ada-key")
+        .with_app_name("Chat");
+    assert_eq!(NotificationStack::source_line(&about), "Chat");
+    let plain = Notification::new("Saved", "").with_app_name("Notes");
+    assert_eq!(NotificationStack::source_line(&plain), "Notes");
+}
+
+/// Once it has arrived and until it starts to leave, a banner stands at full strength on the
+/// floating card's opaque ground, in either theme: never a see-through card over the windows.
+#[test]
+fn a_banner_at_rest_is_solid() {
+    let host = TestHost::default();
+    host.push(
+        Notification::new(
+            "Claude Code finished: 8 changes in Workspace",
+            "Launch notes",
+        )
+        .with_agent_from("Claude Code", "agent-key"),
+    );
+    let mut stack = NotificationStack::new();
+    stack.set_viewport(Rect::new(0.0, 0.0, 1280.0, 800.0));
+    draw(&mut stack, &host, &Theme::dark());
+    let n = host.log().active()[0].clone();
+    let shown = n.dwell.first_shown().expect("it is on screen");
+    let (alpha, dx) = NotificationStack::animation_state(
+        &n,
+        shown + Duration::from_secs(1),
+        (false, false),
+        360.0,
+    );
+    assert!(
+        (alpha - 1.0).abs() < f32::EPSILON,
+        "it stands at full strength: {alpha}"
+    );
+    assert!(dx.abs() < 0.5, "and in its place: {dx}");
+    for theme in [Theme::light(), Theme::dark()] {
+        let (ground, _) = ui::widget::toast::card_ground(&theme);
+        assert!(
+            (ground.components[3] - 1.0).abs() < f32::EPSILON,
+            "the card's ground is opaque: {ground:?}"
+        );
+    }
+}
+
+/// On a phone a banner stands centred across the desk, between the same equal gutters as the
+/// who-is-here sheet, inside it; on a wide desk it keeps to the corner.
+#[test]
+fn a_phones_banner_stands_between_equal_gutters() {
+    for width in [390.0, 360.0] {
+        let (x0, w) = banner_span(Rect::new(0.0, 0.0, width, 844.0));
+        let (left, right) = (x0, width - (x0 + w));
+        assert!(
+            (left - right).abs() < 0.5 && (left - NARROW_GUTTER).abs() < 0.5,
+            "{width} wide: gutters {left} and {right}"
+        );
+    }
+    let (x0, w) = banner_span(Rect::new(0.0, 0.0, 1280.0, 800.0));
+    assert_eq!(
+        (x0 + w, w),
+        (1280.0 - CORNER_INSET, TOAST_WIDTH),
+        "the corner on a laptop"
     );
 }

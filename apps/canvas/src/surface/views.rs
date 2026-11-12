@@ -42,6 +42,21 @@ impl CanvasSurface {
         op: &ViewOp,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
+        // A picture is decoded off the frame, and a page cannot wait for the
+        // decoder: an answer that must show the pictures themselves asks
+        // again once they are here rather than answer from a placeholder.
+        if !ui::rt::available(ui::rt::Feature::BlockOn) {
+            let version = match op {
+                ViewOp::Look { look } => look.version.as_deref(),
+                ViewOp::Inspect { inspect } => inspect.version.as_deref(),
+                ViewOp::Measure { measure } => measure.version.as_deref(),
+                _ => None,
+            };
+            let (art, _, _) = Self::at_version(cx, version)?;
+            if !self.tools.renderer.borrow_mut().pictures.ready(&art) {
+                return Err(crate::locales::CATALOG.t("canvas-pictures-decoding"));
+            }
+        }
         let mut answer = self.answer(op, cx)?;
         if let Some(done) = answer.poll() {
             return done.map(ui::framework::Effected::Done);
@@ -53,15 +68,22 @@ impl CanvasSurface {
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Answer the views whose pictures came.
-    pub(super) fn take_due(&mut self) {
+    /// Answer the views whose pictures came. Taken up between frames, so the
+    /// frame that answers them syncs and shows what the answer wrote.
+    /// Answers whether it answered any.
+    pub(super) fn take_due(&mut self) -> bool {
         let due = std::mem::take(&mut self.due);
+        let mut answered = false;
         for mut due in due {
             match self.came(&mut due.waiting) {
-                Some(done) => due.reply.finish(done),
+                Some(done) => {
+                    due.reply.finish(done);
+                    answered = true;
+                }
                 None => self.due.push(due),
             }
         }
+        answered
     }
 
     /// What `waiting` came to, once its pictures came.
@@ -83,12 +105,7 @@ impl CanvasSurface {
         document: ui::tilo_resource::Doc,
         cx: &mut Reading,
     ) -> ui::framework::Effected {
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let patient = std::mem::replace(&mut renderer.pictures.patient, true);
-        let search = ColourSearch::start(&mut renderer, text, &art, query);
-        renderer.pictures.patient = patient;
-        drop(renderer);
+        let search = ColourSearch::start(&art, query);
         let asked = art.clone();
         let reply = cx.reply_then(move |_, output, cx| {
             let d = output
@@ -146,7 +163,7 @@ impl CanvasSurface {
         };
         let pictures = self.pictures.clone();
         let content = crate::content::store();
-        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
+        let phase = crate::locales::CATALOG.t("canvas-rendering-artwork");
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
@@ -276,14 +293,10 @@ pub(super) fn select_found(
     cx: &Reading,
 ) -> Result<Value, String> {
     if cx.live().with(|current| current != art) {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-changed",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-changed"));
     }
     if cx.dispatcher().read_only() {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-read-only",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-read-only"));
     }
     let mut selected = Artwork::from_doc(document).map_err(|error| error.to_string())?;
     let before = selected.clone();

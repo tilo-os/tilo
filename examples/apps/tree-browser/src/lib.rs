@@ -19,7 +19,6 @@ pub mod locales;
 
 use std::rc::Rc;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::selection::KeySelection;
 use ui::widget::{ListRow, TreeMarks, VecListModel, VirtualList};
@@ -87,7 +86,7 @@ impl Notebook {
 }
 
 fn node_label(id: u64) -> String {
-    I18nManager::lookup_plain(match id {
+    crate::locales::CATALOG.t(match id {
         1 => "tree-notebook",
         2 => "tree-work",
         3 => "tree-projects",

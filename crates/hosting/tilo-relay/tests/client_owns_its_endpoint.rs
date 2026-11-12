@@ -68,6 +68,7 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
         Envelope::Ready {
             workspace_id: 7,
             pending_deltas: 0,
+            records_when_opened: false,
         } => {}
         other => panic!("expected Ready(7, 0), got {other:?}"),
     }

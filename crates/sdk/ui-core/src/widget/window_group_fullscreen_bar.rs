@@ -10,6 +10,7 @@ use super::WindowGroup;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::Widget;
 
 /// A fullscreen window's bar as the person reached for it.
@@ -47,14 +48,15 @@ impl WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.bar.set_maximized(self.maximized);
+        self.bar.set_resize(self.resize());
         self.bar
             .set_group_focused(self.focused || self.search_active);
         // The bar's menus stay inside the window.
         self.bar.set_popup_area(self.rect);
-        self.bar.draw(scene, transform, tr, theme, presence);
+        self.bar.draw_child(scene, transform, tr, theme, presence);
         self.search.set_ground(self.bar.ground_color(theme));
-        self.search.draw(scene, transform, tr, theme, presence);
+        self.search
+            .draw_child(scene, transform, tr, theme, presence);
     }
 
     /// Show or hide a fullscreen window's bar over it (the host reads the

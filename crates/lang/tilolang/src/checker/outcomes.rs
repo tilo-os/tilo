@@ -42,6 +42,8 @@ impl Checker<'_> {
             None => (String::new(), Ty::Error, String::new()),
         };
         self.begin(Ctx::Fn, before, ty.clone(), "");
+        // Words a default says (`name: Text = say("New category")`) are the action's.
+        self.st.words_of = Some(action.id.clone());
         let later: Vec<&str> = action
             .params
             .get(index..)

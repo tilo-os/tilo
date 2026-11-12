@@ -20,7 +20,9 @@
 //!
 //! A radio the device does not have is not offered: Wi-Fi and the hotspot
 //! without a Wi-Fi radio, airplane mode without a Wi-Fi radio or a modem
-//! (`NetworkArea::statuses`).
+//! (`NetworkArea::statuses`). The rows only the network service can fill are
+//! left out the same way when this device runs none, and the page names that
+//! once instead of showing its state as unreadable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -85,28 +87,28 @@ mod tests;
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
     /// Read the adopted network state, pending work and labels this pane shows.
-    #[effect(view, returns, kind = "read", label = "Inspect network state")]
+    #[effect(view, returns, kind = "read")]
     InspectNetworkState,
     /// Scan for Wi-Fi networks and read this device's connections again.
-    #[effect(job, idempotent, label = "Refresh networks")]
+    #[effect(job, idempotent)]
     RefreshNetworks,
     /// Turn Wi-Fi on or off.
-    #[effect(job, idempotent, label = "Wi-Fi")]
+    #[effect(job, idempotent)]
     SetWifi { on: bool },
     /// Turn the wired connection on or off.
-    #[effect(job, idempotent, label = "Wired connection")]
+    #[effect(job, idempotent)]
     SetWired { on: bool },
     /// Turn every radio off, or back on.
-    #[effect(job, idempotent, label = "Airplane mode")]
+    #[effect(job, idempotent, label = "net-airplane")]
     SetAirplaneMode { on: bool },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
-    #[effect(job, idempotent, label = "Hotspot")]
+    #[effect(job, idempotent)]
     #[effect(keywords = "tethering, share internet, personal hotspot")]
     SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
     /// prompt.
-    #[effect(job, row, label = "Connect")]
+    #[effect(job, row)]
     ConnectNetwork {
         #[param("The network's name (SSID)")]
         ssid: String,
@@ -114,41 +116,41 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Close a network's password prompt.
-    #[effect(view, row, label = "Cancel")]
+    #[effect(view, row)]
     CancelConnect {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Open a network's page: how it stands and its settings.
-    #[effect(view, row, label = "Network settings")]
+    #[effect(view, row, label = "net-network-settings")]
     OpenNetworkPage {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Show every network in range.
-    #[effect(view, label = "Show all networks")]
+    #[effect(view)]
     ShowAllNetworks,
     /// Show every network this device knows, in range or not.
-    #[effect(view, label = "Known networks")]
+    #[effect(view, label = "net-known")]
     ShowKnownNetworks,
     /// Show mobile data and the SIM: the modem's whole page.
-    #[effect(view, label = "Mobile")]
+    #[effect(view)]
     ShowMobile,
     /// Show the wired connection's page: how it stands, its addresses and
     /// waking this machine over it.
-    #[effect(view, label = "Wired connection settings")]
+    #[effect(view)]
     ShowWired,
     /// Show the data each connection used, day by day.
-    #[effect(view, label = "Data usage")]
+    #[effect(view, label = "net-usage")]
     #[effect(keywords = "data usage, traffic, bandwidth, network statistics")]
     ShowDataUsage,
     /// Ask for the name and password of a network that does not broadcast
     /// its name, to join it.
-    #[effect(view, label = "Other network")]
+    #[effect(view, label = "net-hidden-title")]
     ShowHiddenNetwork,
     /// Join a network that does not broadcast its name; without its name,
     /// ask for it with the password prompt.
-    #[effect(job, label = "Join other network")]
+    #[effect(job)]
     JoinHiddenNetwork {
         #[param("The network's name (SSID)")]
         ssid: Option<String>,
@@ -156,7 +158,7 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Join a saved network by itself whenever it is in range, or not.
-    #[effect(job, row, idempotent, label = "Connect automatically")]
+    #[effect(job, row, idempotent)]
     SetAutoconnect {
         #[param("The saved network's id")]
         profile: String,
@@ -164,7 +166,7 @@ pub enum NetworkEffect {
     },
     /// Which of several known networks in range is joined first: the
     /// higher.
-    #[effect(job, row, idempotent, label = "Priority")]
+    #[effect(job, row, idempotent)]
     SetPriority {
         #[param("The saved network's id")]
         profile: String,
@@ -173,7 +175,7 @@ pub enum NetworkEffect {
     },
     /// Count a saved network's data against a limit, never, or as the
     /// network says.
-    #[effect(job, row, idempotent, label = "Metered connection")]
+    #[effect(job, row, idempotent, label = "net-metered-connection")]
     SetMeteredPolicy {
         #[param("The saved network's id")]
         profile: String,
@@ -181,7 +183,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Which hardware address this device shows a saved Wi-Fi network.
-    #[effect(job, row, idempotent, label = "Hardware address")]
+    #[effect(job, row, idempotent, label = "net-hardware-address")]
     SetMacAddress {
         #[param("The saved network's id")]
         profile: String,
@@ -189,7 +191,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Join a saved network even when it does not broadcast its name.
-    #[effect(job, row, idempotent, label = "Hidden network")]
+    #[effect(job, row, idempotent, label = "net-hidden-network")]
     SetHiddenNetwork {
         #[param("The saved network's id")]
         profile: String,
@@ -197,7 +199,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv4 settings; what is omitted is what its form
     /// holds.
-    #[effect(job, label = "Apply IP settings")]
+    #[effect(job, label = "net-apply-ip")]
     SetIpv4 {
         #[param("The saved profile's id")]
         profile: String,
@@ -211,7 +213,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv6 settings; what is omitted is what its form
     /// holds.
-    #[effect(job, row, label = "Apply IPv6 settings")]
+    #[effect(job, row, label = "net-apply-ipv6")]
     SetIpv6 {
         #[param("The saved profile's id")]
         profile: String,
@@ -222,7 +224,7 @@ pub enum NetworkEffect {
         gateway: Option<String>,
     },
     /// Give a profile name servers of its own; none takes the network's.
-    #[effect(job, row, idempotent, label = "DNS servers")]
+    #[effect(job, row, idempotent, label = "net-dns-servers")]
     SetDns {
         #[param("The saved profile's id")]
         profile: String,
@@ -231,7 +233,7 @@ pub enum NetworkEffect {
     },
     /// Send a profile's connections through a proxy, or not; what is
     /// omitted is what its form holds.
-    #[effect(job, row, label = "Apply proxy")]
+    #[effect(job, row, label = "net-apply-proxy")]
     SetProxy {
         #[param("The saved profile's id")]
         profile: String,
@@ -242,7 +244,7 @@ pub enum NetworkEffect {
     },
     /// Change who a work or school network knows this device as; what is
     /// omitted is what its form holds.
-    #[effect(job, row, label = "Apply identity")]
+    #[effect(job, row, label = "net-apply-identity")]
     SetEnterpriseIdentity {
         #[param("The saved network's id")]
         profile: String,
@@ -252,14 +254,14 @@ pub enum NetworkEffect {
     },
     /// Show a saved network's password on its page, asking to authenticate
     /// first; or hide it.
-    #[effect(job, row, label = "Show password")]
+    #[effect(job, row, label = "net-show-password")]
     ShowNetworkPassword {
         #[param("The saved network's id")]
         profile: String,
     },
     /// Change a saved network's password; without one, ask for it with the
     /// password prompt.
-    #[effect(job, row, label = "Change password")]
+    #[effect(job, row, label = "net-change-password")]
     SetNetworkPassword {
         #[param("The saved network's id")]
         profile: String,
@@ -267,20 +269,20 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Show or hide the QR code a phone scans to join a network.
-    #[effect(job, row, label = "Share network")]
+    #[effect(job, row)]
     ShowNetworkCode {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
-    #[effect(job, row, idempotent, label = "Wake over network")]
+    #[effect(job, row, idempotent)]
     SetNetworkWake {
         #[param("The saved network's id")]
         profile: String,
         on: bool,
     },
     /// Forget a saved network and its password.
-    #[effect(job, row, destructive, label = "Forget network")]
+    #[effect(job, row, destructive)]
     #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
         #[param("The saved network's id")]
@@ -288,19 +290,19 @@ pub enum NetworkEffect {
     },
     /// Seal a saved Wi-Fi network's password for the person's other
     /// devices, so they join it too.
-    #[effect(job, row, label = "Share with my devices")]
+    #[effect(job, row, label = "net-share-devices")]
     ShareNetwork {
         #[param("The saved network's id")]
         profile: String,
     },
     /// Check the connection, its address, gateway and name servers.
-    #[effect(job, idempotent, label = "Run network diagnostics")]
+    #[effect(job, idempotent)]
     RunDiagnostics,
     /// Open the sign-in page of a network that asks for one.
-    #[effect(job, label = "Open network sign-in")]
+    #[effect(job)]
     OpenNetworkSignIn,
     /// Start the hotspot; what is omitted is what the hotspot form holds.
-    #[effect(job, label = "Start hotspot")]
+    #[effect(job)]
     StartHotspot {
         #[param("The hotspot's network name")]
         name: Option<String>,
@@ -310,28 +312,27 @@ pub enum NetworkEffect {
         band: Option<String>,
     },
     /// Show or hide the QR code others scan to join the hotspot.
-    #[effect(view, label = "Share hotspot QR code")]
+    #[effect(view)]
     ShowHotspotCode,
     /// Show the hotspot's setup: its name, password and band.
-    #[effect(view, label = "Hotspot setup")]
+    #[effect(view)]
     ShowHotspotSetup,
     /// Ask for the hotspot's password with the password prompt.
-    #[effect(view, label = "Hotspot password")]
+    #[effect(view)]
     AskHotspotPassword,
     /// Show the advanced network settings: work or school networks,
     /// diagnostics.
-    #[effect(view, label = "Advanced network settings")]
+    #[effect(view)]
     ShowAdvancedNetworkSettings,
     /// Show or hide the enterprise (802.1X) network setup.
-    #[effect(view, label = "Enterprise network setup")]
+    #[effect(view)]
     ShowEnterpriseSetup,
     /// Choose the organization's CA certificate file.
-    #[effect(label = "Choose CA certificate")]
     ChooseCaCertificate,
     /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
     /// omitted is what the setup form holds, and a password omitted is asked
     /// for with the password prompt.
-    #[effect(job, label = "Save and connect")]
+    #[effect(job, label = "net-save-connect")]
     ConnectEnterpriseNetwork {
         #[param("The profile's name")]
         profile: Option<String>,
@@ -592,6 +593,9 @@ enum DeviceVpnPart {
 /// shown as unreadable instead of as a device state.
 pub(crate) struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
+    /// Whether the network service runs at all, read with the state it
+    /// provides: `None` when not read.
+    service_present: Option<bool>,
     wifi_enabled: Part<bool>,
     wired: Part<WiredInfo>,
     radios: Part<os_actions::RadioState>,
@@ -618,6 +622,9 @@ impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
     fn read(initial: bool) -> Self {
+        if !os_actions::network_service_present() {
+            return Self::without_service();
+        }
         let profiles = os_actions::list_saved_network_profiles();
         Self {
             wake_settings: profiles
@@ -645,12 +652,16 @@ impl NetworkSnapshot {
     /// profiles, their settings and the session's device VPN (whose file
     /// is followed on its own) are not read, so adopting it leaves them.
     fn status() -> Self {
+        if !os_actions::network_service_present() {
+            return Self::without_service();
+        }
         let radios = os_actions::get_radio_state();
         let networks = os_actions::list_wifi_networks();
         let on_wifi = networks
             .as_ref()
             .is_ok_and(|networks| networks.iter().any(|network| network.connected));
         Self {
+            service_present: Some(true),
             link: on_wifi
                 .then(os_actions::network_settings::wifi_link_details)
                 .and_then(Result::ok),
@@ -683,11 +694,35 @@ impl NetworkSnapshot {
         }
     }
 
+    /// The state of a device that runs no network service: nothing fails,
+    /// and the parts only the service fills are empty, so the page leaves
+    /// their rows out rather than naming them unreadable.
+    fn without_service() -> Self {
+        Self {
+            networks: Ok(Vec::new()),
+            service_present: Some(false),
+            wifi_enabled: Some(Ok(false)),
+            wired: Some(Ok(WiredInfo::default())),
+            radios: Some(Ok(os_actions::RadioState::default())),
+            connectivity: Some(Ok(ConnectivityState::Unknown)),
+            profiles: None,
+            profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
+            profile_list: None,
+            hotspot_clients: Some(Ok(Vec::new())),
+            vpns: Some(Ok(Vec::new())),
+            link: None,
+            plugins: None,
+            device_vpn: DeviceVpnPart::NotRead,
+        }
+    }
+
     /// `networks` alone: every other part is not read, so adopting it
     /// leaves them as they are.
     fn networks_only(networks: Result<Vec<WifiNetworkInfo>, String>) -> Self {
         Self {
             networks,
+            service_present: None,
             wifi_enabled: None,
             wired: None,
             radios: None,
@@ -708,6 +743,7 @@ impl NetworkSnapshot {
     fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
             networks: Ok(networks),
+            service_present: Some(true),
             wifi_enabled: Some(Ok(true)),
             wired: Some(Ok(WiredInfo::default())),
             radios: Some(Ok(os_actions::RadioState {
@@ -739,6 +775,7 @@ const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(PartialEq)]
 struct Adopted {
     loaded: bool,
+    service_present: Option<bool>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
     wired: WiredInfo,
@@ -984,6 +1021,9 @@ struct DeviceNetwork {
 impl NetworkService for DeviceNetwork {
     fn networks(&self) -> NetworkSnapshot {
         crate::device_read::off_ui_thread();
+        if !os_actions::network_service_present() {
+            return NetworkSnapshot::networks_only(Ok(Vec::new()));
+        }
         NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
     }
 
@@ -1498,6 +1538,12 @@ impl NetworkRadios {
             ),
         }
     }
+
+    /// Whether there is no radio for airplane mode to switch: both known
+    /// to be missing. An unread radio is not missing.
+    fn without_radios(self) -> bool {
+        self.wifi == Some(false) && self.wwan == Some(false)
+    }
 }
 
 /// What the Network area keeps for the window: the model, read when first
@@ -1550,15 +1596,19 @@ impl NetworkArea {
         }
     }
 
-    /// What this device cannot do with its networks now: Wi-Fi and a
-    /// hotspot without a Wi-Fi radio, airplane mode without a Wi-Fi radio
-    /// or a modem. Reads nothing itself: only what the
-    /// radios and the area's model have read, so it never opens the area.
+    /// What this device cannot do with its networks now: everything, when it
+    /// runs no network service; Wi-Fi and a hotspot without a Wi-Fi radio,
+    /// airplane mode without a Wi-Fi radio or a modem. Reads nothing itself:
+    /// only what the radios and the area's model have read, so it never opens
+    /// the area.
     pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
-        let reported = self.model.get().and_then(|model| {
-            let model = model.try_borrow().ok()?;
-            model.reported_radios().cloned()
-        });
+        let (reported, absent) =
+            self.model
+                .get()
+                .map_or((None, false), |model| match model.try_borrow() {
+                    Ok(model) => (model.reported_radios().cloned(), model.network_absent()),
+                    Err(_) => (None, false),
+                });
         let radios = NetworkRadios::of(&self.reach.radios, reported.as_ref());
         let mut statuses = Vec::new();
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
@@ -1570,25 +1620,40 @@ impl NetworkArea {
                 )
             }));
         };
-        let wifi = radios.wifi == Some(false);
-        let wwan = radios.wwan == Some(false);
-        if wifi {
+        if absent {
             unavailable(
                 &[
                     NetworkEffect::SET_WIFI.id,
                     NetworkEffect::SET_HOTSPOT.id,
                     NetworkEffect::START_HOTSPOT.id,
+                    NetworkEffect::SET_AIRPLANE_MODE.id,
+                    NetworkEffect::SET_WIRED.id,
+                    NetworkEffect::REFRESH_NETWORKS.id,
                 ],
-                "no_adapter",
-                &t("net-no-wifi-adapter"),
+                "no_service",
+                &t("net-no-service"),
             );
-        }
-        if wifi && wwan {
-            unavailable(
-                &[NetworkEffect::SET_AIRPLANE_MODE.id],
-                "no_radio",
-                &t("net-no-radio"),
-            );
+        } else {
+            let wifi = radios.wifi == Some(false);
+            let wwan = radios.wwan == Some(false);
+            if wifi {
+                unavailable(
+                    &[
+                        NetworkEffect::SET_WIFI.id,
+                        NetworkEffect::SET_HOTSPOT.id,
+                        NetworkEffect::START_HOTSPOT.id,
+                    ],
+                    "no_adapter",
+                    &t("net-no-wifi-adapter"),
+                );
+            }
+            if wifi && wwan {
+                unavailable(
+                    &[NetworkEffect::SET_AIRPLANE_MODE.id],
+                    "no_radio",
+                    &t("net-no-radio"),
+                );
+            }
         }
         statuses
     }
@@ -1679,6 +1744,9 @@ pub struct NetworkModel {
     /// False until the first snapshot arrives; until then the pane shows a
     /// pending view.
     loaded: bool,
+    /// Whether this device runs a network service, once read says: the rows
+    /// only it fills are left out when it does not, as for absent hardware.
+    service_present: Option<bool>,
     snapshot: Option<crate::channel::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
@@ -1949,6 +2017,7 @@ impl NetworkModel {
             reach,
             service,
             loaded: false,
+            service_present: None,
             snapshot: None,
             networks: Vec::new(),
             wifi_enabled: false,
@@ -2027,6 +2096,22 @@ impl NetworkModel {
     /// Whether this device has no Wi-Fi radio.
     fn wifi_absent(&self) -> bool {
         self.radios_present().wifi == Some(false)
+    }
+
+    /// Whether this device runs no network service: what only it answers is
+    /// left out, as for absent hardware, rather than shown as unreadable.
+    fn network_absent(&self) -> bool {
+        self.service_present == Some(false)
+    }
+
+    /// Whether Wi-Fi is left out: no radio, or no service to switch it.
+    fn wifi_unavailable(&self) -> bool {
+        self.network_absent() || self.wifi_absent()
+    }
+
+    /// Whether airplane mode has a radio to switch.
+    fn airplane_switchable(&self) -> bool {
+        !self.network_absent() && !self.radios_present().without_radios()
     }
 
     /// The networks in range, as last scanned.
@@ -2167,6 +2252,7 @@ impl NetworkModel {
     fn adopted(&self) -> Adopted {
         Adopted {
             loaded: self.loaded,
+            service_present: self.service_present,
             networks: self.networks.clone(),
             wifi_enabled: self.wifi_enabled,
             wired: self.wired.clone(),
@@ -2187,6 +2273,9 @@ impl NetworkModel {
     fn take_snapshot(&mut self, snapshot: NetworkSnapshot) -> Result<String, String> {
         // A whole snapshot says which Wi-Fi link is in use, also none.
         let whole = snapshot.wifi_enabled.is_some();
+        if snapshot.service_present.is_some() {
+            self.service_present = snapshot.service_present;
+        }
         let outcome = match snapshot.networks {
             Ok(networks) => {
                 self.networks = networks;

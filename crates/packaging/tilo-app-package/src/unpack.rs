@@ -120,6 +120,8 @@ pub fn unpack(
         ));
     }
     std::fs::create_dir_all(dest_dir)?;
+    // Only a unix tree carries execute bits to set.
+    #[cfg(unix)]
     let executable = meta.executable_path();
     for (rel_path, hash) in &meta.collection.entries {
         let out_path = dest_dir.join(rel_path);

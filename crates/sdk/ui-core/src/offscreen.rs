@@ -484,6 +484,15 @@ impl OffscreenMemoryStats {
     }
 }
 
+/// Load the GPU drivers the process draws with now, without opening a device:
+/// a process that also opens a display through EGL (a compositor) loads them
+/// first, as it always did, which is the order NVIDIA's driver tears down
+/// cleanly in. Loaded after it, the driver logs from `eglDestroyContext` as the
+/// process exits, after the logger is gone, and the exit aborts.
+pub fn load_drivers() {
+    let _ = shared_render_context();
+}
+
 fn shared_render_context() -> Arc<Mutex<RenderContext>> {
     SHARED_RENDER_CONTEXT
         .get_or_init(|| Arc::new(Mutex::new(RenderContext::new())))
@@ -726,6 +735,15 @@ impl OffscreenRenderer {
                 },
             )
             .expect("render_to_texture");
+    }
+
+    /// The device and queue this renderer draws on, and the texture it drew
+    /// the last frame into (`Rgba8Unorm`, premultiplied): what a caller that
+    /// shows the frame on the GPU copies from, with no trip through memory.
+    #[doc(hidden)]
+    pub fn target(&self) -> (wgpu::Device, wgpu::Queue, &wgpu::Texture) {
+        let (device, queue) = self.device_queue();
+        (device, queue, &self.texture)
     }
 
     /// The Vello renderer underneath, for its feature and diagnostic
@@ -1169,7 +1187,9 @@ impl OffscreenRenderer {
             format,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::COPY_DST
+                // Read by a compute pass of the caller's (`Self::target`).
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

@@ -5,27 +5,27 @@ kind = "totp.vault"
 label = "Authenticator"
 version = 1
 fields = [
-  { path = "accounts", type = "Collection<StoredAccount>", stored = "collection" },
-  { path = "accounts.*.issuer", type = "String", label = true },
-  { path = "accounts.*.label", type = "String" },
-  { path = "accounts.*.algorithm", type = "Algorithm" },
-  { path = "accounts.*.digits", type = "u8" },
-  { path = "accounts.*.period", type = "u32" },
-  { path = "accounts.*.color", type = "u8" },
+  { path = "accounts", type = { collection = { named = "StoredAccount" } }, stored = "collection" },
+  { path = "accounts.*.issuer", type = "text", label = true },
+  { path = "accounts.*.label", type = "text" },
+  { path = "accounts.*.algorithm", type = { named = "Algorithm" } },
+  { path = "accounts.*.digits", type = "int" },
+  { path = "accounts.*.period", type = "int" },
+  { path = "accounts.*.color", type = "int" },
 ]
 
 [[resources.verbs]]
 id = "move-up"
 kind = "undoable"
 params = [
-  { name = "account", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-down"
 kind = "undoable"
 params = [
-  { name = "account", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -33,6 +33,50 @@ id = "delete"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "account", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-account"
+kind = "read"
+
+[[resources.verbs]]
+id = "open-account"
+kind = "read"
+params = [
+  { name = "account", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "copy-code"
+kind = "read"
+params = [
+  { name = "account", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "set-up-local"
+kind = "read"
+params = [
+  { name = "account", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Algorithm"
+cases = [
+  { name = "sha1" },
+  { name = "sha256" },
+  { name = "sha512" },
+]
+
+[[resources.types]]
+name = "StoredAccount"
+fields = [
+  { name = "issuer", type = "text" },
+  { name = "label", type = "text" },
+  { name = "algorithm", type = { named = "Algorithm" } },
+  { name = "digits", type = "int" },
+  { name = "period", type = "int" },
+  { name = "color", type = "int" },
 ]
 

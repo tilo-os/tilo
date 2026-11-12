@@ -37,6 +37,7 @@ use crate::breadcrumbs::{breadcrumb_components, breadcrumb_root_icon};
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::t;
 use crate::model::format_path;
+use ui::widget::DrawChild;
 
 pub struct PathBar {
     /// The clickable trail (breadcrumb mode).
@@ -286,9 +287,9 @@ impl Widget for PathBar {
         let (field, crumbs) = (&mut self.field, &mut self.crumbs);
         self.own.record(scene, transform, |scene| {
             if editing {
-                field.draw(scene, transform, tr, theme, presence);
+                field.draw_child(scene, transform, tr, theme, presence);
             } else {
-                crumbs.draw(scene, transform, tr, theme, presence);
+                crumbs.draw_child(scene, transform, tr, theme, presence);
             }
             // The field's focus ring reaches past the bar.
             let reach = f64::from(theme.tokens.spacing.s2);
@@ -701,12 +702,7 @@ mod tests {
                 bar.accessibility().unwrap().value.as_deref(),
                 expected.last().copied()
             );
-            let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-                ui::font_catalog::checkout_root(),
-                "en-US",
-            );
-            let mut text = TextRenderer::with_font_catalog(&catalog)
-                .expect("the breadcrumb uses the shipped font fixture");
+            let mut text = ui::font_catalog::fixture_renderer();
             for theme in [Theme::dark(), Theme::light()] {
                 assert!(
                     text.measure_style("Documents", None, &theme.text(ui::TextRole::Caption))

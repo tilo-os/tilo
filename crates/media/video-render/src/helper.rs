@@ -265,6 +265,8 @@ fn policy(job: &Path, plugins: &[PathBuf]) -> confine::Policy {
     }
     read_only.extend(registry_file());
     read_only.extend(font_dirs());
+    // The catalog its host verified and named: a title's text is set in it.
+    read_only.extend(ui::font_catalog::catalog_root());
     read_only.retain(|path| path.exists());
     read_only.sort();
     read_only.dedup();

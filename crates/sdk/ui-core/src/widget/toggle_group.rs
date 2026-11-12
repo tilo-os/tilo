@@ -18,6 +18,7 @@
 //! [`ToggleGroup::from_state`] binds the choice to typed view state instead of a callback;
 //! [`ToggleGroup::vertical`] stacks icon segments into a tool rail, each label (with its
 //! [`Segment::with_hint`] shortcut) its tooltip and its accessible name.
+
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -352,6 +353,8 @@ pub struct ToggleGroup {
     caption_height: f64,
     /// A Fluent message id naming the strip for assistive technology.
     accessible_name: Option<String>,
+    /// `accessible_name` is already resolved text, spoken as given.
+    name_resolved: bool,
     enabled: bool,
     /// Captured on `CursorMoved` so the subsequent `MouseInput` (which
     /// carries no position of its own) can hit-test against `segment_rects`.
@@ -469,6 +472,7 @@ impl ToggleGroup {
             caption: None,
             caption_height: 0.0,
             accessible_name: None,
+            name_resolved: false,
             enabled: true,
             last_cursor: Cell::new(Point::ZERO),
             hovered: None,
@@ -639,6 +643,16 @@ impl ToggleGroup {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self.name_resolved = false;
+        self
+    }
+
+    /// [`Self::with_accessible_name`] with text that is already resolved (the
+    /// row's caption); spoken as given, never looked up as a message id.
+    #[must_use]
+    pub fn with_resolved_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self.name_resolved = true;
         self
     }
 
@@ -2421,7 +2435,6 @@ impl Widget for ToggleGroup {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.place(crate::widget::layout_rect(taffy, node, origin));
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -2565,6 +2578,10 @@ impl Widget for ToggleGroup {
         self.rect == Rect::ZERO || self.layout_dirty
     }
 
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor.set(ctx.logical(position));
@@ -2679,7 +2696,7 @@ impl Widget for ToggleGroup {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Segment labels are runtime strings (host-provided), not FTL
-        // keys, so no `i18n!` wrap.
+        // keys, so no lookup.
         let value = if self.chosen.is_some() {
             None
         } else {
@@ -2717,8 +2734,8 @@ impl Widget for ToggleGroup {
             .collect();
         let name = self
             .accessible_name
-            .as_ref()
-            .map(|name| crate::i18n!(name))
+            .as_deref()
+            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved))
             .or_else(|| self.caption.clone());
         let mut state = AccessState::new()
             .focusable(self.is_focusable())

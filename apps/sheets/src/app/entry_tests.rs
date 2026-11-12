@@ -7,6 +7,7 @@ use super::tests::{char_event, doc_cell_raw, feed, named_event, seeded_app};
 use super::*;
 use crate::grid::GridCmd;
 use automerge::AutoCommit;
+use ui::widget::DrawChild;
 use ui::widget::{ControlSize, SegmentedFace};
 use winit::event::Ime;
 use winit::keyboard::NamedKey;
@@ -329,7 +330,7 @@ fn a_typed_character_damages_its_cell_and_formula_bar_and_a_resize_the_window() 
         app.rect = Rect::new(0.0, 0.0, w, h);
         app.relayout();
         let mut scene = Scene::new();
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         let mut damage = Vec::new();
         app.collect_damage(&mut damage);
         app.mark_drawn();

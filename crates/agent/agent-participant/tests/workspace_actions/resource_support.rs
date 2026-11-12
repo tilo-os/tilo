@@ -1,7 +1,8 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
-use super::{BTreeMap, Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
+use super::{Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::workspaces::IssueInvitationRequest;
+use tilo_session_client::{Cmd, Outbox};
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -17,18 +18,9 @@ pub(super) async fn open_admitted_peer(
         device.key.clone(),
     );
     let events = peer.events();
-    peer.join(workspace).unwrap();
+    peer.send(Cmd::Join(workspace)).unwrap();
     ready(&[&peer]).await;
-    Browser {
-        peer,
-        events,
-        host_key: host.cert.device_public_key,
-        documents: BTreeMap::new(),
-        answers: Vec::new(),
-        correlation: 0,
-        workspace,
-        cluster_id: cluster_id.to_owned(),
-    }
+    Browser::joined((peer, events), device, host, cluster_id)
 }
 
 pub(super) async fn admit_person(
@@ -65,11 +57,12 @@ pub(super) async fn admit_person(
         tilo_clock::unix_now_ns(),
     )
     .unwrap();
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.key.to_bytes()))
-        .bind()
-        .await
-        .unwrap();
+    // As a device dials: relays on, since an invitation names what a stranger
+    // can dial — the host's relay and its addresses — and an endpoint bound
+    // with relays off redeems only an invitation naming a direct address of
+    // the host's own network. Its relay is this machine's loopback one, so
+    // nothing here reaches the person's relays out on the internet.
+    let endpoint = test_relay::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
     tilo_relay::workspace_join::WorkspaceJoinClient::new(endpoint)
         .redeem_hint(
             verified.grant().transport.first().unwrap(),

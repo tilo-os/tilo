@@ -313,3 +313,20 @@ fn history_names_the_field_that_changed() {
         ["Changed the domain to claim", "Changed the contact address"]
     );
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[test]
+fn a_german_window_reads_the_catalogue() {
+    let catalogue = &publisher::locales::CATALOG;
+    assert!(
+        catalogue.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalogue.languages()
+    );
+    catalogue.set_locale("de-DE");
+    assert_eq!(catalogue.t("publisher-create-key"), "Schlüssel anlegen");
+    catalogue.set_locale("en-US");
+    assert_eq!(catalogue.t("publisher-create-key"), "Create key");
+}

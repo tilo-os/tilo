@@ -316,6 +316,7 @@ mod owner_commit_tests {
         events.borrow_mut().push(CollabEvent::Context {
             collaborators: vec![],
             permissions: vec![],
+            apps: Vec::new(),
         });
         app.pump_collab_presence();
         let resource = sent
@@ -445,7 +446,7 @@ mod owner_commit_tests {
                     };
                     let state = fixture.state.clone();
                     let response = tokio::task::spawn_local(async move {
-                        state.commit_owner_request(request, None).await
+                        state.commit_owner_document(request, None).await
                     });
                     let pending = tilo_test_env::within(
                         "owner did not receive the actual commit",
@@ -471,6 +472,34 @@ mod owner_commit_tests {
                         assert!(!error.reason.contains("interrupted"));
                     }
                 }
+            })
+            .await;
+    }
+
+    /// A document write the owner refuses is its writer's alone: the writer
+    /// is answered the refusal, and every other action and write goes on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_owners_refusal_of_a_document_write_leaves_the_owner_healthy() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = canonical_tempdir();
+                let fixture = owner_fixture(root.path());
+                // A write naming another workspace than its route's: the owner
+                // refuses it.
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    workspace: uuid::Uuid::new_v4().to_string(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                        app: fixture.route.app_id.clone(),
+                        record: fixture.route.record_id.clone(),
+                        envelope: Box::new(owner_snapshot(&fixture)),
+                    },
+                };
+                fixture
+                    .state
+                    .commit_owner_document(request, None)
+                    .await
+                    .unwrap_err();
+                assert_eq!(fixture.state.owner_health(), Ok(()));
             })
             .await;
     }
@@ -1408,6 +1437,7 @@ mod owner_commit_tests {
                 revision: "directory-r1".into(),
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
+                operation: tilo_actions::OperationKind::View,
                 confirmation_required: false,
                 params: Vec::new(),
                 query_count: 0,
@@ -1473,14 +1503,15 @@ mod owner_commit_tests {
             let retained_catalogue = handle.subscribe_action_catalogue().await.unwrap();
             let waiting_catalogue = handle.subscribe_action_catalogue().await.unwrap();
             assert!(waiting_catalogue.read().await.is_ok());
-            let catalogue_sender = state
+            let catalogue_follower = state
                 .action_catalogue_subscribers
                 .lock()
                 .unwrap()
                 .get(&901)
                 .unwrap()
                 .2
-                .clone();
+                .upgrade()
+                .unwrap();
             let pending_read =
                 tokio::task::spawn_local(async move { waiting_catalogue.read().await });
             for _ in 0..32 {
@@ -1569,9 +1600,12 @@ mod owner_commit_tests {
                 "full certificate must match descriptor despite same keys"
             );
             *authority.certificate.lock().unwrap() = None;
-            catalogue_sender
-                .send(Some(Arc::from("revoked private snapshot")))
-                .unwrap();
+            catalogue_follower.following.lock().unwrap().pending =
+                Some(runtime_collab::CatalogueChange {
+                    reset: true,
+                    ..runtime_collab::CatalogueChange::default()
+                });
+            catalogue_follower.changed.notify_one();
             assert!(
                 pending_read.await.unwrap().is_err(),
                 "a stream must recheck authority after its read wakes"

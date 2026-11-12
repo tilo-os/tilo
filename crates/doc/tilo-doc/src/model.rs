@@ -32,6 +32,7 @@ use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 use tilo_sort::CompactSort as _;
 
 mod bulk;
+mod graft;
 /// Instrumentation for tests comparing the bulk import path with the op-by-op reference.
 #[cfg(any(test, feature = "bulk-instrumentation"))]
 #[doc(hidden)]

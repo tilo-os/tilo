@@ -11,6 +11,7 @@ use legacy_vm::hosted::files::{self, Served};
 use legacy_vm::hosted::firecracker::Machine;
 use legacy_vm::hosted::guest;
 use legacy_vm::hosted::jail;
+use legacy_vm::hosted::placement::Host;
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::vm::{Settings, system_clock};
 
@@ -19,27 +20,53 @@ usage: tilo-legacy hosted <command>
 
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
-        [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
+        [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
+        [--memory-headroom-mib MIB] [--status-listen ADDR]
+        [--relay-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
                          privileged tilo-hosted-jail helper and its root-owned
                          configuration (default /etc/tilo/hosted-jail.json);
                          --unjailed is for development only: no network.
+                         A jailed host keeps a template of each VM size in use
+                         under STATE/templates, booted once with the session's
+                         and Chromium's files in its page cache, and starts
+                         each new VM as a copy-on-write clone of it.
                          When FILE appears (written by whatever watches the
                          cloud's notice that it takes this host back), every
                          VM is suspended onto STATE and no more are woken.
-                         --memory-mib bounds what the VMs awake at once take
-                         together, by their sizes; a wake past it waits.
+                         --memory-mib is the node's memory its VMs are packed
+                         into (the whole node by default): admission counts
+                         what each VM really takes, as the kernel measures its
+                         processes, not the size it was configured at.
+                         --memory-reserve-mib (2048 by default) is what
+                         stays free for the host itself, and
+                         --memory-headroom-mib (128) is added to what a VM is
+                         counted at until it has been measured. A wake past
+                         that waits; when the node's free memory falls under
+                         the reserve, the VMs' balloons are asked for memory
+                         back before any wake is refused.
                          --status-listen answers Status alone over TCP, for a
-                         placer
+                         placer.
+                         --relay-endpoint serves the workspaces' Browser in
+                         their VMs: ADDR:PORT is where the browser session in a
+                         VM reaches the relay, the one address besides the
+                         internet a VM may reach: the relay's public address,
+                         or its cluster address when the relay is not
+                         reachable from outside, or a loopback address when
+                         the relay runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
-  place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
-        --status-port PORT
+  place --listen ADDR --record FILE
+        (--statefulset NAMESPACE/NAME --status-port PORT --max N
+         | --hosts NAME=ADDR[,NAME=ADDR])
                          say which host runs each workspace's VM (the one holding
                          it, else the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
-                         them: past three quarters, or for any VM waiting
+                         them: past three quarters, or for any VM waiting.
+                         --hosts names a stack's hosts and where each answers
+                         Status, for a stack that runs a known set of machines
+                         and starts none
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
                          kernel's and the root filesystem's paths
@@ -52,6 +79,12 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
+  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
+               [--material JSON]
+                         open or attach the browser session in a workspace's
+                         VM, and say what it took
+  browser-stop --run DIR WORKSPACE
+                         end the browser session in a workspace's VM now
 ";
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -118,6 +151,33 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "run" => run(rest),
         "place" => place(&Flags::parse(rest, &[])?),
+        "browser-open" => {
+            let flags = Flags::parse(rest, &[])?;
+            ask(
+                &flags,
+                &Request::OpenBrowser {
+                    browser: control::OpenBrowser {
+                        workspace: flags.need("--workspace")?.to_string(),
+                        account: flags.need("--account")?.to_string(),
+                        size: vm_size(&flags)?,
+                        store: flags.get("--store").map(PathBuf::from),
+                        material: flags.get("--material").unwrap_or("{}").to_string(),
+                    },
+                },
+            )
+        }
+        "browser-stop" => {
+            let flags = Flags::parse(rest, &[])?;
+            let [workspace] = flags.rest.as_slice() else {
+                return Err("browser-stop: WORKSPACE".to_string());
+            };
+            ask(
+                &flags,
+                &Request::StopBrowser {
+                    workspace: workspace.clone(),
+                },
+            )
+        }
         "usage" => {
             let flags = Flags::parse(rest, &[])?;
             let number = |name: &str, default: u64| {
@@ -165,15 +225,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
 /// the root filesystem's path, one per line.
 fn fetch_guest(flags: &Flags) -> Result<ExitCode, String> {
     let images = flags.path("--images")?;
-    let reference = match flags.get("--ref") {
-        Some(reference) if guest::valid_pinned_ref(reference) => reference.to_string(),
-        Some(reference) => {
-            return Err(format!(
-                "{reference} is not a digest-pinned hosted guest reference"
-            ));
-        }
-        None => guest::current_ref().ok_or_else(|| guest::GuestError::NotPublished.to_string())?,
-    };
+    let reference = guest::reference(flags.get("--ref")).map_err(|e| e.to_string())?;
     let guest = guest::ensure_guest(&images, &reference).map_err(|e| e.to_string())?;
     println!("kernel {}", guest.kernel.display());
     println!("rootfs {}", guest.rootfs.display());
@@ -222,6 +274,16 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
+            // The browser session in a VM joins its workspace through the
+            // relay, inside the host's network: the one address besides the
+            // internet a VM may reach.
+            relay: flags
+                .get("--relay-endpoint")
+                .map(legacy_vm::hosted::network::Endpoint::parse)
+                .transpose()?,
+            // New VMs are clones of a template of their size, kept beside
+            // them: only a jailed VM can be one.
+            templates: Some(flags.path("--state")?.join("templates")),
         },
     };
     // SAFETY: the handler only stores to an atomic.
@@ -231,12 +293,20 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         libc::signal(libc::SIGINT, handler);
     }
     let mut service = Service::open(config, system_clock()).map_err(|e| e.to_string())?;
-    if let Some(mib) = flags.get("--memory-mib") {
-        let mib = mib
-            .parse::<u64>()
-            .map_err(|_| "--memory-mib takes mebibytes".to_string())?;
-        service = service.with_memory_budget(mib);
-    }
+    let budget = memory_budget(flags)?;
+    service = service.with_memory(budget);
+    eprintln!(
+        "tilo-legacy hosted: admitting VMs by what they take: {} for them of the node's {}, \
+         {} kept for this host, and a new VM counted at {} MiB until it is measured",
+        budget
+            .for_vms_mib()
+            .map_or_else(|| "no limit".to_owned(), |mib| format!("{mib} MiB")),
+        budget
+            .node_mib
+            .map_or_else(|| "unknown".to_owned(), |mib| format!("{mib} MiB")),
+        budget.reserve_mib,
+        budget.expected_mib(),
+    );
     let service = Arc::new(service);
     if let Some(address) = flags.get("--status-listen") {
         let listener = std::net::TcpListener::bind(address)
@@ -254,11 +324,49 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What this host admits its VMs by, from the flags it was started with: the
+/// node's memory, what it keeps free, and what a VM is counted at until it is
+/// measured.
+fn memory_budget(flags: &Flags) -> Result<legacy_vm::hosted::memory::Budget, String> {
+    let mib = |name: &str, default: u64| -> Result<u64, String> {
+        flags.get(name).map_or(Ok(default), |mib| {
+            mib.parse::<u64>()
+                .map_err(|_| format!("{name} takes mebibytes"))
+        })
+    };
+    Ok(legacy_vm::hosted::memory::Budget {
+        node_mib: flags
+            .get("--memory-mib")
+            .map(|mib| {
+                mib.parse::<u64>()
+                    .map_err(|_| "--memory-mib takes mebibytes".to_string())
+            })
+            .transpose()?,
+        reserve_mib: mib(
+            "--memory-reserve-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_RESERVE_MIB,
+        )?,
+        headroom_mib: mib(
+            "--memory-headroom-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_HEADROOM_MIB,
+        )?,
+    })
+}
+
+/// The size `--size` names; small when it names none.
+fn vm_size(flags: &Flags) -> Result<legacy_vm::hosted::size::VmSize, String> {
+    use legacy_vm::hosted::size::VmSize;
+    flags.get("--size").map_or(Ok(VmSize::Small), |name| {
+        VmSize::parse(name).ok_or_else(|| format!("no VM size {name:?}"))
+    })
+}
+
 /// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set
 /// through the API server with the pod's service account.
 struct StatefulSetScale {
     namespace: String,
     name: String,
+    port: String,
 }
 
 impl StatefulSetScale {
@@ -293,14 +401,25 @@ impl StatefulSetScale {
 }
 
 impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
-    fn hosts(&self) -> Result<usize, String> {
+    fn hosts(&self) -> Result<Vec<Host>, String> {
         let scale = self.call("GET", None)?;
-        scale
+        let count = scale
             .get("spec")
             .and_then(|spec| spec.get("replicas"))
             .and_then(serde_json::Value::as_u64)
             .and_then(|count| usize::try_from(count).ok())
-            .ok_or_else(|| format!("no replicas in {scale}"))
+            .ok_or_else(|| format!("no replicas in {scale}"))?;
+        // Each pod by name (`vm-host-0`), its Status at the service's own
+        // name for it.
+        Ok((0..count)
+            .map(|index| {
+                let (namespace, name, port) = (&self.namespace, &self.name, &self.port);
+                Host::new(
+                    &format!("{name}-{index}"),
+                    &format!("{name}-{index}.{name}.{namespace}.svc:{port}"),
+                )
+            })
+            .collect())
     }
 
     fn set_hosts(&self, count: usize) -> Result<(), String> {
@@ -313,34 +432,53 @@ impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
     }
 }
 
-/// Place VMs on the `StatefulSet`'s hosts and scale them.
+/// Place VMs on the hosts the environment names: a `StatefulSet`'s, which
+/// it scales, or the named hosts of a stack that runs a known set of machines
+/// (`--hosts`), which it never starts.
 fn place(flags: &Flags) -> Result<ExitCode, String> {
-    use legacy_vm::hosted::placement::{Placer, read_load};
+    use legacy_vm::hosted::placement::{FixedHosts, Placer, Scale, read_load};
 
-    let (namespace, name) = flags
-        .need("--statefulset")?
-        .split_once('/')
-        .ok_or("--statefulset takes NAMESPACE/NAME")?;
-    let max: usize = flags
-        .need("--max")?
-        .parse()
-        .map_err(|_| "--max takes a count".to_string())?;
-    let port = flags.need("--status-port")?;
-    let suffix = format!(".{name}.{namespace}.svc:{port}");
-    let placer = Arc::new(
-        Placer::new(
-            &flags.path("--record")?,
-            &format!("{name}-"),
-            max,
+    let scale: Box<dyn Scale> = match (flags.get("--statefulset"), flags.get("--hosts")) {
+        (Some(statefulset), None) => {
+            let (namespace, name) = statefulset
+                .split_once('/')
+                .ok_or("--statefulset takes NAMESPACE/NAME")?;
             Box::new(StatefulSetScale {
                 namespace: namespace.to_owned(),
                 name: name.to_owned(),
-            }),
-            Box::new(read_load),
-            system_clock(),
-        )?
-        .with_status_suffix(&suffix),
+                port: flags.need("--status-port")?.to_owned(),
+            })
+        }
+        (None, Some(hosts)) => Box::new(FixedHosts::parse(hosts)?),
+        _ => {
+            return Err(format!(
+                "place names its hosts once: --statefulset NAMESPACE/NAME --status-port PORT, or \
+                 --hosts NAME=ADDR[,NAME=ADDR]\n{USAGE}"
+            ));
+        }
+    };
+    let max: usize = match flags.get("--max") {
+        Some(max) => max.parse().map_err(|_| "--max takes a count".to_string())?,
+        None if flags.get("--hosts").is_some() => scale.hosts()?.len(),
+        None => return Err("--statefulset needs --max (the most hosts to start)".to_string()),
+    };
+    let hosts = scale.hosts().map_or_else(
+        |_| "them".to_owned(),
+        |hosts| {
+            hosts
+                .iter()
+                .map(|host| host.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
     );
+    let placer = Arc::new(Placer::new(
+        &flags.path("--record")?,
+        max,
+        scale,
+        Box::new(read_load),
+        system_clock(),
+    )?);
     let address = flags.need("--listen")?;
     let listener =
         std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;
@@ -360,7 +498,7 @@ fn place(flags: &Flags) -> Result<ExitCode, String> {
             });
         }
     });
-    eprintln!("tilo-legacy hosted place: placing on {name}-N{suffix}, at most {max}, on {address}");
+    eprintln!("tilo-legacy hosted place: placing on {hosts}, at most {max}, on {address}");
     while !STOP.load(Ordering::SeqCst) {
         placer.rescale();
         std::thread::sleep(Duration::from_secs(10));
@@ -373,7 +511,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     use legacy_agent_protocol::client::{self, LaunchIo};
     use legacy_agent_protocol::{AGENT_PORT, Display, Launch, Stdio};
     use legacy_vm::hosted::control::VmRequest;
-    use legacy_vm::hosted::size::VmSize;
 
     let mut parts = args.splitn(2, |arg| arg == "--");
     let options = parts.next().unwrap_or_default();
@@ -382,13 +519,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         return Err(format!("run: the program follows --\n{USAGE}"));
     }
     let flags = Flags::parse(options, &[])?;
-    let size = match flags.get("--size").unwrap_or("small") {
-        "small" => VmSize::Small,
-        "default" => VmSize::Default,
-        "large" => VmSize::Large,
-        "xlarge" => VmSize::Xlarge,
-        other => return Err(format!("run: no VM size {other:?}")),
-    };
+    let size = vm_size(&flags).map_err(|error| format!("run: {error}"))?;
     let request = Request::Ensure {
         vm: VmRequest {
             workspace: flags.need("--workspace")?.to_string(),
@@ -492,7 +623,7 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
     match reply {
         Reply::Status { vms, load } => {
             println!(
-                "memory: {} MiB awake of {}, {} MiB waiting",
+                "memory: {} MiB in use of {}, {} MiB waiting",
                 load.awake_mib,
                 load.budget_mib
                     .map_or_else(|| "no budget".to_owned(), |mib| format!("{mib} MiB")),
@@ -500,11 +631,22 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             );
             for vm in vms {
                 println!(
-                    "{:<40} {:<8} {:<10} {:<10} wake {} snapshot {}",
+                    "{:<40} {:<8} {:<10} {:<10} {:<9} wake {} snapshot {}",
                     vm.vm,
                     vm.size,
                     vm.phase,
                     vm.account,
+                    vm.resident_mib.map_or_else(
+                        || "-".to_string(),
+                        |mib| format!(
+                            "{mib} MiB{}",
+                            if vm.balloon_mib == 0 {
+                                String::new()
+                            } else {
+                                format!(" -{} balloon", vm.balloon_mib)
+                            }
+                        )
+                    ),
                     vm.last_wake_ms.map_or_else(
                         || "-".to_string(),
                         |ms| format!(
@@ -530,6 +672,17 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Done | Reply::Ready { .. } => Ok(ExitCode::SUCCESS),
+        Reply::Opened {
+            opened_ms,
+            provider,
+        } => {
+            println!(
+                "{} {}",
+                opened_ms.map_or_else(|| "attached".to_string(), |ms| format!("opened in {ms} ms")),
+                provider,
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         Reply::Placed { host } => {
             println!("{host}");
             Ok(ExitCode::SUCCESS)

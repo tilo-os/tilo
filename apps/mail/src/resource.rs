@@ -314,7 +314,6 @@ impl DraftState {
 
 #[resource(
     kind = "mail.mailbox",
-    label = "Mail",
     params = mailbox,
     children = Mail::places,
     search = Mail::search,
@@ -345,7 +344,7 @@ impl Mail {
     /// Archive messages
     ///
     /// Moves messages to the Archive together.
-    #[action]
+    #[action(label = "mail-folder-archive")]
     pub fn archive(
         &mut self,
         #[param("Ids of the messages")] messages: Vec<String>,
@@ -381,7 +380,7 @@ impl Mail {
     ///
     /// Deletes messages already in the Trash for good: all of them, or none
     /// when one is no longer there.
-    #[action(destructive)]
+    #[action(destructive, label = "mail-delete-permanently")]
     pub fn purge(
         &mut self,
         #[param("Ids of the messages, every one in the Trash")] messages: Vec<String>,
@@ -473,7 +472,7 @@ impl Mail {
     ///
     /// Saves a message being written as its draft: who it goes to, what it
     /// says and carries, keeping the body being written and its notes.
-    #[action]
+    #[action(label = "mail-compose-save-draft")]
     pub fn save_draft(
         &mut self,
         #[param("The message as written")] message: DraftData,
@@ -541,7 +540,7 @@ impl Mail {
     /// picture) to a message being written, under the name given. Save
     /// the draft's text first: saving the draft again keeps only the
     /// attachments it names. At most 16 attachments of 32 MiB each.
-    #[action(label = "Attach to draft", prepare = prepare_attachment)]
+    #[action(prepare = prepare_attachment)]
     pub fn attach(
         &mut self,
         #[param("The file another step handed over, by its content address", content)]
@@ -578,7 +577,7 @@ impl Mail {
     }
 
     /// Discard draft
-    #[action(destructive)]
+    #[action(destructive, label = "mail-bar-discard-draft")]
     pub fn discard_draft(
         &mut self,
         #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
@@ -678,7 +677,7 @@ impl Mail {
     ///
     /// Takes a message out of the outbox unsent: one still waiting, or one
     /// its server refused.
-    #[action]
+    #[action(label = "mail-cancel-sending")]
     pub fn cancel_send(
         &mut self,
         outbox: &mut Outbox<Outgoing>,
@@ -697,23 +696,28 @@ impl Mail {
 }
 
 /// Stage the content an attachment names where it is attached: read it from
-/// this device's content store and keep it under the draft's attachment
-/// identity, with its size and type, so every replica applies the same
-/// attachment and the bytes are verified before the draft names them.
+/// this device's content store, keep it sealed unless it is already, with
+/// its size and type, so every replica applies the same attachment and the
+/// bytes are verified before the draft names them.
 fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
-    let address = params.content.trim();
-    let hash = ui::tilo_actions::content_hash(address)
-        .or_else(|| address.strip_prefix(crate::attachment_store::PREFIX))
-        .unwrap_or(address);
-    if !tilo_content::valid_hash(hash) {
+    let given = params.content.trim();
+    let reference = ui::tilo_actions::content_hash(given)
+        .or_else(|| given.strip_prefix(crate::attachment_store::PREFIX))
+        .unwrap_or(given);
+    if !tilo_content::valid_reference(reference) {
         return Err(format!(
-            "{address:?} is not a content address: attach what another step handed over"
+            "{given:?} is not a content reference: attach what another step handed over"
         ));
     }
-    let bytes = tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())?;
-    let store = tilo_resource::content::current()
-        .ok_or("this window has no content store to attach from")?;
-    let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
+    let bytes =
+        tilo_resource::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
+    let staged = if tilo_content::is_sealed(reference) {
+        crate::attachment_store::kept_as(reference, &bytes, &params.name)?
+    } else {
+        let store = tilo_resource::content::current()
+            .ok_or("this window has no content store to attach from")?;
+        crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?
+    };
     params.content = staged.content_id;
     params.name = staged.filename;
     params.size = Some(staged.size);
@@ -1226,7 +1230,7 @@ impl Mail {
             .map(|folder| {
                 ui::search::ScopeDecl::new(
                     format!("mail.folder:{}", folder.as_key()),
-                    folder.title(),
+                    crate::i18n::t(folder.message()),
                 )
             })
             .collect::<Vec<_>>();
@@ -1248,7 +1252,7 @@ impl Mail {
         let mut places = Vec::new();
         let copies = self.draft_copy_ids();
         for folder in Folder::ALL {
-            let mut place = Derived::new(folder.title())
+            let mut place = Derived::new(crate::i18n::t(folder.message()))
                 .of_kind("folder")
                 .identified(folder_place_id(folder.as_key()))
                 .with_effect(&MailEffect::Open {
@@ -1363,9 +1367,9 @@ impl Mail {
 pub(crate) fn draft_label(draft: &DraftState) -> String {
     let subject = draft.subject.trim();
     let subject = if subject.is_empty() {
-        "(no subject)"
+        crate::i18n::no_subject()
     } else {
-        subject
+        subject.to_owned()
     };
     let to = crate::transport::parse_addr_list(&draft.to)
         .iter()
@@ -1373,9 +1377,12 @@ pub(crate) fn draft_label(draft: &DraftState) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     if to.is_empty() {
-        format!("Draft: {subject}")
+        crate::i18n::CATALOG.t_args("mail-draft-subject", &[("subject", subject.into())])
     } else {
-        format!("Draft: {subject}, to {to}")
+        crate::i18n::CATALOG.t_args(
+            "mail-draft-subject-to",
+            &[("subject", subject.into()), ("to", to.into())],
+        )
     }
 }
 
@@ -1428,6 +1435,16 @@ pub(crate) fn draft_body_object(
     draft_body(draft).object(doc)
 }
 
+/// The resource the body of the draft `draft` is published as, beside the
+/// mailbox.
+pub(crate) fn draft_body_resource_id(draft: Option<&str>) -> String {
+    let child = match draft.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+        Some(id) => format!("draft-body:{id}"),
+        None => "draft-body".to_owned(),
+    };
+    tilo_resource::child_resource_id::<Mail>(&child)
+}
+
 /// The dispatcher the composer edits the body of the draft `draft` through:
 /// each edit is the mailbox's field edit of that body.
 pub(crate) fn draft_body_dispatcher(
@@ -1435,19 +1452,14 @@ pub(crate) fn draft_body_dispatcher(
     draft: Option<&str>,
 ) -> Dispatcher<RichText> {
     let body = draft_body(draft).some();
-    let child = match draft.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
-        Some(id) => format!("draft-body:{id}"),
-        None => "draft-body".to_owned(),
-    };
-    dispatcher.child::<RichText>(
-        &tilo_resource::child_resource_id::<Mail>(&child),
-        move |op| tilo_resource::Stamped {
+    dispatcher.child::<RichText>(&draft_body_resource_id(draft), move |op| {
+        tilo_resource::Stamped {
             operation: MailAction::FieldEdit(body.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
             })),
             now_ms: 0,
-        },
-    )
+        }
+    })
 }
 
 /// What a test reads of the mailbox its document holds, and the edits it
@@ -1855,10 +1867,18 @@ mod tests {
             crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
             b"quarterly numbers"
         );
+        let reference = attachments[0]
+            .content_id
+            .strip_prefix(crate::attachment_store::PREFIX)
+            .unwrap();
+        assert!(tilo_content::is_sealed(reference), "{reference}");
         assert!(
             app.call(
                 "attach",
-                serde_json::json!({"content": hash, "name": "again.csv"}),
+                serde_json::json!({
+                    "content": ui::tilo_actions::content_resource(reference),
+                    "name": "again.csv",
+                }),
             )
             .is_err(),
             "the same file is attached once"
@@ -1881,6 +1901,70 @@ mod tests {
         );
         assert!(app.undo());
         assert!(app.state().draft.attachments.is_empty());
+    }
+
+    /// A file is attached sealed: the draft names it by a reference that
+    /// carries the key, the store holds ciphertext alone under its address,
+    /// and a member reading the draft, and one who joins later, open it
+    /// from that ciphertext.
+    #[test]
+    fn an_attachment_is_ciphertext_in_the_store_and_opens_for_every_member() {
+        use ui::framework::testing::TestApp;
+        let file: Vec<u8> = (0..400)
+            .flat_map(|row| format!("row {row}: {}\n", row * 7919).into_bytes())
+            .collect();
+        let mut alice = TestApp::<MailShell>::new().unwrap();
+        let mut joined =
+            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                .unwrap();
+        let mut bob = TestApp::<MailShell>::with_workspace_record(&mut joined).unwrap();
+        let handed = alice.content().put(&file).unwrap();
+        alice
+            .call(
+                "attach",
+                serde_json::json!({
+                    "content": ui::tilo_actions::content_resource(&handed),
+                    "name": "numbers.txt",
+                }),
+            )
+            .unwrap();
+        let attachment = alice.state().draft.attachments[0].clone();
+        let reference = attachment
+            .content_id
+            .strip_prefix(crate::attachment_store::PREFIX)
+            .unwrap()
+            .to_owned();
+        assert!(tilo_content::is_sealed(&reference), "{reference}");
+        let address = tilo_content::content_address(&reference).unwrap();
+        let ciphertext = alice.content().read(&address).unwrap();
+        assert!(
+            !ciphertext.windows(32).any(|window| window == &file[..32]),
+            "the store holds ciphertext"
+        );
+
+        assert!(alice.deliver_changes_to(&mut bob).unwrap());
+        let shared = bob.state().draft.attachments[0].clone();
+        assert_eq!(shared, attachment);
+        assert!(crate::attachment_store::materialize(&bob.content(), &shared).is_err());
+        bob.content().put_public(&ciphertext).unwrap();
+        assert_eq!(
+            crate::attachment_store::materialize(&bob.content(), &shared).unwrap(),
+            file
+        );
+
+        let mut later =
+            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                .unwrap();
+        let carol = TestApp::<MailShell>::with_workspace_record(&mut later).unwrap();
+        carol.content().put_public(&ciphertext).unwrap();
+        assert_eq!(
+            crate::attachment_store::materialize(
+                &carol.content(),
+                &carol.state().draft.attachments[0]
+            )
+            .unwrap(),
+            file
+        );
     }
 
     /// The saved draft shows as the same Drafts message however often the
@@ -2489,18 +2573,14 @@ mod tests {
         #[test]
         fn an_agent_edits_the_draft_body_through_its_own_address() {
             let mut app = composing();
-            app.call(
-                "field-edit",
-                serde_json::json!({
-                    "edit": crate::resource::draft_body(None)
-                        .some()
-                        .perform(&RichTextAction::ReplaceBody {
-                            markdown: "from an agent".into(),
-                        })
-                        .unwrap(),
-                }),
+            app.invoke_child::<tilo_document::RichText>(
+                &crate::resource::draft_body_resource_id(None),
+                ui::tilo_resource::Invoke::apply(&RichTextAction::ReplaceBody {
+                    markdown: "from an agent".into(),
+                })
+                .unwrap(),
             )
-            .unwrap();
+            .expect("the draft body is published at its own address");
             assert_eq!(body(&app), ["from an agent"]);
             let shown = app.harness().inspection_json().unwrap();
             assert!(shown.contains("from an agent"), "the composer shows it");

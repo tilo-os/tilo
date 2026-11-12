@@ -332,7 +332,8 @@ impl App {
             | ToolbarEvent::Forward
             | ToolbarEvent::Commit { .. }
             | ToolbarEvent::Edit { .. }
-            | ToolbarEvent::Action { .. } => return None,
+            | ToolbarEvent::Action { .. }
+            | ToolbarEvent::Floating { .. } => return None,
         })
     }
 

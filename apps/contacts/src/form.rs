@@ -7,6 +7,7 @@
 //! reaches the shared document until Save.
 
 use ui::LocalState;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::widget::{
     Button, ButtonRole, DatePicker, Dropdown, Element, Field, Form, FormPage, FormSection,
@@ -136,23 +137,35 @@ impl Slot {
 /// The human-facing name of a field: its visible label, or for a field
 /// inside a repeated row, what assistive technology calls it.
 pub(crate) fn field_name(slot: Slot) -> String {
+    let catalogue = &crate::account_editor::CATALOG;
     match slot {
-        Slot::First => "First name".into(),
-        Slot::Last => "Last name".into(),
-        Slot::Org => "Organization".into(),
-        Slot::Title => "Job title".into(),
-        Slot::Website => "Website".into(),
-        Slot::Birthday => "Birthday".into(),
-        Slot::Notes => "Notes".into(),
-        Slot::Groups => "Groups".into(),
-        Slot::Phone(index) => format!("Phone {}", index + 1),
-        Slot::Email(index) => format!("Email {}", index + 1),
-        Slot::AddrStreet(index) => format!("Address {} street", index + 1),
-        Slot::AddrCity(index) => format!("Address {} city", index + 1),
-        Slot::AddrRegion(index) => format!("Address {} region", index + 1),
-        Slot::AddrPostal(index) => format!("Address {} postal code", index + 1),
-        Slot::AddrCountry(index) => format!("Address {} country", index + 1),
+        Slot::First => catalogue.t("contacts-field-first-name"),
+        Slot::Last => catalogue.t("contacts-field-last-name"),
+        Slot::Org => catalogue.t("contacts-field-organization"),
+        Slot::Title => catalogue.t("contacts-field-job-title"),
+        Slot::Website => catalogue.t("contacts-field-website"),
+        Slot::Birthday => catalogue.t("contacts-field-birthday"),
+        Slot::Notes => catalogue.t("contacts-field-notes"),
+        Slot::Groups => catalogue.t("contacts-field-groups"),
+        Slot::Phone(index) => catalogue.t_args(
+            "contacts-field-phone",
+            &[("number", ArgValue::Number(index as f64 + 1.0))],
+        ),
+        Slot::Email(index) => catalogue.t_args(
+            "contacts-field-email",
+            &[("number", ArgValue::Number(index as f64 + 1.0))],
+        ),
+        Slot::AddrStreet(index) => address_field(catalogue, "contacts-field-street", index),
+        Slot::AddrCity(index) => address_field(catalogue, "contacts-field-city", index),
+        Slot::AddrRegion(index) => address_field(catalogue, "contacts-field-region", index),
+        Slot::AddrPostal(index) => address_field(catalogue, "contacts-field-postal-code", index),
+        Slot::AddrCountry(index) => address_field(catalogue, "contacts-field-country", index),
     }
+}
+
+/// One line of the Nth address: "Address 2 street".
+fn address_field(catalogue: &ui::i18n::EmbeddedCatalog, message: &str, index: usize) -> String {
+    catalogue.t_args(message, &[("number", ArgValue::Number(index as f64 + 1.0))])
 }
 
 /// The hint an empty field shows, where the label alone does not say what
@@ -620,7 +633,13 @@ impl EditForm {
                 Button::icon_only(
                     &format!("contacts.form.remove.{}", target.key()),
                     Icon::X,
-                    &format!("Remove {}", target.spoken().to_lowercase()),
+                    &crate::account_editor::CATALOG.t_args(
+                        "contacts-remove-field",
+                        &[(
+                            "field",
+                            ui::i18n::ArgValue::Text(target.spoken().to_lowercase()),
+                        )],
+                    ),
                 )
                 .on_view(queue(shared, Request::Remove(target))),
             )),
@@ -636,13 +655,9 @@ impl EditForm {
         )
     }
 
-    fn add_button(label: &str, kind: RowKind, shared: &Shared) -> Element {
-        let id = format!(
-            "contacts.form.add.{}",
-            label.to_lowercase().replace(' ', "-")
-        );
+    fn add_button(id: &str, label: &str, kind: RowKind, shared: &Shared) -> Element {
         Box::new(
-            Button::new(&id, label)
+            Button::new(id, label)
                 .with_icon(Icon::Plus)
                 .role(ButtonRole::Plain)
                 .on_view(queue(shared, Request::Add(kind))),
@@ -661,20 +676,32 @@ impl EditForm {
                 "Favorite",
                 Toggle::from_state(&self.favorite)
                     .with_id("contacts.form.favorite")
-                    .with_accessible_name("Favorite"),
+                    .with_accessible_name(
+                        &crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
+                    ),
             ));
 
         let mut phones = FormSection::new("Phone");
         for i in 0..self.draft.phones.len() {
             phones = phones.content(self.typed_row(TypeTarget::Phone(i), Slot::Phone(i), shared));
         }
-        phones = phones.content(Self::add_button("Add phone", RowKind::Phone, shared));
+        phones = phones.content(Self::add_button(
+            "contacts.form.add.add-phone",
+            &crate::account_editor::CATALOG.t("contacts-add-phone"),
+            RowKind::Phone,
+            shared,
+        ));
 
         let mut emails = FormSection::new("Email");
         for i in 0..self.draft.emails.len() {
             emails = emails.content(self.typed_row(TypeTarget::Email(i), Slot::Email(i), shared));
         }
-        emails = emails.content(Self::add_button("Add email", RowKind::Email, shared));
+        emails = emails.content(Self::add_button(
+            "contacts.form.add.add-email",
+            &crate::account_editor::CATALOG.t("contacts-add-email"),
+            RowKind::Email,
+            shared,
+        ));
 
         let mut addresses = FormSection::new("Address");
         for i in 0..self.draft.addresses.len() {
@@ -683,20 +710,25 @@ impl EditForm {
                 .content(self.pair(Slot::AddrCity(i), Slot::AddrRegion(i), shared))
                 .content(self.pair(Slot::AddrPostal(i), Slot::AddrCountry(i), shared));
         }
-        addresses = addresses.content(Self::add_button("Add address", RowKind::Address, shared));
+        addresses = addresses.content(Self::add_button(
+            "contacts.form.add.add-address",
+            &crate::account_editor::CATALOG.t("contacts-add-address"),
+            RowKind::Address,
+            shared,
+        ));
 
-        let calendar_label = if self.calendar_open {
-            "Hide calendar"
+        let calendar_label = crate::account_editor::CATALOG.t(if self.calendar_open {
+            "contacts-hide-calendar"
         } else {
-            "Choose from calendar"
-        };
+            "contacts-choose-from-calendar"
+        });
         let mut details = FormSection::new("Details")
             .field(
                 Field::new("Birthday", self.input(Slot::Birthday, shared))
                     .with_help("Year, month and day, such as 1990-04-25"),
             )
             .content(Box::new(
-                Button::new("contacts.form.calendar", calendar_label)
+                Button::new("contacts.form.calendar", &calendar_label)
                     .with_icon(Icon::Calendar)
                     .on_view(queue(shared, Request::ToggleCalendar)),
             ));
@@ -710,7 +742,9 @@ impl EditForm {
             let picker_shared = std::rc::Rc::clone(shared);
             details = details.content(Box::new(
                 DatePicker::new(initial)
-                    .with_accessible_name("Birthday calendar")
+                    .with_accessible_name(
+                        crate::account_editor::CATALOG.t("contacts-a11y-birthday-calendar"),
+                    )
                     .on_view("contacts.birthday-picker", move |date| {
                         picker_shared
                             .borrow_mut()

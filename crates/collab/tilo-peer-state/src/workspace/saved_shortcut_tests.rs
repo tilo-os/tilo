@@ -1,6 +1,7 @@
 use super::*;
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ScalarValue};
+use ed25519_dalek::SigningKey;
 
 pub(crate) const WORKSPACE: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OTHER_WORKSPACE: &str = "5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60";
@@ -149,11 +150,15 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
     let mut forged = revoked(&ada);
     forged.user_public_key = bob.cert.user_public_key;
     for (device, revocations) in [(&ada, vec![revoked(&ada)]), (&bob, vec![forged])] {
-        let row = serde_json::json!({ "device_cert": device.cert, "revocations": revocations });
+        let row = crate::state::GovernedIdentity {
+            device_cert: device.cert.clone(),
+            revocations,
+            ..crate::state::GovernedIdentity::default()
+        };
         doc.put(
             &identities,
             hex::encode(device.cert.device_public_key),
-            ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            ScalarValue::Bytes(row.encode().unwrap()),
         )
         .unwrap();
     }

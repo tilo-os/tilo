@@ -36,7 +36,7 @@ fn session_with_a_window() -> (
         .expect("a launched app's process");
     launches.started(app_process.id(), APP, "private", false);
     let _client = mapped(&mut session, APP);
-    let mut window = Window::open(&launches, APP, "private", app_process.id());
+    let mut window = Window::open(&launches, APP, app_process.id());
     window.hello();
     window.say(&FloatingSurfaceClientMessage::SelectionCapable);
     // The pass that takes the window's word answers its hello, so the box is asked for after the

@@ -112,6 +112,22 @@ fn find(library: &Replica<Ebook>, test: impl Fn(&Annotation) -> bool) -> Annotat
         .expect("the annotation is there")
 }
 
+/// The library is named by the books on its shelf, and reads right: one is
+/// "1 book", never "1 books".
+#[test]
+fn the_library_is_named_by_its_shelf() {
+    let mut library = Replica::<Ebook>::new();
+    let name = |library: &Replica<Ebook>| {
+        <EbookShell as ui::framework::ResourceApp>::label(&state(library))
+    };
+    assert_eq!(name(&library), "Books");
+    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+    assert_eq!(name(&library), "1 book");
+    let other = "book:fedcba9876543210fedcba9876543210";
+    apply(&mut library, shelve(&row(other, "B"))).unwrap();
+    assert_eq!(name(&library), "2 books");
+}
+
 /// The shelf: a book joins once under its content id, refreshing its row
 /// keeps when it was added, and leaving the shelf keeps what was read and
 /// marked in it.
@@ -380,6 +396,88 @@ fn settings_fonts_and_schemes_are_edited_at_their_paths() {
         }))
         .unwrap();
     assert!(state(&library).schemes.get(&Id::from_raw("u1")).is_none());
+}
+
+/// A built-in's name is read where a person reads it: one shared record names
+/// its faces and pages in each member's language, and a name someone gave one
+/// travels with the record instead.
+#[test]
+fn built_in_names_read_in_each_members_language() {
+    let font = |record: &Ebook, id: &str| {
+        record
+            .fonts
+            .values()
+            .find(|font| font.id == id)
+            .cloned()
+            .expect("the built-in font")
+    };
+    let scheme = |record: &Ebook, id: &str| {
+        record
+            .schemes
+            .values()
+            .find(|scheme| scheme.id == id)
+            .cloned()
+            .expect("the built-in scheme")
+    };
+    let mut library = Replica::<Ebook>::new();
+    let fresh = state(&library);
+    assert_eq!(
+        font(&fresh, "default").name,
+        "",
+        "a built-in is stored as what it is, not as a name"
+    );
+    assert_eq!(scheme(&fresh, "light").name, "");
+    assert_eq!(font(&fresh, "default").title(), "Default");
+    assert_eq!(scheme(&fresh, "light").title(), "Light");
+
+    // The same record, read by a member whose language is German.
+    CATALOG.set_locale("de-DE");
+    assert_eq!(font(&fresh, "default").title(), "Standard");
+    assert_eq!(font(&fresh, "mono").title(), "Mono");
+    assert_eq!(scheme(&fresh, "light").title(), "Hell");
+    assert_eq!(scheme(&fresh, "high-contrast").title(), "Hoher Kontrast");
+
+    // A record written when names were kept stores the words of whichever
+    // language made it, and still counts as unnamed in every language.
+    let fonts = Ebook::paths().fonts;
+    let schemes = Ebook::paths().schemes;
+    edit(
+        &mut library,
+        &fonts
+            .item(&Id::from_raw("default"))
+            .name
+            .replace("Standard"),
+    )
+    .unwrap();
+    edit(
+        &mut library,
+        &schemes.item(&Id::from_raw("dark")).name.replace("Dunkel"),
+    )
+    .unwrap();
+    let seeded = state(&library);
+    assert!(!font(&seeded, "default").renamed());
+    assert_eq!(font(&seeded, "default").title(), "Standard");
+    CATALOG.set_locale("en-US");
+    assert_eq!(
+        font(&seeded, "default").title(),
+        "Default",
+        "the German name a record carries reads in the language of whoever reads it"
+    );
+    assert_eq!(scheme(&seeded, "dark").title(), "Dark");
+
+    // A name someone gave a built-in is theirs in every language.
+    edit(
+        &mut library,
+        &fonts.item(&Id::from_raw("serif")).name.replace("Book face"),
+    )
+    .unwrap();
+    let renamed = state(&library);
+    assert!(font(&renamed, "serif").renamed());
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
+    CATALOG.set_locale("de-DE");
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
+    CATALOG.set_locale("en-US");
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
 }
 
 /// Annotation verbs: a highlight goes with its comments, what is gone is
@@ -791,7 +889,7 @@ fn books_and_their_annotations_are_published_as_places() {
         settings
             .children
             .iter()
-            .any(|row| row.label == font.name && ids(row).contains(&"remove-font".to_owned())),
+            .any(|row| row.label == font.title() && ids(row).contains(&"remove-font".to_owned())),
         "a font offers to be removed"
     );
     assert!(

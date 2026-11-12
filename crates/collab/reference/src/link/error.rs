@@ -39,6 +39,22 @@ pub enum LinkError {
 }
 
 impl LinkError {
+    /// Whether the rule broken is about what the link names inside its
+    /// workspace (its app, document, item or view), not the workspace itself.
+    #[must_use]
+    pub const fn is_inside_workspace(&self) -> bool {
+        matches!(
+            self,
+            Self::BadApp
+                | Self::BadRecord
+                | Self::BadResource
+                | Self::BadView
+                | Self::BadSpan
+                | Self::SpanWithoutResource
+                | Self::TooManySegments
+        )
+    }
+
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {

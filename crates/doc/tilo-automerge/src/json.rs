@@ -128,9 +128,16 @@ pub fn scalar_json(scalar: &ScalarValue) -> Result<serde_json::Value, JsonError>
 /// these heads.
 type Heads<'a> = Option<&'a [ChangeHash]>;
 
-/// How many values a read may still produce.
-fn spend(budget: &mut Option<usize>) -> bool {
-    match budget {
+/// How a read goes: how many values it may still produce, and whether bytes read as their count
+/// rather than as an error.
+struct Budget {
+    left: Option<usize>,
+    bytes_counted: bool,
+}
+
+/// Whether the read may produce one more value, spending it.
+fn spend(budget: &mut Budget) -> bool {
+    match &mut budget.left {
         Some(left) => match left.checked_sub(1) {
             Some(rest) => {
                 *left = rest;
@@ -189,10 +196,16 @@ fn value_of<D: ReadDoc + ?Sized>(
     value: &Value<'_>,
     id: &ObjId,
     heads: Heads<'_>,
-    budget: &mut Option<usize>,
+    budget: &mut Budget,
 ) -> Result<serde_json::Value, JsonError> {
     match value {
-        Value::Scalar(scalar) => scalar_json(scalar),
+        // Bytes have no JSON value: a whole document's reader is told how many there are.
+        Value::Scalar(scalar) => match (scalar.as_ref(), budget.bytes_counted) {
+            (ScalarValue::Bytes(bytes) | ScalarValue::Unknown { bytes, .. }, true) => {
+                Ok(serde_json::json!({ "bytes": bytes.len() }))
+            }
+            (scalar, _) => scalar_json(scalar),
+        },
         Value::Object(kind) => object_of(doc, id, *kind, heads, budget),
     }
 }
@@ -203,7 +216,7 @@ fn object_of<D: ReadDoc + ?Sized>(
     id: &ObjId,
     kind: ObjType,
     heads: Heads<'_>,
-    budget: &mut Option<usize>,
+    budget: &mut Budget,
 ) -> Result<serde_json::Value, JsonError> {
     Ok(match kind {
         ObjType::Text => serde_json::Value::String(text(doc, id, heads)?),
@@ -246,7 +259,26 @@ pub fn read_value<D: ReadDoc + ?Sized>(
     value: &Value<'_>,
     id: &ObjId,
 ) -> Result<serde_json::Value, JsonError> {
-    value_of(doc, value, id, None, &mut None)
+    value_of(
+        doc,
+        value,
+        id,
+        None,
+        &mut Budget {
+            left: None,
+            bytes_counted: false,
+        },
+    )
+}
+
+/// The JSON value of the whole document as it is now: its maps, lists, text
+/// as strings and scalars, bytes as their count.
+pub fn read_document<D: ReadDoc + ?Sized>(doc: &D) -> Result<serde_json::Value, JsonError> {
+    let mut budget = Budget {
+        left: None,
+        bytes_counted: true,
+    };
+    object_of(doc, &automerge::ROOT, ObjType::Map, None, &mut budget)
 }
 
 /// The JSON value of the object `id` as it was at `heads`, holding at most
@@ -255,10 +287,14 @@ pub fn read_at<D: ReadDoc + ?Sized>(
     doc: &D,
     id: &ObjId,
     heads: &[ChangeHash],
-    mut limit: Option<usize>,
+    limit: Option<usize>,
 ) -> Result<serde_json::Value, JsonError> {
     let kind = doc.object_type(id)?;
-    object_of(doc, id, kind, Some(heads), &mut limit)
+    let mut budget = Budget {
+        left: limit,
+        bytes_counted: false,
+    };
+    object_of(doc, id, kind, Some(heads), &mut budget)
 }
 
 /// The object of type `kind` at `prop` of `obj`, made where something else or

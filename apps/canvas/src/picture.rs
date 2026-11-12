@@ -27,35 +27,43 @@ pub const MAX_PICTURE_BYTES: usize = 64 << 20;
 pub const MAX_PICTURE_SIDE: u32 = 8192;
 
 /// A PNG, JPEG or WebP decoded to straight RGBA, at most
-/// [`MAX_PICTURE_SIDE`] pixels a side.
-pub fn decode(bytes: &[u8]) -> Result<ImageData, String> {
-    let format = image::guess_format(bytes).map_err(|error| error.to_string())?;
-    if !matches!(
-        format,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
-    ) {
-        return Err(format!("{format:?} is not PNG, JPEG or WebP"));
-    }
+/// [`MAX_PICTURE_SIDE`] pixels a side, off the frame: the browser's own
+/// decoder on the web.
+pub async fn decode(bytes: &[u8]) -> Result<ImageData, String> {
+    accepted(bytes)?;
     let (width, height) = dimensions(bytes)?;
     if width.max(height) > MAX_PICTURE_SIDE {
         return Err(format!(
             "the picture is over {MAX_PICTURE_SIDE} pixels a side"
         ));
     }
-    let decoded =
-        image::load_from_memory_with_format(bytes, format).map_err(|error| error.to_string())?;
-    let rgba = decoded.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(ui::raster::rgba8(rgba.into_raw(), width, height))
+    let decoded = ui::image_codec::decode(bytes, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ui::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
+}
+
+/// The format of a picture Canvas keeps: PNG, JPEG or WebP.
+///
+/// # Errors
+///
+/// What it is otherwise.
+pub fn accepted(bytes: &[u8]) -> Result<ui::image_codec::Format, String> {
+    use ui::image_codec::Format;
+    match ui::image_codec::sniff(bytes) {
+        Some(format @ (Format::Png | Format::Jpeg | Format::WebP)) => Ok(format),
+        Some(format) => Err(format!("{format:?} is not PNG, JPEG or WebP")),
+        None => Err("not a PNG, JPEG or WebP".to_owned()),
+    }
 }
 
 /// A picture's size in pixels, read from its header.
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| error.to_string())?
-        .into_dimensions()
-        .map_err(|error| error.to_string())
+    ui::image_codec::dimensions(bytes).ok_or_else(|| "its size cannot be read".to_owned())
 }
 
 pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
@@ -380,9 +388,13 @@ impl Default for Pictures {
 }
 
 /// A picture's bytes decoded and halved down to a thumbnail's size, every
-/// copy made at once: work for a background thread.
-fn decode_all(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<ImageData>> {
-    let full = bytes_of(content, address).and_then(|bytes| decode(&bytes).ok())?;
+/// copy made at once, off the frame: the browser's own decoder on the web.
+async fn decode_all(
+    content: tilo_content::ContentStore,
+    address: String,
+) -> Option<Vec<ImageData>> {
+    let bytes = bytes_of(&content, &address)?;
+    let full = decode(&bytes).await.ok()?;
     let mut levels = vec![full];
     while let Some(last) = levels.last() {
         if last.width.max(last.height) <= 64 {
@@ -442,25 +454,59 @@ impl Pictures {
             .insert(address, levels.map(|levels| Pyramid { levels, used: 0 }));
     }
 
-    /// Start decoding the picture at `address` in the background; answers
-    /// whether it started.
+    /// Start decoding the picture at `address` off the frame; answers whether
+    /// one is now on its way.
     fn start(&mut self, address: &str) -> bool {
         if self.decoding.contains_key(address) {
             return true;
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         let owned = address.to_owned();
-        // The thread reads the window's store, handed to it here.
+        // The decoder reads the window's store, handed to it here.
         let content = self.content();
-        let started = ui::rt::background::Background::current()
-            .spawn("canvas-picture", move || {
-                let _ = sender.send(decode_all(&content, &owned));
-            })
-            .is_ok();
-        if started {
-            self.decoding.insert(address.to_owned(), receiver);
+        let wake = ui::WakeHandle::new();
+        let sent = address.to_owned();
+        ui::rt::app().spawn_then(
+            async move { decode_all(content, sent).await },
+            move |levels| {
+                let _ = sender.send(levels);
+                wake.wake();
+            },
+        );
+        self.decoding.insert(owned, receiver);
+        true
+    }
+
+    /// Whether every picture `art` shows is here, waiting for the ones still
+    /// being decoded where the thread can wait for the decoder: an answer
+    /// that must show the pictures themselves asks this before it draws them.
+    pub fn ready(&mut self, art: &crate::model::Artwork) -> bool {
+        let mut waiting = false;
+        for mark in &art.marks {
+            let Shape::Image { src, .. } = &mark.shape else {
+                continue;
+            };
+            self.collect();
+            if self.decoded.contains_key(src) {
+                continue;
+            }
+            if !self.decoding.contains_key(src) {
+                self.start(src);
+            }
+            if ui::rt::available(ui::rt::Feature::BlockOn) {
+                // Wait for it rather than look at the placeholder the canvas
+                // shows while it arrives. A picture that did not decode is
+                // kept as one that did not come, and waits no longer.
+                let levels = self
+                    .decoding
+                    .remove(src)
+                    .and_then(|channel| channel.recv().ok().flatten());
+                self.keep(src.clone(), levels);
+                continue;
+            }
+            waiting = true;
         }
-        started
+        !waiting
     }
 
     /// The full picture at `address`, decoded once.
@@ -478,22 +524,24 @@ impl Pictures {
         self.clock += 1;
         self.collect();
         if !self.decoded.contains_key(address) {
-            if !self.patient && self.start(address) {
+            self.start(address);
+            if self.patient && ui::rt::available(ui::rt::Feature::BlockOn) {
+                // Already on its way: wait for it rather than decode twice.
+                // A look, an export or a comparison must see the picture
+                // itself, not the placeholder the canvas shows while it
+                // arrives.
+                let levels = self
+                    .decoding
+                    .remove(address)
+                    .and_then(|channel| channel.recv().ok().flatten());
+                self.keep(address.to_owned(), levels);
+            }
+            // A browser page cannot wait: its decode job runs only once this
+            // returns, so the picture shows as a placeholder until the
+            // pixels arrive, a few frames on.
+            if !self.decoded.contains_key(address) {
                 return None;
             }
-            let levels = match self.decoding.remove(address) {
-                // Already on its way: wait for it rather than decode twice,
-                // where the thread can wait. A browser page cannot: its
-                // decode job runs only once this returns, so `recv` would
-                // never end; it decodes here instead.
-                Some(channel) if ui::rt::available(ui::rt::Feature::BlockOn) => {
-                    channel.recv().ok().flatten()
-                }
-                _ => bytes_of(&self.content(), address)
-                    .and_then(|bytes| decode(&bytes).ok())
-                    .map(|full| vec![full]),
-            };
-            self.keep(address.to_owned(), levels);
         }
         let clock = self.clock;
         let pyramid = self.decoded.get_mut(address)?.as_mut()?;
@@ -623,5 +671,87 @@ mod tests {
         let half = halve(&image);
         assert_eq!((half.width, half.height), (1, 1));
         assert_eq!(half.data.data(), &[128, 128, 128, 255]);
+    }
+
+    /// A 6 by 4 picture in the store `content`, and its address.
+    fn stored(content: &tilo_content::ContentStore) -> String {
+        let png = ui::png::encode_rgba8(6, 4, &[230, 30, 20, 255].repeat(6 * 4))
+            .expect("the fixture encodes");
+        let hash = content.put(&png).expect("the fixture is kept");
+        ui::tilo_actions::content_resource(&hash).expect("the fixture has an address")
+    }
+
+    /// Run passes until `shows` holds, as the canvas draws frame after frame
+    /// while a picture is being decoded.
+    fn until(mut shows: impl FnMut() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !shows() {
+            assert!(
+                ui::time::now() < deadline,
+                "the picture did not decode off the frame in time"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// The canvas draws no pixel itself: a picture it has not decoded yet
+    /// shows as a placeholder, and the picture arrives from the decoder.
+    #[test]
+    fn a_picture_decodes_off_the_frame_and_shows_when_it_lands() {
+        let content = tilo_content::ContentStore::memory();
+        let address = stored(&content);
+        let mut pictures = Pictures::default();
+        pictures.read_from(content);
+        pictures.patient = false;
+
+        assert!(
+            pictures
+                .shown(&address, 1.0, &Treatment::default())
+                .is_none(),
+            "the pass that asks for the pixels draws a placeholder"
+        );
+        assert!(
+            pictures.decoding(),
+            "a decoder is working on it for the frames after"
+        );
+
+        let shown = |pictures: &mut Pictures| {
+            pictures
+                .shown(&address, 1.0, &Treatment::default())
+                .map(|(image, _)| (image.width, image.height))
+        };
+        until(|| shown(&mut pictures).is_some());
+        assert_eq!(shown(&mut pictures), Some((6, 4)));
+        assert!(!pictures.decoding());
+    }
+
+    /// An answer that must show a picture itself asks whether it is here,
+    /// and the decode that answers it runs off the frame either way.
+    #[test]
+    fn a_picture_an_answer_must_see_is_decoded_before_it_answers() {
+        let content = tilo_content::ContentStore::memory();
+        let address = stored(&content);
+        let mut pictures = Pictures::default();
+        pictures.read_from(content);
+        let mut art = crate::model::Artwork::default();
+        art.marks.push(crate::model::Mark {
+            id: "photo".into(),
+            shape: Shape::Image {
+                x: 0.0,
+                y: 0.0,
+                width: 6.0,
+                height: 4.0,
+                src: address.clone(),
+                crop: None,
+                straighten: None,
+            },
+            ..crate::model::Mark::default()
+        });
+
+        until(|| pictures.ready(&art));
+        assert_eq!(
+            pictures.full(&address).map(|i| (i.width, i.height)),
+            Some((6, 4))
+        );
     }
 }

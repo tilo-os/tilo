@@ -4295,11 +4295,11 @@ mod command_path_tests {
         else {
             panic!("Files hands the selected version to Workspace Activity");
         };
-        assert_eq!(entry.author.name, "Scribe · Software, for Ada Lovelace");
+        assert_eq!(entry.author.name, "Scribe");
+        assert_eq!(ui::author_line(&entry.author), "Scribe for Ada Lovelace");
         assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
         let attribution = entry.author.attribution.expect("who acted for whom");
         assert_eq!(attribution.actor, "agent:scribe");
-        assert_eq!(attribution.actor_name, "Scribe");
         assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
         assert_eq!(
             attribution.on_behalf_of_name.as_deref(),
@@ -6212,4 +6212,38 @@ fn on_a_frame_loop_reveal_in_folder_selects_the_item_once_its_folder_is_read() {
         };
         assert_eq!(selected.as_deref(), Some("b.txt"));
     });
+}
+
+/// A file of the system Tilo replaced is never edited where it lies: opening it puts a copy in the
+/// workspace, and the edit lands there. The original keeps exactly what it had, and an earlier copy
+/// the person may have edited since is never overwritten by a second open.
+#[test]
+fn opening_a_file_of_the_replaced_system_brings_a_copy_into_the_workspace() {
+    let replaced = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let original = replaced.path().join("Notes.md");
+    std::fs::write(&original, b"what the old system held").unwrap();
+
+    let copy = crate::fileops::import_mounted_into(&original, workspace.path()).unwrap();
+    assert_eq!(copy, workspace.path().join("Notes.md"));
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        b"what the old system held",
+        "the copy is the file's first version in the workspace"
+    );
+
+    std::fs::write(&copy, b"edited in Tilo").unwrap();
+    assert_eq!(
+        std::fs::read(&original).unwrap(),
+        b"what the old system held",
+        "the edit is the workspace's, and the original is untouched"
+    );
+
+    let again = crate::fileops::import_mounted_into(&original, workspace.path()).unwrap();
+    assert_eq!(again, workspace.path().join("Notes 2.md"));
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        b"edited in Tilo",
+        "a second open never overwrites the copy the person edited"
+    );
 }

@@ -47,6 +47,7 @@ d-pf6eoju5 = Place cards
 
 d-2lxgfocl = New column
     .doc = Adds a column at the right of the board.
+    .w-untitled = Untitled
 
 d-dw7khkq2 = New card
     .doc = Adds a card at the foot of a column, under the title typed in the entry that adds there: a card is named where it is made, not left "Untitled".

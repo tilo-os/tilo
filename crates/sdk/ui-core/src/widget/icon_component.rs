@@ -13,7 +13,8 @@ crate::component::choice!(IconSize, "IconSize", {
 });
 
 /// One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status
-/// mark. It says nothing to assistive technology, so the words beside it carry the meaning.
+/// mark. One that stands on its own says what it means in `description`, read on hover; the
+/// words beside a glyph carry the meaning otherwise.
 #[derive(Component)]
 #[component(name = "Icon", role = "Image")]
 pub struct IconProps {
@@ -29,6 +30,10 @@ pub struct IconProps {
     pub accent: bool,
     /// A status the glyph means, in that status's colour: a passed check, a warning sign.
     pub tone: Option<Tone>,
+    /// What the glyph means, where it stands on its own without words beside it: a mark saying
+    /// why a service cannot be reached. Read on hover; the words a window says in full carry it
+    /// to assistive technology.
+    pub description: Option<String>,
 }
 
 impl Default for IconProps {
@@ -39,6 +44,7 @@ impl Default for IconProps {
             secondary: false,
             accent: false,
             tone: None,
+            description: None,
         }
     }
 }
@@ -53,13 +59,18 @@ impl Described for IconWidget {
             secondary,
             accent,
             tone,
+            description,
         } = props;
         let widget = Self::new(icon).sized(size.unwrap_or_default());
-        match (tone, accent, secondary) {
+        let widget = match (tone, accent, secondary) {
             (Some(tone), _, _) => widget.tone(tone),
             (None, true, _) => widget.accent(),
             (None, false, true) => widget.dim(),
             (None, false, false) => widget,
+        };
+        match description.filter(|it| !it.trim().is_empty()) {
+            Some(it) => widget.describing(it),
+            None => widget,
         }
     }
 
@@ -72,6 +83,7 @@ impl Described for IconWidget {
             (None, false, false) => super::Tint::Primary,
         };
         self.set_glyph(props.icon, props.size.unwrap_or_default(), tint);
+        self.set_description(props.description.filter(|it| !it.trim().is_empty()));
         true
     }
 }

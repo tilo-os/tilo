@@ -34,7 +34,6 @@ impl NoteDates {
     where
         Tz::Offset: std::fmt::Display,
     {
-        use ui::i18n::I18nManager;
         let date = |value: Option<i64>| {
             value
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
@@ -54,11 +53,11 @@ impl NoteDates {
             ("notes-edited-date", self.edited),
         ] {
             if let Some(date) = date(value) {
-                labels.push(I18nManager::format(key, &[("date", date.into())]));
+                labels.push(crate::metadata::CATALOG.t_args(key, &[("date", date.into())]));
             }
         }
         if labels.is_empty() {
-            labels.push(I18nManager::lookup("notes-date-unavailable", None));
+            labels.push(crate::metadata::CATALOG.t("notes-date-unavailable"));
         }
         labels
     }
@@ -75,17 +74,18 @@ impl NoteDates {
     /// zone, read against `now`. A date the history does not know is left
     /// out; a note with no known date shows nothing.
     pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
-        use ui::i18n::I18nManager;
         let created = self.created.map(|seconds| when(seconds, now));
         let edited = self.edited.map(|seconds| when(seconds, now));
         let line = match (created, edited) {
-            (Some(created), Some(edited)) if created != edited => I18nManager::format(
+            (Some(created), Some(edited)) if created != edited => crate::metadata::CATALOG.t_args(
                 "notes-dates",
                 &[("created", created.into()), ("edited", edited.into())],
             ),
-            (Some(date), _) => I18nManager::format("notes-created-date", &[("date", date.into())]),
+            (Some(date), _) => {
+                crate::metadata::CATALOG.t_args("notes-created-date", &[("date", date.into())])
+            }
             (None, Some(date)) => {
-                I18nManager::format("notes-edited-date", &[("date", date.into())])
+                crate::metadata::CATALOG.t_args("notes-edited-date", &[("date", date.into())])
             }
             (None, None) => return Vec::new(),
         };
@@ -97,7 +97,6 @@ impl NoteDates {
 /// year when it is not this one), in the local time zone.
 fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     use chrono::{Datelike, TimeZone};
-    use ui::i18n::I18nManager;
     let Some(moment) = chrono::Local.timestamp_opt(seconds, 0).single() else {
         return String::new();
     };
@@ -105,7 +104,7 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     // reads as today rather than as a date in the future.
     if moment.date_naive() >= now.date_naive() {
         let time = ui::clock::time_of_day(&moment);
-        return I18nManager::format("notes-date-today", &[("time", time.into())]);
+        return crate::metadata::CATALOG.t_args("notes-date-today", &[("time", time.into())]);
     }
     if moment.year() == now.year() {
         ui::format::month_day(moment.date_naive())

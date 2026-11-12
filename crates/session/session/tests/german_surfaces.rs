@@ -13,13 +13,11 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use tilo_actions::ResourceSpec;
 use tilo_actions::door::{ActionDescriptor, survey};
 use tilo_sheets::Seat as _;
 
-use common::{private_home, seeded_session};
+use crate::common::{private_home, seeded_session};
 
 /// The words the person reads the actions of `prefix` 's resources by.
 fn labelled<'a>(labels: &'a [(String, String)], prefix: &str) -> Vec<&'a str> {

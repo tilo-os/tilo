@@ -23,6 +23,10 @@ pub enum OpenState {
     Opening,
     /// A session is attached.
     Open,
+    /// Another device's process, or another participant's, runs the
+    /// session: the tab shows it and starts a shell of its own only when
+    /// the person asks (Restart shell).
+    Joined,
     /// The device's own shell needs the person's allow; the shell is asking.
     AwaitingAllow,
     /// The target could not be opened; the reason is shown on the tab.
@@ -533,11 +537,17 @@ impl Sessions {
             Source::Hosted { .. } => {
                 crate::HostedProcessServices::ask(request, self.workspace().as_deref())?
             }
-            #[cfg(unix)]
             Source::Standalone => {
                 crate::inner::ush_service_ask(request, self.workspace().as_deref())?
             }
-            _ => return Err("environments are managed through Tilo's shell runtime".into()),
+            Source::None => {
+                return Err("environments are managed through Tilo's shell runtime".into());
+            }
+            // A scripted source answers no directory, as it always has.
+            #[cfg(test)]
+            Source::Scripted(_) => {
+                return Err("environments are managed through Tilo's shell runtime".into());
+            }
         };
         parse_directory_reply(&reply)
     }

@@ -1,7 +1,7 @@
 //! What the connector does without changing its record by itself.
 //!
-//! A bot's program only sequences steps, so `plan-route` and `plan-event`
-//! work out what an event means ([`crate::bridge`]) and answer the lists
+//! A bot's program only sequences steps, so `plan-event` works out what an
+//! event means ([`crate::bridge`]) and answers the lists
 //! the program loops over, one per verb to invoke. The linking effects
 //! are a person's, run by the workspace's host for them
 //! ([`ui::linked_accounts`]): `my-link` says whether they linked their
@@ -11,7 +11,7 @@
 //! bot token in the host's secret store.
 
 use discord_wire::event::{link_check, link_proof, sha256_hex};
-use serde_json::{Value, json};
+use serde_json::Value;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::linked_accounts::{AccountName, LinkStart, OfferReading, Reading};
 use ui::tilo_resource::{self, Effect, Id};
@@ -90,6 +90,7 @@ pub enum DiscordEffect {
     /// Bridge for this server: the same setup the workspace's operator gives on
     /// the command line, through the workspace's own actions, which decide
     /// whether this person may add bots.
+    #[effect(label = "discord-bridge-server")]
     BridgeServer {
         #[param(secret)]
         token: String,
@@ -98,19 +99,15 @@ pub enum DiscordEffect {
         #[param("The server's name")]
         server: String,
     },
-    /// Find the message an event is about
-    ///
-    /// The Chat message and channel the bridge reads before planning
-    /// `event`, each empty when it is about none.
-    #[effect(kind = "read", returns, audience = "agents")]
-    PlanRoute { event: Value },
     /// Plan an event
     ///
     /// What `event` means for both sides, one list per verb to run.
     #[effect(kind = "read", returns, audience = "agents")]
     PlanEvent {
         event: Value,
-        #[param("Chat's read-workspace answer")]
+        #[param(
+            "Chat's records as the record door reads them: chat, its record of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
+        )]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
         context: Option<Context>,
@@ -136,10 +133,6 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         | DiscordEffect::SetBotToken { .. }
         | DiscordEffect::FindServers { .. }
         | DiscordEffect::BridgeServer { .. } => None,
-        DiscordEffect::PlanRoute { event } => Some(json!({
-            "message": bridge::route(guild, event),
-            "channel": bridge::route_channel(event),
-        })),
         DiscordEffect::PlanEvent {
             event,
             chat,
@@ -149,7 +142,7 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
-                chat,
+                chat: &crate::tilo::ChatRead::of(chat),
                 context: &context.clone().unwrap_or_default(),
                 workspace: room.as_ref().unwrap_or(&Value::Null),
                 emoji: emoji.as_ref(),

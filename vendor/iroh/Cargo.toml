@@ -405,6 +405,13 @@ version = "0.3.62"
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.wasm-tracing]
 version = "2.1.0"
 
+# TILO PATCH: an endpoint's default trust is the system store (TILO-PATCH.md).
+[target.'cfg(all(not(all(target_family = "wasm", target_os = "unknown")), not(target_os = "android")))'.dependencies.rustls-platform-verifier]
+version = "0.7"
+
+[target.'cfg(target_os = "android")'.dependencies.rustls-native-certs]
+version = "0.8"
+
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.hickory-resolver]
 version = "0.26.0"
 default-features = false

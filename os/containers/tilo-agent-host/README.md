@@ -82,15 +82,24 @@ podman compose exec tilo-mcp \
 | `tilo-relay` | `registry.tilo.so/tilo/tilo-relay:latest` | `os/containers/tilo-relay/Containerfile` |
 | `tilo-mcp` | `registry.tilo.so/tilo/tilo-runtime:latest` | this directory's `Containerfile` |
 
-Override with `TILO_RELAY_IMAGE` / `TILO_MCP_IMAGE`. Building the runtime image
-from the repository root:
+Override with `TILO_RELAY_IMAGE` / `TILO_MCP_IMAGE`. The runtime image packages
+programs built outside it (`tools/ci/publish/server-binaries.sh`, the check
+agent-host-binaries), so a local build stages them first:
 
 ```sh
-podman build -f os/containers/tilo-agent-host/Containerfile \
-  -t registry.tilo.so/tilo/tilo-runtime:latest .
+out=$TMPDIR/agent-host-binaries
+bash tools/ci/publish/server-binaries.sh agent-host "$out"
+context=$TMPDIR/agent-host-context
+mkdir -p "$context/bin" "$context/os/containers/tilo-agent-host"
+cp os/containers/tilo-agent-host/Containerfile "$context/"
+cp "$out/tilo-runtime" "$out/tilo-enroll" "$context/bin/"
+cp os/containers/tilo-agent-host/tilo-agent-mcp "$context/os/containers/tilo-agent-host/"
+podman build -f "$context/Containerfile" -t registry.tilo.so/tilo/tilo-runtime:latest \
+  --build-arg "RPMS_REF=$RPMS_REF" "$context"
 ```
 
-(Requires the same `BASE_REF` / `RPMS_REF` digest pins as the relay image build.)
+`RPMS_REF` is the digest-pinned RPM snapshot the relay image builds from too
+(`tools/ci/publish/rpm-snapshot-ref.sh`).
 
 ## Environment
 

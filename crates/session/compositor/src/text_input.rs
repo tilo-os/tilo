@@ -12,7 +12,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as _, Hasher as _};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
@@ -31,10 +31,10 @@ use smithay::wayland::input_method::{
 use smithay::wayland::text_input::{CommittedState, TextInputManagerState, TextInputSeat};
 use smithay::wayland::virtual_keyboard::{VirtualKeyboardHandler, VirtualKeyboardManagerState};
 
-use crate::host::{HostIme, HostTextInput};
 use crate::input::{InputEvent, Switch};
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
+use tilo_session_core::surface::{HostIme, HostTextInput};
 
 fn trusted(client: &Client) -> bool {
     client
@@ -111,6 +111,22 @@ pub(crate) struct TextInput {
     /// Whether the key being routed came back from a trusted input method through its virtual
     /// keyboard, rather than from a device.
     reinjected: bool,
+    /// A key the person pressed reached the focused field, and that field has not yet committed
+    /// where the key left its caret: the field it was then, and how long the desk waits for it.
+    caret_wait: Option<CaretWait>,
+}
+
+/// How long the desk waits for the field a key reached to say where its caret stands before it
+/// places a surface at the old one: a frame or two, and a little more for an app that was busy.
+const CARET_WAIT: Duration = Duration::from_millis(250);
+
+/// The field a key reached, and when the desk began waiting for its commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaretWait {
+    /// The text field's id and the revision of what its client had committed, or `None` when no
+    /// field took text then.
+    field: Option<(u64, u64)>,
+    since: Instant,
 }
 
 /// The hosted surface's field an input method serves.
@@ -158,6 +174,7 @@ impl TextInput {
             tablet_mode: false,
             host_field: None,
             reinjected: false,
+            caret_wait: None,
         }
     }
 
@@ -209,8 +226,10 @@ impl State {
         self.text_input.entry(typing)
     }
 
-    /// The hosted surface whose field the person types into now: the topmost one that has a field
-    /// with the focus, while the session is not locked.
+    /// The hosted surface whose field the person types into now: the topmost one that holds the
+    /// keyboard and has a field with the focus, while the session is not locked. A surface that
+    /// keeps its field focused under another that took the keys (the desk's search under the
+    /// clipboard opened over it) is not typed into until it has them back.
     fn host_text_input(&self) -> Option<(usize, HostTextInput)> {
         if self.locked() {
             return None;
@@ -219,23 +238,22 @@ impl State {
             .iter()
             .enumerate()
             .rev()
+            .filter(|(_, host)| host.wants_keyboard())
             .find_map(|(index, host)| host.text_input().map(|input| (index, input)))
     }
 
     /// Keep the field the person types into on the keyboard's focus, whoever draws it: a client
     /// tells its `text-input-v3` object, and the compositor's own fields are served by the input
     /// method directly.
-    /// A hosted field takes the focus from every client while it has it: the input method composes
-    /// there, and its candidate window stands where the field's caret does.
+    /// A hosted field holds the keyboard, so no client's field has the focus while it is served:
+    /// the input method composes there, and its candidate window stands where the field's caret
+    /// does.
     pub(crate) fn sync_text_input(&mut self) {
         let host = self.host_text_input();
-        let focused = if host.is_some() {
-            None
-        } else {
-            self.seat
-                .get_keyboard()
-                .and_then(|keyboard| keyboard.current_focus())
-        };
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
         let handle = self.seat.text_input().clone();
         if handle.focus() != focused {
             handle.leave();
@@ -458,11 +476,59 @@ impl State {
         caret
     }
 
+    /// The focused field's identity and the revision of what its client committed: a key that
+    /// moves the caret commits a new revision.
+    fn caret_field(&self) -> Option<(u64, u64)> {
+        let mut field = None;
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|input, surface, committed| {
+                field = Some((field_id(input, surface), u64::from(committed.serial)));
+            });
+        field
+    }
+
+    /// A key reached the focused client: where its caret stands is not known until that client
+    /// commits the frame the key moved it in.
+    pub(crate) fn note_caret_may_move(&mut self) {
+        let field = self.caret_field();
+        if field.is_some() {
+            self.text_input.caret_wait = Some(CaretWait {
+                field,
+                since: Instant::now(),
+            });
+        }
+    }
+
+    /// When the wait for the focused field's caret gives up, while one runs.
+    pub(crate) fn caret_deadline(&self) -> Option<Instant> {
+        let wait = self.text_input.caret_wait?;
+        wait.since.checked_add(CARET_WAIT)
+    }
+
+    /// Whether the focused field's caret is committed for the keys it received: a surface a key
+    /// opens at the caret waits for it, so it stands under where the person's caret is now, not
+    /// where it was before their last redraw.
+    pub(crate) fn caret_settled(&mut self) -> bool {
+        let Some(wait) = self.text_input.caret_wait else {
+            return true;
+        };
+        let settled = self.caret_field() != wait.field || wait.since.elapsed() >= CARET_WAIT;
+        if settled {
+            self.text_input.caret_wait = None;
+        }
+        settled
+    }
+
     /// Where `surface` stands in the desk: a window of the space, or a popup on one — a field the
     /// person types into may live in either.
     fn window_geometry(&self, surface: &WlSurface) -> Option<Rectangle<i32, Logical>> {
         for window in self.space.elements() {
-            let toplevel = window.toplevel()?;
+            // An X11 window has no Wayland toplevel and holds no field of these: the windows after
+            // it are still looked through.
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
             let rect = self.space.element_geometry(window)?;
             if toplevel.wl_surface() == surface {
                 return Some(rect);

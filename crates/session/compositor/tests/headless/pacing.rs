@@ -3,33 +3,67 @@
 
 use super::*;
 
+/// Run `operation` at `instant` on the displays' clock, which the pacing reads: a frame is due at
+/// the instant its grid says, not at the instant the machine took to get there.
+fn at<T>(instant: Instant, operation: impl FnOnce() -> T) -> T {
+    tilo_clock::testing::with_monotonic_time(instant, operation)
+}
+
 /// A display shows one frame per refresh: a change right after a frame waits for the blank that
 /// shows it, and the loop sleeps until then instead of drawing again at once.
 #[test]
 fn a_display_shows_one_frame_per_refresh() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
     let mut config = OutputConfig::new("HEADLESS-1", 640, 480);
+    // A tenth of a second per blank.
     config.refresh_mhz = 10_000;
-    compositor.add_output(&config).expect("output");
-    compositor.draw_frame().expect("a frame");
+    // The grid this display keeps starts where the test holds the clock, so the blank a change is
+    // shown at is the display's to say, however long the frame that found the change took to draw.
+    let grid = tilo_clock::now();
+    at(grid, || compositor.add_output(&config)).expect("output");
+    // A frame that shows something: one that changed no pixel takes no blank, as a display's
+    // backend queues no flip for it.
+    let mut client = mapped_client(
+        &mut compositor,
+        "org.example.shown",
+        (200, 100),
+        [0, 255, 0, 255],
+    );
+    at(grid, || compositor.render()).expect("a frame");
     let shown = compositor.frames_presented();
+    assert_eq!(shown, 1, "the window's first frame is on the display");
 
     // Marking an app private changes what the desk a picture stands on draws.
+    client.show(200, 100, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.owes_frame()
+    });
     compositor.protect_app("org.example.shared", true);
-    // The blank the change is shown at is ahead of now, whether the frame just drawn took most of
-    // the tenth of a second or almost none of it.
-    let wait = compositor.next_wait().expect("the blank that shows it");
+    // The blank the change is shown at is the display's next one, ahead of the frame that found it.
+    let due = compositor
+        .frame_deadline()
+        .expect("the blank that shows it");
     assert!(
-        wait > Duration::ZERO && wait <= Duration::from_millis(100),
-        "the blank ahead, on the display's tenth-of-a-second grid: {wait:?}"
+        due.saturating_duration_since(grid) <= Duration::from_millis(100),
+        "the blank is the display's next one, one refresh on"
     );
-    compositor.render().expect("a turn");
+    let before = due
+        .checked_sub(Duration::from_millis(1))
+        .expect("an instant before the blank");
+    at(before, || {
+        assert_eq!(
+            compositor.next_wait(),
+            Some(due.saturating_duration_since(before)),
+            "the loop sleeps until the blank, not a whole refresh"
+        );
+        compositor.render().expect("a turn");
+    });
     assert_eq!(
         compositor.frames_presented(),
         shown,
         "no frame before the blank"
     );
-    compositor.draw_frame().expect("a frame");
+    at(due, || compositor.render()).expect("a turn");
     assert_eq!(
         compositor.frames_presented(),
         shown + 1,
@@ -110,7 +144,7 @@ fn the_wait_for_the_blank_serves_what_arrived_before_the_frame() {
     });
     let mut served = 0;
     compositor
-        .await_frame_arrivals(|| served += 1)
+        .await_frame_arrivals(|_| served += 1)
         .expect("the wait");
     assert!(served >= 1, "the wait served what arrived while it waited");
     assert_eq!(

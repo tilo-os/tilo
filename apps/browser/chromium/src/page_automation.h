@@ -350,8 +350,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static constexpr int64_t kPathPointMs=16;
   // One turn of the scroll wheel is one frame: a page's scroll listeners and
   // intersection observers run between two turns, as they do under a hand,
-  // so a lazy list loads while the wheel keeps turning.
-  static constexpr int64_t kScrollWheelMs=40;
+  // so a lazy list loads while the wheel keeps turning. The turn itself is
+  // read once the wheel's scroll has come to rest, on the page's side.
+  static constexpr int64_t kScrollWheelMs=16;
   // The most one scroll may turn the wheel, and the most one turn travels:
   // bounded work whatever the page says is left, and an answer inside the
   // time an action is waited for.
@@ -360,8 +361,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static constexpr size_t kMaxRefused=256;
   // A scroll answers inside the time an action is waited for, however much
   // page a lazy list keeps giving: what the wheel reached by then is its
-  // answer, and a caller that wants more scrolls again.
-  static constexpr double kScrollBudgetMs=4000;
+  // answer, and a caller that wants more scrolls again. A wheel moves a box by
+  // one visible page of it, and a turn is read once that page has come to
+  // rest, so a distance of several pages takes a while: the turns it may take
+  // are what bounds the work, and this is the time they are given.
+  static constexpr double kScrollBudgetMs=15000;
   static constexpr double kMaxScrollTurn=2000;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.

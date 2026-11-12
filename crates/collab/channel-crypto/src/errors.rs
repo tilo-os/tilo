@@ -21,7 +21,7 @@ pub enum Error {
     #[error("openmls error: {0}")]
     OpenMls(String),
 
-    /// `OpenMlsRustCrypto::storage()` rejected a write of secret material.
+    /// The MLS provider's storage rejected a write of secret material.
     /// Separate variant because storage failure has a different operational
     /// signal than a protocol error — almost always OOM or a test-fixture
     /// issue, not a malformed peer message.
@@ -79,6 +79,13 @@ pub enum Error {
     #[error("peer state belongs to another device")]
     OtherDevice,
 
+    /// The kept state is in a format no upgrade reaches: one no build wrote,
+    /// or older than the upgrade path keeps. It is this device's own and
+    /// authentic, but cannot be read; the caller can only drop it and join
+    /// again, and anything only this device held is lost.
+    #[error("peer state was kept in a format no upgrade reaches")]
+    OtherFormat,
+
     /// AEAD authentication failed, or sealing could not be performed.
     #[error("MLS state cryptography error: {0}")]
     StateCrypto(&'static str),
@@ -90,6 +97,11 @@ pub enum Error {
     /// A signed governance frame failed live membership/capability checks.
     #[error("MLS governance error: {0}")]
     Governance(String),
+
+    /// A Welcome was refused before this device took it, for the reason
+    /// named.
+    #[error("Welcome refused: {0}")]
+    WelcomeRefused(WelcomeRefusal),
 
     /// No content key is held for the ciphertext's epoch: the member joined
     /// without that epoch's history, or was removed before it.
@@ -120,6 +132,22 @@ impl Error {
     pub(crate) fn tls_codec<E: std::fmt::Debug>(e: E) -> Self {
         Self::TlsCodec(format!("{e:?}"))
     }
+}
+
+/// Why a waiting device refused a Welcome. Neither is mistaken for a lost
+/// frame: the device stays waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum WelcomeRefusal {
+    /// The Welcome's `GroupInfo` is signed by a leaf naming another device
+    /// than the one that signed the frame carrying it.
+    #[error("its group information is signed by another device than its frame")]
+    SignedByAnotherDevice,
+    /// A leaf of the tree names a device the channel's membership does not
+    /// let read it, as this device sees the membership now. A lie, or this
+    /// device's view behind or ahead of the committer's, so the Welcome is
+    /// judged again as that view changes.
+    #[error("its tree holds a device the membership does not allow")]
+    DeviceNotAllowed,
 }
 
 /// Crate-wide `Result` alias.

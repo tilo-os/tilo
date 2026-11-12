@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 type Continuation<T> = Box<dyn FnOnce(Option<T>) + Send>;
@@ -287,7 +287,7 @@ impl<T> Pending<T> {
     /// Block the calling thread until the answer arrives or `timeout`
     /// passes. For threads that do not drive the answer's producer.
     pub fn wait_timeout(mut self, timeout: Duration) -> Result<Option<T>, Self> {
-        let deadline = Instant::now().checked_add(timeout);
+        let deadline = tilo_clock::now().checked_add(timeout);
         let mut state = self.slot.state.lock_recover();
         loop {
             if !matches!(*state, State::Waiting { .. }) {
@@ -298,7 +298,7 @@ impl<T> Pending<T> {
                 });
             }
             let remaining = deadline.map_or(timeout, |deadline| {
-                deadline.saturating_duration_since(Instant::now())
+                deadline.saturating_duration_since(tilo_clock::now())
             });
             if remaining.is_zero() {
                 drop(state);
@@ -501,7 +501,7 @@ mod tests {
                     parked.send(()).expect("announce parking");
                     announced = true;
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline.saturating_duration_since(tilo_clock::now());
                 if remaining.is_zero() {
                     return false;
                 }

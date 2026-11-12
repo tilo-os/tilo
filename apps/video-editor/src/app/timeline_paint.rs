@@ -45,7 +45,7 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "No audio",
+                &crate::resource::CATALOG.t("video-editor-no-audio"),
                 &label,
                 c.text_dim,
                 m.readout.x0,
@@ -58,7 +58,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            "Mix",
+            &crate::resource::CATALOG.t("video-editor-mix"),
             &label,
             c.text_dim,
             m.readout.x0,
@@ -608,16 +608,18 @@ impl VideoEditorApp {
         // use, so the three empty surfaces of one window are one design.
         // Its words ask for a step, so it carries the button for it.
         if let Some(empty) = self.timeline_empty(r) {
+            let words = empty.words();
             ui::widget::EmptyState::paint(
                 &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
                 empty.area,
-                &empty.content(),
+                &super::timeline_empty::TimelineEmpty::content(&words),
                 self.last_mouse,
             );
         }
 
         for (kind, rect) in self.add_track_buttons(r) {
-            let face = ButtonFace::new(rect, add_track_label(kind))
+            let adding = add_track_label(kind);
+            let face = ButtonFace::new(rect, &adding)
                 .icon(Icon::Plus)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
@@ -797,7 +799,7 @@ impl VideoEditorApp {
                 // strip, rather than leaving a row of blanks to be read as
                 // "this clip has no picture".
                 if self.thumbnails.is_undecodable(clip.media) && cr.width() > 90.0 {
-                    let msg = "No preview";
+                    let msg = &crate::resource::CATALOG.t("video-editor-no-preview");
                     let style = caption(theme);
                     let at = text_centre(inner, msg, &style, ctx.text);
                     text(
@@ -1074,12 +1076,12 @@ impl VideoEditorApp {
 }
 
 /// What an add-track button says.
-pub(super) fn add_track_label(kind: TrackKind) -> &'static str {
-    if kind == TrackKind::Video {
-        "Video track"
+pub(super) fn add_track_label(kind: TrackKind) -> String {
+    crate::resource::CATALOG.t(if kind == TrackKind::Video {
+        "video-editor-video-track"
     } else {
-        "Audio track"
-    }
+        "video-editor-audio-track"
+    })
 }
 
 /// The ground pulled over what will not be heard, seen or written.

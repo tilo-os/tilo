@@ -774,7 +774,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
 
     // The synthetic window root gathers the top-level accessible nodes.
     let mut root_node = AkNode::new(AkRole::Window);
-    root_node.set_label("Tilo application window");
+    root_node.set_label(crate::i18n::widget_format("window-root-name", &[]));
 
     let mut top = AkScope::under(ROOT_ID, false);
     for root in roots {
@@ -910,6 +910,11 @@ struct AkScope {
     id: AkNodeId,
     in_focused_widget: bool,
     children: Vec<AkNodeId>,
+    /// The keys this scope's synthetic children have been given ids by: a widget that draws
+    /// several windows names each window's control alike ("Show sidebar" in every window), and
+    /// the second of a key takes its own place among the children instead, so both keep a node
+    /// a reader reaches.
+    keys: std::collections::HashSet<u64>,
 }
 
 impl AkScope {
@@ -918,6 +923,7 @@ impl AkScope {
             id,
             in_focused_widget,
             children: Vec::new(),
+            keys: std::collections::HashSet::new(),
         }
     }
 }
@@ -948,10 +954,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
             self.walk_counter = self.walk_counter.saturating_add(1);
             return Visit::Collapse;
         };
-        if access.description.is_none() {
-            access.description =
-                slot.and_then(|(parent, index)| parent.accessibility_child_description(index));
-        }
+        crate::a11y_tree::walk::with_slot_words(&mut access, slot.as_ref());
         let id = match (&route, taffy_id) {
             (Some((owner, path)), None) => {
                 child_route_node_id(widget_node_id(Some(*owner), 0), path)
@@ -1040,7 +1043,15 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
         parent: &mut AkScope,
     ) -> (AkNode, AkScope) {
         let ordinal = path.last().copied().unwrap_or_default();
-        let id = synthetic_node_id(parent.id, access.key.unwrap_or(ordinal as u64));
+        let key = access.key.unwrap_or(ordinal as u64);
+        // Two windows' controls of one name, drawn by the widget that holds both: the first keeps
+        // the id its key names, the next its own place among the children, so neither is lost to
+        // the other. A repeated key is a node the widget describes twice, never a node dropped.
+        let id = if parent.keys.insert(key) {
+            synthetic_node_id(parent.id, key)
+        } else {
+            synthetic_node_id(parent.id, ordinal as u64)
+        };
 
         let mut ak = AkNode::new(map_role(access.role));
         apply_semantics_common(&mut ak, access);
@@ -1610,27 +1621,85 @@ mod tests {
         }
     }
 
-    /// Exactly as the App does before `build_tree_update`.
-    #[test]
-    fn a_rows_secondary_line_describes_its_trailing_switch() {
-        let mut row = crate::widget::ListRow::new("remove-data", "Remove its data")
-            .secondary("Your settings and saved files go to the Trash.")
-            .trailing(Box::new(
-                crate::widget::Toggle::new("remove-data-switch", "remove_data")
-                    .with_accessible_name("Remove its data"),
-            ));
-        let (_taffy, node_map, _root) = lay_out(&mut row);
-        let update = build_tree_update(&row, &node_map, None, 1.0);
-        let switch = update
+    /// A node of `role` in `update`, and nothing else claiming to be it.
+    fn only(update: &TreeUpdate, role: AkRole) -> AkNode {
+        let mut found = update
             .nodes
             .iter()
             .map(|(_, node)| node)
-            .find(|node| node.role() == AkRole::Switch)
-            .expect("the switch is exported");
+            .filter(|node| node.role() == role);
+        let node = found.next().unwrap_or_else(|| panic!("no {role:?}"));
+        assert!(found.next().is_none(), "two {role:?} nodes");
+        node.clone()
+    }
+
+    /// Exactly as the App does before `build_tree_update`: a row names the
+    /// control it holds by its caption and describes it by its own
+    /// explanation, so a reader says what the switch turns on.
+    #[test]
+    fn a_row_names_its_trailing_switch_and_describes_it() {
+        let mut row = crate::widget::ListRow::new("remove-data", "Remove its data")
+            .secondary("Your settings and saved files go to the Trash.")
+            .trailing(Box::new(crate::widget::Toggle::from_state(
+                &crate::LocalState::new(false),
+            )));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let switch = only(&update, AkRole::Switch);
+        assert_eq!(switch.label(), Some("Remove its data"));
         assert_eq!(
             switch.description(),
             Some("Your settings and saved files go to the Trash.")
         );
+    }
+
+    /// A control that says more than its row does keeps its own words.
+    #[test]
+    fn a_control_that_names_itself_keeps_its_name() {
+        let mut row = crate::widget::ListRow::new("name", "Device name").trailing(Box::new(
+            crate::widget::TextInput::new(Vec::new()).with_accessible_name("Name shown to others"),
+        ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let field = only(&update, AkRole::TextInput);
+        assert_eq!(field.label(), Some("Name shown to others"));
+    }
+
+    /// A chooser that finds a name in the value it shows is named by the row
+    /// that holds it instead, and keeps saying what it is set to.
+    #[test]
+    fn a_rows_chooser_is_named_by_the_row_and_not_by_its_value() {
+        let mut row = crate::widget::ListRow::new("currency", "Currency").trailing(Box::new(
+            crate::widget::Dropdown::from_state(
+                vec!["EUR".to_owned(), "USD".to_owned()],
+                &crate::LocalState::new("EUR".to_owned()),
+            ),
+        ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let chooser = only(&update, AkRole::ComboBox);
+        assert_eq!(chooser.label(), Some("Currency"));
+        assert_eq!(chooser.value(), Some("EUR"));
+    }
+
+    /// A row wraps its slider in a box of its own for the width every slider
+    /// of the page keeps: the box says nothing to a reader, so the slider
+    /// still takes the row's name and description.
+    #[test]
+    fn a_wrapped_trailing_slider_keeps_the_rows_name_and_description() {
+        let mut row = crate::widget::ListRow::new("sdr-brightness", "Brightness")
+            .secondary("How bright standard content is")
+            .description("How bright standard content is")
+            .trailing(Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(crate::widget::Slider::new("sdr", "sdr"))),
+            ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let slider = only(&update, AkRole::Slider);
+        assert_eq!(slider.label(), Some("Brightness"));
+        assert_eq!(slider.description(), Some("How bright standard content is"));
     }
 
     fn lay_out(
@@ -1645,6 +1714,51 @@ mod tests {
         let theme = Theme::dark();
         let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
         (taffy, node_map, root_node)
+    }
+
+    /// Two windows, drawn by the one widget that holds both: each names the control it draws of
+    /// its own content the same way — every window's sidebar toggle reads "Show sidebar" — and
+    /// each keeps a node of its own, at the place it stands, that a reader reaches.
+    #[test]
+    fn two_windows_that_share_a_control_name_each_keep_their_own_node() {
+        let toggle = |x0: f64| {
+            AccessNode::new(Role::Button)
+                .with_name("Show sidebar")
+                .with_action_target("sidebar-toggle")
+                .with_bounds(vello::kurbo::Rect::new(x0, 0.0, x0 + 32.0, 32.0))
+                .with_state(crate::a11y::AccessState::new().focusable(true))
+        };
+        let mut windows = TestWidget::new(Some(
+            AccessNode::new(Role::Group).with_children(vec![toggle(0.0), toggle(604.0)]),
+        ));
+        let (_taffy, node_map, _root) = lay_out(&mut windows);
+        let update = build_tree_update(&windows, &node_map, None, 1.0);
+        let shown: Vec<(AkNodeId, f64)> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Show sidebar"))
+            .map(|(id, node)| (*id, node.bounds().map_or(f64::NAN, |bounds| bounds.x0)))
+            .collect();
+        assert_eq!(
+            shown.len(),
+            2,
+            "both windows' toggles are in the tree: {shown:?}"
+        );
+        assert_ne!(
+            shown[0].0, shown[1].0,
+            "each window's toggle has its own id"
+        );
+        assert_eq!(
+            [shown[0].1, shown[1].1],
+            [0.0, 604.0],
+            "each stands where its window drew it"
+        );
+        let ids: std::collections::HashSet<_> = update.nodes.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids.len(),
+            update.nodes.len(),
+            "a node id addresses one node of the tree"
+        );
     }
 
     /// A container whose first field is a child widget starts at the very

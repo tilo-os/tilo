@@ -96,7 +96,9 @@ const CANCELLATION_CHECK_OPS: std::ffi::c_int = 1000;
 /// A live `SQLite` handle. Owns the connection for the lifetime of the
 /// session; all introspection + query execution goes through it.
 pub struct SqliteEngine {
-    conn: Connection,
+    /// Boxed: the driver's connection is the bulk of the engine, and a `LiveEngine` of another
+    /// driver would carry its size.
+    conn: Box<Connection>,
     /// The cancellation flag of the next [`run`](Self::run). Each run takes
     /// it and leaves a fresh one, so a request aimed at one query can never
     /// stop a later one.
@@ -109,7 +111,7 @@ impl SqliteEngine {
     /// external file.
     #[cfg(feature = "samples")]
     pub fn open_sample() -> Result<Self, String> {
-        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let conn = Box::new(Connection::open_in_memory().map_err(|e| e.to_string())?);
         sample::seed(&conn).map_err(|e| e.to_string())?;
         Ok(Self {
             conn,
@@ -124,7 +126,7 @@ impl SqliteEngine {
     /// `SQLite` database (missing parent directory, permission denied, or the
     /// file exists but isn't a valid `SQLite` database).
     pub fn open_file(path: &str) -> Result<Self, String> {
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let conn = Box::new(Connection::open(path).map_err(|e| e.to_string())?);
         Ok(Self {
             conn,
             cancelled: Arc::default(),
@@ -277,12 +279,16 @@ impl SqliteEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        self.conn.progress_handler(
-            CANCELLATION_CHECK_OPS,
-            Some(move || cancelled.load(Ordering::Relaxed)),
-        );
+        self.conn
+            .progress_handler(
+                CANCELLATION_CHECK_OPS,
+                Some(move || cancelled.load(Ordering::Relaxed)),
+            )
+            .map_err(|e| e.to_string())?;
         let result = self.run_statement(trimmed);
-        self.conn.progress_handler(0, None::<fn() -> bool>);
+        self.conn
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|e| e.to_string())?;
         result
     }
 
@@ -381,8 +387,12 @@ pub(crate) fn row_retained_bytes(row: &[Cell]) -> usize {
 /// bundled) and the real network engines share one code path.
 pub enum LiveEngine {
     Sqlite(SqliteEngine),
-    Postgres(crate::engine_pg::PostgresEngine),
-    MySql(crate::engine_mysql::MySqlEngine),
+    /// Boxed: a network driver's connection buffers what it reads and writes, so the engine is
+    /// much larger than the local one.
+    Postgres(Box<crate::engine_pg::PostgresEngine>),
+    /// Boxed: the `MySQL` engine carries the driver's connection and the options it reconnects
+    /// with.
+    MySql(Box<crate::engine_mysql::MySqlEngine>),
 }
 
 impl LiveEngine {
@@ -460,10 +470,10 @@ pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
             Err("SQLite connection has no file path".to_string())
         }
         Engine::Sqlite => SqliteEngine::open_file(&profile.file_path).map(LiveEngine::Sqlite),
-        Engine::Postgres => {
-            crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres)
-        }
-        Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile).map(LiveEngine::MySql),
+        Engine::Postgres => crate::engine_pg::PostgresEngine::connect(profile)
+            .map(|engine| LiveEngine::Postgres(Box::new(engine))),
+        Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile)
+            .map(|engine| LiveEngine::MySql(Box::new(engine))),
     }
 }
 

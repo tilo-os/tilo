@@ -22,9 +22,10 @@ use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DETACH_HOST,
-    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE,
-    HostedWorkspace, LIST_REVOCATIONS, LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
+    ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
+    DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
+    HOST_ROOMS_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
+    LIST_ROOMS, NOT_YOUR_OWN, PersonalList, UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -51,9 +52,13 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 /// What a person's own workspace is called when they do not say.
 const OWN_WORKSPACE_NAME: &str = "My workspace";
 
+/// The part a person takes in a workspace of their own, as a listing names
+/// it: they made it and administer it.
+const OWNER_ROLE: &str = "owner";
+
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 9] = [
+const HOST_VERBS: [(Verb, HostOperation); 12] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -76,6 +81,16 @@ const HOST_VERBS: [(Verb, HostOperation); 9] = [
     ),
     (
         Verb {
+            id: DELETE_ROOM,
+            label: "Delete your workspace",
+            gate: DELETE_ROOM,
+            kind: roles::GOVERNANCE_KIND,
+            params: workspace_params,
+        },
+        HostOperation::DeleteOwnWorkspace,
+    ),
+    (
+        Verb {
             id: LIST_ROOMS,
             label: "List workspaces",
             gate: LIST_ROOMS,
@@ -83,6 +98,26 @@ const HOST_VERBS: [(Verb, HostOperation); 9] = [
             params: Vec::new,
         },
         HostOperation::ListWorkspaces,
+    ),
+    (
+        Verb {
+            id: LIST_PERSONAL,
+            label: "List your workspaces, wherever they are hosted",
+            gate: LIST_PERSONAL,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        HostOperation::ReadPersonalList,
+    ),
+    (
+        Verb {
+            id: KEEP_PERSONAL,
+            label: "Keep your workspace list here",
+            gate: KEEP_PERSONAL,
+            kind: roles::GOVERNANCE_KIND,
+            params: keep_personal_params,
+        },
+        HostOperation::KeepPersonalList,
     ),
     (
         Verb {
@@ -151,6 +186,14 @@ fn workspace_params() -> Vec<ActionParam> {
         "room",
         ParamType::Text,
         "The workspace, as listing workspaces names it.",
+    )]
+}
+
+fn keep_personal_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "list",
+        ParamType::Object,
+        "Your workspaces, each with where it is hosted, as your device holds them.",
     )]
 }
 
@@ -260,7 +303,7 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "name",
             ParamType::Text,
-            "The workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Unused once you have one.",
+            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another; omitting it answers the first you made.",
         ),
         ActionParam::optional(
             "room",
@@ -297,6 +340,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         workspace_id: summary.workspace_id,
         name: summary.name.clone(),
         generation: summary.generation,
+        role: None,
     }
 }
 
@@ -379,20 +423,29 @@ impl Workspaces {
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                let workspaces = self.list().await;
-                // An agent's grant is shown only the workspaces it reaches.
-                answer(
-                    &workspaces
-                        .iter()
-                        .filter(|summary| {
-                            device
-                                .capabilities
-                                .agent
-                                .is_none_or(|scope| scope.reaches(&summary.workspace))
-                        })
-                        .map(listing)
-                        .collect::<Vec<_>>(),
-                )
+                answer(&self.listed(device).await)
+            }
+            HostOperation::DeleteOwnWorkspace => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let workspace = args.required_text("room")?;
+                // The host's person deletes any workspace it governs; anyone
+                // else one of their own, which their grant reaches.
+                let person = device.user_public_key;
+                let theirs =
+                    person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
+                if !theirs || !self.lists_to(device, workspace) {
+                    return Err(refused(&NOT_YOUR_OWN));
+                }
+                self.delete(workspace)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(serde_json::json!({ "deleted": workspace }))
+            }
+            HostOperation::ReadPersonalList | HostOperation::KeepPersonalList => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                self.personal_invoke(device, operation, &args).await
             }
             HostOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -433,6 +486,42 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Read or keep `device`'s person's workspace list, already permitted to.
+    async fn personal_invoke(
+        &self,
+        device: &DeviceCert,
+        operation: HostOperation,
+        args: &Args,
+    ) -> Result<Value, ActionHostError> {
+        if operation == HostOperation::ReadPersonalList {
+            self.note_own_device(device);
+            // A page names its browser's tab keys; one it can't name as the
+            // contract says still reads the list.
+            if let Ok(Some(browser)) = args.object("browser") {
+                self.note_browser(device, browser);
+            }
+            let here = self.listed(device).await;
+            return answer(&self.personal(device, &here));
+        }
+        let list: PersonalList = args
+            .object("list")?
+            .ok_or_else(|| invalid("`list` is required"))?;
+        // A list is kept for a person who takes part here: one the site let
+        // in, or a member of a workspace here, whom an invitation brought.
+        // Anyone else holds nothing here to keep a list of.
+        let person = device.user_public_key;
+        if !self.inner.memberships.holds_any(&person)
+            && !self.let_in(&person, tilo_clock::unix_now_ns()).await
+        {
+            return Err(refused(&self.not_let_in().to_reason()));
+        }
+        let kept = self
+            .keep_personal(device, list)
+            .map_err(|error| refused(&error))?;
+        self.note_own_device(device);
+        Ok(serde_json::json!({ "kept": kept }))
     }
 
     /// Make the workspace `args` names, as `device`, already permitted to,
@@ -482,8 +571,59 @@ impl Workspaces {
         })
     }
 
-    /// Make or find the workspace of `device`'s person's own, already
-    /// permitted to, and invite the person into it.
+    /// The workspaces `device` lists on this host, each with the part their
+    /// person takes in it: the host's person every one, anyone else the ones
+    /// of their own and the ones they were invited into, found by their person
+    /// so a host with many workspaces answers a person with a few of them in
+    /// the time those few take.
+    async fn listed(&self, device: &DeviceCert) -> Vec<WorkspaceListing> {
+        let person = device.user_public_key;
+        if person != self.inner.host.cert.user_public_key {
+            let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
+            let mut listed: Vec<WorkspaceListing> = Vec::new();
+            for workspace in &own {
+                if !self.lists_to(device, workspace) {
+                    continue;
+                }
+                if let Ok(mut one) = self.listing_of(workspace).await {
+                    one.role = Some(OWNER_ROLE.to_owned());
+                    listed.push(one);
+                }
+            }
+            let now = tilo_clock::unix_now_ns();
+            for workspace in self.inner.memberships.of(&person) {
+                if own.contains(&workspace) || !self.lists_to(device, &workspace) {
+                    continue;
+                }
+                let Some(role) = self.role_of(&workspace, person, now).await else {
+                    continue;
+                };
+                if let Ok(mut one) = self.listing_of(&workspace).await {
+                    one.role = Some(super::role_name(role).to_owned());
+                    listed.push(one);
+                }
+            }
+            listed.sort_by(|a, b| {
+                a.name
+                    .cmp(&b.name)
+                    .then_with(|| a.workspace.cmp(&b.workspace))
+            });
+            return listed;
+        }
+        self.list()
+            .await
+            .iter()
+            .filter(|summary| self.lists_to(device, &summary.workspace))
+            .map(|summary| WorkspaceListing {
+                role: Some(OWNER_ROLE.to_owned()),
+                ..listing(summary)
+            })
+            .collect()
+    }
+
+    /// Make another workspace of `device`'s person's own, already permitted
+    /// to, and invite the person into it: the one they have when the ask
+    /// names none, the one `room` names when it is one of theirs.
     async fn create_own_invoke(
         &self,
         device: &DeviceCert,
@@ -493,24 +633,69 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let own = self.own().ok_or(ActionHostError::UnknownAction)?;
         let person = device.user_public_key;
+        let name = args.text("name")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
+        // A grant for one workspace enters that one, already made: it makes no other.
+        let makes = device
+            .capabilities
+            .agent
+            .is_none_or(|scope| scope.makes_workspaces());
+        if !makes
+            && (name.is_some()
+                || !moving.is_some_and(|room| {
+                    device
+                        .capabilities
+                        .agent
+                        .is_some_and(|scope| scope.reaches(room))
+                }))
+        {
+            return Err(refused(&NOT_YOUR_OWN));
+        }
         let making = own.making.lock().await;
-        let summary = if let Some(existing) = own.of(&person) {
-            if moving.is_some_and(|moving| moving != existing) {
-                return Err(ActionHostError::Refused {
-                    reason: Self::second_own_refusal(&existing).to_reason(),
-                });
-            }
-            self.list()
+        let mine = own.of(&person);
+        let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
+        let summary = if let Some(moving) = theirs {
+            // One of theirs: a device of theirs entering it, or a grant's
+            // parent asking for the invitation into it.
+            self.summary(moving)
                 .await
-                .into_iter()
-                .find(|summary| summary.workspace == existing)
-                .ok_or_else(|| refused(&"your workspace here is gone"))?
+                .map_err(|error| refused(&error))?
+        } else if let Some(joined) = moving.filter(|_| name.is_none())
+            && let Some(role) = self.role_of(joined, person, now).await
+        {
+            // Another's, which the person was invited into: another device
+            // of theirs (their key) enters it as them, at the role they hold.
+            drop(making);
+            let summary = self
+                .summary(joined)
+                .await
+                .map_err(|error| refused(&error))?;
+            return self
+                .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
+                .await;
+        } else if name.is_none() && moving.is_some() && !mine.is_empty() {
+            // A workspace this host does not keep for them, asked for as one
+            // of theirs.
+            return Err(refused(&NOT_YOUR_OWN));
+        } else if name.is_none()
+            && moving.is_none()
+            && let Some(first) = mine.first()
+        {
+            // A plain ask for "my workspace" answers the first they made.
+            self.summary(first).await.map_err(|error| refused(&error))?
+        } else if !makes {
+            return Err(refused(&NOT_YOUR_OWN));
+        } else if !self.let_in(&person, now).await {
+            // A new workspace is for a person the site let in. Anyone can
+            // make a root, so a certificate alone is nobody's way past the
+            // door: they hear the door's own refusal, with its wait list.
+            return Err(refused(&self.not_let_in().to_reason()));
         } else {
-            let name = args.text("name")?.unwrap_or(OWN_WORKSPACE_NAME);
+            // Another one: there is no bound on how many a person keeps.
+            let name = name.unwrap_or(OWN_WORKSPACE_NAME);
             let summary = self
                 .create_workspace(name, moving)
                 .await
@@ -526,15 +711,50 @@ impl Workspaces {
         self.administer_own(&summary.workspace, person, now)
             .await
             .map_err(|error| refused(&error))?;
+        self.invite_own_person(
+            summary,
+            person,
+            MemberRole::Editor,
+            request_id,
+            expiry(now, seconds),
+        )
+        .await
+    }
+
+    /// The role `person` holds in `workspace` now, a member it has not
+    /// removed; `None` for anyone else, and for a workspace not governed
+    /// here.
+    async fn role_of(&self, workspace: &str, person: [u8; 32], now: u64) -> Option<MemberRole> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let governed = governed.lock().await;
+        governed
+            .peer()
+            .governance()
+            .governed_members(crate::workspaces::system_time(now))
+            .ok()?
+            .into_iter()
+            .find(|member| member.user_public_key == person && !member.removed)
+            .map(|member| member.role)
+    }
+
+    /// Answer `summary` with an invitation for its `person` as `role`, until
+    /// `expires_at_ns`: the workspace's governor, the host, invites them.
+    async fn invite_own_person(
+        &self,
+        summary: WorkspaceSummary,
+        person: [u8; 32],
+        role: MemberRole,
+        request_id: [u8; 32],
+        expires_at_ns: u64,
+    ) -> Result<Value, ActionHostError> {
         let terms = IssueInvitationRequest {
             request_id,
-            role: MemberRole::Editor,
+            role,
             recipient_user_public_key: Some(person),
             invitee_name: None,
-            expires_at_ns: expiry(now, seconds),
+            expires_at_ns,
             inviter_name: None,
         };
-        // The workspace's governor, the host, invites its person.
         let issued = self
             .issue(&summary.workspace, &self.inner.host.cert, terms)
             .await
@@ -625,5 +845,7 @@ impl Workspaces {
 
 #[cfg(test)]
 mod own_tests;
+#[cfg(test)]
+mod personal_tests;
 #[cfg(test)]
 mod tests;

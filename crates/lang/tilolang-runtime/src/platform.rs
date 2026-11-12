@@ -15,7 +15,7 @@ use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
-use crate::runtime::Reading;
+use crate::runtime::{Presentation, Reading};
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
@@ -184,6 +184,13 @@ pub fn form_asks(meta: &Meta, ty: &str) -> bool {
         .is_ok_and(|parsed| parsed.asked_by_form() && plain(meta, &parsed))
 }
 
+/// Whether `ty`, as metadata writes it, is a `File`: the parameter a person's own chooser fills
+/// (`file.choose(a)`), which no form asks for and no call gets from anywhere else.
+#[must_use]
+pub fn chooser_fills(meta: &Meta, ty: &str) -> bool {
+    crate::meta::parse_ty(ty.trim(), &meta.app).is_ok_and(|ty| ty == crate::meta::Ty::File)
+}
+
 /// The state key `delivery(r)` reads for the resource `id`.
 #[must_use]
 pub fn delivery_key(id: &str) -> StateKey {
@@ -259,9 +266,10 @@ impl Source {
     }
 }
 
-/// The longest run of a conversation's unread messages a mention count reads: one page of
-/// them, so a workspace nobody has read is not read message by message for a badge.
-const MENTION_SCAN: usize = 64;
+/// The longest run of a conversation's unread messages a count reads: one page of them, so a
+/// workspace nobody has read is not read message by message for a badge. A conversation holding
+/// more unread than this says the page it read, its mentions and its unread count alike.
+const UNREAD_SCAN: usize = 64;
 
 /// A suggestion's opening words when the host has no locale string for them.
 const SAYS_FALLBACK: &str = "{name} suggests:";
@@ -336,6 +344,7 @@ impl Core {
             }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
+            Imp::SeenBy => self.seen_by_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -404,6 +413,18 @@ impl Core {
         let coll = self.ref_arg(a.h(0)?)?;
         let field = self.text(a.h(1)?)?;
         let item = self.text(a.h(2)?)?;
+        // What another app's person has not seen is read where that app runs, and comes here in
+        // its reading, which the view runs again on when it moves.
+        if crate::foreign::is_foreign(&coll.target) {
+            self.note_reading(crate::foreign::reading_key(&coll.target));
+            let unseen = self.foreign.borrow_mut().unseen(&coll.target)?;
+            let first = unseen
+                .as_ref()
+                .and_then(|unseen| unseen.get("first"))
+                .and_then(serde_json::Value::as_str)
+                .map(|id| Value::some(Value::resource(&coll.target.item(id, item.clone()))));
+            return self.ret_h(first.unwrap_or_else(Value::none));
+        }
         let person = self.looking()?;
         let found = self
             .first_unseen_of(&person, &coll.target, &field, &item)
@@ -891,6 +912,9 @@ impl Core {
                     })
                     .collect::<HResult<_>>()?,
             ),
+            // A file a change put in a field or took out: what it is called, as a person reads
+            // it; where its content is, a picture beside the row tells.
+            (_, Value::File(file)) => one("text", Value::Text(file.name.clone()), None),
             // A rich text a change made: its paragraphs, the runs it inserted marked and the
             // runs it deleted struck, shown by the shared rich text component.
             (_, Value::Rich(rich)) => one("rich", Value::Rich(rich.clone()), None),
@@ -994,16 +1018,21 @@ impl Core {
             let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
             let mine =
                 last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
-            // How many changes the step folds: versions of one change are one command over many
-            // items, which history says the count of and Undo takes back together.
+            // How many acts the step folds: versions of one change are one command over many
+            // items, and the changes of one gesture are the keystrokes of one burst of typing —
+            // history says the count of each, and Undo takes them all back together.
             let changes = {
                 let mut count = 0usize;
-                let mut previous: Option<&str> = None;
+                let mut previous: Option<(&str, Option<&str>)> = None;
                 for v in &step {
-                    if previous != Some(v.change.as_str()) {
+                    let holds = (v.change.as_str(), v.gesture.as_deref());
+                    let continues = previous.is_some_and(|(change, gesture)| {
+                        change == holds.0 || (gesture.is_some() && gesture == holds.1)
+                    });
+                    if !continues {
                         count = count.saturating_add(1);
                     }
-                    previous = Some(v.change.as_str());
+                    previous = Some(holds);
                 }
                 count
             };
@@ -1159,13 +1188,8 @@ impl Core {
     }
 
     /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
-    /// conversation's first unread message), as a transcript shows it.
-    ///
-    /// Read item by item from the collection's end, a page at most: an item is unseen when a
-    /// version of it is newer than what the person has seen of `at` (its mark), and an item they
-    /// wrote is one they saw. The first one found, oldest first, is the answer, and a channel
-    /// the person is caught up with costs the page it looks through. Writing a message reads
-    /// nothing above it: a reply counts as neither a mark nor a reading of what came before it.
+    /// conversation's first unread message), as a transcript shows it: the first of
+    /// [`Self::unread_items`], which is where its "New messages" divider stands.
     pub(crate) fn first_unseen_of(
         &self,
         person: &str,
@@ -1173,16 +1197,42 @@ impl Core {
         field: &str,
         item: &str,
     ) -> Result<Option<String>, crate::store::StoreError> {
-        // How many items from the end are looked through for the first unread one: one index
-        // page, which is what a listing reads to place an item.
-        const TAIL: usize = 64;
+        Ok(self
+            .unread_items(person, at, field, item, 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// The items of `at`'s collection `field` (of `item`) `person` has not seen, oldest first,
+    /// `most` of them at most: what the divider of a transcript stands before and so what the
+    /// place that opens it and the window of it count. One count, read here, however many
+    /// numbers a person is shown.
+    ///
+    /// Read item by item from where the person read to, a page at most: an item is unseen when
+    /// a version of it is newer than what the person has seen of `at` (its mark), and an item
+    /// they wrote is one they saw. A channel the person is caught up with costs the page it
+    /// looks through, and one they never opened costs its first page, never its whole
+    /// conversation: what a person is shown is a page, so counting it reads a page. Writing a
+    /// message reads nothing above it: a reply counts as neither a mark nor a reading of what
+    /// came before it.
+    pub(crate) fn unread_items(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+        most: usize,
+    ) -> Result<Vec<String>, crate::store::StoreError> {
+        // How many items are looked through: one index page, which is what a listing reads to
+        // place an item, and what a transcript shows in one frame.
+        const PAGE: usize = 64;
+        let mut unread = Vec::new();
         let store = self.store.borrow();
         let storage = self
-            .type_of_ref(&at.ty)
-            .ok()
-            .and_then(|(_, info)| info.field_by_id_or_name(field).map(|f| f.id.clone()));
+            .record_type_of(at)
+            .and_then(|info| info.field_by_id_or_name(field).map(|f| f.id.clone()));
         let Some(storage) = storage else {
-            return Ok(None);
+            return Ok(unread);
         };
         // A record the store does not hold yet (one just made, or empty) has nothing unseen.
         let Ok(items) = store.listing(
@@ -1192,11 +1242,11 @@ impl Core {
                 kind: crate::meta::FieldKind::Collection,
             },
         ) else {
-            return Ok(None);
+            return Ok(unread);
         };
         let len = items.len();
         if len == 0 {
-            return Ok(None);
+            return Ok(unread);
         }
         let runs = self.seen_runs(person);
         let mark = self.seen_mark(person, &at.id_string());
@@ -1204,7 +1254,7 @@ impl Core {
         // change their mark of the channel names (a store with no channel versions names the
         // newest item it holds). It is looked for in the tail, a page deep.
         let mut read_to: Option<usize> = None;
-        for index in (len.saturating_sub(TAIL)..len).rev() {
+        for index in (len.saturating_sub(PAGE)..len).rev() {
             let Some(id) = items.get(index) else {
                 continue;
             };
@@ -1220,13 +1270,17 @@ impl Core {
         // The first item after where they read that someone changed since, oldest first: a
         // version of theirs is one they saw, so it never makes an item unread of its own. A mark
         // that named nothing in the tail is older than the page shown from it, so the page is
-        // all after it.
+        // all after it, and one who never read anything is read from the conversation's first
+        // page.
         let from = match read_to {
             Some(index) => index.saturating_add(1),
-            None if mark.is_some() => len.saturating_sub(TAIL),
+            None if mark.is_some() => len.saturating_sub(PAGE),
             None => 0,
         };
-        for index in from.min(len)..len {
+        // The items looked through are the page from there, never the conversation: an unread
+        // item beyond it is one the count says nothing of, as a transcript shows a page.
+        let upto = len.min(from.saturating_add(PAGE));
+        for index in from.min(len)..upto {
             let Some(id) = items.get(index) else {
                 break;
             };
@@ -1242,10 +1296,102 @@ impl Core {
             let seen = self.seen_mark(person, &candidate.id_string());
             let un = crate::seen::unseen(&versions, person, seen.as_ref(), &runs);
             if !un.is_empty() {
-                return Ok(Some(id.to_string()));
+                unread.push(id.to_string());
+                if unread.len() >= most {
+                    break;
+                }
             }
         }
-        Ok(None)
+        Ok(unread)
+    }
+
+    /// The type `at` is of: the one its ref names, or — for a ref that names none, as a window's
+    /// does — the one the store holds the record under.
+    fn record_type_of(&self, at: &ResourceRef) -> Option<Rc<crate::registry::TypeInfo>> {
+        self.type_of_ref(&at.ty)
+            .ok()
+            .or_else(|| {
+                let ty = self.store.borrow().type_of(at).ok()?;
+                self.type_of_ref(&ty).ok()
+            })
+            .map(|(_, info)| info)
+    }
+
+    /// The collection of records `at` holds, and the type of its items: what a fact about the
+    /// items of a resource reads (`first_unseen`, `mentions`), which is the list a window of it
+    /// shows and a place that opens it counts. A resource holding none has no items of its own.
+    pub(crate) fn item_collection_of(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let info = self.record_type_of(at)?;
+        let field = info.fields.iter().find(|field| {
+            field.kind == crate::meta::FieldKind::Collection && self.item_type(&field.ty).is_ok()
+        })?;
+        let item = self.item_type(&field.ty).ok()?;
+        Some((field.id.clone(), item.id.clone()))
+    }
+
+    /// How many of the items `at` holds `person` has not seen, oldest first: the number a place
+    /// that opens it shows on its badge and a window of it in its header, both read here. `None`
+    /// for a resource that holds no collection of records: nothing of it is an item.
+    pub(crate) fn unread_count_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<Option<i64>, crate::store::StoreError> {
+        let Some((field, item)) = self.item_collection_of(at) else {
+            return Ok(None);
+        };
+        let unread = self.unread_items(person, at, &field, &item, UNREAD_SCAN)?;
+        Ok(Some(i64::try_from(unread.len()).unwrap_or(i64::MAX)))
+    }
+
+    /// The members, the person looking aside, whose reading of `coll` ends at `at`: their seen
+    /// mark of `coll` names the change that made `at`, so the last line they read is that one.
+    ///
+    /// Read from the marks the host gives of everyone's reading (`crate::Runtime::set_seen`),
+    /// so a conversation shows who read to a line without counting anything: `at`'s own versions
+    /// say which change it is, and each member is one slot read. A member without a mark of
+    /// `coll` reads nothing of it; a mark that names another line read further.
+    pub(crate) fn seen_by_of(
+        &self,
+        looking: &str,
+        coll: &ResourceRef,
+        at: &ResourceRef,
+    ) -> Result<Vec<crate::members::Member>, crate::store::StoreError> {
+        let versions = self.store.borrow().versions(at)?;
+        if versions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resource = coll.id_string();
+        let mut read = Vec::new();
+        for member in self.read_members() {
+            if member.who.0.eq_ignore_ascii_case(looking) {
+                continue;
+            }
+            // Every member's mark is read, so the view runs again when any of them reads on.
+            self.note_seen_read(&member.who.0, &resource);
+            let Some(mark) = self.seen_mark(&member.who.0, &resource) else {
+                continue;
+            };
+            if versions.iter().any(|version| version.change == mark.change) {
+                read.push(member);
+            }
+        }
+        Ok(read)
+    }
+
+    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m`, the person looking aside:
+    /// who has read to that line. A view that reads it runs again when `m` moves or when one of
+    /// them reads on.
+    fn seen_by_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let coll = self.ref_arg(a.h(0)?)?;
+        let at = self.ref_arg(a.h(1)?)?;
+        let person = self.looking()?;
+        let read = self
+            .seen_by_of(&person, &coll.target, &at.target)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        // What the answer is made of: `m`'s own versions, noted as read by the answer itself.
+        self.read_versions_of(&at.target);
+        self.ret_h(crate::members::principals(read.iter()))
     }
 
     /// How many of the items of `at`'s collection `field` (of `item`) name `person` in their
@@ -1299,7 +1445,7 @@ impl Core {
             .collect();
         // The longest run of unread messages read for a count: a workspace nobody has read counts
         // mentions in its first page of new messages, not in every one.
-        let upto = from.saturating_add(MENTION_SCAN).min(len);
+        let upto = from.saturating_add(UNREAD_SCAN).min(len);
         let mut found: usize = 0;
         for index in from..upto {
             let Some(id) = items.get(index) else {
@@ -1595,18 +1741,14 @@ impl Core {
         }
     }
 
-    /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
-    /// field of the resource changes, which is a new version.
+    /// Record, in a view's frame, that it read the versions of `target`: it runs again when a
+    /// version of the resource comes, which every change to it makes one of — the version, not
+    /// each field, so a view that reads a resource's history reads one thing of it and not its
+    /// every field.
     pub(crate) fn read_versions_of(&self, target: &crate::value::ResourceRef) {
-        let id = target.id_string();
-        let fields: Vec<String> = self
-            .type_of_ref(&target.ty)
-            .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
-            .unwrap_or_default();
         if let Some(vs) = self.frames.borrow_mut().view_mut() {
-            for field in fields {
-                vs.reads.push((id.clone(), field));
-            }
+            vs.reads
+                .push((target.id_string(), crate::marks::DOC_VERSIONS.to_owned()));
         }
     }
 
@@ -1991,10 +2133,7 @@ impl Core {
             .iter()
             .enumerate()
             .find(|(_, ty)| ty.name == made.name)?;
-        let title = ty
-            .fields
-            .iter()
-            .find(|field| matches!(field.ty.trim(), "Text" | "RichText" | "std.RichText"))?;
+        let title = ty.fields.iter().find(|field| field.holds_text())?;
         let root = action.params.first().and_then(|param| {
             meta.roots
                 .iter()
@@ -2118,17 +2257,14 @@ impl Core {
             && let Some(view) = &action.present
             && let Some(node) = self.present(view, subject)?
         {
-            if let Some(Value::Text(text)) = node.props.get("label") {
-                label.clone_from(text);
+            let presented = presentation_of(&node);
+            if let Some(text) = presented.label {
+                label = text;
             }
-            if let Some(Value::Text(name)) = node.props.get("icon") {
-                icon = Some(name.clone());
+            if let Some(name) = presented.icon {
+                icon = Some(name);
             }
-            on = match node.props.get("on") {
-                Some(Value::Bool(flag)) => Some(*flag),
-                Some(Value::Int(flag)) => Some(*flag != 0),
-                _ => None,
-            };
+            on = presented.on;
         }
         // Whether it applies to the item where the view offers it at all, and whether it can
         // run on it now, as the conditions its subject and place decide say: a menu leaves out
@@ -2256,6 +2392,51 @@ impl Core {
         )
     }
 
+    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// state its presentation gives it, with what reading them read. `None` for an action whose
+    /// app presents nothing of it there.
+    pub(crate) fn presentation_reading(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<(Option<Presentation>, Reading)> {
+        let (pkg, presents) = {
+            let registry = self.registry.borrow();
+            let Some(pkg) = registry.action_package(action) else {
+                return Ok((None, Reading::default()));
+            };
+            let presents = pkg.action(action).and_then(|meta| meta.present.clone());
+            (pkg, presents)
+        };
+        let Some(view) = presents else {
+            return Ok((None, Reading::default()));
+        };
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::View(ViewState {
+                viewer: viewer.clone(),
+                decides: true,
+                ..ViewState::default()
+            }),
+        );
+        // The presentation runs in a frame of its own, as a requirement does, so a failure
+        // leaves nothing behind and what it read is taken with the rest.
+        let node = self.present(&view, subject);
+        let frame = self.frames.borrow_mut().pop();
+        let Some(FrameKind::View(reads)) = frame.map(|f| f.kind) else {
+            return trap("the presentation frame vanished");
+        };
+        let mut at = reads.reads.clone();
+        at.sort_unstable();
+        at.dedup();
+        let beyond = reads.changes_at.is_some()
+            || !reads.state_reads.is_empty()
+            || !reads.space_reads.is_empty();
+        let shown = node?.as_ref().map(presentation_of);
+        Ok((shown, Reading { reads: at, beyond }))
+    }
+
     /// What a condition of `action` is decided on: its subject, and the places after it left to
     /// their own.
     fn subject_args(&self, action: &str, subject: &RefValue) -> Vec<Value> {
@@ -2309,6 +2490,7 @@ impl Core {
             pkg.hash.clone(),
             FrameKind::View(ViewState {
                 viewer: viewer.clone(),
+                decides: true,
                 ..ViewState::default()
             }),
         );
@@ -2400,6 +2582,24 @@ impl Core {
             }
         }
         Ok(Some(rendered.root))
+    }
+}
+
+/// What the presentation `node` says of the action it presents: the label it is called there,
+/// the icon beside it, and whether the state it toggles is on.
+fn presentation_of(node: &crate::view::UiNode) -> Presentation {
+    let text = |prop: &str| match node.props.get(prop) {
+        Some(Value::Text(text)) => Some(text.clone()),
+        _ => None,
+    };
+    Presentation {
+        label: text("label"),
+        icon: text("icon"),
+        on: match node.props.get("on") {
+            Some(Value::Bool(flag)) => Some(*flag),
+            Some(Value::Int(flag)) => Some(*flag != 0),
+            _ => None,
+        },
     }
 }
 

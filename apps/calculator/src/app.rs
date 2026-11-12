@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::rc::Rc;
+use ui::i18n::ArgValue;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::ModelPath;
@@ -37,6 +38,7 @@ use crate::keypad::{CalcScreen, DisplaySlot, MEM_KEYS};
 use crate::mathfield::MathField;
 use crate::model::{self, CalcModel, KeypadPage, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
+use crate::resource::CATALOG;
 use crate::resource::Calculator;
 
 use ui::tilo_resource::Id;
@@ -1180,47 +1182,53 @@ fn field_accepts(ch: char) -> bool {
 /// Speak intent rather than a lone glyph for the custom-painted keypad.
 fn key_accessible_name(key: &model::Key) -> String {
     use model::Key;
-    match key {
-        Key::Equals => "Evaluate expression".into(),
-        Key::Clear => "Clear expression".into(),
-        Key::Backspace => "Backspace".into(),
-        Key::ToggleSign => "Toggle sign".into(),
-        Key::Percent => "Percent".into(),
-        Key::Ans => "Insert previous answer".into(),
-        Key::MemAdd => "Add expression to memory".into(),
-        Key::MemSub => "Subtract expression from memory".into(),
-        Key::MemRecall => "Recall memory".into(),
-        Key::MemClear => "Clear memory".into(),
-        Key::Wrap(_, _) => "Square expression".into(),
-        Key::Page(KeypadPage::Functions) => "Function keys, second page".into(),
-        Key::Page(KeypadPage::Primary) => "Number keys, first page".into(),
-        Key::Ins("sin(") => "Sine".into(),
-        Key::Ins("cos(") => "Cosine".into(),
-        Key::Ins("tan(") => "Tangent".into(),
-        Key::Ins("asin(") => "Inverse sine".into(),
-        Key::Ins("acos(") => "Inverse cosine".into(),
-        Key::Ins("atan(") => "Inverse tangent".into(),
-        Key::Ins("sqrt(") => "Square root".into(),
-        Key::Ins("int(") => "Definite integral".into(),
-        Key::Ins("root(") => "Nth root".into(),
-        Key::Ins("abs(") => "Absolute value".into(),
-        Key::Ins("sinh(") => "Hyperbolic sine".into(),
-        Key::Ins("cosh(") => "Hyperbolic cosine".into(),
-        Key::Ins("tanh(") => "Hyperbolic tangent".into(),
-        Key::Ins("gamma(") => "Gamma function".into(),
-        Key::Ins("ln(") => "Natural logarithm".into(),
-        Key::Ins("log10(") => "Base 10 logarithm".into(),
-        Key::Ins("exp(") => "Exponential".into(),
-        Key::Ins("1/(") => "Reciprocal".into(),
-        Key::Ins("^") => "Power".into(),
-        Key::Ins("*") => "Multiply".into(),
-        Key::Ins("/") => "Divide".into(),
-        Key::Ins("+") => "Add".into(),
-        Key::Ins("-") => "Subtract".into(),
-        Key::Ins("pi") => "Pi".into(),
-        Key::Ins("e") => "Euler's number".into(),
-        _ => format!("Calculator key {}", key.label()),
-    }
+    let message = match key {
+        Key::Equals => "calculator-key-equals",
+        Key::Clear => "calculator-key-clear",
+        Key::Backspace => "calculator-key-backspace",
+        Key::ToggleSign => "calculator-key-sign",
+        Key::Percent => "calculator-key-percent",
+        Key::Ans => "calculator-key-answer",
+        Key::MemAdd => "calculator-key-mem-add",
+        Key::MemSub => "calculator-key-mem-sub",
+        Key::MemRecall => "calculator-key-mem-recall",
+        Key::MemClear => "calculator-key-mem-clear",
+        Key::Wrap(_, _) => "calculator-key-square",
+        Key::Page(KeypadPage::Functions) => "calculator-key-functions-page",
+        Key::Page(KeypadPage::Primary) => "calculator-key-numbers-page",
+        Key::Ins("sin(") => "calculator-key-sin",
+        Key::Ins("cos(") => "calculator-key-cos",
+        Key::Ins("tan(") => "calculator-key-tan",
+        Key::Ins("asin(") => "calculator-key-asin",
+        Key::Ins("acos(") => "calculator-key-acos",
+        Key::Ins("atan(") => "calculator-key-atan",
+        Key::Ins("sqrt(") => "calculator-key-sqrt",
+        Key::Ins("int(") => "calculator-key-integral",
+        Key::Ins("root(") => "calculator-key-root",
+        Key::Ins("abs(") => "calculator-key-abs",
+        Key::Ins("sinh(") => "calculator-key-sinh",
+        Key::Ins("cosh(") => "calculator-key-cosh",
+        Key::Ins("tanh(") => "calculator-key-tanh",
+        Key::Ins("gamma(") => "calculator-key-gamma",
+        Key::Ins("ln(") => "calculator-key-ln",
+        Key::Ins("log10(") => "calculator-key-log10",
+        Key::Ins("exp(") => "calculator-key-exp",
+        Key::Ins("1/(") => "calculator-key-reciprocal",
+        Key::Ins("^") => "calculator-key-power",
+        Key::Ins("*") => "calculator-key-multiply",
+        Key::Ins("/") => "calculator-key-divide",
+        Key::Ins("+") => "calculator-key-add",
+        Key::Ins("-") => "calculator-key-subtract",
+        Key::Ins("pi") => "calculator-key-pi",
+        Key::Ins("e") => "calculator-key-euler",
+        _ => {
+            return CATALOG.t_args(
+                "calculator-key-other",
+                &[("key", ArgValue::Text(key.label().to_owned()))],
+            );
+        }
+    };
+    CATALOG.t(message)
 }
 
 impl CalculatorApp {
@@ -1637,17 +1645,26 @@ impl Widget for CalculatorApp {
             Mode::Calc => {
                 let mut controls = Vec::new();
                 let mut display = AccessNode::new(Role::TextInput)
-                    .with_name("Expression")
+                    .with_name(crate::resource::CATALOG.t("calculator-a11y-expression"))
                     .with_value(self.model.expr.clone())
-                    .with_description("Type an expression, then activate Evaluate or press Enter.")
+                    .with_description(crate::resource::CATALOG.t("calculator-a11y-expression-hint"))
                     .with_action_target("calculator.expression")
                     .with_bounds(self.calc.expression_rect())
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key("calculator.display");
                 if !self.model.expr.trim().is_empty() {
                     let outcome = match engine::evaluate(&self.model.expr, &self.model.ctx()) {
-                        Ok(value) => format!("Result {}", engine::format_number(value)),
-                        Err(error) => format!("Invalid expression: {error}"),
+                        Ok(value) => CATALOG.t_args(
+                            "calculator-result",
+                            &[(
+                                "value",
+                                ui::i18n::ArgValue::Text(engine::format_number(value)),
+                            )],
+                        ),
+                        Err(error) => CATALOG.t_args(
+                            "calculator-invalid-expression",
+                            &[("detail", ui::i18n::ArgValue::Text(error))],
+                        ),
                     };
                     display = display.with_children(vec![
                         AccessNode::new(Role::StaticText)
@@ -1685,7 +1702,7 @@ impl Widget for CalculatorApp {
                 }
                 children.push(
                     AccessNode::new(Role::Toolbar)
-                        .with_name("Calculator controls")
+                        .with_name(crate::resource::CATALOG.t("calculator-a11y-controls"))
                         .with_hashed_key("calculator.keypad-controls")
                         .with_children(controls),
                 );
@@ -1708,10 +1725,8 @@ impl Widget for CalculatorApp {
                     .collect();
                 children.push(
                     AccessNode::new(Role::Group)
-                        .with_name("Scientific keypad")
-                        .with_description(
-                            "Use the calculator keys, or type an expression directly.",
-                        )
+                        .with_name(crate::resource::CATALOG.t("calculator-a11y-keypad"))
+                        .with_description(crate::resource::CATALOG.t("calculator-a11y-keypad-hint"))
                         .with_hashed_key("calculator.keypad")
                         .with_children(keys),
                 );
@@ -1722,13 +1737,13 @@ impl Widget for CalculatorApp {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Calculator")
+                .with_name(crate::resource::CATALOG.t("calculator-title"))
                 .with_value(if self.model.expr.is_empty() {
                     "Empty expression".to_string()
                 } else {
                     self.model.expr.clone()
                 })
-                .with_description("Calculator and graphing workspace")
+                .with_description(crate::resource::CATALOG.t("calculator-a11y-workspace"))
                 .with_state(
                     AccessState::new()
                         .focusable(true)
@@ -1884,8 +1899,8 @@ impl CalculatorApp {
     fn graph_accessibility(&self, kind: GraphKind) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let (title, slug) = match kind {
-            GraphKind::Curve2d => ("Functions", "2d"),
-            GraphKind::Surface3d => ("Surfaces", "3d"),
+            GraphKind::Curve2d => (CATALOG.t("calculator-graph-functions"), "2d"),
+            GraphKind::Surface3d => (CATALOG.t("calculator-graph-surfaces"), "3d"),
         };
         let rows = self.model.graphs(kind);
         let panel = self.panel(kind);
@@ -1900,10 +1915,15 @@ impl CalculatorApp {
                     panel.delete_rect(index),
                 );
                 let mut field = AccessNode::new(Role::TextInput)
-                    .with_name(format!(
-                        "{} {} formula",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-field",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_value(row.expr.clone())
                     .with_action_target(format!("calculator.graph.field:{slug}:{index}"))
@@ -1912,10 +1932,15 @@ impl CalculatorApp {
                     field = field.with_bounds(bounds);
                 }
                 let mut visible = AccessNode::new(Role::ToggleButton)
-                    .with_name(format!(
-                        "Show {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-show",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.visible:{slug}:{index}"))
                     .with_state(AccessState::new().focusable(true).checked(row.visible));
@@ -1923,13 +1948,18 @@ impl CalculatorApp {
                     visible = visible.with_bounds(bounds);
                 }
                 let mut delete = AccessNode::new(Role::Button)
-                    .with_name(format!(
-                        "Delete {} {}",
-                        title.trim_end_matches('s'),
-                        index + 1
+                    .with_name(CATALOG.t_args(
+                        "calculator-graph-delete",
+                        &[
+                            (
+                                "kind",
+                                ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                            ),
+                            ("number", ArgValue::Text((index + 1).to_string())),
+                        ],
                     ))
                     .with_action_target(format!("calculator.graph.delete:{slug}:{index}"))
-                    .with_description("Permanently removes this saved formula.")
+                    .with_description(crate::resource::CATALOG.t("calculator-a11y-remove-formula"))
                     .with_state(AccessState::new().focusable(true));
                 if let Some(bounds) = delete_bounds {
                     delete = delete.with_bounds(bounds);
@@ -1943,7 +1973,13 @@ impl CalculatorApp {
                 );
             }
             let mut add = AccessNode::new(Role::Button)
-                .with_name(format!("Add {}", title.trim_end_matches('s')))
+                .with_name(CATALOG.t_args(
+                    "calculator-graph-add",
+                    &[(
+                        "kind",
+                        ArgValue::Text(title.trim_end_matches('s').to_owned()),
+                    )],
+                ))
                 .with_action_target(format!("calculator.graph.add:{slug}"))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = add_bounds {

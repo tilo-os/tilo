@@ -4,21 +4,22 @@ import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
 import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
-import {createCrashQuarantine,crashAction} from './app-crash.mjs';
+import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,showPageCrash,trapCrash} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createHere} from './here.mjs';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
-import {createDomPresenter} from './dom-present.mjs';
+import {createViewPresenter,VIEW_CSS} from './view-present.mjs';
+import {createDomInput} from './dom-input.mjs';
 export {createPanorama} from './panorama.mjs';
-import {createNativeCatalogueBridge, invokeMembershipAction, runRecordAction} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeMembershipAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
 import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
@@ -37,17 +38,48 @@ const recoveryJobs=new Set();
 // module is dead after it, so each mount restarts the page without that window.
 const crashes=createCrashQuarantine();
 const crashListeners=new Set();
+// A panic that names no window leaves no application to close: the page
+// itself is what starts over (`app-crash.mjs`), once.
+const pageRestarts=createPageRestarts();
+let pageCrashed=false;
+/** Where the page reports what it did not catch, for the door it came in
+ * through to log (`entry-page.mjs`). A panic is reported the same way. */
+let pageErrorReport=null;
+export function reportPageErrors(report){pageErrorReport=report;}
+let runtimePanicked=false;
 globalThis.__tiloRuntimePanic=raw=>{
+  runtimePanicked=true;
   let crash;try{crash=JSON.parse(raw);}catch{return;}
   for(const listener of crashListeners)listener(crash);
+  if(crash?.tab!=null||pageCrashed)return;
+  pageCrashed=true;
+  // The report leaves first, as a crashed window's does; the load that follows
+  // shows the workspace, its windows and their drafts as the session saved them.
+  pageCrashAction(crash,{restarts:pageRestarts,reload:()=>setTimeout(()=>location.reload(),250),
+    show:message=>showPageCrash(message),reportError:(kind,message)=>pageErrorReport?.(kind,message)});
 };
+// A trap no panic preceded (`trapCrash`) is a panic outside any window too.
+globalThis.addEventListener?.('error',event=>{
+  const crash=trapCrash(event.error,{panicked:runtimePanicked});
+  if(crash)globalThis.__tiloRuntimePanic(JSON.stringify(crash));
+});
 // One startup timeline from navigation start, so a slow phase names itself
 // instead of hiding in "loading". tools/perf/web_startup.mjs reads it.
 const mark=name=>{try{performance.mark(`tilo:${name}`);}catch{}};
 mark('module');
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
-const ready=retryableMemo(()=>init());
+// The entry page started compiling the start module as it parsed its head
+// (compile.inline.js), while it downloaded and the page's modules loaded:
+// init takes that, once. A page without it, or whose compile failed, has
+// init fetch and compile the module itself, as a retry after a failure does.
+let startModule=globalThis.__tiloStartModule;
+const ready=retryableMemo(async()=>{
+  const early=startModule;startModule=undefined;
+  const module=early&&await early.catch(()=>null);
+  mark('compiled');
+  return init(module?{module_or_path:module}:undefined);
+});
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
 // So do the fonts a mount waits for: fetched beside the module, not after the page joined.
@@ -58,8 +90,28 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** Open a profile's durable storage for state kept outside any mount (the
  * relay peer). Shares the lease with mounts of the same profile/device;
  * `flush()` resolves when writes are durable; call `release()` once. */
-/** The wasm runtime module, once loaded (the peer's codec and certificates). */
-export async function loadRuntime(){await ready();return runtime;}
+/** The certified peer's code — its crypto, transport and the workspaces'
+ * replication — is a module of its own in the desktop bundle (`lazy_exports!`
+ * in tilo-web-desktop), which nothing before a workspace's door needs. It is
+ * fetched and compiled as soon as this module runs, beside the start
+ * module's compile, and every door waits for it.
+ * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
+ * is here once the start module is; a bundle without one has the peer in
+ * its start module. */
+const peerCode=retryableMemo(async()=>{
+  const split=await import('./pkg/__wasm_split.js').catch(()=>null);
+  // Downloading and compiling it needs nothing of the start module: it runs
+  // while the start module compiles, and only its instantiation waits.
+  void split?.prefetch('peer');
+  await ready();
+  mark('runtime');
+  await split?.load('peer');
+  mark('peer');
+});
+void peerCode().catch(()=>{});
+/** The wasm runtime module, once loaded with the peer's code (its codec and
+ * certificates). */
+export async function loadRuntime(){await peerCode();return runtime;}
 /** Open the WebGPU device and compile the renderer once the module is in,
  * while the page opens the workspace it was let into; the first mount
  * takes it.
@@ -103,6 +155,25 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     const [modules]=await Promise.all([listing,after()]);
     const module=modules.find(entry=>entry.id===app)?.module;
     if(typeof module==='string')(await load()).prefetch(module);
+  })().catch(()=>{});
+}
+/** The modules split off the start module that every desktop's first layout
+ * asks for (tilo-web-desktop's `lazy.rs` says which, at each module): the
+ * action palette, which the first window to lay out asks for, and desktop
+ * search, which the desktop asks for as it first lays out. */
+export const FIRST_LAYOUT_MODULES=Object.freeze(['action_palette','desktop_search']);
+/** Get a desktop's first frame ready while the page is let in: the app
+ * listing (`apps.json`, a few kilobytes) now, and once the code the entry
+ * needs is in, the modules the desktop's first layout asks for, which are
+ * small. Left to the layout, each was a round trip, a download and a
+ * compile after the desktop mounted, before it could draw. A bundle that
+ * does not split them answers each from its start module. */
+export function prefetchDesktop({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=peerCode}={}){
+  void applications(fetch).catch(()=>{});
+  void (async()=>{
+    await after();
+    const compiled=await load();
+    for(const name of FIRST_LAYOUT_MODULES)void compiled.prefetch(name)?.catch?.(()=>{});
   })().catch(()=>{});
 }
 /** The name `apps.json` gives `app`, or `null`: what the bar over one app calls it. */
@@ -153,6 +224,25 @@ export function prefetchOfferedApplications({fetch=globalThis.fetch,load=()=>imp
   return offeredPrefetch;
 }
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
+// The startup fonts the runtime sets text in, as the page's own faces, for
+// the text an HTML mount shows itself: the interface face as "Tilo Sans",
+// each other one by the stem of its file's name, after it in every stack.
+const pageFaces=new Set();
+function registerPageFonts(assets){
+  if(!globalThis.FontFace||!document.fonts)return;
+  const fallbacks=[];
+  for(const [name,bytes] of Object.entries(assets)){
+    const stem=name.replace(/^.*\//,'').replace(/[[\-.].*$/,'');
+    const family=stem==='TiloSans'?'Tilo Sans':stem;
+    if(family!=='Tilo Sans')fallbacks.push(`"${family}"`);
+    if(pageFaces.has(name))continue;
+    pageFaces.add(name);
+    const face=new FontFace(family,bytes,family==='Tilo Sans'?{weight:'100 900',stretch:'75% 100%'}:{weight:'100 900'});
+    document.fonts.add(face);
+    face.load().catch(error=>console.warn('page font',name,error));
+  }
+  document.documentElement.style.setProperty('--tilo-faces',['"Tilo Sans"',...fallbacks,'system-ui','sans-serif'].join(','));
+}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
   const canvas=document.createElement('canvas');canvas.className='tilo-canvas';canvas.tabIndex=0;
@@ -172,22 +262,34 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  // Shown as HTML (`dom: true`): the frames are built as elements in a layer
-  // under the canvas, which stays the input surface but shows nothing. A
-  // wheel over one of the layer's scroll containers scrolls it natively
-  // (below); `selectText(true)` lets the pointer through to the layer, where
-  // the browser's own text selection works on the real text.
-  let domPresenter;
+  // Shown as HTML (`dom: true`): each frame's composition is built as
+  // elements in a layer over the canvas (view-present.mjs), which shows
+  // nothing and stays where winit listens. The layer is the hit target: the
+  // browser scrolls, selects and edits fields natively, and the rest goes on
+  // to the canvas (dom-input.mjs). `selectText(true)` keeps every pointer on
+  // the page, for native text selection alone.
+  let domPresenter,domInput,selectOnly=false;
   if(options.dom){
     const domLayer=document.createElement('div');domLayer.className='tilo-dom';
-    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;';
-    canvas.style.cssText+='position:absolute;inset:0;opacity:0;';
-    surface.prepend(domLayer);
-    domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
-      if(id===undefined||closed)return;
-      try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
-    }});
-    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{canvas.style.pointerEvents=on?'none':'';}};
+    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;touch-action:none;';
+    canvas.style.cssText+='position:absolute;inset:0;opacity:0;pointer-events:none;';
+    canvas.after(domLayer);
+    if(!document.getElementById('tilo-view-css')){const style=document.createElement('style');style.id='tilo-view-css';style.textContent=VIEW_CSS;document.head.append(style);}
+    domPresenter=createViewPresenter(domLayer,{onFrame:options.onDomFrame,
+      onScroll:(path,offset)=>{
+        if(id===undefined||closed)return;
+        try{runtime.dom_scrolled(id,path,offset);}catch(error){report({domScroll:String(error)});}
+      },
+      picture:(path,scale)=>{
+        if(id===undefined||closed)return null;
+        try{return runtime.dom_picture(id,path,scale);}catch(error){report({domPicture:String(error)});return null;}
+      },
+      semantic:(path,target,action,value,anchor,focus)=>{
+        if(id===undefined||closed)return;
+        try{runtime.semantic(id,path,target,action,value,anchor,focus);}catch(error){report({domSemantic:String(error)});}
+      }});
+    domInput=createDomInput({layer:domLayer,canvas,scrollerAt:domPresenter.scrollerAt,native:()=>selectOnly||!active()});
+    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{selectOnly=on;}};
   }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
@@ -198,6 +300,11 @@ export async function mountDesktop(target,options={}) {
   const writeClipboard=text=>globalThis.navigator?.clipboard?.writeText
     ?globalThis.navigator.clipboard.writeText(text)
     :Promise.reject(new Error('this page cannot reach the clipboard'));
+  // Why this page has no app files, once it is known it has none: the
+  // browser keeps none for it (a private window, or site data turned off).
+  // Every status says so, so a page reading the last one knows (the bar's
+  // line is `connection-status.mjs`'s).
+  let noFiles;
   const report=data=>{
     // A finished copy is the app's to show, in its own window; the page only speaks it.
     if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
@@ -205,7 +312,7 @@ export async function mountDesktop(target,options={}) {
     if(data.clipboard==='failed')status.show(data.clipboardError||'Could not copy. Try the keyboard Copy shortcut.',{again:true});
     if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
     if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
-    options.onStatus?.(data);
+    options.onStatus?.(noFiles?{files:'unavailable',filesError:noFiles,...data}:data);
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
@@ -215,13 +322,13 @@ export async function mountDesktop(target,options={}) {
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;delete config.dom;delete config.onDomFrame;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.dom;delete config.onDomFrame;
   // The desktop shows its invite sheet when the page configures one: what it
   // makes links through, as `mountDesktop({invite})` hands it over.
   delete config.onInvite;
   // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
   delete config.hostActions;delete config.onHostAction;
-  // The workspace directory's door granted this person a workspace: only the page joins with it.
+  // The person chose a workspace in the workspace directory: only the page enters it.
   delete config.onJoinGranted;
   let unsubscribeDesktopCommits;
   let here,livePlace=null,livePointer=null;
@@ -230,7 +337,7 @@ export async function mountDesktop(target,options={}) {
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
   const semanticPresentation=createSemanticPresentation({request:(target,observe)=>{if(active())runtime.request_component_locus(id,JSON.stringify(target),observe);},valid:()=>fontMountValid(),surfaceSize:()=>[canvas.width,canvas.height]});
   const capture=createPresentedSource({audience:JSON.stringify([config.profile,config.device,config.workspace]),app:config.app,canvas,layer:liveLayer,valid:()=>fontMountValid()});
-  let media,semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  let media,semantic,semanticKeys,hiddenKeys,composition,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
     replaceEditor();
@@ -258,20 +365,13 @@ export async function mountDesktop(target,options={}) {
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
-  },inputScope,domPresenter?.host);
+  },inputScope,domInput?{holdsSelection:domInput.holdsSelection}:undefined);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
-  // A wheel over a scroll container of the HTML layer moves that container,
-  // as on any page: the browser shows the move at once, and the widget hears
-  // of it through the container's scroll (`dom_scrolled`). Anything else is
-  // the canvas's, which hands it to the runtime.
-  if(domPresenter)on(surface,'wheel',event=>{
-    if(event.ctrlKey||!active())return;
-    const dy=event.deltaMode===1?event.deltaY*40:event.deltaMode===2?event.deltaY*surface.clientHeight:event.deltaY;
-    const scroller=dy&&domPresenter.scrollerAt(event.clientX,event.clientY,dy);
-    if(!scroller)return;
-    event.preventDefault();event.stopPropagation();
-    scroller.scrollTop+=dy;
-  },{capture:true,passive:false});
+  // A person holding a selection of the HTML layer's text keeps it: the
+  // copy shortcut is the browser's, which copies it.
+  if(domInput)on(surface,'keydown',event=>{
+    if((event.ctrlKey||event.metaKey)&&!event.altKey&&event.key.toLowerCase()==='c'&&domInput.holdsSelection())event.stopPropagation();
+  },{capture:true});
   if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
@@ -299,6 +399,9 @@ export async function mountDesktop(target,options={}) {
   // What the person says they are doing and how they share it, as their
   // profile keeps it: set on another of their devices, it shows here too.
   function ownStatus(profile){
+    // How new the profile this page read is: its presence says so, and a
+    // device of theirs with an older one fetches it again.
+    options.peer?.setProfileChanged?.(profile.issued_at_ms);
     const status=typeof profile.status==='string'?profile.status:'';
     const sharing=typeof profile.sharing==='string'?profile.sharing:'';
     options.onHostAction?.('set-status',{status,sharing,keep:false});
@@ -314,7 +417,8 @@ export async function mountDesktop(target,options={}) {
     actions:()=>options.peer?.actions,
     membership:()=>options.peer?.membership,
     take:()=>JSON.parse(runtime.component_catalogue_requests?.(id) ?? '[]'),
-    deliver:message=>runtime.component_catalogue_response(id,JSON.stringify(message)),
+    // Answers are read by the peer's code, which the page loads beside the start module.
+    deliver:message=>peerCode().then(()=>runtime.component_catalogue_response(id,JSON.stringify(message))).catch(error=>report({catalogueError:String(error)})),
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes,fontLoader.digestOf(bytes)??''),failed:()=>runtime.font_failed(id)});
@@ -330,14 +434,16 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active()&&!config.app)runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
     if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
-      desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
+      // A mount of one application holds no desk, so the page answers for its input
+      // itself; a desktop's answer is read live (`desktop_input_ownership`).
+      desktopOwnership=Boolean(runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
       if(options.hostActions&&runtime.desktop_set_host_actions&&runtime.desktop_navigation_snapshot?.(id))runtime.desktop_set_host_actions(id,JSON.stringify(options.hostActions));
       if(runtime.desktop_navigation_snapshot(id)){
@@ -356,17 +462,12 @@ export async function mountDesktop(target,options={}) {
       const demanded=JSON.parse(runtime.font_demands(id));
       if(demanded.length)void fontDemands(demanded);
     }
-    if(desktopCommands)void desktopCommands.pump();
-    if(actionPalette){
-      const request=runtime.take_caller_action(id);
-      if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
-    }
     // Search opened from page chrome (a Search button) takes the keyboard.
     if(state.searchOpen&&!lastState?.searchOpen&&![canvas,editor].includes(document.activeElement))canvas.focus({preventScroll:true});
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;const layer=liveLayer();if(!livePointer&&layer){livePointer=followOwnPointer(layer,()=>id,surface,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_say_doing)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -379,10 +480,11 @@ export async function mountDesktop(target,options={}) {
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
-      if(document.activeElement===canvas)editor.focus({preventScroll:true});
+      // A native selection of the HTML layer's text would go with the focus.
+      if(document.activeElement===canvas&&!domInput?.holdsSelection())editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
-    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
+    if(state.phase==='presented'){readyResolve();persistAfterFrame();void loadAssets();}
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
@@ -433,7 +535,14 @@ export async function mountDesktop(target,options={}) {
   // something has anything to save. One persist runs at a time: a request
   // arriving while it runs marks `again`, and one more runs after it, so a
   // burst of frames costs one round trip instead of a task per frame.
-  let persisting=null,persistAgain=false;
+  let persisting=null,persistAgain=false,persistQueued=false;
+  // A frame's status asks in the task after it: storing what the frame
+  // wrote waits a moment for the frame, never the frame for the store.
+  function persistAfterFrame(){
+    if(persistQueued)return;
+    persistQueued=true;
+    setTimeout(()=>{persistQueued=false;void persist().catch(()=>{});},0);
+  }
   function persist(){
     if(!active()||!storage||persistenceFailed)return Promise.resolve();
     if(persisting){persistAgain=true;return persisting;}
@@ -473,12 +582,15 @@ export async function mountDesktop(target,options={}) {
   }
   let closeWrites=[];
   let forgetCrashed;
+  // Whether the module is in: its exports are filled by init, so a mount that
+  // stopped before that has nothing to flush and nothing to ask.
+  let moduleLoaded=false;
   const cleanup=recoverableClose({
     begin(){
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
       if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
-      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },
@@ -486,7 +598,11 @@ export async function mountDesktop(target,options={}) {
       // An explicit close waits for every persist outstanding, then saves
       // whatever the mount's own close wrote.
       while(persisting)await persisting.catch(()=>{});
-      await runtime.flush_files();
+      // A mount that stopped before the module arrived (no WebGPU, a disposed
+      // mount) says why through its own error: asking the unloaded module to
+      // flush would replace that message with a TypeError about a missing
+      // export, which tells the person nothing about the browser they are in.
+      if(moduleLoaded)await runtime.flush_files();
       if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       if(storage){await storage.release();storage=undefined;}
       recoveryJobs.delete(cleanup);closures.delete(cleanup);
@@ -511,13 +627,19 @@ export async function mountDesktop(target,options={}) {
     }
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    moduleLoaded=true;
     mark('wasm-ready');
     const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
     mark('storage');
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
-    // Apps' own files (OPFS) are mirrored before any app reads them.
-    const [assets,entries]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    // Apps' own files (OPFS) are mirrored before any app reads them. A
+    // browser that keeps none for this page (a private window, or site data
+    // turned off) refuses the whole tree rather than one file: the page goes
+    // on, its records are elsewhere, and it tells the person that files of
+    // their own cannot be kept here instead of failing to start.
+    const [assets,entries,files]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    if(files){noFiles=files;console.warn('no app files on this page:',files);}
     mark('assets');
     if(!registry.current(token))throw Error('mount disposed');
     // WebKit's GPU process holds the page's load-time surfaces for a moment;
@@ -538,6 +660,8 @@ export async function mountDesktop(target,options={}) {
     // Each startup font goes in with the digest the loader computed natively,
     // which the runtime checks against its build instead of hashing again.
     for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    // The page sets the composition's text itself, in the same faces.
+    if(domPresenter)registerPageFonts(assets);
     if(domPresenter)runtime.present_as_dom(domPresenter.present);
     id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,
@@ -616,10 +740,12 @@ export async function mountDesktop(target,options={}) {
     const dispatchCanvasKey=(key,mods={})=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key,...mods}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key,...mods}));};
     // Canvas clicks are hit-tested by the runtime. Page chrome is outside that
     // surface, so route dismissal to the current search owner without stealing
-    // focus or consuming the external control's pointer event.
+    // focus or consuming the external control's pointer event. A press beside
+    // the card closes the desk's search on the desk itself; closing it is what
+    // this press means there too.
     on(document,'pointerdown',event=>{
       if(!active()||surface.contains(event.target))return;
-      if(inputScope.capture()?.owner==='system-search')dispatchCanvasKey('Escape');
+      if(inputScope.capture()?.holder==='system-search')runtime.desktop_search_close(id);
     },{capture:true});
     onEditor('keydown',event=>{
       inputScope.capture();if(!active())return;
@@ -661,15 +787,26 @@ export async function mountDesktop(target,options={}) {
     // A mouse wheel's notches reach the runtime as the lines a native wheel
     // sends; this runs before the runtime's own canvas listener.
     const wheelNotch={x:0,y:0};
+    // The pointer a wheel names, which the runtime routes the wheel by: a
+    // swipe over a window's grid is that grid's, not whatever the pointer was
+    // left on.
+    const wheelPointer={x:NaN,y:NaN};
+    const placePointerAtWheel=event=>{
+      if(typeof PointerEvent!=='function')return;
+      const move=wheelPointerMove(event,wheelPointer);
+      if(move)canvas.dispatchEvent(new PointerEvent('pointermove',move));
+    };
     on(surface,'wheel',event=>{
       if(event.target!==canvas)return;
       const lines=wheelNotchesAsLines(event,config.mac,wheelNotch);
       if(!lines)return;
       event.preventDefault();event.stopImmediatePropagation();
+      placePointerAtWheel(event);
       canvas.dispatchEvent(new WheelEvent('wheel',lines));
     },{capture:true,passive:false});
     on(canvas,'wheel',event=>{
       event.preventDefault();
+      placePointerAtWheel(event);
       const pixels=pageWheelAsPixels(event,canvas.clientWidth,canvas.clientHeight);
       if(pixels)canvas.dispatchEvent(new WheelEvent('wheel',pixels));
       else report({lastInput:'wheel'});
@@ -702,12 +839,10 @@ export async function mountDesktop(target,options={}) {
       // that a call's audio went both ways, or null for a page with no call
       // lane.
       call:()=>options.peer?.voice?.call.stats()??null,
-      // The workspace's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
-      pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
-      durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
+      durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),loseGpu:()=>runtime.lose_gpu(id),
       semantic:(...args)=>runtime.semantic(id,...args),
       publications:()=>JSON.parse(runtime.component_publications(id)),
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(id,resource??undefined,window)),
@@ -722,8 +857,8 @@ async function settleBeforeGpu(){
   await new Promise(resolve=>(globalThis.requestIdleCallback??(f=>setTimeout(f,0)))(resolve,{timeout:1500}));
 }
 // This person's pointer, said over the tab it is on: a point in that tab's
-// logical pixels, which every member's view of the tab places. The mount
-// draws the members' pointers from the board; this only says where this
+// logical pixels, which every member's view of the tab places. The session's
+// roster draws the members' pointers from the board; this only says where this
 // page's is.
 function followOwnPointer(layer,mountId,surface,active){
   const move=event=>{

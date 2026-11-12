@@ -1,5 +1,7 @@
-//! `tilo mcp`: the agent's MCP server over stdio, as the device `tilo login`
-//! made of this computer.
+//! `tilo mcp`: the agent's MCP server over stdio. On a Tilo desktop it is
+//! the desktop's own agent door (`agent.sock`), which the person admits the
+//! agent at; elsewhere it serves as the device `tilo login` made of this
+//! computer.
 //!
 //! What it serves is the runtime's own projection of a workspace
 //! ([`tilo_runtime::mcp::McpServer`], the agent surface: `tilo_ls`,
@@ -25,46 +27,45 @@ use std::time::Duration;
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_browser_peer::PeerHandle;
-use tilo_browser_peer::login::{action, say_here};
-use tilo_browser_peer::session_actions::SessionActions;
-use tilo_relay_protocol::web::HereAction;
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_client::device::Device as Entered;
+use tilo_session_core::remote::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
-use crate::mcp_presence;
+use tilo_runtime::mcp_windows;
 
-/// How many of the agent's actions the workspace shows at once.
-const SHOWN_ACTIONS: usize = 8;
 /// The MCP protocol version this server speaks when it cannot reach the
 /// workspace; the projection answers with its own once it can.
 const PROTOCOL: &str = "2025-06-18";
 /// How long a request waits for this device to enter the workspace.
 const ENTERING: Duration = Duration::from_secs(25);
+/// What the host's session says once the person stopped this agent from its card.
+const STOPPED: &str = "agent-run-stopped";
+/// The longest the agent waits, as it goes, for its session to close: the host
+/// then sees the connection end at once, and takes the agent down, rather than
+/// after the connection's silence runs out.
+const CLOSING: Duration = Duration::from_secs(3);
 
 /// This device in the workspace, serving the agent.
 struct Session {
     server: McpServer<SessionActions>,
-    peer: PeerHandle,
-    workspace_id: u64,
-    agent: String,
-    shown: Mutex<Vec<HereAction>>,
-    /// The agent, present in the workspace while this connection lives.
-    presence: Arc<mcp_presence::Presence>,
+    device: Entered,
+    /// The windows of the records the agent works in.
+    windows: Arc<mcp_windows::AgentWindows>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // The agent leaves with the connection: nothing of it is drawn
-        // after this.
-        self.presence.leave();
-        self.peer.close();
+        // The agent's run ends with the connection, and the host that shows
+        // it takes it down.
+        self.device.close();
     }
 }
 
 /// What the server holds: the device, and its session once entered.
 struct Serving {
-    device: Option<(SigningKey, Device)>,
+    /// This computer's login, or why there is none to enter with.
+    device: Result<(SigningKey, Device), String>,
     /// The agent run every invocation of this connection belongs to.
     run: String,
     session: tokio::sync::Mutex<Option<Arc<Session>>>,
@@ -74,9 +75,7 @@ impl Serving {
     /// The device's session, entering the workspace when it is not in it
     /// yet; why not, when it cannot.
     async fn session(&self) -> Result<Arc<Session>, String> {
-        let Some((key, device)) = &self.device else {
-            return Err(NOT_LOGGED_IN.to_owned());
-        };
+        let (key, device) = self.device.as_ref().map_err(Clone::clone)?;
         let mut held = self.session.lock().await;
         if let Some(session) = held.as_ref() {
             return Ok(Arc::clone(session));
@@ -100,65 +99,65 @@ impl Serving {
     /// Leave the workspace as the connection ends: the agent says it has
     /// left while its session can still say so, and the device closes.
     async fn leaving(&self) {
-        let session = self.session.lock().await.take();
+        let Some(session) = self.session.lock().await.take() else {
+            return;
+        };
+        let peer = session.device.session().clone();
         drop(session);
+        // The session closes on its own task: the process waits for it rather than ending it
+        // with the runtime, which would leave the host waiting out the connection's silence.
+        let closed = async {
+            while peer.status().phase != tilo_session_client::TransportPhase::Closed {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        let _ = tokio::time::timeout(CLOSING, closed).await;
     }
 }
 
-/// The projection over the workspace `peer` is in, its actions asked of the
-/// workspace's host.
-fn open(
-    (peer, workspace_id): (PeerHandle, u64),
-    device: &Device,
-    run: &str,
-) -> Result<Session, String> {
-    let host = device
-        .certs()
-        .map_err(|error| format!("this computer's login is damaged ({error}); log in again"))?
-        .1
-        .device_public_key;
+/// The projection over the workspace `entered` is in, its actions asked of
+/// the workspace's host.
+fn open(entered: Entered, device: &Device, run: &str) -> Result<Session, String> {
+    let workspace_id = entered.workspace_id();
     let user: [u8; 32] = hex::decode(&device.user)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
-    let actions = SessionActions::new(&peer, workspace_id, host);
-    // The person's desktops see the agent present from the moment it enters
-    // the workspace, not from its first action.
-    let presence = mcp_presence::Presence::new(
-        &peer,
+    let actions = entered.actions(workspace_id);
+    let person = collab_types::Principal::of_person(user).id().to_owned();
+    // The records the agent works in open as windows on the workspace's
+    // desk; the host that executes its run shows it there, doing what it
+    // does.
+    let windows = Arc::new(mcp_windows::AgentWindows::new(
         actions.clone(),
-        person(user),
-        (device.workspace.clone(), workspace_id),
-        device.agent.clone(),
-    );
-    presence.arrive();
-    // And see each action it takes in a record as it goes.
-    let narrating = Arc::clone(&presence);
-    let server = McpServer::new(actions, device.workspace.clone(), person(user))
+        person.clone(),
+        device.workspace.clone(),
+    ));
+    let server = McpServer::new(actions, device.workspace.clone(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run(run, device.agent.clone())
-        .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
+        .with_agent_run(run, device.agent.clone());
     Ok(Session {
         server,
-        peer,
-        workspace_id,
-        agent: device.agent.clone(),
-        shown: Mutex::new(Vec::new()),
-        presence,
+        device: entered,
+        windows,
     })
 }
 
-/// The person `user` is, as their workspaces name them.
-fn person(user: [u8; 32]) -> String {
-    match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user))
-    {
-        collab_types::Principal::Person(id) => id,
-        _ => hex::encode(user),
-    }
-}
-
-/// `tilo mcp`.
+/// `tilo mcp`: on a Tilo desktop, the desktop's own agent door, which asks the person to let the
+/// agent in; elsewhere, this computer's login, entering the person's workspace wherever it is
+/// hosted.
 pub fn serve() -> Result<ExitCode> {
+    let device = match tilo_runtime::session_door::desktop_door() {
+        Ok(Some(door)) => {
+            tilo_runtime::session_door::bridge(&door)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Ok(None) => crate::login::load(&crate::login::device_dir()?)?
+            .ok_or_else(|| NOT_LOGGED_IN.to_owned()),
+        // A desktop whose door is not open yet (its first login is not complete) is no computer
+        // that needs a login: the agent hears what it waits for.
+        Err(error) => Err(error.to_string()),
+    };
     // The agent's connection goes where `tilo login` went: a host whose
     // certificate only a test trusts is reached the same way here.
     crate::login::trust_test_certificates()?;
@@ -166,7 +165,7 @@ pub fn serve() -> Result<ExitCode> {
         .enable_all()
         .build()?;
     let serving = Arc::new(Serving {
-        device: crate::login::load(&crate::login::device_dir()?)?,
+        device,
         run: hex::encode(rand::random::<[u8; 8]>()),
         session: tokio::sync::Mutex::new(None),
     });
@@ -216,13 +215,26 @@ async fn answer(serving: &Serving, line: &str) -> Option<String> {
             );
         }
     };
-    let session = serving.session().await;
+    let session = serving.session().await.and_then(|session| {
+        // The person stopped this agent: its session ended for good, and every call says so.
+        let stopped = session
+            .device
+            .session()
+            .status()
+            .failures
+            .into_iter()
+            .find(|failure| failure.code == STOPPED);
+        match stopped {
+            Some(failure) => Err(format!("{} Start a new session to go on.", failure.message)),
+            None => Ok(session),
+        }
+    });
     let answer = match &session {
         Ok(session) => session.server.handle(request.clone()).await,
         Err(problem) => unreachable_answer(&request, problem),
     }?;
     if let Ok(session) = session {
-        show(&session, &request, &answer);
+        show(&session, &request);
     }
     Some(answer.to_string())
 }
@@ -253,82 +265,20 @@ fn unreachable_answer(request: &Value, problem: &str) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-/// Show the person, beside the agent in their workspace, the tool call
-/// `request` made and whether it worked.
-fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
+/// Open the record the tool call `request` worked in as a window where the
+/// agent works: the host that executes the run shows what it did.
+fn show(session: &Arc<Session>, request: &Value) {
     if request.get("method").and_then(Value::as_str) != Some("tools/call") {
         return;
     }
-    let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
-        || answer.get("error").is_some();
-    // The workspace sees the agent present, doing this and where, beside the
-    // line this connection adds to the person's recent actions.
-    let said = Arc::clone(session);
-    let (call, acted) = (request.clone(), session.server.acted());
-    tokio::spawn(async move { said.presence.called(&call, failed, acted).await });
-    let Some((title, resource)) = described(request) else {
-        return;
-    };
-    let title = if failed {
-        format!("{title} (failed)")
-    } else {
-        title
-    };
-    let actions = {
-        let mut shown = session
-            .shown
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        shown.push(action(&title, &resource, "Tilo MCP"));
-        let excess = shown.len().saturating_sub(SHOWN_ACTIONS);
-        shown.drain(..excess);
-        shown.clone()
-    };
-    let session = Arc::clone(session);
-    tokio::spawn(async move {
-        let _ = say_here(
-            &session.peer,
-            session.workspace_id,
-            &session.agent,
-            actions,
-            true,
-        )
-        .await;
-    });
-}
-
-/// A tool call as the person reads it: what the agent did and on what.
-fn described(request: &Value) -> Option<(String, String)> {
-    let params = request.get("params")?;
-    let tool = params.get("name")?.as_str()?;
-    let arguments = params.get("arguments").cloned().unwrap_or_default();
-    let text = |key: &str| {
-        arguments
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
-    };
-    Some(match tool {
-        "tilo_ls" => ("Looked at".to_owned(), text("path")),
-        "tilo_read" => ("Read".to_owned(), text("path")),
-        "tilo_find" => ("Searched for".to_owned(), text("query")),
-        "tilo_do" => {
-            let path = text("path");
-            let path = if path.is_empty() {
-                arguments
-                    .get("calls")
-                    .and_then(Value::as_array)
-                    .map(|calls| format!("{} actions", calls.len()))
-                    .unwrap_or_default()
-            } else {
-                path
-            };
-            ("Ran".to_owned(), path)
-        }
-        "tilo" => ("Ran a program".to_owned(), text("program")),
-        _ => return None,
-    })
+    // Each record the call made or changed opens where the agent works, as
+    // a step of the run the call was.
+    let windows = Arc::clone(&session.windows);
+    let (changed, run) = (
+        session.server.take_changed(),
+        session.server.run_of(request),
+    );
+    tokio::spawn(async move { windows.changed(changed, run).await });
 }
 
 #[cfg(test)]
@@ -337,7 +287,7 @@ mod tests {
 
     fn serving() -> Serving {
         Serving {
-            device: None,
+            device: Err(NOT_LOGGED_IN.to_owned()),
             run: "run".into(),
             session: tokio::sync::Mutex::new(None),
         }
@@ -347,6 +297,36 @@ mod tests {
         answer(serving, line)
             .await
             .map(|answer| serde_json::from_str(&answer).unwrap())
+    }
+
+    /// A Tilo desktop whose door is not open yet (its first login is not complete) is no computer
+    /// that needs `tilo login`: the agent hears what it waits for, never "not logged in".
+    #[tokio::test]
+    async fn a_desktop_whose_door_is_not_open_yet_never_says_not_logged_in() {
+        let waiting = tilo_runtime::session_door::route(
+            false,
+            None,
+            true,
+            Some("/run/user/1000/tilo-session/agent.sock".into()),
+            |_| false,
+        )
+        .unwrap_err()
+        .to_string();
+        let serving = Serving {
+            device: Err(waiting.clone()),
+            run: "run".into(),
+            session: tokio::sync::Mutex::new(None),
+        };
+        let init = ask(
+            &serving,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        )
+        .await
+        .unwrap();
+        let said = init["result"]["instructions"].as_str().unwrap();
+        assert_eq!(said, waiting);
+        assert!(!said.contains("not logged in"), "{said}");
+        assert!(said.contains("first login"), "{said}");
     }
 
     #[tokio::test]
@@ -387,30 +367,5 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(called["result"]["isError"], true);
-    }
-
-    #[test]
-    fn a_call_is_shown_as_what_it_did_and_on_what() {
-        let call = |name: &str, arguments: Value| {
-            described(
-                &json!({"method": "tools/call", "params": {"name": name, "arguments": arguments}}),
-            )
-        };
-        assert_eq!(
-            call("tilo_do", json!({"path": "docs/Plan#append-paragraph"})),
-            Some(("Ran".into(), "docs/Plan#append-paragraph".into()))
-        );
-        assert_eq!(
-            call(
-                "tilo_do",
-                json!({"calls": [{"path": "a#b"}, {"path": "c#d"}]})
-            ),
-            Some(("Ran".into(), "2 actions".into()))
-        );
-        assert_eq!(
-            call("tilo_find", json!({"query": "budget"})),
-            Some(("Searched for".into(), "budget".into()))
-        );
-        assert_eq!(call("tilo_status", json!({})), None);
     }
 }

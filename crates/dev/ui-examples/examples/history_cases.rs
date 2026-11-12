@@ -33,6 +33,7 @@ use automerge::AutoCommit;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::{ActivityTimeline, AuthorDirectory, HistoryEntry, HistorySource, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -265,7 +266,7 @@ impl Shot {
         let mut scene = Scene::new();
         // The pane is placed by hand, the way both hosts place it: the compositor
         // reserves a sheet out of its chrome, the editor a band under its canvas.
-        widget.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        widget.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
         self.n = self.n.saturating_add(1);
         let path = self.dir.join(format!("{:02}-{name}.png", self.n));
         std::fs::create_dir_all(&self.dir).ok();

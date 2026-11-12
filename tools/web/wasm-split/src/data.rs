@@ -29,9 +29,15 @@
 //! from then on the pointer may go anywhere (to the start module's code, the
 //! heap, other modules) and the bytes are there.
 //!
+//! A static several split modules or shared chunks reach moves into one
+//! of them that is always in memory whenever any of their code runs: a
+//! shared chunk every module running that code loads first. A module's
+//! chunks are instantiated before it is, and a chunk's code only runs once
+//! a module that loads it is in.
+//!
 //! What stays in the start module:
-//! - a static the start module's own code or data reaches, or that two
-//!   modules reach (split modules or shared chunks);
+//! - a static the start module's own code or data reaches, or that several
+//!   modules reach with no shared chunk loaded before all of them;
 //! - a static nothing reaches (code the split removed was its only user);
 //! - bytes no symbol covers, and runs too short to be worth a segment;
 //! - everything, when the analysis cannot vouch for the module: data the
@@ -140,7 +146,8 @@ enum Cause {
     /// Code reaches it through a base the program computes, or a pointer to
     /// it sits in bytes no symbol covers.
     Pinned,
-    /// Two split modules reach it.
+    /// Several split modules reach it, and no shared chunk is loaded
+    /// before all of them.
     Shared,
     /// This symbol, kept for its own cause, points to it.
     Via(u32),
@@ -151,6 +158,53 @@ enum Owner {
     Nobody,
     Start,
     Split(usize),
+    /// Several split modules or shared chunks, by their set's index in the
+    /// plan's table of sets.
+    Several(usize),
+}
+
+/// Sets of modules, each kept once, sorted and without repeats.
+#[derive(Default)]
+struct SetTable {
+    sets: Vec<Vec<usize>>,
+    index: HashMap<Vec<usize>, usize>,
+}
+
+impl SetTable {
+    fn intern(&mut self, mut members: Vec<usize>) -> usize {
+        members.sort_unstable();
+        members.dedup();
+        if let Some(index) = self.index.get(&members) {
+            return *index;
+        }
+        self.sets.push(members.clone());
+        self.index.insert(members, self.sets.len() - 1);
+        self.sets.len() - 1
+    }
+
+    fn members(&self, set: usize) -> &[usize] {
+        &self.sets[set]
+    }
+
+    fn len(&self) -> usize {
+        self.sets.len()
+    }
+}
+
+/// The module to write a static `reachers` all reach into: one that is in
+/// memory whenever any of them runs (`loaded`, see [`DataLayout::plan`]),
+/// the one the fewest modules count on being in, so the fewest pages fetch
+/// bytes they never read.
+fn home(reachers: &[usize], loaded: &[Vec<usize>]) -> Option<usize> {
+    let mut always: Vec<usize> = loaded.get(*reachers.first()?)?.clone();
+    for reacher in &reachers[1..] {
+        let theirs = loaded.get(*reacher)?;
+        always.retain(|module| theirs.contains(module));
+    }
+    let loaders = |module: usize| loaded.iter().filter(|set| set.contains(&module)).count();
+    always
+        .into_iter()
+        .min_by_key(|module| (loaders(*module), *module))
 }
 
 impl DataLayout {
@@ -558,13 +612,17 @@ impl DataLayout {
     /// Decide where each static goes. `claimants` lists every module with
     /// the functions whose code it carries; `module` is the bindgened module
     /// and `refs` its functions' references ([`Self::function_refs`]).
+    /// `loaded[i]` lists the modules (split modules, then shared chunks, as
+    /// in [`DataPlan::moved`]) that are always in memory when module `i`'s
+    /// code runs, `i` among them.
     pub(crate) fn plan(
         &self,
         module: &Module,
         refs: &HashMap<FunctionId, Vec<u32>>,
         claimants: Vec<(Claimant, Vec<FunctionId>)>,
-        modules: usize,
+        loaded: &[Vec<usize>],
     ) -> DataPlan {
+        let modules = loaded.len();
         let mut plan = DataPlan {
             moved: vec![Vec::new(); modules],
             removed: Vec::new(),
@@ -577,10 +635,12 @@ impl DataLayout {
         let mut owner = vec![Owner::Nobody; self.symbols.len()];
         // Why each symbol the start module keeps is there.
         let mut cause = vec![Cause::Nobody; self.symbols.len()];
-        let claim = |owner: &mut Vec<Owner>,
-                     cause: &mut Vec<Cause>,
-                     who: Owner,
-                     roots: Vec<(u32, Cause)>| {
+        // The sets of modules several of them reach a symbol from.
+        let mut sets = SetTable::default();
+        let mut claim = |owner: &mut Vec<Owner>,
+                         cause: &mut Vec<Cause>,
+                         who: Owner,
+                         roots: Vec<(u32, Cause)>| {
             let mut seen = HashSet::new();
             let mut queue: VecDeque<(u32, Cause)> = roots.into_iter().collect();
             while let Some((symbol, why)) = queue.pop_front() {
@@ -591,14 +651,17 @@ impl DataLayout {
                 let next = match (*current, who) {
                     (Owner::Nobody, who) => who,
                     (current, who) if current == who => who,
-                    _ => Owner::Start,
+                    (Owner::Start, _) | (_, Owner::Start) => Owner::Start,
+                    (Owner::Split(a), Owner::Split(b)) => Owner::Several(sets.intern(vec![a, b])),
+                    (Owner::Several(set), Owner::Split(b)) => {
+                        let mut members = sets.members(set).to_vec();
+                        members.push(b);
+                        Owner::Several(sets.intern(members))
+                    }
+                    _ => unreachable!("a claim is the start module's or one module's"),
                 };
                 if next == Owner::Start && *current != Owner::Start {
-                    cause[symbol as usize] = if who == Owner::Start {
-                        why
-                    } else {
-                        Cause::Shared
-                    };
+                    cause[symbol as usize] = why;
                 }
                 *current = next;
                 queue.extend(
@@ -642,6 +705,22 @@ impl DataLayout {
         claim(&mut owner, &mut cause, Owner::Start, start_roots);
         for (index, roots) in split_roots {
             claim(&mut owner, &mut cause, Owner::Split(index), roots);
+        }
+        // A static several modules reach goes to the module always in memory
+        // when any of them runs, or stays in the start module.
+        let homes: Vec<Option<usize>> = (0..sets.len())
+            .map(|set| home(sets.members(set), loaded))
+            .collect();
+        for (symbol, current) in owner.iter_mut().enumerate() {
+            if let Owner::Several(set) = *current {
+                *current = homes[set].map_or_else(
+                    || {
+                        cause[symbol] = Cause::Shared;
+                        Owner::Start
+                    },
+                    Owner::Split,
+                );
+            }
         }
         if let Some(count) = std::env::var("WASM_SPLIT_DATA_WHY")
             .ok()
@@ -920,4 +999,31 @@ fn immediate(operator: &wasmparser::Operator) -> Option<u32> {
         _ => return None,
     };
     u32::try_from(memarg.offset).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::home;
+
+    /// Modules 0 and 1 are split modules, 2 and 3 shared chunks: 0 loads 2
+    /// and 3, 1 loads 2 only.
+    const LOADED: [&[usize]; 4] = [&[0, 2, 3], &[1, 2], &[2], &[2, 3]];
+
+    fn loaded() -> Vec<Vec<usize>> {
+        LOADED.iter().map(|set| set.to_vec()).collect()
+    }
+
+    #[test]
+    fn data_two_modules_reach_goes_to_the_chunk_both_load_first() {
+        assert_eq!(home(&[0, 1], &loaded()), Some(2));
+        // A chunk's own reach and a module that loads it: the chunk.
+        assert_eq!(home(&[0, 3], &loaded()), Some(3));
+        assert_eq!(home(&[1, 2], &loaded()), Some(2));
+    }
+
+    #[test]
+    fn data_no_chunk_is_loaded_before_stays_where_it_was() {
+        let loaded = vec![vec![0], vec![1]];
+        assert_eq!(home(&[0, 1], &loaded), None);
+    }
 }

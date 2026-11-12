@@ -16,7 +16,6 @@ pub const APP_TITLE: &str = "Bound Controls";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// The regions a profile can choose.
@@ -105,7 +104,7 @@ impl ResourceApp for App {
                     NumberInput::from_state(value)
                         .with_range(1.0, 120.0)
                         .with_step(5.0)
-                        .with_suffix(&I18nManager::lookup_plain("controls-minutes-suffix"))
+                        .with_suffix(&crate::locales::CATALOG.t("controls-minutes-suffix"))
                 },
                 p.refresh_minutes,
             )

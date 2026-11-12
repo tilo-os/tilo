@@ -192,16 +192,15 @@ impl Credentials {
         if self.address_mode {
             self.addresses.refresh();
         }
-        self.notice = if self.private {
-            "Passwords and address autofill are unavailable here: this window browses without your sign-ins."
+        self.notice = crate::CATALOG.t(if self.private {
+            "browser-credentials-unavailable-private"
         } else if !supported {
-            "Form filling is unavailable with this browser engine."
+            "browser-credentials-unavailable-engine"
         } else if self.origin.is_none() {
-            "Open a secure HTTPS page to fill a form."
+            "browser-credentials-unavailable-insecure"
         } else {
-            "Checking this page…"
-        }
-        .into();
+            "browser-credentials-checking"
+        });
         if !self.private && supported && self.origin.is_some() {
             requests.extend(self.request(CredentialAction::Status));
         }
@@ -294,7 +293,7 @@ impl Credentials {
                 {
                     return self.request(CredentialAction::FillAddress { form, profile });
                 }
-                self.notice = "Select an enabled, saved address before filling.".into();
+                self.notice = crate::CATALOG.t("browser-credentials-select-address");
             }
             Action::Capture => {
                 if let Some(form) = self.form.clone() {
@@ -313,7 +312,7 @@ impl Credentials {
                 }
                 if let Some((capture, _, expires)) = self.capture.take() {
                     if ui::time::now() >= expires {
-                        self.notice = "Capture expired. Read the login again.".into();
+                        self.notice = crate::CATALOG.t("browser-credentials-capture-expired");
                         return vec![];
                     }
                     let action = if matches!(action, Action::Save) {
@@ -377,7 +376,7 @@ impl Credentials {
             self.pending.clear();
             self.capture = None;
             self.delete = None;
-            self.notice="Request expired. Refresh before trying again; an operation already started may still finish.".into();
+            self.notice = crate::CATALOG.t("browser-credentials-request-expired");
             dirty = true;
         }
         dirty
@@ -397,8 +396,9 @@ impl Credentials {
             .chain(self.capture.iter().map(|c| c.2))
             .min()
     }
-    fn button(&self, id: &str, label: &str, action: Action) -> Button {
-        Button::new(id, label).on_effect(self.command(action))
+    /// A button of this panel, its words from `key`, a catalogue message.
+    fn button(&self, id: &str, key: &str, action: Action) -> Button {
+        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
@@ -408,12 +408,12 @@ impl Credentials {
     fn choice(
         &self,
         id: String,
-        title: &str,
+        title: impl AsRef<str>,
         detail: Option<&str>,
         chosen: bool,
         action: Action,
     ) -> ListRow {
-        let mut row = ListRow::new(id, title)
+        let mut row = ListRow::new(id, title.as_ref())
             .selected(chosen)
             .on_view(self.command(action));
         if let Some(detail) = detail {
@@ -433,41 +433,47 @@ impl Credentials {
         let refresh = (!self.private && self.origin.is_some() && !self.addresses.is_editing())
             .then(|| {
                 if self.address_mode {
-                    Button::icon_only("browser.address.refresh", Icon::Refresh, "Refresh forms")
-                        .on_effect(self.command(Action::Refresh))
+                    Button::icon_only(
+                        "browser.address.refresh",
+                        Icon::Refresh,
+                        &crate::CATALOG.t("browser-credentials-refresh-addresses"),
+                    )
+                    .on_effect(self.command(Action::Refresh))
                 } else {
                     Button::icon_only(
                         "browser.credentials.refresh",
                         Icon::Refresh,
-                        "Refresh forms and accounts",
+                        &crate::CATALOG.t("browser-credentials-refresh"),
                     )
                     .on_effect(self.command(Action::Refresh))
                 }
             });
+        let title = if self.address_mode {
+            crate::resource::CATALOG.t("browser-section-address-autofill")
+        } else {
+            crate::resource::CATALOG.t("browser-section-passwords")
+        };
         let mut header = Row::new()
             .no_wrap()
-            .push(Box::new(
-                Text::new(if self.address_mode {
-                    "Address autofill"
-                } else {
-                    "Passwords"
-                })
-                .with_role(TextRole::Title),
-            ))
+            .push(Box::new(Text::new(&title).with_role(TextRole::Title)))
             .push(Box::new(Spacer::new()));
         if let Some(refresh) = refresh {
             header = header.push(Box::new(refresh));
         }
+        let page = match self.origin.as_deref() {
+            Some(origin) => origin.to_owned(),
+            None => crate::resource::CATALOG.t("browser-section-no-secure-page"),
+        };
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(header.push(Box::new(self.button(
                 "browser.credentials.close",
-                "Done",
+                "browser-credentials-done",
                 Action::Close,
             )))))
             .push(Box::new(
-                Text::new(self.origin.as_deref().unwrap_or("No secure page"))
+                Text::new(&page)
                     .with_role(TextRole::Caption)
                     .with_kind(TextKind::Url)
                     .dimmed(),
@@ -503,7 +509,8 @@ impl Credentials {
     ) -> Column {
         column = column.push(self.addresses.panel(actions));
         if !self.private && self.origin.is_some() && !self.addresses.is_editing() {
-            let bases = vec!["Address form"; self.forms.len()];
+            let bases =
+                vec![crate::CATALOG.t("browser-credentials-address-form"); self.forms.len()];
             let forms: Vec<Box<dyn Widget>> = self
                 .forms
                 .iter()
@@ -511,7 +518,7 @@ impl Credentials {
                 .map(|(index, form)| {
                     Box::new(self.choice(
                         format!("browser.address.form.{index}"),
-                        &form_title(&bases, index),
+                        form_title(&bases, index),
                         None,
                         self.form.as_ref() == Some(&form.id),
                         Action::Form(form.id.clone()),
@@ -519,16 +526,18 @@ impl Credentials {
                 })
                 .collect();
             if forms.is_empty() {
-                column = column.push(line("No supported address form found on this page."));
-            } else {
-                column = column.push(Box::new(
-                    Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
+                column = column.push(line(
+                    crate::CATALOG.t("browser-credentials-no-address-form"),
                 ));
+            } else {
+                column = column.push(Box::new(Section::new(forms).with_header(
+                    SectionHeader::group(crate::CATALOG.t("browser-section-forms")),
+                )));
             }
             column = column.push(Box::new(Actions::new(
                 self.button(
                     "browser.address.fill",
-                    "Fill selected address",
+                    "browser-credentials-fill-address",
                     Action::FillAddress,
                 )
                 .role(ButtonRole::Primary)
@@ -543,16 +552,16 @@ impl Credentials {
             return column;
         }
         if self.forms.is_empty() {
-            column = column.push(line("No supported login form found."));
+            column = column.push(line(crate::CATALOG.t("browser-credentials-no-login-form")));
         } else {
-            let bases: Vec<&str> = self
+            let bases: Vec<String> = self
                 .forms
                 .iter()
                 .map(|form| {
                     if form.kind == "new-password" {
-                        "Create account form"
+                        crate::CATALOG.t("browser-credentials-create-form")
                     } else {
-                        "Sign-in form"
+                        crate::CATALOG.t("browser-credentials-sign-in-form")
                     }
                 })
                 .collect();
@@ -563,19 +572,19 @@ impl Credentials {
                 .map(|(index, form)| {
                     Box::new(self.choice(
                         format!("browser.credentials.form.{index}"),
-                        &form_title(&bases, index),
+                        form_title(&bases, index),
                         None,
                         self.form.as_ref() == Some(&form.id),
                         Action::Form(form.id.clone()),
                     )) as Box<dyn Widget>
                 })
                 .collect();
-            column = column.push(Box::new(
-                Section::new(forms).with_header(SectionHeader::group("Forms on this page")),
-            ));
+            column = column.push(Box::new(Section::new(forms).with_header(
+                SectionHeader::group(crate::CATALOG.t("browser-section-forms")),
+            )));
         }
         if self.accounts.is_empty() {
-            column = column.push(line("No saved accounts for this site."));
+            column = column.push(line(crate::CATALOG.t("browser-credentials-no-accounts")));
         } else {
             let accounts: Vec<Box<dyn Widget>> = self
                 .accounts
@@ -585,9 +594,9 @@ impl Credentials {
                     Box::new(self.choice(
                         format!("browser.credentials.account.{index}"),
                         if account.username.is_empty() {
-                            "Unnamed account"
+                            crate::CATALOG.t("browser-credentials-unnamed-account")
                         } else {
-                            &account.username
+                            account.username.clone()
                         },
                         None,
                         self.account.as_ref() == Some(&account.id),
@@ -595,9 +604,9 @@ impl Credentials {
                     )) as Box<dyn Widget>
                 })
                 .collect();
-            column = column.push(Box::new(
-                Section::new(accounts).with_header(SectionHeader::group("Saved accounts")),
-            ));
+            column = column.push(Box::new(Section::new(accounts).with_header(
+                SectionHeader::group(crate::CATALOG.t("browser-section-saved-accounts")),
+            )));
         }
         self.password_actions(column, ready)
     }
@@ -606,44 +615,57 @@ impl Credentials {
         // Everything done to the chosen account sits in one trailing group;
         // the destructive command asks for confirmation below.
         let mut actions = Actions::new(
-            self.button("browser.credentials.fill", "Fill login", Action::Fill)
-                .role(ButtonRole::Primary)
-                .with_enabled(ready && self.form.is_some() && self.account.is_some()),
+            self.button(
+                "browser.credentials.fill",
+                "browser-credentials-fill",
+                Action::Fill,
+            )
+            .role(ButtonRole::Primary)
+            .with_enabled(ready && self.form.is_some() && self.account.is_some()),
         )
         .secondary(
             self.button(
                 "browser.credentials.capture",
-                "Save login from form",
+                "browser-credentials-save-from-form",
                 Action::Capture,
             )
             .with_enabled(ready && self.form.is_some()),
         );
         if self.delete.is_none() {
             actions = actions.secondary(
-                self.button("browser.credentials.delete", "Delete login", Action::Delete)
-                    .role(ButtonRole::Destructive)
-                    .with_enabled(ready && self.account.is_some()),
+                self.button(
+                    "browser.credentials.delete",
+                    "browser-credentials-delete",
+                    Action::Delete,
+                )
+                .role(ButtonRole::Destructive)
+                .with_enabled(ready && self.account.is_some()),
             );
         }
         column = column.push(Box::new(actions));
         if let Some((_, username, _)) = &self.capture {
             column = column
                 .push(Box::new(
-                    Text::new(&format!("Save login for {username}?"))
-                        .with_role(TextRole::Subheading),
+                    Text::new(&crate::CATALOG.t_args(
+                        "browser-save-login",
+                        &[("site", ui::i18n::ArgValue::Text(username.clone()))],
+                    ))
+                    .with_role(TextRole::Subheading),
                 ))
-                .push(line(
-                    "The password is kept in this device’s password store.",
-                ))
+                .push(line(crate::CATALOG.t("browser-credentials-kept-here")))
                 .push(Box::new(
                     Actions::new(
-                        self.button("browser.credentials.save", "Save new account", Action::Save)
-                            .with_enabled(ready),
+                        self.button(
+                            "browser.credentials.save",
+                            "browser-credentials-save-account",
+                            Action::Save,
+                        )
+                        .with_enabled(ready),
                     )
                     .secondary(
                         self.button(
                             "browser.credentials.update",
-                            "Update selected account",
+                            "browser-credentials-update-account",
                             Action::Update,
                         )
                         .with_enabled(ready && self.account.is_some()),
@@ -651,22 +673,24 @@ impl Credentials {
                 ));
         }
         if self.delete.is_some() {
-            column = column.push(line("Delete this saved login?")).push(Box::new(
-                Actions::new(
-                    self.button(
-                        "browser.credentials.delete.confirm",
-                        "Delete account",
-                        Action::ConfirmDelete,
+            column = column
+                .push(line(crate::CATALOG.t("browser-credentials-confirm-delete")))
+                .push(Box::new(
+                    Actions::new(
+                        self.button(
+                            "browser.credentials.delete.confirm",
+                            "browser-credentials-delete-account",
+                            Action::ConfirmDelete,
+                        )
+                        .role(ButtonRole::Destructive)
+                        .with_enabled(ready),
                     )
-                    .role(ButtonRole::Destructive)
-                    .with_enabled(ready),
-                )
-                .secondary(self.button(
-                    "browser.credentials.delete.cancel",
-                    "Keep account",
-                    Action::CancelDelete,
-                )),
-            ));
+                    .secondary(self.button(
+                        "browser.credentials.delete.cancel",
+                        "browser-credentials-keep-account",
+                        Action::CancelDelete,
+                    )),
+                ));
         }
         column
     }
@@ -674,22 +698,31 @@ impl Credentials {
 
 /// A form's name in the list: what kind of form it is, numbered only when
 /// several share the name.
-fn form_title(bases: &[&str], index: usize) -> String {
-    let base = bases.get(index).copied().unwrap_or("Form");
+fn form_title(bases: &[String], index: usize) -> String {
+    let base = bases
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| crate::CATALOG.t("browser-credentials-form"));
     if bases.iter().filter(|other| **other == base).count() > 1 {
         let ordinal = bases
             .iter()
             .take(index.saturating_add(1))
             .filter(|other| **other == base)
             .count();
-        format!("{base} {ordinal}")
+        crate::CATALOG.t_args(
+            "browser-credentials-form-numbered",
+            &[
+                ("form", ui::i18n::ArgValue::Text(base)),
+                ("number", ui::i18n::ArgValue::Number(ordinal as f64)),
+            ],
+        )
     } else {
-        base.to_owned()
+        base
     }
 }
 
-fn line(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(TextRole::Body))
+fn line(text: impl AsRef<str>) -> Box<dyn Widget> {
+    Box::new(Text::new(text.as_ref()).with_role(TextRole::Body))
 }
 
 #[cfg(test)]

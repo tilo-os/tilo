@@ -29,6 +29,7 @@ use crate::effect::OnboardingEffect;
 use crate::page::{ChooserPurpose, Page, Screen, TourPage};
 use crate::seat::{OnboardingSeat, Secrets, WordMistakes};
 use crate::{Onboarding, t};
+use ui::widget::DrawChild;
 
 const PANEL_MAX_WIDTH: f32 = 760.0;
 // Longer translated/large-text pages scroll inside this limit. Short pages
@@ -415,7 +416,7 @@ impl Ceremony {
             let _ = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
         let mut local = Scene::new();
-        composed.draw(
+        composed.draw_child(
             &mut local,
             Affine::IDENTITY,
             text_renderer,
@@ -452,7 +453,7 @@ impl Ceremony {
             &self.rect,
         );
         picker.set_rect(chooser_rect(self.rect));
-        picker.draw(scene, transform, text_renderer, theme, presence);
+        picker.draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn escape_effect(&self) -> Option<OnboardingEffect> {

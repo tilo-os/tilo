@@ -14,6 +14,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::a11y::AccessNode;
 use ui::fact::{Measure, Measured};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
@@ -29,6 +30,7 @@ use ui::widget::{
 use ui::window_toolbar::{ToolbarAction, ToolbarView, ToolbarViews};
 
 use crate::blocked::BlockedReport;
+use crate::locales::CATALOG;
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
 
 /// What a control in the window asks for. The app applies each one to the
@@ -144,12 +146,12 @@ impl Tab {
         }
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Rules => "Rules",
-            Tab::Services => "Services",
-            Tab::Blocked => "Blocked",
-        }
+    fn label(self) -> String {
+        crate::locales::CATALOG.t(match self {
+            Tab::Rules => "firewall-a11y-rules",
+            Tab::Services => "firewall-a11y-services",
+            Tab::Blocked => "firewall-tab-blocked",
+        })
     }
 }
 
@@ -207,7 +209,8 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
         .iter()
         .filter_map(|kind| config.zone(*kind))
         .map(|zone: &Zone| {
-            let item = NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
+            let item = NavItem::new(zone_id(zone.kind), CATALOG.t(zone.kind.title_message()))
+                .without_actions();
             if zone.kind == config.default_zone {
                 item.status_label("Active", Tone::Success)
             } else {
@@ -218,7 +221,7 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("zones", zones)])
         .selected(&zone_id(selected))
-        .with_accessible_name("Firewall zones")
+        .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-zones"))
         .on_view("firewall.zones", move |id| {
             if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
                 intents.push(Intent::SelectZone(zone));
@@ -254,9 +257,9 @@ pub(crate) fn window_actions(
             FIREWALL_ON,
             Icon::Shield.name(),
             if enabled {
-                "Turn off the firewall"
+                crate::locales::CATALOG.t("firewall-stop-confirm")
             } else {
-                "Turn on the firewall"
+                crate::locales::CATALOG.t("firewall-turn-on")
             },
         )
         .on(enabled),
@@ -264,20 +267,28 @@ pub(crate) fn window_actions(
             APPLY,
             Icon::Upload.name(),
             if applying {
-                "Applying the rules to the system"
+                crate::locales::CATALOG.t("firewall-bar-applying")
             } else {
-                "Apply the rules to the system"
+                crate::locales::CATALOG.t("firewall-bar-apply")
             },
         )
         .enabled(!applying),
     ];
     if tab == Tab::Rules {
-        actions.push(ToolbarAction::new(ADD_RULE, Icon::Plus.name(), "Add rule"));
+        actions.push(ToolbarAction::new(
+            ADD_RULE,
+            Icon::Plus.name(),
+            crate::locales::CATALOG.t("firewall-add-rule"),
+        ));
     }
     actions.push(
-        ToolbarAction::new(PANIC_MODE, Icon::Ban.name(), "Panic mode")
-            .on(panic)
-            .in_menu(),
+        ToolbarAction::new(
+            PANIC_MODE,
+            Icon::Ban.name(),
+            crate::locales::CATALOG.t("firewall-panic-mode"),
+        )
+        .on(panic)
+        .in_menu(),
     );
     actions
 }
@@ -285,12 +296,12 @@ pub(crate) fn window_actions(
 /// The zone's two views, as the window bar's switcher.
 pub(crate) fn window_views(tab: Tab) -> ToolbarViews {
     ToolbarViews {
-        name: "View".to_owned(),
+        name: crate::locales::CATALOG.t("firewall-views"),
         choices: Tab::ALL
             .into_iter()
             .map(|tab| ToolbarView {
                 id: tab.view_id().to_owned(),
-                label: tab.label().to_owned(),
+                label: tab.label(),
             })
             .collect(),
         chosen: tab.view_id().to_owned(),
@@ -302,7 +313,7 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
     let state = match detail {
         Some(detail) => EmptyState::error("Firewall service unavailable", detail),
         None => EmptyState::new("Firewall service unavailable")
-            .with_message("Start firewalld, then try again. No rules were changed."),
+            .with_message(CATALOG.t("firewall-service-unavailable-hint")),
     };
     Box::new(
         state
@@ -393,7 +404,7 @@ pub(crate) fn zone_page(
         .push(tab);
     if model.applying {
         page = page.push(Box::new(
-            Text::new("Applying the stored rules to this device…")
+            Text::new(&crate::locales::CATALOG.t("firewall-applying-rules"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
@@ -423,14 +434,15 @@ pub(crate) fn zone_page(
 fn banners(config: &FirewallConfig) -> Vec<Element> {
     let mut out: Vec<Element> = Vec::new();
     if config.panic_mode {
-        out.push(Box::new(Banner::error("Panic mode is on").with_message(
-            "All incoming and outgoing network traffic is dropped.",
-        )));
+        out.push(Box::new(
+            Banner::error(CATALOG.t("firewall-panic-banner"))
+                .with_message(CATALOG.t("firewall-panic-mode-message")),
+        ));
     }
     if !config.enabled {
         out.push(Box::new(
-            Banner::warning("The firewall is stopped")
-                .with_message("No rules are enforced until you turn it on."),
+            Banner::warning(CATALOG.t("firewall-stopped-banner"))
+                .with_message(CATALOG.t("firewall-stopped-message")),
         ));
     }
     out
@@ -446,13 +458,13 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
         let intents = intents.clone();
         column = column.push(Box::new(
             Row::new().push(Box::new(
-                Button::new("firewall-make-active", "Make active zone")
+                Button::new("firewall-make-active", &CATALOG.t("firewall-make-active"))
                     .on_effect(move || intents.push(Intent::MakeActive)),
             )),
         ));
     }
     column.push(Box::new(
-        Text::new(model.zone.kind.description())
+        Text::new(&crate::locales::CATALOG.t(model.zone.kind.description_message()))
             .with_role(TextRole::Body)
             .dimmed(),
     ))
@@ -494,17 +506,25 @@ fn stats(zone: &Zone) -> StatGroup {
 
 fn details(zone: &Zone) -> Section {
     let interfaces = if zone.interfaces.is_empty() {
-        Property::new("Interfaces", "None")
+        Property::new(CATALOG.t("firewall-interfaces"), "None")
     } else {
-        Property::new("Interfaces", zone.interfaces.join(", ")).with_kind(TextKind::Identifier)
+        Property::new(CATALOG.t("firewall-interfaces"), zone.interfaces.join(", "))
+            .with_kind(TextKind::Identifier)
     };
-    let masquerading = if zone.masquerade { "On" } else { "Off" };
+    let masquerading = CATALOG.t(if zone.masquerade {
+        "firewall-masquerade-on"
+    } else {
+        "firewall-masquerade-off"
+    });
     Section::titled(
-        "Details",
+        CATALOG.t("firewall-section-details"),
         vec![Box::new(PropertyList::new(vec![
             interfaces,
-            Property::new("Unmatched traffic", zone.target.outcome()),
-            Property::new("Masquerading", masquerading),
+            Property::new(
+                CATALOG.t("firewall-unmatched-traffic"),
+                CATALOG.t(zone.target.outcome_message()),
+            ),
+            Property::new(CATALOG.t("firewall-masquerading"), masquerading),
         ]))],
     )
 }
@@ -539,7 +559,7 @@ impl RuleRow {
 fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Element {
     if model.zone.rules.is_empty() {
         return Box::new(
-            Text::new("This zone has no rules yet.")
+            Text::new(&crate::locales::CATALOG.t("firewall-zone-empty"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         );
@@ -573,7 +593,7 @@ fn rule_table(
                     Action::Allow => Tone::Success,
                     Action::Deny => Tone::Danger,
                 };
-                (row.action.title().to_string(), tone)
+                (CATALOG.t(row.action.title_message()), tone)
             }),
         ColumnDef::new("rule", "Rule", ColumnWidth::Flex(1.0))
             .min_width(160.0)
@@ -599,7 +619,10 @@ fn rule_table(
                 Box::new(
                     Toggle::from_state(&state)
                         .with_id(&format!("firewall-rule-enabled-{}", row.id))
-                        .with_accessible_name(&format!("Enable the {} rule", row.title)),
+                        .with_accessible_name(&CATALOG.t_args(
+                            "firewall-a11y-enable-rule",
+                            &[("rule", ArgValue::Text(row.title.clone()))],
+                        )),
                 )
             }),
         ColumnDef::new("edit", "", ColumnWidth::Auto).with_widget(move |row: &RuleRow, _| {
@@ -609,7 +632,10 @@ fn rule_table(
                 Button::icon_only(
                     &format!("firewall-rule-edit-{id}"),
                     Icon::Pencil,
-                    &format!("Edit the {} rule", row.title),
+                    &CATALOG.t_args(
+                        "firewall-edit-rule",
+                        &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
+                    ),
                 )
                 .on_view(move || intents.push(Intent::EditRule(id))),
             )
@@ -621,14 +647,17 @@ fn rule_table(
                 Button::icon_only(
                     &format!("firewall-rule-delete-{id}"),
                     Icon::Trash2,
-                    &format!("Delete the {} rule", row.title),
+                    &CATALOG.t_args(
+                        "firewall-delete-rule-action",
+                        &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
+                    ),
                 )
                 .on_view(move || intents.push(Intent::AskDelete(id))),
             )
         }),
     ])
     .with_id("firewall-rules")
-    .with_accessible_name("Rules")
+    .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-rules"))
     .with_sort_state(sort)
     .selectable(true);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
@@ -783,7 +812,7 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         TextInput::from_state(&draft.source)
             .with_id("firewall-rule-source")
             .with_kind(TextInputKind::Path)
-            .with_placeholder("Anywhere"),
+            .with_placeholder(crate::locales::CATALOG.t("firewall-source-anywhere")),
     );
     fields.push(match &draft.source_error {
         Some(error) => source.with_error(error),
@@ -800,9 +829,21 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
     let cancel = intents.clone();
     let dismiss = intents.clone();
     let title = if editing {
-        format!("Edit the rule in {}", zone.title())
+        CATALOG.t_args(
+            "firewall-edit-rule-in-zone",
+            &[(
+                "zone",
+                ui::i18n::ArgValue::Text(CATALOG.t(zone.title_message())),
+            )],
+        )
     } else {
-        format!("Add a rule to {}", zone.title())
+        CATALOG.t_args(
+            "firewall-add-rule-to-zone",
+            &[(
+                "zone",
+                ui::i18n::ArgValue::Text(CATALOG.t(zone.title_message())),
+            )],
+        )
     };
     let primary = if editing { "Save rule" } else { "Add rule" };
     ModalDialog::new(title, body)
@@ -818,7 +859,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
     let report = match model.blocked {
         BlockedRead::Reading => {
             return Box::new(
-                Text::new("Reading dropped traffic from the system journal…")
+                Text::new(&crate::locales::CATALOG.t("firewall-reading-dropped"))
                     .with_role(TextRole::Body)
                     .dimmed(),
             );
@@ -835,7 +876,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         }
         BlockedRead::Unread => {
             return Box::new(
-                Text::new("Open Blocked again to read the system journal.")
+                Text::new(&crate::locales::CATALOG.t("firewall-reading-dropped-stopped"))
                     .with_role(TextRole::Body)
                     .dimmed(),
             );
@@ -863,9 +904,9 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
                         .numeric(),
                 ))
                 .push(Box::new(
-                    Text::new(&format!(
-                        "packets in the last {} min",
-                        report.window_minutes
+                    Text::new(&CATALOG.t_args(
+                        "firewall-packets-window",
+                        &[("minutes", ArgValue::Text(report.window_minutes.to_string()))],
                     ))
                     .with_role(TextRole::Caption)
                     .dimmed(),
@@ -886,16 +927,19 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         page = page.push(Box::new(
             EmptyState::new("Nothing was dropped")
                 .with_icon(Icon::Shield)
-                .with_message(format!(
-                    "The kernel logged no dropped or rejected packets in the last {} minutes.",
-                    report.window_minutes
+                .with_message(CATALOG.t_args(
+                    "firewall-nothing-dropped-message",
+                    &[(
+                        "minutes",
+                        ui::i18n::ArgValue::Number(f64::from(report.window_minutes)),
+                    )],
                 )),
         ));
         return Box::new(page);
     }
     let retry = intents.clone();
     page = page.push(Box::new(blocked_table(report))).push(Box::new(
-        Button::new("firewall-blocked-refresh", "Refresh")
+        Button::new("firewall-blocked-refresh", &CATALOG.t("firewall-refresh"))
             .with_icon(Icon::Refresh)
             .on_view(move || retry.push(Intent::RefreshBlocked)),
     ));
@@ -917,7 +961,7 @@ fn blocked_table(report: &BlockedReport) -> DataTable<BlockedRow> {
             .with_text(|row: &BlockedRow| row.scale.clone()),
     ])
     .with_id("firewall-blocked")
-    .with_accessible_name("Dropped traffic, grouped by rule");
+    .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-dropped"));
     table.set_rows(
         report
             .groups
@@ -947,23 +991,20 @@ struct BlockedRow {
 fn switch_dialog(which: PendingSwitch, intents: &Intents) -> ModalDialog<Text> {
     let (title, body, confirm) = match which {
         PendingSwitch::Stop => (
-            "Turn off the firewall?",
-            "No rules will be enforced until you turn it on again. If this machine is \
-             reachable from a network you do not control, that connection can reach it \
-             without the rules you set.",
-            "Turn off the firewall",
+            CATALOG.t("firewall-stop-title"),
+            CATALOG.t("firewall-stop-body"),
+            CATALOG.t("firewall-stop-confirm"),
         ),
         PendingSwitch::PanicOn => (
-            "Enter panic mode?",
-            "All incoming and outgoing traffic is dropped, including the remote session \
-             you may be using to fix this machine. Anything already connected is cut.",
-            "Drop all traffic",
+            CATALOG.t("firewall-panic-title"),
+            CATALOG.t("firewall-panic-body"),
+            CATALOG.t("firewall-panic-confirm"),
         ),
     };
     let ask = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();
-    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
+    ModalDialog::new(&title, Text::new(&body).with_role(TextRole::Body))
         .with_test_id("firewall-switch-dialog")
         .with_destructive(true)
         .primary_action(confirm, move || ask.push(Intent::ConfirmSwitch))
@@ -976,15 +1017,20 @@ fn switch_dialog(which: PendingSwitch, intents: &Intents) -> ModalDialog<Text> {
 fn delete_dialog(rule: &Rule, intents: &Intents) -> ModalDialog<Text> {
     let what = RuleRow::of(rule);
     let source = what.source.as_deref().unwrap_or("anywhere");
-    let body = format!(
-        "{} over {} from {} will no longer be {}.",
-        what.title,
-        what.protocol,
-        source,
-        match what.action {
-            Action::Allow => "allowed",
-            Action::Deny => "denied",
-        }
+    let body = CATALOG.t_args(
+        "firewall-delete-rule-body",
+        &[
+            ("rule", ArgValue::Text(what.title.clone())),
+            ("protocol", ArgValue::Text(what.protocol.to_owned())),
+            ("source", ArgValue::Text(source.to_owned())),
+            (
+                "action",
+                ArgValue::Text(match what.action {
+                    Action::Allow => CATALOG.t("firewall-state-allowed"),
+                    Action::Deny => CATALOG.t("firewall-state-denied"),
+                }),
+            ),
+        ],
     );
     let confirm = intents.clone();
     let cancel = intents.clone();
@@ -1049,13 +1095,16 @@ fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRo
                 Box::new(
                     Toggle::from_state(&state)
                         .with_id(&format!("firewall-service-{}", row.id))
-                        .with_accessible_name(&format!("Allow {}", row.name)),
+                        .with_accessible_name(&CATALOG.t_args(
+                            "firewall-a11y-allow-service",
+                            &[("service", ArgValue::Text(row.name.to_owned()))],
+                        )),
                 )
             }),
     ]);
     let mut table = DataTable::new(columns)
         .with_id("firewall-services")
-        .with_accessible_name("Services");
+        .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-services"));
     table.set_rows(
         ServiceCatalog::ALL
             .iter()

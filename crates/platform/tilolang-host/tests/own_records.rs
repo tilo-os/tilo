@@ -211,17 +211,13 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: MAIL.to_owned(),
-            workspace: workspace.to_string(),
-            instance: 1,
-            person: person.to_owned(),
-        },
+        Spec::new(MAIL, workspace.to_string(), 1, person),
         record,
         Arc::clone(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));

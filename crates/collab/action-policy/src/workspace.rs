@@ -298,6 +298,15 @@ impl WorkspacePolicy {
                 .map_or(Subject::Role(Role::Owner), Subject::Person);
             self.grants.push(roles::device_panel(&self.workspace, by));
         }
+        // And the one its files are authored through, which a workspace
+        // written before it was granted gains too.
+        if !self.grants.iter().any(roles::is_files_app) {
+            let by = self
+                .owner
+                .clone()
+                .map_or(Subject::Role(Role::Owner), Subject::Person);
+            self.grants.push(roles::files_app(&self.workspace, by));
+        }
         self
     }
 

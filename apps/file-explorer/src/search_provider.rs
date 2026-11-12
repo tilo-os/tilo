@@ -133,7 +133,7 @@ impl PlacesSearch {
                         item: id.to_owned(),
                     },
                     OPEN_ACTION,
-                    "Open",
+                    crate::i18n::CATALOG.t("files-shortcuts-open"),
                 ),
             ),
         )
@@ -258,7 +258,7 @@ impl CollaborativeRecordSearch {
                         record: record.record_id.to_string(),
                     },
                     REVEAL_ACTION,
-                    "Reveal in Files",
+                    crate::i18n::CATALOG.t("files-reveal"),
                 ),
             ),
         )
@@ -325,7 +325,7 @@ impl RemoteAccountSearch {
                         account: account.id.to_string(),
                     },
                     REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Show connection details",
+                    crate::i18n::CATALOG.t("files-remote-details"),
                 ),
             ),
         )

@@ -5,10 +5,26 @@ kind = "backups.workspace"
 label = "Backups"
 version = 1
 fields = [
-  { path = "policy", type = "RetentionPolicy", stored = "record" },
-  { path = "policy.hourly", type = "u32" },
-  { path = "policy.daily", type = "u32" },
-  { path = "policy.weekly", type = "u32" },
-  { path = "policy.monthly", type = "u32" },
+  { path = "policy", type = { named = "RetentionPolicy" }, stored = "record" },
+  { path = "policy.hourly", type = "int" },
+  { path = "policy.daily", type = "int" },
+  { path = "policy.weekly", type = "int" },
+  { path = "policy.monthly", type = "int" },
+]
+
+[[resources.verbs]]
+id = "verify"
+kind = "read"
+params = [
+  { name = "snapshot_id", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "RetentionPolicy"
+fields = [
+  { name = "hourly", type = "int" },
+  { name = "daily", type = "int" },
+  { name = "weekly", type = "int" },
+  { name = "monthly", type = "int" },
 ]
 

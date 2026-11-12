@@ -609,23 +609,33 @@ pub static SET_OPS: ModelOps = ModelOps {
 /// reference to their content.
 pub const BYTES_INLINE_LIMIT: usize = 1024;
 
-/// Binary data. Small values live inside the document; larger ones are
-/// referenced by their content hash and kept in the content store, which
-/// carries them alongside the record. Written whole: last writer wins.
+/// Binary data. Small values live inside the document; larger ones are kept
+/// in the content store, which carries them alongside the record, and the
+/// document keeps the reference to them. Written whole: last writer wins.
+///
+/// Whoever invokes the action that writes the data keeps it, sealed, in the
+/// window's store before the action is recorded ([`Self::keep`]); the action
+/// carries the reference, and every replica applying it stores that.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Bytes {
     #[default]
     Empty,
     /// The data itself, at most [`BYTES_INLINE_LIMIT`] bytes.
     Inline(Vec<u8>),
-    /// Data kept in the content store under its BLAKE3 hash.
-    Blob { hash: [u8; 32], len: u64 },
+    /// Data kept in the content store: its BLAKE3 hash and length, and the
+    /// sealed reference (`<address>.<key>`) it is kept under. Data kept
+    /// before content was sealed has none, and is kept under its hash.
+    Blob {
+        hash: [u8; 32],
+        len: u64,
+        sealed: Option<String>,
+    },
 }
 
 impl Bytes {
-    /// `data` inline when it is small, else a reference to its content; the
-    /// caller puts larger data into the content store (see
-    /// [`Self::needs_store`]).
+    /// `data` inline when it is small, else named by its hash alone, as
+    /// data was before it was sealed: what an action recorded with its bytes
+    /// inline replays to. Data to keep is kept with [`Self::keep`].
     #[must_use]
     pub fn of(data: &[u8]) -> Self {
         if data.is_empty() {
@@ -636,14 +646,52 @@ impl Bytes {
             Self::Blob {
                 hash: *blake3::hash(data).as_bytes(),
                 len: u64::try_from(data.len()).unwrap_or(u64::MAX),
+                sealed: None,
             }
         }
     }
 
-    /// Whether the data is kept outside the document.
+    /// `data` as the side invoking an action hands it over: an argument
+    /// that is kept, sealed, in the window's store where the action is built
+    /// ([`crate::content::invoking`]), so the action carries the reference.
     #[must_use]
-    pub const fn needs_store(&self) -> bool {
-        matches!(self, Self::Blob { .. })
+    pub fn to_keep(data: Vec<u8>) -> Self {
+        if data.is_empty() {
+            Self::Empty
+        } else {
+            Self::Inline(data)
+        }
+    }
+
+    /// `data`, kept in `store` unless it is small enough to live inside the
+    /// document: what the side invoking an action does with the data it
+    /// carries. A store that seals (a window's) keeps it under a key of its
+    /// own, which the answer carries.
+    ///
+    /// # Errors
+    /// Why the store refused the data.
+    pub fn keep(
+        store: &tilo_content::ContentStore,
+        data: &[u8],
+    ) -> Result<Self, tilo_content::ContentError> {
+        if data.len() <= BYTES_INLINE_LIMIT {
+            return Ok(Self::of(data));
+        }
+        let reference = store.put(data)?;
+        Ok(Self::kept_as(data, &reference))
+    }
+
+    /// `data`, kept in a content store under `reference`, however small.
+    #[must_use]
+    pub fn kept_as(data: &[u8], reference: &str) -> Self {
+        if data.is_empty() {
+            return Self::Empty;
+        }
+        Self::Blob {
+            hash: *blake3::hash(data).as_bytes(),
+            len: u64::try_from(data.len()).unwrap_or(u64::MAX),
+            sealed: tilo_content::is_sealed(reference).then(|| reference.to_owned()),
+        }
     }
 
     /// The data when it is inside the document.
@@ -653,6 +701,32 @@ impl Bytes {
             Self::Empty => Some(&[]),
             Self::Inline(data) => Some(data),
             Self::Blob { .. } => None,
+        }
+    }
+
+    /// The reference a content store keeps the data under, when it is kept
+    /// outside the document.
+    #[must_use]
+    pub fn reference(&self) -> Option<String> {
+        match self {
+            Self::Blob {
+                sealed: Some(reference),
+                ..
+            } => Some(reference.clone()),
+            Self::Blob { hash, .. } => Some(blake3::Hash::from_bytes(*hash).to_hex().to_string()),
+            _ => None,
+        }
+    }
+
+    /// The data, read from `store` when it is kept there, and checked
+    /// against its hash. `None` while it is not here.
+    #[must_use]
+    pub fn read(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+        match self.inline() {
+            Some(data) => Some(data.to_vec()),
+            None => store
+                .read(&self.reference()?)
+                .filter(|data| blake3::hash(data).as_bytes() == &self.hash()),
         }
     }
 
@@ -680,26 +754,127 @@ impl Bytes {
         self.len() == 0
     }
 
-    /// The content address the data is fetched by, however it is stored:
-    /// `blake3:<hex>:<len>`.
-    #[must_use]
-    pub fn address(&self) -> String {
-        Self::reference(&self.hash(), self.len())
+    /// A kept value's text: `blake3:<hex>:<len>`, then `:<reference>` when
+    /// sealed.
+    fn text(hash: &[u8; 32], len: u64, sealed: Option<&str>) -> String {
+        let hex = blake3::Hash::from_bytes(*hash).to_hex();
+        match sealed {
+            Some(reference) => format!("blake3:{hex}:{len}:{reference}"),
+            None => format!("blake3:{hex}:{len}"),
+        }
     }
 
-    fn reference(hash: &[u8; 32], len: u64) -> String {
-        format!("blake3:{}:{len}", blake3::Hash::from_bytes(*hash).to_hex())
-    }
-
-    fn parse_reference(text: &str) -> Result<Self, ModelError> {
+    fn parse_text(text: &str) -> Result<Self, ModelError> {
         let invalid = || ModelError::invalid(format!("not a content reference: {text}"));
         let rest = text.strip_prefix("blake3:").ok_or_else(invalid)?;
-        let (hex, len) = rest.split_once(':').ok_or_else(invalid)?;
-        let hash = blake3::Hash::from_hex(hex).map_err(|_| invalid())?;
-        let len = len.parse().map_err(|_| invalid())?;
+        let mut parts = rest.splitn(3, ':');
+        let hash =
+            blake3::Hash::from_hex(parts.next().ok_or_else(invalid)?).map_err(|_| invalid())?;
+        let len = parts
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        let sealed = match parts.next() {
+            Some(reference) if tilo_content::is_sealed(reference) => Some(reference.to_owned()),
+            Some(_) => return Err(invalid()),
+            None => None,
+        };
         Ok(Self::Blob {
             hash: *hash.as_bytes(),
             len,
+            sealed,
+        })
+    }
+
+    /// The value an action's argument names: its stored form, or, where the
+    /// action is invoked, the data inline or a `tilo.content:<reference>`
+    /// to content readable in the workspace, which is kept, sealed, in the
+    /// window's store ([`crate::content::invoking`]).
+    fn from_argument(value: serde_json::Value) -> Result<Self, String> {
+        match value {
+            serde_json::Value::Array(_) => {
+                let data: Vec<u8> =
+                    serde_json::from_value(value).map_err(|error| error.to_string())?;
+                if !crate::content::is_invoking() {
+                    // An action an earlier version recorded with its bytes inline.
+                    return Ok(Self::of(&data));
+                }
+                Self::keep_here(&data)
+            }
+            serde_json::Value::String(text) if text.starts_with("tilo.content:") => {
+                if !crate::content::is_invoking() {
+                    return Err(format!(
+                        "{text} is read where the action is invoked, never where it replays"
+                    ));
+                }
+                let reference = crate::content::reference_hash(&text)
+                    .ok_or_else(|| crate::content::ContentRefusal::NotAReference(text.clone()))
+                    .map_err(|refusal| refusal.to_string())?
+                    .to_owned();
+                let data =
+                    crate::content::read_reference(&text).map_err(|refusal| refusal.to_string())?;
+                if tilo_content::is_sealed(&reference) {
+                    Ok(Self::kept_as(&data, &reference))
+                } else {
+                    Self::keep_here(&data)
+                }
+            }
+            other => Self::from_json(&other).map_err(|error| error.to_string()),
+        }
+    }
+
+    /// `data`, kept in the store of the window whose code is running.
+    fn keep_here(data: &[u8]) -> Result<Self, String> {
+        if data.len() <= BYTES_INLINE_LIMIT {
+            return Ok(Self::of(data));
+        }
+        let store = crate::content::current()
+            .ok_or("this window has no content store to keep the data in")?;
+        Self::keep(&store, data)
+            .map_err(|error| format!("the content store refused the data: {error}"))
+    }
+}
+
+impl serde::Serialize for Bytes {
+    /// Its stored form; data to keep ([`Self::to_keep`]) as the bytes
+    /// themselves, which the action's build keeps.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Inline(data) if data.len() > BYTES_INLINE_LIMIT => {
+                serializer.collect_seq(data.iter())
+            }
+            stored => stored.to_json().serialize(serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_argument(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl crate::JsonSchema for Bytes {
+    /// The data inline, as integers, or a reference to content readable in
+    /// the workspace; or the value as the document keeps it.
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "oneOf": [
+                {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+                {
+                    "type": "string",
+                    tilo_actions::CONTENT_ANNOTATION: true,
+                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                },
+                {
+                    "type": "string",
+                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                },
+                {"type": "object", "properties": {"inline": {"type": "array"}}},
+                {"type": "null"},
+            ]
         })
     }
 }
@@ -717,14 +892,16 @@ impl Model for Bytes {
         match self {
             Self::Empty => serde_json::Value::Null,
             Self::Inline(data) => serde_json::json!({ "inline": data }),
-            Self::Blob { hash, len } => serde_json::Value::String(Self::reference(hash, *len)),
+            Self::Blob { hash, len, sealed } => {
+                serde_json::Value::String(Self::text(hash, *len, sealed.as_deref()))
+            }
         }
     }
     #[inline(never)]
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
         match value {
             serde_json::Value::Null => Ok(Self::Empty),
-            serde_json::Value::String(text) => Self::parse_reference(text),
+            serde_json::Value::String(text) => Self::parse_text(text),
             serde_json::Value::Object(fields) => {
                 let data: Vec<u8> = fields
                     .get("inline")
@@ -751,7 +928,7 @@ impl Model for Bytes {
             Value::Scalar(scalar) => match scalar.as_ref() {
                 ScalarValue::Bytes(data) if data.is_empty() => Ok(Self::Empty),
                 ScalarValue::Bytes(data) => Ok(Self::Inline(data.clone())),
-                ScalarValue::Str(text) => Self::parse_reference(text),
+                ScalarValue::Str(text) => Self::parse_text(text),
                 ScalarValue::Null => Ok(Self::Empty),
                 _ => Err(ModelError::shape("bytes")),
             },
@@ -766,9 +943,10 @@ impl Model for Bytes {
         match self {
             Self::Empty => slot.put_scalar(doc, ScalarValue::Null),
             Self::Inline(data) => slot.put_scalar(doc, ScalarValue::Bytes(data.clone())),
-            Self::Blob { hash, len } => {
-                slot.put_scalar(doc, ScalarValue::Str(Self::reference(hash, *len).into()))
-            }
+            Self::Blob { hash, len, sealed } => slot.put_scalar(
+                doc,
+                ScalarValue::Str(Self::text(hash, *len, sealed.as_deref()).into()),
+            ),
         }
     }
 }

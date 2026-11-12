@@ -35,7 +35,7 @@ impl UnavailableReason {
         match self {
             Self::Offline => "offline",
             Self::UnsupportedPeer => "unsupported-peer",
-            Self::Backpressure => "backpressure",
+            Self::Backpressure => tilo_relay_protocol::refusal::BACKPRESSURE,
             Self::NotAuthorised => "not-authorised",
             Self::InvalidRequest => "invalid-request",
             Self::AdmissionUnavailable => "admission-unavailable",

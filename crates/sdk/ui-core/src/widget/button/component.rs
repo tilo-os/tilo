@@ -18,7 +18,7 @@ fn count_content(count: Option<i64>, dot: bool) -> Option<BadgeContent> {
 
 /// A button: pressing it does one thing. Its role says what kind of thing, which decides its
 /// whole look: the window's one primary action, a destructive one, or an ordinary one.
-#[derive(Component)]
+#[derive(Clone, Component)]
 #[component(name = "Button", role = "Button", label = "label")]
 pub struct ButtonProps {
     /// What pressing it does, in a word or two. An icon-only button is still named by it.

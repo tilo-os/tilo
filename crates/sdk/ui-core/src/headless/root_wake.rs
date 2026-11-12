@@ -73,6 +73,7 @@ impl super::FrameHarness {
     /// asked for in reply to it) is applied before the action answers, so
     /// its effects are the action's and not the next one's. Waits for
     /// wakes, never polls.
+    /// Quiet: runs frames through `relayout`, which invalidates first.
     pub fn settle_owed(&mut self) {
         let handle = self.component_wake.as_ref().map_or_else(
             || self.root_wake.handle(),

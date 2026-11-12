@@ -15,17 +15,11 @@
               lives until the app it serves is done"
 )]
 
-// A host admits its members' records through an Automerge worker: this binary is that worker, as it
-// is the session's own.
-tilo_automerge_isolate::test_worker!();
-
-mod common;
-
 use std::path::Path;
 
 use automerge::transaction::Transactable as _;
 
-use common::personal::{self, Personal};
+use crate::common::personal::{self, Personal};
 
 /// Contacts, and the record kind of the person's it keeps: an identity they added, which is theirs
 /// alone until their other devices hear of it.
@@ -95,30 +89,14 @@ fn a_contact_added_here_is_kept_in_the_persons_own_store() {
     tilo_action_broker::register_package_surface(CONTACTS, SURFACE);
     let socket = machine.socket().to_path_buf();
     let state = tempfile::tempdir().expect("a state for this session");
-    personal::hold_workspace(
-        state.path(),
-        &machine.device,
-        &machine.cert,
-        &cluster,
-        CONTACTS,
-        KIND,
-    );
-    let mut session = personal::session(
-        &socket,
-        &machine,
-        "Ada",
-        &cluster,
-        state.path(),
-        CONTACTS,
-        false,
-    );
+    let mut session = personal::session(&socket, "Ada", &cluster, state.path(), CONTACTS, false);
 
     add_contact(&socket, &machine, &cluster);
 
     // The record reaches the person's own store, written beside the session's state as it changes:
     // what this device serves their other devices.
     let path = personal::store_path(state.path());
-    let bytes = common::wait_for(&mut session, "the person's store", |session| {
+    let bytes = crate::common::wait_for(&mut session, "the person's store", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(5))

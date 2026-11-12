@@ -7,8 +7,6 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-mod support;
-
 use canvas::model::{Mark, Shape};
 use canvas::{App, Artwork};
 use ui::prelude::TestApp;
@@ -539,6 +537,20 @@ fn the_eyedropper_and_the_bucket_wait_for_their_pictures() {
         "nothing is filled before the picture"
     );
     answer_between_frames(&mut desk, &mut host);
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1, "the bucket filled the area");
+    assert!(art.marks.last().unwrap().id.starts_with("fill"));
+}
+
+/// Where the thread can wait for the GPU there is no picture between frames:
+/// the click's own frame fills the area it read.
+#[test]
+fn the_bucket_fills_in_the_click_s_frame_where_the_thread_can_wait() {
+    let mut desk = Desk::open();
+    let before = desk.art().marks.len();
+    desk.key("g");
+    desk.click(760.0, 600.0);
+    desk.app.harness().poll_frame().unwrap();
     let art = desk.art();
     assert_eq!(art.marks.len(), before + 1, "the bucket filled the area");
     assert!(art.marks.last().unwrap().id.starts_with("fill"));
@@ -1156,7 +1168,7 @@ fn object_tree_selects_an_occluded_object_for_an_exact_edit() {
         )
         .unwrap();
     let snapshot = desk.app.harness().inspection();
-    let target = support::named_bounds(&snapshot.root, "Hidden rectangle")
+    let target = crate::support::named_bounds(&snapshot.root, "Hidden rectangle")
         .expect("the covered object is listed");
     desk.app
         .harness()

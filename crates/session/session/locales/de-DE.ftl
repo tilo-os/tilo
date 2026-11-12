@@ -87,16 +87,17 @@ desk-not-opened-old-unreadable-detail = { $path } ist der Schreibtisch, den Tilo
 desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
 desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
 desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+desk-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
 
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
 ## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
-desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
-
 ## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
 ## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
 ## war, wird erneut gefragt.
 agent-bindings-app-name = Agenten
+send-to-agent-unnamed = Agent
+send-to-resource = Senden an
 agent-bindings-lost-title = { $agent } wird erneut gefragt
 agent-bindings-lost-body = Dieser Rechner konnte nicht lesen, dass du { $agent } hier arbeiten lässt, deshalb fragt er dich erneut, wenn sich { $agent } das nächste Mal verbindet. Sonst wurde nichts entfernt.
 agent-bindings-unreadable-title = Deine Antworten zu Agenten ließen sich nicht lesen
@@ -195,6 +196,7 @@ session-displays-close-sheet = Das Bildschirmfenster schließen
 session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
+session-quick-settings = Schnelleinstellungen
 session-devices = Geräte
 session-devices-press = Eines der Geräte der Person drücken
 session-bluetooth-app = Bluetooth
@@ -221,11 +223,14 @@ session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-notifications-open = Die Benachrichtigung öffnen
-session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
+## A notification a program sent from a terminal, with no app this device
+## knows behind it: the person reads where it came from, never a bare
+## command name.
+notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.
@@ -275,6 +280,7 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 ## welchem Fenster er steht.
 people-pointer-where = { $who } ist in { $where }
 
+
 ## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen
 ## Reader, der sie hört statt ihre Symbole zu sehen.
 status-battery = Akku { $percent } %
@@ -320,17 +326,11 @@ session-desk-stop-agent = Stoppen
 session-people = Personen
 
 ## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
-session-messages = Private Nachrichten
-session-messages-send = Private Nachricht senden
-
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
 
 ## Was die Programme eines Agenten sind, wie sie die Aktionspforte anbietet:
 ## ein Aufgaben-Agent schreibt jeweils ein Programm als Schritt seines Laufs.
-task-programs-resource = Aufgabenprogramme
-task-programs-run = Ein Programm ausführen
-task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
 
 ## Was die eigenen Geräte der Person antworteten, als eines von ihnen nach
 ## einem Neustart entsperrt werden wollte, wie es ihre Aktivität auflistet.
@@ -365,6 +365,8 @@ window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Ver
 profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
+profile-action-connect-agent = Agent oder Rechner verbinden
+profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 
 ## A capture, while the capture studio's bar is down: the card the floating
@@ -396,9 +398,6 @@ capture-target-region = Ein Bereich des Schreibtischs
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistent
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistent
 
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
@@ -409,3 +408,76 @@ desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt d
 turn-question-title = Den Agenten { $action } lassen
 turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
 turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
+
+## Someone mentioned the person in a record of the workspace.
+mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
+mention-notice-channel = { $name } hat dich in { $channel } erwähnt
+mention-notice = { $name } hat dich erwähnt
+mention-notice-someone = Jemand
+mention-notice-open = Öffnen
+
+## What a call says it wants a device for, when the call asks the person
+## to allow its camera, microphone or screen.
+call-microphone-reason = um im Anruf gehört zu werden
+call-camera-reason = um im Anruf gesehen zu werden
+call-screen-reason = um diesen Bildschirm im Anruf zu teilen
+
+## What the window names
+session-resource-keyboard = Bildschirmtastatur
+session-resource-diagnostics = Sitzungsdiagnose
+session-resource-window-menu = Fenstermenü
+session-resource-surfaces = Oberflächen
+session-resource-keyboard-focus = Tastaturfokus
+
+## Actions
+
+so-tilo-session-desk-switch-workspace = Zum Arbeitsbereich wechseln
+so-tilo-session-desk-invitations = Einladungen auflisten
+so-tilo-session-desk-issue-invitation = Einladungslink erstellen
+so-tilo-session-desk-show-invite = Personen einladen
+so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
+so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
+so-tilo-session-desk-close-surface = Bereich schließen
+so-tilo-session-desk-clear-notices = Mitteilungen löschen
+so-tilo-session-desk-dismiss-notice = Mitteilung verwerfen
+so-tilo-session-desk-act-on-notice = Auf Mitteilung antworten
+so-tilo-session-desk-walk-switcher = Fenster wechseln
+so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
+so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
+
+## Actions
+
+so-tilo-session-clipboard-clear = Den Verlauf leeren
+so-tilo-session-clipboard-copy = Text kopieren
+so-tilo-session-clipboard-paste = Eine Kopie einfügen
+so-tilo-session-clipboard-paste-files = Dateien einfügen
+so-tilo-session-clipboard-pin = Die Kopie anheften
+so-tilo-session-clipboard-remove = Eine Kopie aus dem Verlauf entfernen
+so-tilo-session-devices-hand-off = Zubehör weitergeben
+so-tilo-session-devices-press = Eines der Geräte drücken
+so-tilo-session-displays-brightness-down = Dunkler
+so-tilo-session-displays-brightness-up = Heller
+so-tilo-session-displays-close-sheet = Die Anzeigeeinstellungen schließen
+so-tilo-session-displays-next-mode = Nächste Anordnung
+so-tilo-session-displays-open-sheet = Die Anzeigeeinstellungen öffnen
+so-tilo-session-displays-set-brightness = Die Helligkeit setzen
+so-tilo-session-displays-set-display-brightness = Die Helligkeit einer Anzeige setzen
+so-tilo-session-displays-set-mode = Diese Anordnung verwenden
+so-tilo-session-keyboard-set-visible = Die Bildschirmtastatur zeigen
+so-tilo-session-keyboard-type = Text tippen
+so-tilo-session-notifications-act = Eine Aktion wählen
+so-tilo-session-notifications-clear = Alle löschen
+so-tilo-session-notifications-dismiss = Verwerfen
+so-tilo-session-notifications-open = Öffnen
+so-tilo-session-notifications-set-quiet = Meldungen zurückhalten
+so-tilo-session-notifications-undo-clear = Die gelöschten Benachrichtigungen zurückholen
+so-tilo-session-quick-settings-hide-control = Ein Element entfernen
+so-tilo-session-quick-settings-move-control = Ein Element verschieben
+so-tilo-session-quick-settings-reset-controls = Das Panel zurücksetzen
+so-tilo-session-quick-settings-show-control = Ein Element hinzufügen
+so-tilo-session-send-to-send = Senden an
+so-tilo-desktop-overlays-close = Eine Oberfläche schließen
+so-tilo-desktop-overlays-open = Eine Oberfläche öffnen
+so-tilo-desktop-window-menu-choose = Eine Zeile wählen
+so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
+so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen

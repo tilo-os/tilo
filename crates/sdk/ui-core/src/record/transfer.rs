@@ -435,6 +435,146 @@ pub fn rehome(
     Ok(doc)
 }
 
+/// A branch's copy of `source`, a document of a workspace branched into `to_workspace`: its whole
+/// history, under a writer of its own, with one more change naming `to_workspace` as the workspace
+/// it is in when it names one at all. Its id stays: a record id names a document only inside its
+/// workspace ([`super::workspace_scope`]), and a branch is a whole workspace forked, so every
+/// reference one of its records makes to another still names the same one. Where it was minted
+/// (`home`) stays too, as its provenance, but for a record any app makes from its kind alone,
+/// which is minted again in the branch ([`minted_again`]). `source` is not changed.
+///
+/// # Errors
+/// `to_workspace` is empty, or the document's metadata cannot name it.
+pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, TransferError> {
+    if to_workspace.is_empty() {
+        return Err(TransferError::NotTransferable(
+            "a branch is made into a workspace",
+        ));
+    }
+    // A fork continues the same change graph under a writer of its own, so a change made in the
+    // branch never takes a number a change in the source already has.
+    let mut doc = match minted_again(source, to_workspace)? {
+        Some(mut minted) => minted.fork(),
+        None => source.clone().fork(),
+    };
+    let Some(scoped) = super::workspace_scope(&doc) else {
+        return Ok(doc);
+    };
+    if scoped == to_workspace {
+        return Ok(doc);
+    }
+    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
+    let meta = meta_obj(&mut doc).ok_or(RecordOpenError::IdentityMismatch)?;
+    doc.put(&meta, super::WORKSPACE, to_workspace)
+        .map_err(automerge)?;
+    let _ = doc.delete(&meta, super::WORKSPACE_ALIAS);
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    );
+    Ok(doc)
+}
+
+/// `source` minted again in `to_workspace`, when it is a record any app makes from its kind alone
+/// where it holds none ([`collab_types::workspace_record_id`]: the workspace's emoji, its agents)
+/// and its genesis made it: its whole history, but with the genesis an app of the branch makes
+/// ([`super::genesis`]) as its first change, and every change after it built on that one. An app of
+/// the branch that opens the record before the branch's copy reached it makes the same genesis, so
+/// the two meet as one record. `None` for any other document, which keeps where it was minted.
+fn minted_again(
+    source: &AutoCommit,
+    to_workspace: &str,
+) -> Result<Option<AutoCommit>, TransferError> {
+    use automerge::legacy::{ElementId, Key, ObjectId, OpId, OpType};
+
+    let Some(checkout) = identity(source) else {
+        return Ok(None);
+    };
+    if checkout.id.as_str() != collab_types::workspace_record_id(checkout.kind.as_str()) {
+        return Ok(None);
+    }
+    let Some(home) = super::home(source).filter(|home| home != to_workspace) else {
+        return Ok(None);
+    };
+    let from = super::genesis_actor_of(&checkout.id, &checkout.kind, &home);
+    let to = super::genesis_actor_of(&checkout.id, &checkout.kind, to_workspace);
+    let changes = source.clone().get_changes(&[]);
+    // Its genesis made it: the genesis actor's one change comes first and depends on nothing.
+    let made_by_genesis = changes
+        .first()
+        .is_some_and(|first| first.actor_id() == &from && first.deps().is_empty())
+        && changes
+            .iter()
+            .filter(|change| change.actor_id() == &from)
+            .count()
+            == 1;
+    if !made_by_genesis {
+        return Ok(None);
+    }
+    let rename = |id: &mut OpId| {
+        if id.1 == from {
+            id.1 = to.clone();
+        }
+    };
+    let mut hashes = std::collections::HashMap::new();
+    let mut minted = Vec::with_capacity(changes.len());
+    for change in changes {
+        let was = change.hash();
+        let mut expanded = change.decode();
+        expanded.hash = None;
+        expanded.deps = expanded
+            .deps
+            .iter()
+            .map(|dep| hashes.get(dep).copied())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| TransferError::Automerge(format!("change {was} before its base")))?;
+        let genesis = expanded.actor_id == from;
+        if genesis {
+            expanded.actor_id = to.clone();
+        }
+        for op in &mut expanded.operations {
+            if let ObjectId::Id(id) = &mut op.obj {
+                rename(id);
+            }
+            if let Key::Seq(ElementId::Id(id)) = &mut op.key {
+                rename(id);
+            }
+            op.pred = op
+                .pred
+                .iter()
+                .cloned()
+                .map(|mut pred| {
+                    rename(&mut pred);
+                    pred
+                })
+                .collect();
+            // The genesis names the workspace that minted it, and the one it is in.
+            let names_home = match (&op.key, &op.action) {
+                (Key::Map(key), OpType::Put(ScalarValue::Str(named))) => {
+                    genesis
+                        && ["home", super::WORKSPACE].contains(&key.as_str())
+                        && named.as_str() == home
+                }
+                _ => false,
+            };
+            if names_home {
+                op.action = OpType::Put(ScalarValue::from(to_workspace));
+            }
+        }
+        let change = automerge::Change::from(expanded);
+        hashes.insert(was, change.hash());
+        minted.push(change);
+    }
+    let mut doc = AutoCommit::new();
+    doc.apply_incoming(minted)
+        .map_err(|error| TransferError::Automerge(error.to_string()))?;
+    if super::genesis_actor(&doc).as_ref() != Some(&to) {
+        return Err(RecordOpenError::IdentityMismatch.into());
+    }
+    validate_identity(&doc, &checkout, to_workspace)?;
+    Ok(Some(doc))
+}
+
 /// The changes `source` holds beyond the `known` heads of an earlier read:
 /// what its writer committed after that read.
 pub fn changes_since(source: &AutoCommit, known: &[ChangeHash]) -> usize {
@@ -1181,5 +1321,127 @@ mod tests {
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))
         ));
+    }
+    /// A branch's copy keeps the record's id, where it was minted and its whole history, names the
+    /// branch as its workspace, and writes as a writer of its own: the source and the copy go on
+    /// apart.
+    #[test]
+    fn a_branch_keeps_the_record_and_its_history_and_names_the_branch() {
+        let id = RecordId::minted();
+        let mut source = AutoCommit::new();
+        assert!(crate::record::init_scoped(
+            &mut source,
+            &id,
+            &RecordKind::new("transfer.test"),
+            FROM,
+            Some(FROM),
+        ));
+        source.put(ROOT, "body", "plan").unwrap();
+        source.commit();
+        let before = source.get_heads();
+        let mut copy = branch(&source, TO).unwrap();
+        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
+        assert_eq!(
+            workspace_scope(&source).as_deref(),
+            Some(FROM),
+            "the source stays"
+        );
+        assert_eq!(identity(&copy).map(|checkout| checkout.id), Some(id));
+        assert_eq!(crate::record::home(&copy).as_deref(), Some(FROM));
+        assert_eq!(body(&copy).as_deref(), Some("plan"));
+        assert!(
+            copy.get_changes(&[]).len() > source.get_changes(&[]).len(),
+            "the copy holds the source's history and the change that names the branch"
+        );
+        assert!(copy.get_change_by_hash(&before[0]).is_some());
+        assert_ne!(copy.get_actor(), source.get_actor(), "a writer of its own");
+        copy.put(ROOT, "body", "branch").unwrap();
+        copy.commit();
+        source.put(ROOT, "body", "source").unwrap();
+        source.commit();
+        assert_eq!(body(&copy).as_deref(), Some("branch"));
+        assert_eq!(body(&source).as_deref(), Some("source"));
+        // A document no workspace scopes is forked as it is.
+        let mut plain = AutoCommit::new();
+        plain.put(ROOT, "body", "loose").unwrap();
+        plain.commit();
+        let mut forked = branch(&plain, TO).unwrap();
+        assert_eq!(forked.get_heads(), plain.get_heads());
+        assert!(branch(&plain, "").is_err());
+    }
+
+    /// A record of the workspace's own that any app makes from its kind alone where it holds none
+    /// (the workspace's emoji) is, in a branch, the very record an app of the branch makes when it
+    /// first opens it there: the two meet as one document, scoped to the branch, holding what the
+    /// source held. Before, the branch's copy kept the source's genesis, the app's was the
+    /// branch's, and the two met as a record of no identity, its history blocked.
+    #[test]
+    fn a_workspace_record_branched_is_the_one_an_app_of_the_branch_makes() {
+        use crate::record::workspace::WorkspaceRecords;
+        const CHAT: &str = "so.tilo.chat";
+        const EMOJI: &str = "tilo.workspace.emoji";
+        let initialize = |doc: &mut AutoCommit| {
+            doc.put_object(ROOT, "emoji", ObjType::Map)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        };
+        let records = |workspace: &str| {
+            WorkspaceRecords::in_workspace(
+                RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
+                workspace.into(),
+                crate::permissions::UserId("ada".into()),
+            )
+        };
+        let emoji = |doc: &AutoCommit| {
+            let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, "emoji") else {
+                return None;
+            };
+            match doc.get(&map, "parrot") {
+                Ok(Some((Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
+                _ => None,
+            }
+        };
+        let source = records(FROM).open_record(CHAT, EMOJI, &initialize).unwrap();
+        source
+            .edit(true, |doc| {
+                let Ok(Some((_, map))) = doc.get(ROOT, "emoji") else {
+                    return Err("no emoji".to_owned());
+                };
+                doc.put(&map, "parrot", "parrot.png")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let held = source.read(AutoCommit::clone).unwrap();
+        let want = identity(&held).unwrap();
+
+        let copy = branch(&held, TO).unwrap();
+        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
+        assert_eq!(
+            crate::record::home(&copy).as_deref(),
+            Some(TO),
+            "minted again"
+        );
+        assert_eq!(emoji(&copy).as_deref(), Some("parrot.png"));
+        let made = records(TO)
+            .open_record(CHAT, EMOJI, &initialize)
+            .unwrap()
+            .read(AutoCommit::clone)
+            .unwrap();
+        for (mut one, mut other) in [(made.clone(), copy.clone()), (copy.clone(), made.clone())] {
+            one.merge_incoming(&mut other).unwrap();
+            assert!(
+                validate_identity(&one, &want, TO).is_ok(),
+                "one record of the branch: {:?} in {:?}",
+                identity(&one),
+                workspace_scope(&one)
+            );
+            assert_eq!(emoji(&one).as_deref(), Some("parrot.png"));
+        }
+        assert_eq!(
+            emoji(&held).as_deref(),
+            Some("parrot.png"),
+            "the source keeps its own"
+        );
+        assert_eq!(workspace_scope(&held).as_deref(), Some(FROM));
     }
 }

@@ -24,6 +24,7 @@ use tilo_desktop_surface::navigation::DeskEffect;
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -49,9 +50,9 @@ fn wake_deadline(child: &dyn Widget) -> Option<ui::time::Instant> {
 }
 
 pub use crate::host_contract::{
-    DELETE_WORKSPACE, DesktopAsk, DesktopRules, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
-    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
-    WORKSPACE_SETTINGS,
+    BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, DesktopRules, JOIN_WORKSPACE, LEAVE_WORKSPACE,
+    NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART,
+    SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 
 pub use testing::{NoticeTiles, PermissiveRules};
@@ -66,6 +67,15 @@ pub fn desk_is_empty(tree: &DesktopTree) -> bool {
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))
             .is_none_or(|strip| strip.window_groups.is_empty())
     })
+}
+
+/// Queue `ask` for the host, and ask it for the pass that answers it. What the person chose on the
+/// desk is carried out by the host on its next pass: a desk that drew the press and then went quiet
+/// would answer it only whenever something else woke the host, so the window it opens comes long
+/// after the press, and a person who presses again meanwhile gets a second one.
+pub(crate) fn ask(handle: &DesktopHandle, asks: &Rc<RefCell<Vec<DesktopAsk>>>, asked: DesktopAsk) {
+    asks.borrow_mut().push(asked);
+    handle.wake();
 }
 
 /// A node filling its parent, laid over its siblings.
@@ -306,9 +316,11 @@ impl DeskLayer {
                     .into_iter()
                     .find(|action| action.slug() == card)
                 {
-                    self.asks
-                        .borrow_mut()
-                        .push(DesktopAsk::HostAction(card.host_id()));
+                    ask(
+                        &self.handle,
+                        &self.asks,
+                        DesktopAsk::HostAction(card.host_id()),
+                    );
                 } else {
                     return false;
                 }
@@ -331,13 +343,13 @@ impl DeskLayer {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
-                self.asks.borrow_mut().push(DesktopAsk::WaitWindow(tab));
+                ask(&self.handle, &self.asks, DesktopAsk::WaitWindow(tab));
             }
             DeskEffect::ForceQuitApp { tab } => {
                 let Ok(tab) = tab.parse() else {
                     return false;
                 };
-                self.asks.borrow_mut().push(DesktopAsk::ForceQuitApp(tab));
+                ask(&self.handle, &self.asks, DesktopAsk::ForceQuitApp(tab));
             }
         }
         true
@@ -470,7 +482,8 @@ impl Widget for DeskLayer {
             self.backdrop
                 .set_workspace(front.map_or_else(String::new, |id| id.to_string()));
         }
-        self.backdrop.draw(scene, transform, text, theme, presence);
+        self.backdrop
+            .draw_child(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
         if self.hosts_cards {
             self.draw_cards(scene, transform, text, theme, presence);
@@ -512,11 +525,11 @@ impl Widget for DeskLayer {
         if !*ctx.handled
             && let Some(at) = self.secondary_press(event)
         {
-            self.asks
-                .borrow_mut()
-                .push(DesktopAsk::Intent(ChromeIntent::ToggleWorkspaceMenu {
-                    at: Some(at),
-                }));
+            ask(
+                &self.handle,
+                &self.asks,
+                DesktopAsk::Intent(ChromeIntent::ToggleWorkspaceMenu { at: Some(at) }),
+            );
             *ctx.handled = true;
         }
     }

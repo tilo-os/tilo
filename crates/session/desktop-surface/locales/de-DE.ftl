@@ -62,21 +62,6 @@ topbar-arrived-more = { $name } und { $count ->
     [one] eine weitere Person
    *[other] { $count } weitere
 } sind da
-topbar-clock-resume = Fortsetzen
-topbar-clock-pause = Pausieren
-topbar-clock-lap = Runde
-topbar-clock-add-minute = +1 Min.
-topbar-clock-close-stopwatch = Schwebende Stoppuhr schließen
-topbar-clock-close-timer = Schwebenden Timer schließen
-topbar-clock-floating-stopwatch = Schwebende Stoppuhr
-topbar-clock-floating-timer = Schwebender Timer
-topbar-clock-floating-description = Zum Verschieben ziehen. Mit der Tastatur Alt gedrückt halten und die Pfeiltasten verwenden; zusätzlich Umschalt für größere Schritte.
-topbar-clock-stopwatch = Stoppuhr
-topbar-clock-timer = Timer
-topbar-clock-paused = Pausiert
-topbar-clock-running = Läuft
-topbar-clock-record-lap = Runde erfassen
-topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
@@ -237,7 +222,6 @@ activity-pane-timeline = Zeitleiste
 activity-pane-browse = Durchsuchen
 activity-pane-details = Details
 activity-resume-heading = Zuletzt bearbeitet
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Fortsetzen
 activity-pending-edits = Warte auf laufende Bearbeitungen
 activity-catch-up-quiet = { $workspace } · Nichts Neues braucht deine Aufmerksamkeit
@@ -627,11 +611,6 @@ workspace-settings-role-assign-placeholder = Rolle und Mitwirkende
 workspace-settings-role-assign-description = Weise einer Person, Anwendung oder einem Agenten eine gespeicherte Rolle mit minimalen Rechten zu.
 workspace-settings-role-assign-named = { $role } zuweisen
 workspace-settings-role-assign-named-placeholder = Identität der mitwirkenden Person
-workspace-settings-app-action-placeholder = App, Ressource und Aktion
-workspace-settings-app-action-grant = Einer App die Aktion einer anderen App erlauben
-workspace-settings-app-action-grant-description = Erlaube einer Anwendung in diesem Arbeitsbereich, eine Aktion auf einer Ressource zu verwenden, die eine andere Anwendung bereitstellt.
-workspace-settings-app-action-revoke = Einer App die Aktion einer anderen App entziehen
-workspace-settings-app-action-revoke-description = Nimm in diesem Arbeitsbereich jede Freigabe zurück, mit der eine Anwendung eine Aktion auf einer Ressource einer anderen Anwendung verwenden darf.
 workspace-settings-title = Arbeitsbereichseinstellungen
 workspace-settings-close = Einstellungen schließen
 workspace-settings-tab-general = Allgemein
@@ -968,6 +947,7 @@ a11y-shell-sharing-change = Ändern, was du teilst
 a11y-shell-follow-collaborator = Mitwirkender Person folgen
 a11y-shell-follow = { $name } folgen
 a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
+a11y-shell-stop-following = { $name } nicht mehr folgen
 a11y-shell-invite = Personen einladen
 a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
 a11y-shell-join = Arbeitsbereich beitreten
@@ -975,8 +955,7 @@ a11y-shell-join-description = Mit einer authentifizierten Einladung verbinden
 a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und sehen, was in deiner Abwesenheit passiert ist
 
 # Empty-workspace launchpad
-launchpad-title = Gemeinsam etwas schaffen
-launchpad-title-private = Etwas anfangen
+launchpad-title = Etwas anfangen
 launchpad-description = Wähle eine Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
 launchpad-open-app = App öffnen
 launchpad-discuss = Besprechen
@@ -987,7 +966,7 @@ launchpad-invite = Personen einladen
 launchpad-activity = Auf dem Laufenden bleiben
 launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
 launchpad-notes-detail = Gemeinsam Ideen aufschreiben
-launchpad-tasks-detail = Die Aufgabenliste im Kalender öffnen
+launchpad-tasks-detail = Aufschreiben, was zu tun ist
 launchpad-meet-detail = Mit diesem Arbeitsbereich im Chat sprechen
 launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
@@ -1011,11 +990,6 @@ people-panel-here-count = { $count ->
     [one] Du und 1 weitere Person
    *[other] Du und { $count } weitere
 }
-people-panel-here-watching = { $count ->
-    [0] Nur du
-    [one] Du und 1 weitere Person
-   *[other] Du und { $count } weitere
-}, { $watching } schauen zu
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
 people-panel-section-devices = Deine Geräte
@@ -1042,30 +1016,18 @@ people-panel-follow = Folgen
 people-panel-stop-following = Beenden
 
 # The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-unpin = Zurück in die Leiste
+a11y-people-unpin = Wer hier ist, zurück in die Leiste
+people-panel-screen-private = Behält für sich, wo sie gerade sind
+people-panel-nothing-open = Auf ihrem Bildschirm ist nichts offen
 people-panel-pin = Auf dem Bildschirm halten
 a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
 a11y-people-overlay = Wer hier ist
-people-overlay-title = { $count ->
-    [0] Nur du
-    [one] 1 hier
-   *[other] { $count } hier
-}
-people-overlay-unpin = Zurück in die Leiste
-people-overlay-follow-name = { $name } folgen
-people-overlay-doing-nothing = Hier
-people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
-people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
-people-overlay-message-placeholder = Nachricht an { $name }
-people-overlay-message-you = Du
-people-overlay-send = Senden
-people-overlay-own-status = Was du gerade machst
-people-overlay-own-status-placeholder = Woran arbeitest du?
-people-overlay-own-status-clear = Leeren, was du gerade machst
 a11y-people-follow = { $name } folgen
 a11y-people-stop-following = { $name } nicht mehr folgen
-launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
-launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
-launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
+launchpad-subtitle = Alle in diesem Arbeitsbereich sehen, was du hier machst.
+launchpad-subtitle-private = Nur du siehst, was du hier machst, bis du jemanden einlädst.
+launchpad-subtitle-public = Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
 # Der Fensterwechsler (Alt+Tab).
 window-switcher-title = Fenster wechseln
@@ -1098,8 +1060,7 @@ overview-presence-many = { $count } Personen sind hier
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo
 browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du machst, wird laufend gespeichert und Ende-zu-Ende-verschlüsselt.
-browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet, Strg+K findet jede App
-browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jede App
+browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet
 
 # The workspace overview every desktop shows
 overview-title = Arbeitsbereichsübersicht
@@ -1137,11 +1098,16 @@ overview-tilo-host-self = Dein eigener Host
 overview-tilo-host-provider = Hosting-Anbieter
 overview-tilo-manage-billing = Abrechnung verwalten
 overview-tilo-agent-everywhere = Alle deine Workspaces
-overview-tilo-agent-running = { $runs ->
-        [one] arbeitet gerade
+overview-tilo-agent-everywhere-lower = alle deine Workspaces
+overview-tilo-agent-browser-pages = Bedient Webseiten im Browser
+overview-tilo-agent-working = { $runs ->
+        [one] Arbeitet gerade
        *[other] { $runs } Läufe gerade
     }
 overview-tilo-revoke = Widerrufen
+overview-tilo-revoke-question = { $agent } verliert den Zugriff auf { $reach } und hört sofort auf
+overview-tilo-revoke-access = Zugriff entziehen
+overview-tilo-keep = Behalten
 overview-windows-title = Fenster in diesem Arbeitsbereich
 overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich oder eine andere Leiste, um es dorthin zu verschieben.
 overview-strips-title = Leisten in diesem Arbeitsbereich
@@ -1255,6 +1221,7 @@ strip-switcher-remove = Entfernen
 
 ## Ein Problem melden, indem man darauf zeigt
 feedback-report-problem = Problem melden…
+profile-action-devices-access = Geräte und Zugriff
 feedback-picker-hint = Klicke auf das, was nicht funktioniert. Umschalt-Klick oder Ziehen wählt mehr, Scrollen erweitert, Esc verlässt.
 feedback-picker-picked = { $count ->
     [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.
@@ -1322,6 +1289,15 @@ desk-look-window = { $window } als Bild ansehen
 desk-read-window = Lesen, was { $window } zeigt
 session-host-new-workspace = Neuer Arbeitsbereich
 session-host-new-workspace-description = Auf diesem Rechner anlegen
+session-host-branch-workspace = Arbeitsbereich abzweigen
+session-host-branch-workspace-description = Eine Kopie dieses Bereichs, die ihren eigenen Weg geht
+desktop-branch-workspace-name = { $name } Abzweig
+desktop-cannot-branch-workspace = Dieser Arbeitsbereich enthält, was du nicht lesen kannst, darum kann er hier nicht abgezweigt werden
+session-branching-workspace = { $name } wird abgezweigt
+session-branching-workspace-body = { $branch } öffnet sich, sobald seine Einträge, Dateien und Umgebungen kopiert sind.
+session-branched-workspace = { $branch } ist bereit
+session-branched-workspace-body = Er enthält, was { $name } enthält, mit dir als einzigem Mitglied. Sein Chat ist geblieben.
+session-branch-failed = { $branch } ist nicht vollständig
 session-host-join-workspace = Arbeitsbereich beitreten
 session-host-join-workspace-description = Aus seinem Verzeichnis
 session-host-leave-workspace = Arbeitsbereich verlassen
@@ -1339,9 +1315,13 @@ session-left-workspace = Du hast { $name } verlassen
 session-left-workspace-body = Seine Fenster sind von diesem Rechner verschwunden. Du kannst ihm über das Verzeichnis wieder beitreten.
 session-deleted-workspace = { $name } ist gelöscht
 session-deleted-workspace-body = Er ist von diesem Rechner und aus deiner Liste der Arbeitsbereiche verschwunden.
+session-owner-deleted-workspace = { $name } wurde von seinem Besitzer gelöscht
+session-owner-deleted-workspace-body = Er ist von diesem Rechner verschwunden, und nichts darin lässt sich mehr öffnen.
 session-joined-workspace = Du bist { $name } beigetreten
 session-joined-workspace-body = Es ist jetzt geöffnet, mit allem, was seine Leute darin halten.
 session-join-failed-title = Arbeitsbereich konnte nicht beigetreten werden
+session-awaiting-admission = Dieses Gerät ist noch nicht in { $name }
+session-awaiting-admission-body = { $host } stellt { $name } bereit und muss dieses Gerät zuerst aufnehmen. Seine Apps warten hier, bis dieses Gerät { $host } einmal erreicht.
 desktop-no-workspace = Es gibt keinen Arbeitsbereich namens { $name }
 desktop-joined-workspace-unknown = Dieser Arbeitsbereich liegt in einem Arbeitsbereich, dem dieser Rechner nicht beitreten kann
 desk-first-workspace = Das ist der erste Arbeitsbereich
@@ -1441,6 +1421,7 @@ desktop-display-name = Bildschirm { $number }
 # What a person can do to one window, from its own menu.
 window-menu-reveal = Zu diesem Fenster gehen
 window-menu-rename = Dieses Fenster benennen…
+window-tab-name = Fenstername
 window-menu-full-screen = Vollbild
 window-menu-exit-full-screen = Vollbild beenden
 window-menu-maximize = Den Streifen füllen
@@ -1502,9 +1483,72 @@ activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
 
-profile-agent-card = Karte öffnen
+profile-agent-card = Arbeit ansehen
 profile-agent-stop = Anhalten
 profile-agent-undo-run = Lauf rückgängig machen
 profile-agent-take-over = Übernehmen
 profile-agent-revoke = Zugriff entziehen
 profile-agent-now = Gerade
+task-programs-resource = Aufgabenprogramme
+task-programs-run = Ein Programm ausführen
+task-programs-run-detail = Führt ein tilolang-Programm als Schritt des Laufs der Aufgabe aus, als der Agent, der an der Aufgabe arbeitet, und antwortet, was es gelesen oder geändert hat.
+
+## What a grant covers when it covers the whole tree
+workspace-settings-scope-everything = Alles
+activity-grant-everything = Alles
+
+## Actions
+
+so-tilo-chrome-about = Über Tilo
+so-tilo-chrome-activity = Verlauf des Arbeitsbereichs
+so-tilo-chrome-branch-workspace = Den Arbeitsbereich abzweigen
+so-tilo-chrome-close-activity = Den Verlauf schließen
+so-tilo-chrome-close-window = Ein Fenster schließen
+so-tilo-chrome-delete-workspace = Einen Arbeitsbereich löschen
+so-tilo-chrome-equalize = Gleiche Breiten
+so-tilo-chrome-fixed-shortcut = Ein festes Tastenkürzel ausführen
+so-tilo-chrome-float = Das Fenster schweben lassen
+so-tilo-chrome-fullscreen = Vollbild
+so-tilo-chrome-history = Fensterverlauf
+so-tilo-chrome-join-workspace = Einem Arbeitsbereich beitreten
+so-tilo-chrome-leave-workspace = Einen Arbeitsbereich verlassen
+so-tilo-chrome-maximize = Ein Fenster maximieren
+so-tilo-chrome-move-strip = Eine Leiste verschieben
+so-tilo-chrome-move-tab = Einen Tab verschieben
+so-tilo-chrome-new-group = Neue Gruppe
+so-tilo-chrome-new-strip = Neue Leiste
+so-tilo-chrome-new-workspace = Neuer Arbeitsbereich
+so-tilo-chrome-notifications = Benachrichtigungszentrum
+so-tilo-chrome-open-app = Eine App öffnen
+so-tilo-chrome-overview = Übersicht
+so-tilo-chrome-pan = Eine Leiste schieben
+so-tilo-chrome-quick-settings = Schnelleinstellungen
+so-tilo-chrome-rename = Umbenennen
+so-tilo-chrome-reopen-closed = Das geschlossene Fenster wieder öffnen
+so-tilo-chrome-reveal-top-bar = Die obere Leiste zeigen
+so-tilo-chrome-scroll = Ein Fenster scrollen
+so-tilo-chrome-set-width = Die Breite setzen
+so-tilo-chrome-share-window = Ein Fenster teilen
+so-tilo-chrome-shortcut = Ein Tastenkürzel ausführen
+so-tilo-chrome-show-app = Eine App zeigen
+so-tilo-chrome-show-person = Eine Person zeigen
+so-tilo-chrome-show-strip = Eine Leiste zeigen
+so-tilo-chrome-show-strips = Die Leisten zeigen
+so-tilo-chrome-split-right = Nach rechts teilen
+so-tilo-chrome-step-strip = Durch die Leisten wechseln
+so-tilo-chrome-stop-desktop-control = Die Fernsteuerung beenden
+so-tilo-chrome-switch-workspace = Arbeitsbereich wechseln
+so-tilo-chrome-tilo-menu = Tilo-Menü
+so-tilo-chrome-toggle-collaborators = Wer hier ist
+so-tilo-chrome-workspace-menu = Arbeitsbereich-Menü
+so-tilo-chrome-workspace-settings = Einstellungen des Arbeitsbereichs
+so-tilo-desk-choose-search-row = Ein Suchergebnis wählen
+so-tilo-desk-close-tab = Ein Fenster schließen
+so-tilo-desk-focus = Ein Fenster fokussieren
+so-tilo-desk-focus-display = Eine Anzeige fokussieren
+so-tilo-desk-force-quit-app = Die App sofort beenden
+so-tilo-desk-launchpad = Eine Karte wählen
+so-tilo-desk-move-to-display = Auf eine andere Anzeige verschieben
+so-tilo-desk-search = Den Desktop durchsuchen
+so-tilo-desk-step-focus = Durch die Fenster wechseln
+so-tilo-desk-wait-window = Weiter warten

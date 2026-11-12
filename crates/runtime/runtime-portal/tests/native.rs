@@ -364,11 +364,21 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
         }
         command.output_locked().unwrap()
     };
-    // The re-executed test prints libtest's header before the host runs.
+    // The re-executed test prints libtest's progress before the host runs, with no line break
+    // between: the host's answer is read from where its marker stands, not from a line of its own.
     let chose = |output: &std::process::Output| {
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("HOST ").map(str::to_owned))
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (_, answer) = stdout.split_once("HOST ")?;
+        Some(answer.lines().next().unwrap_or_default().to_owned())
+    };
+    // A case that went wrong says what the child did, not only which case it was.
+    let why = |output: &std::process::Output| {
+        format!(
+            "status {:?}, out {:?}, err {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
     };
 
     // Stock macOS or a foreign Linux desktop: the standalone runtime first.
@@ -376,13 +386,15 @@ fn the_host_is_the_standalone_runtime_outside_the_tilo_desktop_and_the_sessions_
     assert_eq!(
         chose(&foreign).as_deref(),
         Some("tilo-runtime"),
-        "case foreign"
+        "case foreign: {}",
+        why(&foreign)
     );
     let other_desktop = run(&both, Some("GNOME"), None);
     assert_eq!(
         chose(&other_desktop).as_deref(),
         Some("tilo-runtime"),
-        "case GNOME"
+        "case GNOME: {}",
+        why(&other_desktop)
     );
     // Inside the Tilo desktop: the session's host.
     let tilo = run(&both, Some("tilo"), None);

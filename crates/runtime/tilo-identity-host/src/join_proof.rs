@@ -1,29 +1,10 @@
-//! This device's signed collaboration-join proof for a workspace, minted
-//! once while nothing that decides it changed.
+//! This device's signed collaboration-join proof for a workspace: its signature over the
+//! workspace's join bytes, presented with its certificate.
 //!
-//! A join proof is this device's signature over the workspace's join bytes,
-//! presented with its certificate. Ed25519 signatures are deterministic, so
-//! the proof for a workspace changes only when the identity it signs as, the
-//! device key, the device certificate or the device fleet changes, and each
-//! of those lives in a file. A proof is served from memory while one `stat`
-//! of every such file matches the stamp taken when it was minted:
-//!
-//! * the identity directory and its registry file: which identity this
-//!   device holds (an imported or removed identity);
-//! * the device key file: key rotation. A key in the macOS Keychain has no
-//!   file to stamp, so its proofs are never cached;
-//! * the held identity's device certificate: certificate rotation;
-//! * the fleet file and the home-peer registry: revocation and enrollment.
-//!
-//! A file changed within the last two seconds is never trusted to its stamp,
-//! because a coarse filesystem clock can give the next write the same time:
-//! until every file has settled the proof is minted again on each call.
-//! Failures are never cached, and a stamp that can't be taken (a file that
-//! can't be examined) never matches. The cache keeps the public certificate
-//! and the signature, never the private key.
-//!
-//! This only spares re-deriving the proof. Whoever receives it still checks
-//! it against current membership, fleet and policy time on every call.
+//! Signatures are deterministic, so a proof changes only when the identity it signs as, the device
+//! key, its certificate or the fleet changes — each a file (`stat`ed, settled past the filesystem
+//! clock's granularity, never cached while unsettled or on failure; the cache keeps no key). A
+//! receiver still checks it against current membership, fleet and policy time.
 
 use std::collections::HashMap;
 use std::io;

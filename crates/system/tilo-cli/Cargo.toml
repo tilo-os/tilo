@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-cli"
 version = "0.1.0"
 edition = "2024"
@@ -16,6 +18,8 @@ path = "src/main.rs"
 # library, so this builds on a host with no development headers, which is the
 # constraint that shaped tilo-rollback the same way.
 anyhow.workspace = true
+# A hosted workspace's files come down in base64 pieces (`tilo files get`).
+base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 # Reads the session's GPU health record for `tilo system health --gpu`.
@@ -36,8 +40,14 @@ tilo-control = { path = "../../session/control-cli" }
 settings-store = { path = "../settings-store" }
 # `tilo login` and `tilo mcp`: this computer as one of the person's devices,
 # certified by the root their browser tab holds, in their workspace.
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+tilo-session-client = { path = "../../session/client" }
+tilo-session-core = { path = "../../session/core" }
+# Documents are applied in a confined worker: this program started again as
+# it, which `main` hands over to first thing.
+tilo-automerge-isolate.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# HTTPS to a site and a host, as every client of the relay makes its requests.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).

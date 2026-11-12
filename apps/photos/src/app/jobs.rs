@@ -99,7 +99,7 @@ fn mark_analysis_shared(analysis: &mut crate::model::ImageAnalysis) {
 
 fn analysis_worker(
     rx: &Receiver<AnalysisJob>,
-    tx: &SyncSender<AnalysisResult>,
+    tx: &ui::wake::WakingSyncSender<AnalysisResult>,
     content: &ContentStore,
 ) {
     while let Ok(job) = rx.recv() {

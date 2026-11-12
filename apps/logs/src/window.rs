@@ -39,6 +39,7 @@ use crate::journal::{JournalLoadError, Page};
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::{JournalFixture, Logs};
 use crate::view::{Bridge, JournalPane, JournalRow, Placeholder, Request, Shared};
+use ui::widget::DrawChild;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -466,7 +467,7 @@ impl Journal {
         if self.live_tail {
             statuses.push(EffectStatus::labelled(
                 JournalEffect::SET_LIVE_TAIL,
-                "Stop live tail",
+                crate::locales::CATALOG.t("logs-effects-stop-live-tail"),
             ));
         }
         if self.exporting {
@@ -999,7 +1000,7 @@ impl Widget for LogsWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
+        self.shell.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1601,7 +1602,7 @@ mod tests {
         let before = app.agent_surface();
         assert_eq!(
             effect(&before, "set-live-tail").unwrap()["label"],
-            "Start live tail"
+            "Follow live"
         );
         app.effect(&JournalEffect::SetLiveTail {
             enabled: Some(true),
@@ -1610,7 +1611,7 @@ mod tests {
         app.settle();
         assert_eq!(
             effect(&app.agent_surface(), "set-live-tail").unwrap()["label"],
-            "Stop live tail"
+            "Stop following"
         );
         assert!(
             app.effect(&JournalEffect::SelectEntry {

@@ -446,7 +446,7 @@ impl Session<'_> {
                 .await
                 .map_err(|error| error.to_string())?;
                 if let Some((tap, author, body)) = notice {
-                    crate::peer::tell_governor(&tap, author, body).await;
+                    crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
             }
             Envelope::RetiredPresence { workspace_id, .. } => {

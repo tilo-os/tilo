@@ -56,6 +56,13 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 /// carries it.
 pub type Invitation = String;
 
+/// How long a device is given to hold the workspace it joined and to show it in front: the join is
+/// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
+/// it did not happen, and the suite's hang bound after that.
+pub fn joined_within() -> Duration {
+    tilo_session::sync::JOIN_PATIENCE.saturating_add(tilo_test_env::hang_bound())
+}
+
 /// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
 /// admits people to it at its door.
 pub struct Site {
@@ -76,18 +83,24 @@ pub struct Site {
     pub entry: String,
     /// The door the site serves, kept up until the site is dropped.
     _door: Responder,
-    _state: tempfile::TempDir,
+    state: tempfile::TempDir,
 }
 
 impl Drop for Site {
     fn drop(&mut self) {
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
-        }
+        self.stop();
     }
 }
 
 impl Site {
+    /// Stop the site's host, as a site that went away: what its people's devices hold of the
+    /// workspace, they read of their own.
+    pub fn stop(&mut self) {
+        if let Some(relay) = self.relay.take() {
+            self.runtime.block_on(relay.shutdown());
+        }
+    }
+
     /// `owner`'s site: a relay of this machine governing the workspace `name`,
     /// listening on loopback with its directory and door served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
@@ -110,7 +123,7 @@ impl Site {
         let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start(
+            let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
                     // Devices of this machine find the site on loopback, as they do on a person's
@@ -124,6 +137,9 @@ impl Site {
                     device_cert: host.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
+                // The site relays through this machine's loopback relay, as its people's devices
+                // do: neither side reaches number 0.
+                test_relay::relay_mode(),
             )
             .await
             .expect("the site's host");
@@ -144,7 +160,7 @@ impl Site {
                 .expect("the site's device is in its workspace");
             (relay, workspaces, workspace)
         });
-        let door = door_responder(&runtime, &workspaces, &workspace, name);
+        let door = door_responder(&workspace, name);
         let entry = format!("{}/", door.url());
         Self {
             runtime,
@@ -156,8 +172,32 @@ impl Site {
             name: name.to_owned(),
             entry,
             _door: door,
-            _state: state,
+            state,
         }
+    }
+
+    /// Delete the workspace, as its owner does: final, for everyone in it.
+    pub fn delete(&self) {
+        self.runtime
+            .block_on(self.workspaces.delete(&self.workspace))
+            .expect("the site deletes its workspace");
+    }
+
+    /// Where the site's relay is reached, as a link to something it hands out names it.
+    pub fn node_addr(&self) -> iroh::EndpointAddr {
+        self.relay
+            .as_ref()
+            .expect("the site's relay runs")
+            .node_addr()
+    }
+
+    /// The workspace `workspace` as the site's host carries it, by its id here: what a machine an
+    /// environment runs in is handed, and what a page action names.
+    pub fn workspace_id(&self, workspace: &str) -> Option<u64> {
+        self.runtime
+            .block_on(self.workspaces.summary(workspace))
+            .ok()
+            .map(|summary| summary.workspace_id)
     }
 
     /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
@@ -175,9 +215,9 @@ impl Site {
             .expect("the workspace is published");
     }
 
-    /// Admit `person` at the site's door, as the person themselves asks it:
-    /// the HTTP POST their own join makes, answered by the site's door with an
-    /// invitation only they can redeem.
+    /// Admit `person` at the site's door, as their own entry through it asks
+    /// it, and answer the invitation the door lets them in with: one only
+    /// they can redeem.
     ///
     /// # Panics
     ///
@@ -195,30 +235,19 @@ impl Site {
     ///
     /// What the door said, when it says no.
     pub fn try_admit(&self, person: [u8; 32]) -> Result<Invitation, String> {
-        let client = tilo_net::http::blocking_client()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("a client for the site");
-        let answer = client
-            .post(format!("{}{}join", self.entry, door_path(&self.workspace)))
-            .json(&json!({
-                "userPublicKey": hex::encode(person),
-                "displayName": "Someone",
-            }))
-            .send()
-            .expect("the site's door answers");
-        let status = answer.status();
-        let bytes = answer.bytes().expect("the door's answer");
-        if !status.is_success() {
-            let refusal = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|refusal| refusal["error"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            return Err(refusal);
-        }
-        let answer: tilo_relay_protocol::directory::DoorAnswer =
-            serde_json::from_slice(&bytes).expect("a door's answer");
-        Ok(answer.invitation)
+        let (issued, _token) = self
+            .runtime
+            .block_on(self.workspaces.admit_listed(
+                &self.workspace,
+                &DoorJoin {
+                    user_public_key: hex::encode(person),
+                    display_name: "Someone".to_owned(),
+                },
+            ))
+            .map_err(|refusal| refusal.to_string())?;
+        Ok(tilo_workspace_join::encode_invitation_text(
+            &issued.signed_invitation,
+        ))
     }
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
@@ -401,35 +430,6 @@ impl Site {
             None => "the site holds no copy of the workspace".to_owned(),
         }
     }
-
-    /// The workspace's shared desktop as the site keeps it, described for a step that waited for
-    /// it: how many bytes and changes it holds, and how many windows read out of it.
-    pub fn desk_report(&self) -> String {
-        let Some(bytes) = self.record(
-            tilo_desktop_model::ownership::DESKTOP_APP,
-            tilo_desktop_model::ownership::DESKTOP_RECORD,
-        ) else {
-            return "the site keeps no desk record".to_owned();
-        };
-        let Ok(mut document) = automerge::AutoCommit::load(&bytes) else {
-            return format!("{} bytes that do not load", bytes.len());
-        };
-        let changes = document.get_changes(&[]).len();
-        let read = tilo_desktop_model::shared_record::read(&document, None).map_or_else(
-            || "no desk reads out of it".to_owned(),
-            |desk| {
-                let windows = desk
-                    .tree
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| &workspace.strips)
-                    .map(|strip| strip.window_groups.len())
-                    .sum::<usize>();
-                format!("{windows} windows in it")
-            },
-        );
-        format!("{} bytes, {changes} changes, {read}", bytes.len())
-    }
 }
 
 /// What the site holds, named on the wait that found it short: the routes it kept are the
@@ -575,9 +575,11 @@ impl std::fmt::Display for Watched<'_> {
         for device in self.devices {
             writeln!(
                 formatter,
-                "{} shows {:?}\n{}",
+                "{} shows {:?}, with {:?} in front of {:?}\n{}",
                 device.label,
                 titles_on(device, self.site),
+                device.showing(),
+                device.on_desk(),
                 device.diagnostic()
             )?;
         }
@@ -740,24 +742,15 @@ fn share_the_fleet(person: &Person, devices: &[&Device]) {
     }
 }
 
-/// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
-/// it governs, which admits a person the workspace is public to — the same handlers the production
-/// door answers with (`tilo_relay::web`).
-fn door_responder(
-    runtime: &tokio::runtime::Runtime,
-    workspaces: &tilo_relay::workspaces::Workspaces,
-    workspace: &str,
-    name: &str,
-) -> Responder {
+/// What a site serves: its entry and the directory of what it lists. The door itself is the
+/// workspace's host's, which a device enters through on its session with the host
+/// ([`Site::admit`] asks it as that entry does).
+fn door_responder(workspace: &str, name: &str) -> Responder {
     let origin = Arc::new(Mutex::new(String::new()));
     let served_origin = Arc::clone(&origin);
-    let workspaces = workspaces.clone();
     let workspace_answered = workspace.to_owned();
     let listed = workspace.to_owned();
     let page_name = name.to_owned();
-    let door = workspace.to_owned();
-    let behind = format!("/directory/{workspace}/join");
-    let answer = runtime.handle().clone();
     let responder = Responder::handle(move |request| {
         let json = |body: String| {
             Some(
@@ -773,7 +766,7 @@ fn door_responder(
                     "home": {
                         "name": page_name,
                         "host": { "origin": served_origin.lock().expect("the site's origin").clone() },
-                        "admission": "door/",
+                        "admission": format!("door/directory/{workspace_answered}/"),
                     },
                 })
                 .to_string(),
@@ -796,36 +789,6 @@ fn door_responder(
                     .to_string(),
                 )
             }
-            ("POST", asked) if asked == behind || asked == "/door/join" => {
-                let Ok(join) = serde_json::from_slice::<DoorJoin>(&request.body) else {
-                    return Some(Reply::status(400));
-                };
-                let admitted = answer.block_on(
-                    workspaces.admit_listed(&door, &join),
-                );
-                match admitted {
-                    Ok((issued, token)) => json(
-                        json!({
-                            "invitation": tilo_workspace_join::encode_invitation_text(
-                                &issued.signed_invitation
-                            ),
-                            "admissionToken": token,
-                        })
-                        .to_string(),
-                    ),
-                    Err(tilo_relay::workspaces::DoorRefusal::Full { retry_after_secs }) => Some(
-                        Reply::status(503).header("retry-after", &retry_after_secs.to_string()),
-                    ),
-                    Err(
-                        refusal @ (tilo_relay::workspaces::DoorRefusal::Refused(_)
-                        | tilo_relay::workspaces::DoorRefusal::InvitationOnly),
-                    ) => Some(
-                        Reply::status(403)
-                            .header("content-type", "application/json")
-                            .body(json!({ "error": refusal.to_string() }).to_string()),
-                    ),
-                }
-            }
             _ => Some(Reply::status(404)),
         }
     });
@@ -836,7 +799,7 @@ fn door_responder(
 /// The log of what runs in this test's own process — the site's relay above all — as `RUST_LOG`
 /// asks for it, warnings and worse by default: what the host did with a change a device published
 /// is only said there.
-fn install_log() {
+pub fn install_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -983,6 +946,9 @@ impl Person {
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
         );
+        // This device relays through this machine's loopback relay, as the site does: no session
+        // of a test reaches the person's relays or their directory out on the internet.
+        test_relay::relay_through_loopback_in(&root.join("config"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {
@@ -1323,20 +1289,6 @@ impl Device {
         )
     }
 
-    /// Everything this device logged, session and apps alike: what a step that compares devices
-    /// reads when they disagree.
-    pub fn every_log(&self) -> String {
-        let mut all = format!("{} session:\n{}\n", self.label, self.log());
-        if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
-            for entry in entries.flatten() {
-                let text =
-                    std::fs::read_to_string(entry.path()).unwrap_or_else(|error| error.to_string());
-                let _ = writeln!(all, "{} {}:\n{text}", self.label, entry.path().display());
-            }
-        }
-        all
-    }
-
     /// Run this device's session: its own home, its own identity root, its own state and its own
     /// control socket, as a device's session runs.
     fn spawn(&mut self, invitation: Option<&str>) {
@@ -1445,8 +1397,15 @@ impl Device {
     pub fn ask(&self, request: &Value) -> Value {
         let mut stream = UnixStream::connect(&self.control)
             .unwrap_or_else(|error| panic!("{}'s control socket: {error}", self.label));
+        // A request that asks the desk to hold its answer (`wait_ms`) is answered when what it
+        // waits for happens: the read outlives that wait by the suite's hang bound, so a desk still
+        // waiting for a change is waited for rather than reported as one that did not answer.
+        let held = request
+            .get("wait_ms")
+            .and_then(Value::as_u64)
+            .map_or(Duration::ZERO, Duration::from_millis);
         stream
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(held.saturating_add(tilo_test_env::hang_bound())))
             .expect("a read timeout");
         stream
             .write_all(format!("{request}\n").as_bytes())
@@ -1489,7 +1448,12 @@ impl Device {
     /// Wait until this device keeps the workspace `workspace` , failing with what its session
     /// logged if it never does.
     pub fn wait_holding(&self, workspace: &str) {
-        let deadline = tilo_test_env::hang_deadline();
+        // A device is told to join as it starts, and the join is the product's own: it gives it
+        // `JOIN_PATIENCE` before it tells the person it did not happen, so the wait spans that and
+        // the suite's hang bound after it.
+        let deadline = Instant::now()
+            .checked_add(joined_within())
+            .expect("the wait's bound fits in an Instant");
         let mut pause = Duration::from_millis(10);
         loop {
             let held = self.held();
@@ -1519,12 +1483,115 @@ impl Device {
             .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
     }
 
+    /// The workspaces on this device's desk, by id, in the desk's order: the ones it made, the ones
+    /// it joined and the ones the person's list brought from their other devices.
+    pub fn on_desk(&self) -> Vec<String> {
+        self.state()["state"]["workspace_tree"]["workspaces"]
+            .as_array()
+            .map(|workspaces| {
+                workspaces
+                    .iter()
+                    .filter_map(|workspace| workspace["room"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What this device's session logged of the workspaces it joined and entered, oldest first:
+    /// which of them arrived on its desk, and when.
+    pub fn join_flow(&self) -> String {
+        self.log()
+            .lines()
+            .filter(|line| line.contains(tilo_startup_metrics::JOIN_FLOW_TARGET))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The publisher this device's session goes by at its own seat: what every other device in a
+    /// workspace it is in knows it as.
+    pub fn publisher(&self) -> Option<String> {
+        let own = &self.state()["state"]["peers"]["own"];
+        own["publisher"].as_str().map(str::to_owned)
+    }
+
+    /// Who this device's session says is present in `workspace` now: each member's publisher, which
+    /// is the device, and the name their own word gives them — the rows every surface here draws
+    /// its roster from.
+    pub fn present(&self, workspace: &str) -> Vec<(String, String)> {
+        let peers = &self.state()["state"]["peers"];
+        let Some(members) = peers["workspaces"]
+            .as_array()
+            .and_then(|held| held.iter().find(|held| held["room"] == json!(workspace)))
+            .and_then(|held| held["members"].as_array())
+        else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter_map(|member| {
+                Some((
+                    member["publisher"].as_str()?.to_owned(),
+                    member["label"].as_str()?.to_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Wait until this device says the device `publisher` is present in `workspace` , failing with
+    /// who it does say is there if it never does: presence reaches a device by itself, on the
+    /// workspace's own plane.
+    pub fn wait_present(&self, workspace: &str, publisher: &str) {
+        struct Present<'a> {
+            device: &'a Device,
+            workspace: &'a str,
+            publisher: &'a str,
+        }
+        impl std::fmt::Display for Present<'_> {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    "{} says {} is in {}; it says {:?}",
+                    self.device.label,
+                    self.publisher,
+                    self.workspace,
+                    self.device.present(self.workspace)
+                )
+            }
+        }
+        let watched = Present {
+            device: self,
+            workspace,
+            publisher,
+        };
+        tilo_test_env::wait_until(watched, || {
+            self.present(workspace)
+                .iter()
+                .any(|(present, _)| present == publisher)
+        });
+    }
+
     /// Wait until the desk shows the workspace `workspace` in front: a person who joins a workspace
     /// lands in it, so the door opens apps into it rather than into the desk they were on.
     pub fn wait_showing(&self, workspace: &str) {
-        tilo_test_env::wait_until(format!("{} shows {workspace} in front", self.label), || {
-            self.showing().as_deref() == Some(workspace)
-        });
+        let deadline = Instant::now()
+            .checked_add(joined_within())
+            .expect("the wait's bound fits in an Instant");
+        let mut pause = Duration::from_millis(10);
+        loop {
+            let showing = self.showing();
+            if showing.as_deref() == Some(workspace) {
+                return;
+            }
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "{} never showed {workspace} in front; it shows {showing:?}:\n{}",
+                self.label,
+                self.log(),
+            );
+            std::thread::sleep(pause.min(deadline.saturating_duration_since(now)));
+            pause = pause.saturating_mul(2).min(Duration::from_millis(500));
+        }
     }
 
     /// The store this device's session reads its installed apps from.
@@ -1532,27 +1599,88 @@ impl Device {
         self.home.path().join("data/tilo-apps")
     }
 
-    /// Install Chat in this device's store, as a device with the app installed has it: the app this
-    /// run built, under its own manifest, in the registry the session launches installed apps from.
-    /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for the runtime bundle it
-    /// names: an app of this build runs on the machine it was built on, and the bundle an installed
-    /// desktop carries is not here. The runtime host is the build's own, beside the app, as
-    /// `runtime_portal::native` looks for it before the installed one.
-    pub fn install_chat(&self) {
-        let payload = chat_payload().to_path_buf();
-        let manifest = payload.join("manifest.toml");
+    /// Install the app `app` in this device's store from `payload` , as a device that carries the
+    /// app has it: one row after another in the registry the session launches installed apps from.
+    /// `package` is the digest of the payload's signed root, for an app the session reads the
+    /// person's records of before it ever runs.
+    fn install(&self, app: &str, (payload, package): &(PathBuf, String)) {
         let store = self.store();
         std::fs::create_dir_all(&store).expect("the device's store");
-        std::fs::write(
-            store.join("registry.toml"),
-            format!(
-                "[[entry]]\nid = \"so.tilo.chat\"\nversion = \"0.1.0\"\n\
-                 payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-                payload = payload.display(),
-                manifest = manifest.display(),
-            ),
+        let registry = store.join("registry.toml");
+        let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
+        writeln!(
+            rows,
+            "[[entry]]\nid = \"{app}\"\nversion = \"0.1.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n\
+             package_id_hex = \"{package}\"",
+            payload = payload.display(),
+            manifest = payload.join("manifest.toml").display(),
         )
-        .expect("the store's registry");
+        .expect("the registry is a string");
+        std::fs::write(&registry, rows).expect("the store's registry");
+    }
+
+    /// Install Chat in this device's store, as a device with the app installed has it: the app this
+    /// run built, under its own manifest and surface.
+    pub fn install_chat(&self) {
+        self.install("so.tilo.chat", chat_install());
+    }
+
+    /// Install Passwords in this device's store, as a device with the app installed has it.
+    pub fn install_passwords(&self) {
+        self.install("so.tilo.passwords", passwords_install());
+    }
+
+    /// Install Model Providers in this device's store, as a device with the app installed has it.
+    pub fn install_model_providers(&self) {
+        self.install("so.tilo.model-providers", model_providers_install());
+    }
+
+    /// The provider and id this device lists for the running `app`'s `operation`, once the app
+    /// published it: a provider the session names by the app's live connection.
+    pub fn app_action(&self, app: &str, operation: &str) -> (String, String) {
+        let mut named = None;
+        tilo_test_env::wait_until(
+            format!("{} publishes {app}'s {operation}", self.label),
+            || {
+                named = self.actions()["answer"]["actions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|row| {
+                        row["application"] == app
+                            && row["operation"] == operation
+                            && row["provider"]
+                                .as_str()
+                                .is_some_and(|provider| provider.parse::<u64>().is_ok())
+                    })
+                    .map(|row| {
+                        (
+                            row["provider"].as_str().expect("a provider").to_owned(),
+                            row["id"].as_str().expect("an action's id").to_owned(),
+                        )
+                    });
+                named.is_some()
+            },
+        );
+        named.expect("the action the app published")
+    }
+
+    /// Invoke the running `app`'s `operation` with `args` and wait until it settled, as a program
+    /// of the person's does: the receipt, the person's confirmation given where it asked first.
+    pub fn app_act(&self, app: &str, operation: &str, args: &Value) -> Value {
+        let (provider, id) = self.app_action(app, operation);
+        let answer = self.act_wait(&provider, &id, args);
+        if answer["err"]["code"].as_str() == Some("needs_confirmation") {
+            return self.act_confirming(&provider, &id, args);
+        }
+        answer
+    }
+
+    /// Install Tasks in this device's store, as a device with the app installed has it: the app this
+    /// run built, with the tracker's surface its package ships.
+    pub fn install_tasks(&self) {
+        self.install("so.tilo.tasks", tasks_install());
     }
 
     /// Install the Files app in this device's store as a desktop that carries it has it: the surface
@@ -1561,23 +1689,7 @@ impl Device {
     /// device's trees is that app's endpoint: a session serves no tree record for an app it cannot
     /// read as installed.
     pub fn install_files(&self) {
-        let payload = files_payload();
-        let manifest = payload.join("manifest.toml");
-        let store = self.store();
-        std::fs::create_dir_all(&store).expect("the device's store");
-        let registry = store.join("registry.toml");
-        let mut rows = std::fs::read_to_string(&registry).unwrap_or_default();
-        writeln!(
-            rows,
-            "[[entry]]\nid = \"so.tilo.file-explorer\"\nversion = \"0.1.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n\
-             package_id_hex = \"{package}\"",
-            payload = payload.display(),
-            manifest = manifest.display(),
-            package = files_package(),
-        )
-        .expect("the registry is a string");
-        std::fs::write(&registry, rows).expect("the store's registry");
+        self.install("so.tilo.file-explorer", files_install());
     }
 
     /// The actions this device publishes now.
@@ -1680,12 +1792,46 @@ impl Device {
     }
 
     /// Wait until a window of the app `app` is open on this device's desk.
+    ///
+    /// An app that started and stopped before its window came is not one to wait longer for: the
+    /// wait ends with what the session logged of it, which is where a sandbox that could not start
+    /// (or a launcher that refused) says why. Waiting out the hang bound instead would report a
+    /// picture of the desk and nothing about the launch.
     pub fn wait_for_window(&self, app: &str) {
-        tilo_test_env::wait_until(NoWindow { device: self, app }, || {
-            self.ask(&json!({"op": "windows"}))["answer"]["windows"]
-                .as_array()
-                .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+        let already_logged = self.log().lines().count();
+        let ended = tilo_test_env::wait_for(NoWindow { device: self, app }, || {
+            if self.shows_window(app) {
+                return Some(None);
+            }
+            self.ended_since(already_logged, app).map(Some)
         });
+        if let Some(why) = ended {
+            panic!("{} did not start {app}: {why}", self.label);
+        }
+    }
+
+    /// Whether this device's desk shows a window of `app` .
+    fn shows_window(&self, app: &str) -> bool {
+        self.ask(&json!({"op": "windows"}))["answer"]["windows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
+    }
+
+    /// What this device's session logged of `app` ending, once the log had `already_logged` lines:
+    /// the app stopping, and the lines the app itself printed before it did.
+    fn ended_since(&self, already_logged: usize, app: &str) -> Option<String> {
+        let log = self.log();
+        let lines: Vec<&str> = log.lines().skip(already_logged).collect();
+        let stopped = lines.iter().position(|line| {
+            line.contains("an app stopped") && line.contains(&format!("app={app}"))
+        })?;
+        let said: Vec<&str> = lines[stopped..]
+            .iter()
+            .copied()
+            .filter(|line| line.contains(&format!("app={app}")) || line.contains("tilo-launcher"))
+            .take(20)
+            .collect();
+        Some(said.join("\n"))
     }
 }
 
@@ -1716,41 +1862,37 @@ pub struct Chat<'a> {
 }
 
 impl Chat<'_> {
-    /// The row the device's session publishes for the app's `operation` .
-    fn row(&self, operation: &str) -> Value {
-        let answer = self.device.actions();
-        answer["answer"]["actions"]
-            .as_array()
-            .and_then(|rows| {
-                rows.iter()
-                    .find(|row| {
-                        row["application"] == "so.tilo.chat" && row["operation"] == operation
-                    })
-                    .cloned()
-            })
-            .unwrap_or_else(|| panic!("{} publishes Chat's {operation}", self.device.label))
-    }
-
     /// The provider and id the session publishes for the app's `operation`,
-    /// once the app published it: the app names its own actions, so a caller
-    /// asks rather than writing them down.
+    /// once the running app published it: the app names its own actions, so a
+    /// caller asks rather than writing them down.
     fn action(&self, operation: &str) -> (String, String) {
+        let mut named = None;
         tilo_test_env::wait_until(
             format!("{} publishes Chat's {operation}", self.device.label),
             || {
                 let answer = self.device.actions();
-                answer["answer"]["actions"].as_array().is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        row["application"] == "so.tilo.chat" && row["operation"] == operation
-                    })
-                })
+                named = answer["answer"]["actions"].as_array().and_then(|rows| {
+                    rows.iter()
+                        // The running app's own: a provider the session names by the app's
+                        // live connection, not the launcher that would start it again.
+                        .find(|row| {
+                            row["application"] == "so.tilo.chat"
+                                && row["operation"] == operation
+                                && row["provider"]
+                                    .as_str()
+                                    .is_some_and(|provider| provider.parse::<u64>().is_ok())
+                        })
+                        .map(|row| {
+                            (
+                                row["provider"].as_str().expect("a provider").to_owned(),
+                                row["id"].as_str().expect("an action's id").to_owned(),
+                            )
+                        })
+                });
+                named.is_some()
             },
         );
-        let row = self.row(operation);
-        (
-            row["provider"].as_str().expect("a provider").to_owned(),
-            row["id"].as_str().expect("an action's id").to_owned(),
-        )
+        named.expect("the action the session published")
     }
 
     /// Invoke the app's `operation` with `args` and wait for what it answered: the value it
@@ -1768,15 +1910,16 @@ impl Chat<'_> {
                 self.device.diagnostic()
             ),
             other => panic!(
-                "{} Chat's {operation} ended as {other:?}: {answer}",
-                self.device.label
+                "{} Chat's {operation} ended as {other:?}: {answer}\n{}",
+                self.device.label,
+                self.device.diagnostic()
             ),
         }
     }
 
     /// The app's answer to `operation` with `args` once it settled: the person's confirmation given
     /// where the action asked for it.
-    fn settled(&self, operation: &str, args: &Value) -> Value {
+    pub fn settled(&self, operation: &str, args: &Value) -> Value {
         let (provider, id) = self.action(operation);
         let answer = self.device.act_wait(&provider, &id, args);
         if answer["err"]["code"].as_str() == Some("needs_confirmation") {
@@ -1815,26 +1958,88 @@ impl Chat<'_> {
         );
     }
 
-    /// The conversation with `peer` as Chat reads it now: its messages in the order the app shows
-    /// them, and how many of them its person has not read.
+    /// The conversation with `peer` as Chat's record holds it here now: its messages in the order
+    /// the app shows them, and how many of them its person has not read.
     pub fn conversation(&self, peer: &str) -> Conversation {
-        let answer = self.invoke(
-            "read-direct-conversation",
-            &json!({"public_key": Self::conversation_key(peer)}),
+        self.read(peer).unwrap_or_else(|refusal| {
+            panic!(
+                "{} Chat's read of {peer} failed: {refusal}\n{}",
+                self.device.label,
+                self.device.diagnostic()
+            )
+        })
+    }
+
+    /// The conversation with `peer` as Chat's record on this device holds it, or why there is
+    /// none: a person who is in no workspace with this device's person has no conversation here,
+    /// and until the workspace's people are in its shared record nobody has one.
+    fn read(&self, peer: &str) -> Result<Conversation, String> {
+        self.held(None).conversation(peer)
+    }
+
+    /// Chat's record and the first part of its messages (all a conversation here writes), as this
+    /// device holds them, once they differ from the revision `after`: read through the record door
+    /// as plain JSON, which wakes the read on the next write to any of them.
+    fn held(&self, after: Option<&str>) -> HeldChat {
+        let wait = tilo_test_env::hang_bound();
+        let answer = self.device.ask(&json!({
+            "op": "record_read",
+            "app": "so.tilo.chat",
+            "records": ["", chat::parts::part(0).to_string()],
+            "after": after,
+            "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+        }));
+        assert!(
+            answer.get("err").is_none(),
+            "{} reads Chat's record: {answer}",
+            self.device.label
         );
-        Conversation {
-            messages: answer["messages"].as_array().cloned().unwrap_or_default(),
-            unread: answer["unread"].as_u64().unwrap_or_default(),
+        let answer = &answer["answer"];
+        let mut values = answer["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|record| record["value"].clone());
+        HeldChat {
+            me: hex::encode(self.device.cert.user_public_key),
+            revision: answer["revision"].as_str().unwrap_or_default().to_owned(),
+            chat: values.next().unwrap_or_default(),
+            parts: values.collect(),
+        }
+    }
+
+    /// Wait until Chat's record here holds what `wanted` names, woken by each write to it: `done`
+    /// says what it holds instead, `None` once it holds that.
+    fn wait_for(&self, wanted: &str, mut done: impl FnMut(&HeldChat) -> Option<String>) {
+        // Chat's record is sealed in the workspace's channel, and what a device reads of it follows
+        // the channel service's own longest wait between asking for its keys: the wait spans that
+        // and the suite's hang bound, and each answer it is woken by is its progress.
+        let deadline = Instant::now()
+            .checked_add(
+                tilo_channels::asking_again_wait().saturating_add(tilo_test_env::hang_bound()),
+            )
+            .expect("the wait's bound fits in an Instant");
+        let mut after = None;
+        loop {
+            let held = self.held(after.as_deref());
+            let Some(instead) = done(&held) else {
+                return;
+            };
+            assert!(
+                Instant::now() < deadline,
+                "{DIAG}{} {instead} instead of {wanted}\n\
+                 what the session warned and failed at:\n{}",
+                self.device.label,
+                self.device.warnings(),
+                DIAG = self.device.diagnostic()
+            );
+            after = Some(held.revision);
         }
     }
 
     /// The texts of the conversation with `peer` , in the order Chat shows them.
     pub fn texts(&self, peer: &str) -> Vec<String> {
-        self.conversation(peer)
-            .messages
-            .iter()
-            .filter_map(|message| message["text"].as_str().map(str::to_owned))
-            .collect()
+        self.conversation(peer).texts()
     }
 
     /// How many of the messages `peer` wrote this device's person has not read, as Chat counts
@@ -1843,48 +2048,17 @@ impl Chat<'_> {
         self.conversation(peer).unread
     }
 
-    /// What Chat answers when asked for the conversation with `peer` : `None` when it can read it,
-    /// and why not when it refuses — a person who is in no workspace with this device's person has
-    /// no conversation here.
+    /// Why Chat has no conversation with `peer` here: `None` when it has one.
     pub fn refusal(&self, peer: &str) -> Option<String> {
-        let answer = self.settled(
-            "read-direct-conversation",
-            &json!({"public_key": Self::conversation_key(peer)}),
-        );
-        if let Some(refusal) = answer.get("err") {
-            return Some(refusal["message"].as_str().unwrap_or_default().to_owned());
-        }
-        let update = &answer["answer"]["receipt"]["update"];
-        match update["state"].as_str() {
-            Some("succeeded") => None,
-            Some("failed") => Some(
-                update["output"]["error"]
-                    .as_str()
-                    .map_or_else(|| update.to_string(), str::to_owned),
-            ),
-            other => panic!(
-                "{} Chat's read of {peer} ended as {other:?}: {answer}\n{}",
-                self.device.label,
-                self.device.diagnostic()
-            ),
-        }
+        self.read(peer).err()
     }
 
     /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its
     /// shared record, a conversation with them reads as unavailable rather than as held.
     pub fn wait_for_contact(&self, peer: &str) {
-        let deadline = tilo_test_env::hang_deadline();
-        while let Some(refusal) = self.refusal(peer) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        self.wait_for(&format!("{peer} to talk to"), |held| {
+            held.conversation(peer).err()
+        });
     }
 
     /// Wait until the conversation with `peer` shows `texts` in that order,
@@ -1905,63 +2079,94 @@ impl Chat<'_> {
         if !in_order {
             wanted.sort_unstable();
         }
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let held = if self.reads(peer) {
-                let shown = self.texts(peer);
-                Some(if in_order {
-                    shown
-                } else {
-                    let mut shown: Vec<String> = shown;
-                    shown.sort_unstable();
-                    shown
-                })
-            } else {
-                None
-            };
-            let matches = held.as_ref().is_some_and(|shown| {
-                shown.len() == wanted.len()
-                    && shown.iter().map(String::as_str).eq(wanted.iter().copied())
-            });
-            if matches {
-                return;
+        self.wait_for(&format!("{texts:?} from {peer}"), |held| {
+            let mut shown = held.conversation(peer).map(|held| held.texts());
+            if let (Ok(shown), false) = (&mut shown, in_order) {
+                shown.sort_unstable();
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} shows {held:?} from {peer} instead of {texts:?}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            match shown {
+                Ok(shown) if shown.iter().map(String::as_str).eq(wanted.iter().copied()) => None,
+                shown => Some(format!("shows {shown:?}")),
+            }
+        });
     }
 
     /// Wait until Chat counts `wanted` messages of `peer` as unread here.
     pub fn wait_for_unread(&self, peer: &str, wanted: u64) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let count = self.unread(peer);
-            if count == wanted {
-                return;
+        self.wait_for(&format!("{wanted} unread from {peer}"), |held| {
+            match held.conversation(peer).map(|held| held.unread) {
+                Ok(count) if count == wanted => None,
+                count => Some(format!("counts {count:?}")),
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{DIAG}{} counts {count} unread from {peer} instead of {wanted}\n\
-                 what the session warned and failed at:\n{}",
-                self.device.label,
-                self.device.warnings(),
-                DIAG = self.device.diagnostic()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+        });
     }
+}
 
-    /// Whether the app answered a read of the conversation with `peer` : it refuses one with
-    /// someone it does not know in the workspace.
-    fn reads(&self, peer: &str) -> bool {
-        self.refusal(peer).is_none()
+/// Chat's record and the parts of its messages as a device holds them, read at `revision`.
+struct HeldChat {
+    /// The device's person, as the workspace names them.
+    me: String,
+    revision: String,
+    chat: Value,
+    /// Each part of the chain, in its order.
+    parts: Vec<Value>,
+}
+
+impl HeldChat {
+    /// The conversation with `peer` as Chat shows it, or why there is none: its messages in the
+    /// chain's order (each part's, by the order key the record keeps), and how many of the
+    /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
+    /// conversation's messages in it they saw).
+    fn conversation(&self, peer: &str) -> Result<Conversation, String> {
+        use chat::record::{Chat, Participant};
+        let people = self.chat["people"]
+            .as_object()
+            .filter(|people| !people.is_empty());
+        let Some(people) = people else {
+            return Err("the workspace's people are not in Chat's record yet".into());
+        };
+        if peer == self.me
+            || people
+                .get(peer)
+                .is_none_or(|person| person["agent"] == true)
+        {
+            return Err(format!("Chat knows no person {peer}"));
+        }
+        let channel = Chat::direct_id([
+            Participant::person(self.me.clone()),
+            Participant::person(peer),
+        ])
+        .to_string();
+        let mark = &self.chat["read"][&self.me][&channel];
+        let (from, seen) = (
+            mark["part"].as_u64().unwrap_or(0),
+            mark["seen"].as_u64().unwrap_or(0),
+        );
+        let mut messages = Vec::new();
+        let mut unread = 0u64;
+        for (index, part) in (0u64..).zip(&self.parts) {
+            let mut held: Vec<(&String, &Value)> = part["messages"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, entry)| entry["v"]["channel"] == channel.as_str())
+                .collect();
+            held.sort_by(|(a, x), (b, y)| (x["k"].as_str(), a).cmp(&(y["k"].as_str(), b)));
+            let skip = if index == from { seen } else { 0 };
+            let top = held
+                .iter()
+                .filter(|(_, entry)| entry["v"]["parent"].is_null());
+            let past = top
+                .skip(usize::try_from(skip).unwrap_or(usize::MAX))
+                .filter(|(_, entry)| index >= from && entry["v"]["author"] != self.me.as_str())
+                .count();
+            unread = unread.saturating_add(u64::try_from(past).unwrap_or(u64::MAX));
+            messages.extend(held.into_iter().map(|(id, entry)| {
+                let message = &entry["v"];
+                json!({"id": id, "author": message["author"], "text": message["text"], "at": message["ts"]})
+            }));
+        }
+        Ok(Conversation { messages, unread })
     }
 }
 
@@ -1974,92 +2179,138 @@ pub struct Conversation {
     pub unread: u64,
 }
 
+impl Conversation {
+    /// The messages' texts, in the app's order.
+    fn texts(&self) -> Vec<String> {
+        self.messages
+            .iter()
+            .filter_map(|message| message["text"].as_str().map(str::to_owned))
+            .collect()
+    }
+}
+
 impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-/// The payload every device of this test installs Chat from: the app and the runtime host the run
-/// built, beside each other as an installed payload keeps them, with Chat's manifest. Staged once
-/// per test process, in the build's own directory, so the two programs are hardlinks of what the
-/// run built and no device pays for a copy of a debug binary.
-fn chat_payload() -> &'static Path {
-    static PAYLOAD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    PAYLOAD.get_or_init(|| {
-        let binary = tilo_test_env::sibling_binary("chat", "chat");
-        let host = tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime");
-        let build = binary.parent().expect("the build's own directory");
-        let payload = build.join(format!("chat-payload-{}", std::process::id()));
-        std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
-        for (from, name) in [(binary, "chat"), (host, "tilo-runtime")] {
-            let to = payload.join("bin").join(name);
-            let _ = std::fs::remove_file(&to);
-            std::fs::hard_link(&from, &to).expect("the program this run built");
-        }
-        std::fs::write(payload.join("manifest.toml"), manifest_of("chat"))
-            .expect("the app's manifest");
-        payload
-    })
-}
-
-/// The payload the Files app is installed from: Files' own manifest and the surface its package
-/// ships, with the signed root and collection an install leaves beside them, so a session reads
-/// them as the records the app keeps of the person's. Staged once per test process, in the build's
-/// own directory.
-fn files_payload() -> &'static Path {
-    &files_install().0
-}
-
-/// The digest of [`files_payload`]'s signed root: the package the store's registry names.
-fn files_package() -> &'static str {
-    &files_install().1
-}
-
-/// [`files_payload`] with the digest of its signed root.
-fn files_install() -> &'static (PathBuf, String) {
+/// The payload Chat is installed from here ([`stage`]), with the digest of its signed root.
+fn chat_install() -> &'static (PathBuf, String) {
     static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
     INSTALL.get_or_init(|| {
-        use ed25519_dalek::Signer as _;
-        use tilo_app_package::blobs::{BlobHash, Collection};
-        use tilo_app_package::signed::SignedRoot;
-
-        let build = std::env::current_exe()
-            .expect("the test's own binary")
-            .parent()
-            .and_then(Path::parent)
-            .expect("the build's own directory")
-            .to_path_buf();
-        let payload = build.join(format!("file-explorer-payload-{}", std::process::id()));
-        std::fs::create_dir_all(&payload).expect("the package's payload");
-        let manifest = manifest_of("file-explorer").into_bytes();
-        let surface_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/file-explorer/surface.toml");
-        let surface = std::fs::read(&surface_path).unwrap_or_else(|error| {
-            panic!("Files' surface at {}: {error}", surface_path.display())
-        });
-        std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
-        std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
-        let collection =
-            Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
-        let collection_bytes = collection.encode();
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
-        let mut signed = SignedRoot::unsigned(
-            BlobHash::of(&manifest),
-            BlobHash::of(&collection_bytes),
-            signing_key.verifying_key().to_bytes(),
-        );
-        // What the root's bytes sign says whether a signature is there, so one is placed before
-        // signing: an installed package's root is signed, and the store reads it as such.
-        signed.signature = Some([0; 64]);
-        signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
-        let signed_bytes = signed.encode();
-        let package = BlobHash::of(&signed_bytes).to_hex();
-        std::fs::write(payload.join("signed-root"), signed_bytes).expect("the package's root");
-        std::fs::write(payload.join("collection.qcl"), &collection_bytes)
-            .expect("the package's collection");
-        (payload, package)
+        stage(
+            "chat",
+            &[
+                (tilo_test_env::sibling_binary("chat", "chat"), "chat"),
+                (
+                    tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime"),
+                    "tilo-runtime",
+                ),
+            ],
+        )
     })
+}
+
+/// The payload Files is installed from here ([`stage`]), with the digest of its signed root.
+fn files_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| stage("file-explorer", &[]))
+}
+
+/// The payload Passwords is installed from here ([`stage`]), with the digest of its signed root.
+fn passwords_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "passwords",
+            &[(
+                tilo_test_env::sibling_binary("passwords", "passwords"),
+                "passwords",
+            )],
+        )
+    })
+}
+
+/// The payload Model Providers is installed from here ([`stage`]), with the digest of its signed
+/// root.
+fn model_providers_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "model-providers",
+            &[(
+                tilo_test_env::sibling_binary("model-providers", "model-providers"),
+                "model-providers",
+            )],
+        )
+    })
+}
+
+/// The payload Tasks is installed from here ([`stage`]), with the digest of its signed root.
+fn tasks_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        stage(
+            "tasks",
+            &[(tilo_test_env::sibling_binary("tasks", "tasks"), "tasks")],
+        )
+    })
+}
+
+/// `app`'s payload staged in the build's own directory, as an install leaves a package: its
+/// manifest and the surface its package ships, the signed root and collection an install writes
+/// beside them, and each of `programs` the run built, hardlinked under `bin/` so a device pays for
+/// no copy of a debug binary. The session reads a package's surface, and with it the records and
+/// person records the app keeps, only from a payload whose signature covers it: a payload staged
+/// without one is no install of the app at all.
+fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
+    use ed25519_dalek::Signer as _;
+    use tilo_app_package::blobs::{BlobHash, Collection};
+    use tilo_app_package::signed::SignedRoot;
+
+    let exe = std::env::current_exe().expect("the test's own binary");
+    let build = programs
+        .first()
+        .and_then(|(program, _)| program.parent())
+        .unwrap_or_else(|| {
+            exe.parent()
+                .and_then(Path::parent)
+                .expect("the build's own directory")
+        });
+    let payload = build.join(format!("{app}-payload-{}", std::process::id()));
+    std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
+    for (from, name) in programs {
+        let to = payload.join("bin").join(name);
+        let _ = std::fs::remove_file(&to);
+        std::fs::hard_link(from, &to).expect("the program this run built");
+    }
+    let manifest = manifest_of(app).into_bytes();
+    let surface_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/surface.toml"));
+    let surface = std::fs::read(&surface_path)
+        .unwrap_or_else(|error| panic!("{app}'s surface at {}: {error}", surface_path.display()));
+    std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
+    std::fs::write(payload.join("surface.toml"), &surface).expect("the app's surface");
+    let collection =
+        Collection::from_entries([("surface.toml".to_string(), BlobHash::of(&surface))]);
+    let collection_bytes = collection.encode();
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[19_u8; 32]);
+    let mut signed = SignedRoot::unsigned(
+        BlobHash::of(&manifest),
+        BlobHash::of(&collection_bytes),
+        signing_key.verifying_key().to_bytes(),
+    );
+    // What the root's bytes sign says whether a signature is there, so one is placed before
+    // signing: an installed package's root is signed, and the store reads it as such.
+    signed.signature = Some([0; 64]);
+    signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
+    let signed_bytes = signed.encode();
+    let package = BlobHash::of(&signed_bytes).to_hex();
+    std::fs::write(payload.join("signed-root"), signed_bytes).expect("the package's root");
+    std::fs::write(payload.join("collection.qcl"), &collection_bytes)
+        .expect("the package's collection");
+    (payload, package)
 }
 
 /// The manifest an app of this repository is installed from as one of this machine's stores

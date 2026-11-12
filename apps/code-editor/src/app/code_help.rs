@@ -4,7 +4,6 @@
 //! assistive technology, opens a sheet that says why and offers to try again.
 
 use ui::chrome::status_bar::{StatusReadout, draw_readouts};
-use ui::i18n::I18nManager;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -50,9 +49,9 @@ impl CodeApp {
             return String::new();
         }
         if !self.editor.is_bound() {
-            return I18nManager::lookup_plain("code-editor-code-help-unavailable-any");
+            return crate::resource::CATALOG.t("code-editor-code-help-unavailable-any");
         }
-        I18nManager::format(
+        crate::resource::CATALOG.t_args(
             "code-editor-code-help-unavailable",
             &[("language", self.editor.language().label().into())],
         )
@@ -82,11 +81,11 @@ impl CodeApp {
     pub(super) fn code_help_wording(&self) -> Wording {
         let failure = self.code_help_failure();
         let server = failure.map_or("", LspFailure::server);
-        let said = |key: &str| I18nManager::format(key, &[("server", server.into())]);
+        let said = |key: &str| crate::resource::CATALOG.t_args(key, &[("server", server.into())]);
         let body = match failure {
             Some(LspFailure::NotInstalled { .. }) => {
                 let how = if server == "rust-analyzer" {
-                    I18nManager::lookup_plain("code-editor-code-help-install-rust")
+                    crate::resource::CATALOG.t("code-editor-code-help-install-rust")
                 } else {
                     said("code-editor-code-help-install")
                 };
@@ -100,18 +99,18 @@ impl CodeApp {
             .into_iter()
             .map(|answer| match answer {
                 CodeHelpAnswer::TryAgain => {
-                    Answer::primary(I18nManager::lookup_plain("code-editor-code-help-try-again"))
+                    Answer::primary(crate::resource::CATALOG.t("code-editor-code-help-try-again"))
                 }
-                CodeHelpAnswer::CopyDetails => Answer::secondary(I18nManager::lookup_plain(
-                    "code-editor-code-help-copy-details",
-                )),
+                CodeHelpAnswer::CopyDetails => Answer::secondary(
+                    crate::resource::CATALOG.t("code-editor-code-help-copy-details"),
+                ),
                 CodeHelpAnswer::Close => {
-                    Answer::secondary(I18nManager::lookup_plain("code-editor-code-help-close"))
+                    Answer::secondary(crate::resource::CATALOG.t("code-editor-code-help-close"))
                 }
             })
             .collect();
         Wording {
-            title: I18nManager::lookup_plain("code-editor-code-help-title"),
+            title: crate::resource::CATALOG.t("code-editor-code-help-title"),
             body,
             actions,
             dismissable: true,
@@ -210,9 +209,7 @@ impl CodeApp {
             AccessNode::new(Role::Button)
                 .with_key(ui::a11y::hash_key(&TARGET))
                 .with_name(trouble)
-                .with_description(I18nManager::lookup_plain(
-                    "code-editor-code-help-description",
-                ))
+                .with_description(crate::resource::CATALOG.t("code-editor-code-help-description"))
                 .with_state(AccessState::new().focusable(true))
                 .with_bounds(self.code_help.rect)
                 .with_action_target(TARGET),

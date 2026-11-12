@@ -20,16 +20,14 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
-mod common;
-
 use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
-use tilo_session::mount::indexes::SessionIndexes;
+use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
-use tilo_surface_host::Published;
+use tilo_session_core::door::Published;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -94,7 +92,7 @@ impl Published for Mailbox {
         &mut self,
         address: &ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(
@@ -125,7 +123,7 @@ fn step(session: &mut Session) {
 
 /// Run a frame until `done` , so what a change asked of the session lands.
 fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "the change to land", |session| {
+    crate::common::wait_for(session, "the change to land", |session| {
         done(session).then_some(())
     });
 }
@@ -432,15 +430,15 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
 }
 
 // (4) A text nothing published matches is not dropped and not refused: it is a sentence to the
-// agent the workspace keeps, so the ask conversation stands where the person typed (shell.md §8.1,
-// "Asking from the canvas").
+// agent the workspace keeps, sent as a send-to box sends, and Chat opens the conversation it lands
+// in — nothing stands on the canvas for it (shell.md §8.1, "Asking from the canvas").
 #[test]
 fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let before = arrangement(&session).places.len();
-    let placed = session
+    session
         .invoke(
             "shell:arrangement",
             "place-found",
@@ -449,11 +447,17 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
                 .expect("arguments"),
         )
         .expect("text that names nothing asks the agent");
-    let _ = placed;
+    let sent = crate::common::wait_for(&mut session, "the ask to be sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.last().cloned())
+    });
+    assert_eq!(sent["text"], "nothing is called this", "{sent}");
     assert_eq!(
         arrangement(&session).places.len(),
-        before + 1,
-        "the ask conversation stands where they typed"
+        before,
+        "the ask stands no place of its own"
     );
 }
 
@@ -752,7 +756,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             &mut self,
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_surface_host::Look<'_>,
+            _: &mut tilo_session_core::door::Look<'_>,
         ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
             Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -889,7 +893,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
             &mut self,
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_surface_host::Look<'_>,
+            _: &mut tilo_session_core::door::Look<'_>,
         ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
             Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),

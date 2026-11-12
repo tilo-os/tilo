@@ -380,3 +380,34 @@ fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
         );
     });
 }
+
+/// A failure that moved to the box showing it takes the view out of the children this one
+/// lists, walks and hands out to change at the same time: an action a route addresses by index
+/// reaches the view the walk found, or nothing, never the view that moved away.
+#[test]
+fn a_failure_moved_away_leaves_the_child_lists_agreeing() {
+    let t0 = crate::time::now();
+    let mut view = with_monotonic_time(t0, || {
+        let arriving: Arriving<f32> = Arriving::pending(Source::Local);
+        arriving
+            .view(|height| Box::new(Spacer::fixed(*height)))
+            .shaped(SHAPE)
+    });
+    view.respoken = true;
+    view.reveal.set(Reveal {
+        showing: Showing::Failure,
+        revision: 0,
+        speaks: false,
+    });
+    assert!(view.failure_moved_away());
+    let listed = view.children().len();
+    let mut walked = 0;
+    view.for_each_child(&mut |_| walked += 1);
+    let handed = view.children_mut().len();
+    assert_eq!(listed, handed, "the lists hold the same children");
+    assert_eq!(walked, listed, "the walk visits the children listed");
+    assert_eq!(
+        listed, 0,
+        "the view that moved its failure away is no child here"
+    );
+}

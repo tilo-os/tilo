@@ -25,15 +25,23 @@ impl TopBarChrome {
         t_args("topbar-profile", &[("name", name.into())])
     }
 
-    /// The faces in the people control, one named image each, then the "+N" chip for those beyond
-    /// them. Keyed by the roster id, so a reader's place survives someone arriving or leaving.
+    /// The faces in the people control, one named control each, then the "+N" chip for those
+    /// beyond them. Keyed by the roster id, so a reader's place survives someone arriving or
+    /// leaving, and each stands where the pointer reaches it: a reader presses a face where a
+    /// person does, and it opens that person's card.
     pub(super) fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        let mut faces: Vec<AccessNode> = self
-            .collaborator_names
+        // A bar not drawn yet stands the first few of everyone, as a wide bar does.
+        let drawn: Vec<usize> = if self.face_rects.is_empty() {
+            (0..self.faces_shown).collect()
+        } else {
+            self.shown_faces.clone()
+        };
+        let mut faces: Vec<AccessNode> = drawn
             .iter()
             .enumerate()
-            .map(|(index, name)| {
+            .filter_map(|(drawn, &index)| {
+                let name = self.collaborator_names.get(index)?;
                 let name = if self
                     .collaborator_agents
                     .get(index)
@@ -44,27 +52,28 @@ impl TopBarChrome {
                 } else {
                     name.clone()
                 };
-                let mut face = AccessNode::new(Role::Image)
+                let id = self.collaborator_ids.get(index).map_or("", String::as_str);
+                let mut face = AccessNode::new(Role::Button)
                     .with_name(name)
-                    .with_hashed_key((
-                        "topbar-face",
-                        self.collaborator_ids.get(index).map_or("", String::as_str),
-                    ));
-                if let Some(rect) = self.face_rects.get(index) {
+                    .with_action_target(format!("{}{id}", Self::FACE_TARGET))
+                    .with_hashed_key(("topbar-face", id));
+                if let Some(rect) = self.face_rects.get(drawn) {
                     face = face.with_bounds(*rect);
                 }
-                face
+                Some(face)
             })
             .collect();
         if self.collaborator_overflow > 0 {
-            faces.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(t_args(
-                        "topbar-faces-more",
-                        &[("count", self.collaborator_overflow.into())],
-                    ))
-                    .with_hashed_key("topbar-faces-more"),
-            );
+            let mut more = AccessNode::new(Role::StaticText)
+                .with_name(t_args(
+                    "topbar-faces-more",
+                    &[("count", self.collaborator_overflow.into())],
+                ))
+                .with_hashed_key("topbar-faces-more");
+            if !self.people_count_rect.is_zero_area() {
+                more = more.with_bounds(self.people_count_rect);
+            }
+            faces.push(more);
         }
         faces
     }
@@ -342,9 +351,10 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// The person's own avatar, ending at `right_x` , in their colour with their initials; returns
-    /// where the controls before it end. It opens their profile card, so it is set apart from the
-    /// others' stack.
+    /// The person's own avatar, ending at `right_x` : their face as everyone here sees it, drawn by
+    /// the one face painter the others' faces use ([`ui::presence::FaceStack::BAR`]), so it has
+    /// the same size, the same ring in their colour and the same initials. It opens their own
+    /// menu. Returns where the controls before it end.
     pub(super) fn draw_own_avatar(
         &mut self,
         scene: &mut Scene,
@@ -358,24 +368,20 @@ impl TopBarChrome {
             self.own_avatar_rect = Rect::ZERO;
             return right_x;
         };
-        let side = BAR_CONTROL_PX;
-        let chip = Rect::new(
-            right_x - side,
-            center_y - side / 2.0,
-            right_x,
-            center_y + side / 2.0,
-        );
         let (r, g, b) = own.rgb;
-        ui::widget::AvatarFace::new(&own.name, &own.identity)
-            .presence(Color::from_rgb8(r, g, b))
-            .ringed_on(theme.tokens.colors.surfaces.base)
-            .paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                chip,
-            );
-        self.own_avatar_rect = chip;
-        self.draw_avatar_ask_dot(scene, transform, theme);
-        chip.x0 - f64::from(theme.tokens.spacing.s3)
+        let face = ui::presence::Face::new(&own.name, &own.identity, Color::from_rgb8(r, g, b));
+        let stack = ui::presence::FaceStack::BAR;
+        let (rects, _) = stack.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (right_x, center_y),
+            (&[face], 0),
+            theme.tokens.colors.surfaces.base,
+        );
+        self.own_avatar_rect = Self::faces_drawn(rects)
+            .first()
+            .copied()
+            .unwrap_or(Rect::ZERO);
+        right_x - stack.width_of(1, 0) - f64::from(theme.tokens.spacing.s2)
     }
 
     /// Paint an explicit, persistent disclosure beside the roster. An eye plus a count is retained
@@ -424,7 +430,7 @@ impl TopBarChrome {
             self.sharing_indicator_rect,
             tokens.colors.surfaces.base,
         );
-        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s2)
     }
 
     /// A quiet offer to continue the tab another of this person's devices just moved to, left of
@@ -490,35 +496,4 @@ pub(super) struct FaceLook {
     pub(super) call: Option<f32>,
     /// A wave's bounce (1 at rest).
     pub(super) scale: f64,
-}
-
-/// Cursor and avatar colours for a workspace, settled over the whole roster so a peer's avatar
-/// matches the colour their cursor is drawn in elsewhere. An explicit `cursor_color` outranks
-/// anything computed; the local user takes part in the settlement (never the avatar stack) so every
-/// host agrees.
-pub(super) fn roster_colors(
-    roster: &[tilo_desktop_model::Collaborator],
-    local: &str,
-) -> HashMap<String, (u8, u8, u8)> {
-    let explicit: HashMap<_, _> = roster
-        .iter()
-        .filter_map(|c| {
-            c.cursor_color
-                .as_deref()
-                .and_then(ui::presence::parse_hex_color)
-                .map(|rgb| (c.id.clone(), rgb))
-        })
-        .collect();
-    let mut ids: Vec<_> = roster
-        .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !local.is_empty() && !explicit.contains_key(local) {
-        ids.push(local);
-    }
-    let mut assigned =
-        ui::presence::assign_peer_colors(&ids, &explicit.values().copied().collect::<Vec<_>>());
-    assigned.extend(explicit);
-    assigned
 }

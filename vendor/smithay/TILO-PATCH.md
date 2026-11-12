@@ -11,6 +11,11 @@ compiles, the manifest as shipped minus its example and bench targets, the
 license and README. Examples, benches, anvil, CI files and the changelog stay
 upstream.
 
+The backends no Tilo crate builds are left out too: the X11 backend
+(`backend_x11`), Vulkan (`backend_vulkan`, its allocator included) and the
+glow renderer (`renderer_glow`), with their features and the `ash` and `glow`
+dependencies only they used.
+
 ## Warning-free on the workspace toolchain
 
 A path dependency's warnings are not capped like a registry crate's, and CI
@@ -103,6 +108,24 @@ whether it changed since it was looked at.
 Remove this once a smithay release keeps committed text-input state,
 including the cursor rectangle, or exposes what the focused field declared
 and where its caret is.
+
+## A focused field is entered without an input method (`text-input-v3`)
+
+smithay entered a client's text-input only while an input method ran and
+discarded every text-input request otherwise, so on a machine with no IME or
+on-screen keyboard no field ever reported its caret or content type, and
+nothing the compositor places at the caret could find it.
+
+- `src/wayland/seat/keyboard.rs`: keyboard `enter`/`leave` always send
+  `enter`/`leave` to the surface's text-inputs.
+- `src/wayland/text_input/mod.rs`: a text-input made while its client has the
+  keyboard is entered on its own, not by re-entering the client's others.
+- `src/wayland/text_input/text_input_handle.rs`: requests are tracked whether
+  or not an input method runs; what goes to the method still needs one.
+- `src/wayland/input_method/input_method_handle.rs`: an input method that
+  goes away leaves the focused field entered.
+
+Remove this once smithay enters text-inputs on keyboard focus alone.
 
 ## A toplevel icon outlives the objects that carried it (`xdg_toplevel_icon_v1`)
 
@@ -267,3 +290,26 @@ would paint it with two channels swapped.
   texture that carries it, in both import paths.
 
 Remove this once upstream maps the opaque 10-bit RGB formats.
+
+## A copy made just before the keyboard left is kept (`wl_data_device`, primary selection)
+
+smithay took a selection only from the client holding the keyboard. The
+compositor takes the keys from a client while a surface of its own is typed
+into, so a copy whose request arrived after that (Ctrl+C, then a key that
+opens such a surface at once) was dropped. `src/input/keyboard/mod.rs`
+remembers the focus the keyboard last left for no one and that leave's serial;
+`src/wayland/seat/keyboard.rs` `client_of_object_may_set_selection` also takes
+a selection from that client for an event serial before the leave, and both
+`SetSelection` requests ask it.
+
+## A read-back frees the read-backs dropped before it (GLES)
+
+A dropped `GlesMapping` only queues its pixel buffer for deletion, and the
+queue was drained when a frame finished. A compositor that reads its display
+back while it draws nothing (a capture, a screenshot of a still desktop) kept
+every read-back's buffer, a whole display of pixels each.
+`src/backend/renderer/gles/mod.rs` `copy_framebuffer` and `copy_texture` drain
+the queue (`cleanup`) before they read, so at most the mappings still held
+stand.
+
+Remove this once upstream frees dropped mappings outside a frame.

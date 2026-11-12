@@ -1217,9 +1217,8 @@ fn validate_string_schema(
             .ok_or_else(|| "has a non-string schema format".to_string())?;
         let valid = match format {
             "date-time" => looks_like_rfc3339(text),
-            "date" => {
-                text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
-            }
+            // RFC 3339's full-date is the date of a date-time.
+            "date" => text.len() == 10 && looks_like_rfc3339(&format!("{text}T00:00:00Z")),
             "uuid" => uuid::Uuid::parse_str(text).is_ok(),
             "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
                 !scheme.is_empty()
@@ -1352,11 +1351,19 @@ fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
     param
         .schema
         .as_deref()
-        .and_then(|schema| schema.get("oneOf"))
+        .is_some_and(|schema| has_alternative(schema, json_type))
+}
+
+/// Whether one of `schema`'s alternatives, or theirs (an optional value's
+/// alternatives), is of `json_type`.
+fn has_alternative(schema: &serde_json::Value, json_type: &str) -> bool {
+    schema
+        .get("oneOf")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|alternatives| {
             alternatives.iter().any(|alternative| {
                 alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+                    || has_alternative(alternative, json_type)
             })
         })
 }

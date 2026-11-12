@@ -56,10 +56,10 @@ chrome() {
 
 case $group in
   fs)
-    cargo test --locked -p tilo-fs --test performance_timing --test document_media_footprint --no-run
+    cargo test --locked -p tilo-fs --test it --test document_media_footprint --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test performance_timing -- --nocapture --test-threads=1 \
+      TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test it performance_timing:: -- --nocapture --test-threads=1 \
         2> "$out/fs-gate-$run.log" || status=$?
       TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
         2>> "$out/fs-gate-$run.log" || status=$?
@@ -204,7 +204,7 @@ case $group in
     chrome
     env_json release swiftshader kvm > "$out/env.json"
     node scripts/perf/browser_qualification.mjs "$bundle" --out "$out/browser.json" \
-      --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --typing-keys 16 --viewport 960x540 \
+      --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --typing-keys 16 --scroll-steps 24 --viewport 960x540 \
       --expect-revision "$(git rev-parse HEAD)" | tee "$out/browser-summary.txt"
     python3 tools/perf/adapters.py browser-qualification --env-json "$out/env.json" "$out/browser.json" \
       > "$out/browser.jsonl"

@@ -17,10 +17,14 @@ decisions are unit-tested here on the records the Forgejo API returns, and
 simulated against a steady stream of pushes, which is what main is.
 """
 from pathlib import Path
+import contextlib
 import datetime
 import heapq
 import importlib.util
+import io
+import os
 import unittest
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo/workflows"
@@ -28,8 +32,6 @@ PUBLISHING = (
     "release-apps.yml",
     "release-imager.yml",
     "release-desktop.yml",
-    "build-kernel.yml",
-    "build-rpms.yml",
     "build-env-runtime.yml",
     "build-env-tools.yml",
 )
@@ -69,28 +71,40 @@ class MainIsNotGated(unittest.TestCase):
                 self.assertNotIn("pull_request", on)
                 self.assertRegex(on, r"(?m)^  workflow_dispatch:")
 
-    def test_both_gates_hand_their_one_verdict_out_the_same_way(self):
-        # A whole-tree lint at a later commit says everything an earlier one
-        # could, and one window of checks at a time is what the runners carry.
-        # Both workflows decide who runs with tools/ci/push_window.py rather
-        # than the forge's `concurrency:`, which cancelled the waiting runs
-        # instead of letting one of them start.
-        for name, marker in (("check.yml", "select"), ("lint.yml", "policy")):
-            with self.subTest(workflow=name):
-                text = workflow(name)
-                self.assertNotIn("\nconcurrency:\n", text)
-                supersede = block(text, "supersede", 2)
-                self.assertIn("tools/ci/push_window.py", supersede)
-                self.assertIn(f"WORKFLOW: {name}", supersede)
-                self.assertIn(f"MARKER_JOB: {marker}", supersede)
-                self.assertIn("superseded: ${{ steps.window.outputs.superseded }}",
-                              supersede)
-                for job in ("policy", "lints") if name == "lint.yml" else ("builder", "select"):
-                    with self.subTest(job=job):
-                        body = block(text, job, 2)
-                        self.assertIn("needs: [supersede]", body)
-                        self.assertIn("if: needs.supersede.outputs.superseded != 'true'",
-                                      body)
+    def test_check_hands_its_window_out_through_the_push_window(self):
+        # One window of checks at a time is what the runners carry; the decision
+        # is tools/ci/push_window.py's. Without an explicit
+        # `cancel-in-progress: false` the forge cancels every unfinished push run
+        # on main at the next push, holder included, and a group wider than one
+        # commit would queue runs behind each other.
+        text = workflow("check.yml")
+        concurrency = block(text, "concurrency")
+        self.assertIn("cancel-in-progress: false", concurrency)
+        self.assertIn("-${{ github.sha }}", concurrency)
+        supersede = block(text, "supersede", 2)
+        self.assertIn("tools/ci/push_window.py", supersede)
+        self.assertIn("WORKFLOW: check.yml", supersede)
+        self.assertIn("MARKER_JOB: select", supersede)
+        self.assertIn("superseded: ${{ steps.window.outputs.superseded }}", supersede)
+        for job in ("builder", "select"):
+            with self.subTest(job=job):
+                body = block(text, job, 2)
+                self.assertIn("needs: [supersede]", body)
+                self.assertIn("if: needs.supersede.outputs.superseded != 'true'", body)
+
+    def test_every_push_gets_its_own_lint_verdict(self):
+        # The format, commit-message and unused-dependency gates check the
+        # commits the push added (`github.event.before`): a push whose run was
+        # stood in for by another would never have them checked.
+        text = workflow("lint.yml")
+        concurrency = block(text, "concurrency")
+        self.assertIn("cancel-in-progress: false", concurrency)
+        self.assertIn("-${{ github.sha }}", concurrency)
+        self.assertNotIn("push_window.py", text)
+        self.assertNotIn("supersede", text)
+        for job in ("policy", "lints"):
+            with self.subTest(job=job):
+                self.assertNotIn("needs:", block(text, job, 2))
 
     def test_a_push_that_cannot_open_the_window_skips_its_jobs(self):
         # A run that never reached a runner is superseded by skipping its jobs:
@@ -104,8 +118,23 @@ class MainIsNotGated(unittest.TestCase):
         self.assertIn("runs-on: runner\n", supersede)
         self.assertNotIn("runner-large", supersede)
         self.assertNotIn("WAIT_SECONDS", supersede)
-        # The aggregate job does not turn a superseded run red.
+        # The aggregate job leaves a superseded run to `untested`.
         self.assertIn("needs.supersede.outputs.superseded != 'true'", block(check, "checks", 2))
+
+    def test_a_superseded_run_never_reads_as_a_success(self):
+        # Skipping every job would leave the run green although it tested
+        # nothing; `untested` cancels it after the jobs it ran for its own head.
+        text = workflow("check.yml")
+        self.assertIn("window: ${{ steps.window.outputs.window }}",
+                      block(text, "supersede", 2))
+        untested = block(text, "untested", 2)
+        self.assertIn("needs: [supersede, web]", untested)
+        self.assertIn("if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}",
+                      untested)
+        self.assertIn("python3 tools/ci/push_window.py --close", untested)
+        self.assertIn("WORKFLOW: check.yml", untested)
+        self.assertIn("WINDOW_RUN: ${{ needs.supersede.outputs.window }}", untested)
+        self.assertIn("HEAD_RESULTS: ${{ needs.web.result }}", untested)
 
     def test_the_plan_starts_where_the_last_window_that_ran_ended(self):
         check = workflow("check.yml")
@@ -249,6 +278,21 @@ class PushWindowTests(unittest.TestCase):
         self.assertEqual(superseding, 0)
         self.assertEqual(holding, 19)
         self.assertEqual(cancelling, [])
+
+    def test_a_holder_whose_later_jobs_wait_for_runners_is_never_cancelled(self):
+        # A window's shards queue for large runners long after its decision and
+        # plan finished; it still holds the window and is nobody's to drop.
+        holder = [{"name": "supersede", "status": "success"},
+                  {"name": "builder", "status": "success"},
+                  {"name": "select", "status": "success"},
+                  {"name": "security", "status": "failure"},
+                  {"name": "wasm", "status": "waiting"},
+                  {"name": "checks", "status": "blocked"},
+                  {"name": "test (x86_64, runner-large)", "status": "waiting"}]
+        runs = [self.record(20, "running"), self.record(19, "running")]
+        superseding, _, holding, cancelling = self.decide(runs, {19: holder})
+        self.assertEqual((superseding, holding, cancelling), (0, 19, []))
+        self.assertFalse(push_window.cancellable(runs[1], holder, "select"))
 
     def test_a_run_that_has_not_decided_yet_also_holds_the_window(self):
         # It may claim the window when its decision lands; starting beside it
@@ -399,6 +443,58 @@ class ReadDepth(unittest.TestCase):
         self.assertEqual(len(requests), 2)
         self.assertEqual(len(runs), push_window.PAGE_SIZE * 2)
 
+
+
+class CloseUntested(unittest.TestCase):
+    """`--close`: a superseded run ends cancelled, or red, and never green."""
+
+    def run_close(self, env, refuse=False):
+        runs = [{"index_in_repo": 20, "id": 1020, "commit_sha": "a" * 40},
+                {"index_in_repo": 19, "id": 1019, "commit_sha": "b" * 40}]
+        cancelled = []
+
+        class Api:
+            token = "token"
+
+            def get(_, path):
+                return {"workflow_runs": runs}
+
+            def cancel(_, run_id, token=None):
+                if refuse:
+                    raise urllib.error.HTTPError("", 403, "forbidden", {}, io.BytesIO())
+                cancelled.append(run_id)
+
+        saved_env = dict(os.environ)
+        saved_api = push_window.api_from_environment
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        os.environ.update({"RUN_NUMBER": "20", "WINDOW_RUN": "23"}, **env)
+        push_window.api_from_environment = Api
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = push_window.close()
+        finally:
+            push_window.api_from_environment = saved_api
+            os.environ.clear()
+            os.environ.update(saved_env)
+        return code, cancelled, out.getvalue()
+
+    def test_the_run_cancels_itself_and_names_the_window(self):
+        code, cancelled, out = self.run_close({"HEAD_RESULTS": "success"})
+        self.assertEqual(cancelled, [1020])
+        self.assertIn("run #23 measures these commits", out)
+        # Should the forge still take this job's result, it is a failure.
+        self.assertEqual(code, 1)
+
+    def test_a_failed_head_job_keeps_the_run_red(self):
+        # Cancelling would hide the failure: a cancelled run reads as
+        # cancelled whatever its jobs found.
+        code, cancelled, _ = self.run_close({"HEAD_RESULTS": "failure"})
+        self.assertEqual((code, cancelled), (1, []))
+
+    def test_a_refused_cancellation_fails_the_run(self):
+        code, cancelled, out = self.run_close({}, refuse=True)
+        self.assertEqual((code, cancelled), (1, []))
+        self.assertIn("cannot cancel itself", out)
 
 class SteadyPushRate(unittest.TestCase):
     """Main opens a window at any push rate, not only when the pushes pause.

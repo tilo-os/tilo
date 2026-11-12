@@ -5,3 +5,57 @@ kind = "passwords.vault"
 label = "Password vault"
 version = 1
 
+[[resources.verbs]]
+id = "deny-access"
+kind = "read"
+params = [
+  { name = "proposal", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "read"
+
+[[resources.verbs]]
+id = "list-logins"
+kind = "read"
+
+[[resources.verbs]]
+id = "cancel"
+kind = "read"
+
+[[resources.verbs]]
+id = "copy"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "copy-identity"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "copy-origins"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "reveal"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "filter"
+kind = "read"
+params = [
+  { name = "filter", type = "text", required = true },
+]
+

@@ -81,13 +81,18 @@ label = "Copy used by source is in every shipped catalogue"
 run = "python3 tools/policy/check_app_copy.py"
 
 [[step]]
+name = "app-copy-resolution"
+label = "App copy resolves through the app's catalogue"
+run = "python3 tools/policy/check_app_copy_resolution.py"
+
+[[step]]
 name = "copy-language"
 label = "Copy follows the house language and glossary"
 run = "python3 tools/policy/check_copy_language.py"
 
 [[step]]
 name = "catalogue-coverage"
-label = "Every translation says every word of its source catalogue"
+label = "Every translation says every word of its source catalogue, and each generated registry names its messages"
 run = "python3 tools/policy/check_catalogue_coverage.py"
 
 [[step]]
@@ -136,6 +141,11 @@ label = "Live rows are items of declared resource types"
 run = "python3 tools/policy/check_live_rows.py"
 
 [[step]]
+name = "widget-html"
+label = "Every widget renders itself as HTML too; the default only shrinks"
+run = "python3 tools/policy/check_widget_html.py"
+
+[[step]]
 name = "host-data-apps"
 label = "Apps that show the machine declare it and are captured only from scenarios"
 run = "python3 tools/policy/check_host_data_apps.py"
@@ -144,6 +154,11 @@ run = "python3 tools/policy/check_host_data_apps.py"
 name = "app-resource-action-contract"
 label = "Application resource/action contract"
 run = "python3 tools/policy/check_app_resource_action_contract.py"
+
+[[step]]
+name = "app-record-reads"
+label = "Every record an app publishes answers a read"
+run = "python3 tools/policy/check_app_record_reads.py"
 
 [[step]]
 name = "atspi-endpoint-contract"
@@ -177,7 +192,7 @@ run = "python3 tools/policy/check_kernel_dev_build.py"
 
 [[step]]
 name = "dev-overrides-contract"
-label = "Dev-override features stay out of production images"
+label = "Dev overrides stay out of production images, and every documented control is read"
 run = "python3 tools/policy/check_dev_overrides_contract.py"
 
 [[step]]
@@ -189,6 +204,16 @@ run = "python3 tools/policy/check_ui_host_inputs_contract.py"
 name = "ui-clock-contract"
 label = "UI clock contract"
 run = "python3 tools/policy/check_ui_clock_contract.py"
+
+[[step]]
+name = "clock-contract"
+label = "Trust-bearing crates read time through tilo_clock"
+run = "python3 tools/policy/check_clock_contract.py"
+
+[[step]]
+name = "loop-never-blocks"
+label = "The session's loop never waits on async work"
+run = "python3 tools/policy/check_loop_never_blocks.py"
 
 [[step]]
 name = "no-transient-cards"

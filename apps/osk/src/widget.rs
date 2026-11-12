@@ -342,6 +342,10 @@ pub struct OskWidget {
     /// What the keyboard learned from this person, as last presented.
     learned: std::rc::Rc<Learned>,
 
+    /// The person put the keyboard away with its Dismiss, for the session to hear: it decides
+    /// whether the keyboard belongs on screen, so hiding it here alone would not last the next
+    /// reading.
+    dismissed: bool,
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
     /// while a text input is focused and hides it otherwise, and relays that
@@ -472,6 +476,7 @@ impl OskWidget {
             forget_learned: false,
             learned: std::rc::Rc::default(),
             visible: true,
+            dismissed: false,
             fill_surface: false,
             parked: false,
         };
@@ -546,7 +551,7 @@ impl OskWidget {
         self.toolbar.push(OskToolbarItem::new(
             "dismiss",
             Some(ui::icons::Icon::ChevronDown),
-            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+            &crate::i18n::t("osk-toolbar-dismiss"),
             OskToolbarAction::Dismiss,
         ));
         self.structure_dirty = true;
@@ -698,6 +703,11 @@ impl OskWidget {
     /// Drain the log of toolbar actions.
     pub fn take_toolbar_actions(&mut self) -> Vec<OskToolbarAction> {
         self.toolbar_log.drain(..).collect()
+    }
+
+    /// Whether the person put the keyboard away since the host last looked.
+    pub fn take_dismissed(&mut self) -> bool {
+        std::mem::take(&mut self.dismissed)
     }
 
     /// Bytes that could not fit in the bounded diagnostic text mirror. Live
@@ -1180,15 +1190,11 @@ impl OskWidget {
                     && self.context_generation == Some(*generation);
                 self.context_error = if admitted {
                     self.context_handler.as_mut().map_or_else(
-                        || {
-                            Some(ui::i18n::I18nManager::lookup_plain(
-                                "osk-context-unavailable",
-                            ))
-                        },
+                        || Some(crate::i18n::t("osk-context-unavailable")),
                         |handler| handler(*generation, *slot).err(),
                     )
                 } else {
-                    Some(ui::i18n::I18nManager::lookup_plain("osk-context-stale"))
+                    Some(crate::i18n::t("osk-context-stale"))
                 };
             }
             OskToolbarAction::Key(symbol) => {
@@ -1216,6 +1222,9 @@ impl OskWidget {
             OskToolbarAction::Dismiss => {
                 self.finish_editing_word();
                 self.set_visible(false);
+                // The session decides whether the keyboard belongs on screen: it hears this and
+                // stops saying it does, so the next reading does not bring it back.
+                self.dismissed = true;
             }
             OskToolbarAction::Park => {
                 self.finish_editing_word();

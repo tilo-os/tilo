@@ -164,6 +164,7 @@ fn tilo_desk(build_box: &str) -> TiloDesk {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],
+                browser_pages: true,
                 ..Grant::default()
             }],
             ..Door::default()
@@ -227,6 +228,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frame.render_png(&path);
                 println!("{}", path.display());
             }
+            // Taking an agent's grant back cannot be undone, so its Revoke asks first, at the
+            // control, naming what the agent loses: pressed where a reader or a script finds it,
+            // which also says the control is where the tree says it is.
+            let revoke = frame
+                .a11y_nodes()
+                .into_iter()
+                .find_map(|(_, node)| {
+                    let label = node.label()?;
+                    let bounds = node.bounds()?;
+                    label.starts_with("Revoke: ").then_some(bounds)
+                })
+                .expect("the agent's row offers Revoke");
+            frame.click_at(
+                f64::midpoint(revoke.x0, revoke.x1),
+                f64::midpoint(revoke.y0, revoke.y1),
+            );
+            for _ in 0..30 {
+                frame.relayout();
+                if !frame.poll_frame().expect("a frame draws the overview") {
+                    break;
+                }
+            }
+            let path = output.join(format!("ask-{size}-{theme_name}.png"));
+            frame.render_png(&path);
+            println!("{}", path.display());
         }
     }
     Ok(())

@@ -8,7 +8,11 @@
 use std::collections::BTreeMap;
 
 use tilo_document::RichText;
-use ui::tilo_resource::{self, Model, Refusal};
+use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
+use ui::tilo_resource::{self, Demand, Doc, Id, Model, ModelError, Refusal, SearchEntry};
+
+use crate::record::Chat;
 
 /// The person's unsent messages, by channel or thread.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -18,7 +22,13 @@ pub struct ChatDrafts {
     pub drafts: BTreeMap<String, RichText>,
 }
 
-#[ui::tilo_resource::resource(kind = "chat.drafts", label = "Chat drafts", params = drafts)]
+#[ui::tilo_resource::resource(
+    kind = "chat.drafts",
+    label = "Chat drafts",
+    params = drafts,
+    search = ChatDrafts::search,
+    load = ChatDrafts::load_drafts,
+)]
 impl ChatDrafts {
     /// Start a draft.
     ///
@@ -33,6 +43,51 @@ impl ChatDrafts {
             return Err(Refusal::new("a draft is kept under its channel or thread"));
         }
         self.drafts.entry(key).or_default();
+        Ok(())
+    }
+
+    /// What search finds in the person's drafts: the words they have not
+    /// sent, opening the conversation they are writing in.
+    ///
+    /// The record is theirs, not the workspace's, and it is read like any
+    /// other record: a device that never opened Chat finds the draft in it,
+    /// and one they send stops being found with it.
+    #[must_use]
+    pub fn search(&self) -> Vec<SearchEntry> {
+        self.drafts
+            .iter()
+            .filter_map(|(key, draft)| {
+                // A thread's draft is keyed `channel::t::message`; the
+                // channel's row opens the conversation it is written in.
+                let channel = key.split_once("::").map_or(key.as_str(), |(at, _)| at);
+                let line = line(&draft.text())?;
+                let anchor =
+                    item_resource_id::<Chat>("channels", &Id::from_raw(channel.to_owned()));
+                let place = IndexPerson {
+                    name: String::new(),
+                    anchor: anchor.clone(),
+                    identity: channel.to_owned(),
+                    agent: false,
+                };
+                Some(
+                    SearchEntry::new(line, "")
+                        .anchored(anchor)
+                        .of_kind(IndexKind::Message)
+                        .with_icon("pencil")
+                        .in_place(place),
+                )
+            })
+            .collect()
+    }
+
+    /// The words of every draft, read from `doc`: a draft is nothing but what
+    /// the person typed, so a read of the record reads them however little of
+    /// it the reader asked for — its order says nothing without them.
+    fn load_drafts(&mut self, doc: &Doc, _demand: &Demand) -> Result<(), ModelError> {
+        let whole = Demand::range(0..usize::MAX);
+        for draft in self.drafts.values_mut() {
+            draft.demand(doc, &whole)?;
+        }
         Ok(())
     }
 }
@@ -84,5 +139,32 @@ mod tests {
             "half a thought"
         );
         assert_eq!(ada.state().unwrap().drafts.len(), 2);
+    }
+
+    /// A draft is found by the words that were typed, opening the conversation it is written in.
+    #[test]
+    fn the_words_not_yet_sent_are_found() {
+        let mut ada = Replica::<ChatDrafts>::new().as_author("u_ada");
+        let append = ChatDrafts::paths()
+            .drafts
+            .key("c_general")
+            .perform(&tilo_document::RichTextAction::AppendParagraph {
+                text: "see you at 8".into(),
+            })
+            .unwrap();
+        ada.apply(Invoke::edit(&append).unwrap()).unwrap();
+
+        let entries = ada.live().expect("the draft reads").search();
+        assert_eq!(entries.len(), 1, "one draft, one entry: {entries:?}");
+        assert!(
+            entries[0].title.ends_with("see you at 8"),
+            "{}",
+            entries[0].title
+        );
+        assert_eq!(
+            entries[0].anchor.as_deref(),
+            Some("chat.workspace/channels/c_general"),
+            "the conversation it is written in"
+        );
     }
 }

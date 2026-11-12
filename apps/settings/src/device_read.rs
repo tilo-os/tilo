@@ -290,15 +290,11 @@ pub type Work = Box<dyn FnOnce() -> Erased + Send>;
 /// background work. Every off-thread read and change of Settings goes
 /// through here, so the spawn and the channel are compiled once.
 fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let wake = ui::WakeHandle::new();
+    // The window's report-back channel: the result wakes the pane that
+    // asked for it, before it can be received and once it can.
+    let (sender, receiver) = ui::wake::waking_channel();
     let job: Box<dyn FnOnce() + Send> = Box::new(move || {
-        let result = work();
-        // Announced before it can be received, and again once it can: a
-        // frame that takes the result always has a wake to answer for it.
-        wake.wake();
-        let _ = sender.send(result);
-        wake.wake();
+        let _ = sender.send(work());
     });
     ui::background::Background::current()
         .spawn("settings device work", job)
@@ -312,10 +308,7 @@ fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
 /// start-up and its result plumbing are compiled once for every thread
 /// Settings starts, rather than once per closure (about a kilobyte each).
 pub fn thread(name: &str, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name(name.to_owned())
-        .spawn(job)
-        .map(drop)
+    tilo_rt::spawn_thread(name, job).map(drop)
 }
 
 /// Blocking work running off the UI thread for a model, which takes its

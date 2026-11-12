@@ -14,9 +14,10 @@
 //! next takes [`Openings::open`]. Until then the ask stays pending, so a window shows its open as
 //! in progress, then done or refused, exactly as with a broker.
 //! The session also serves the workspace's activity, as a native session's broker does
-//! (`activity`), and carries the person's own asks of their agent door
-//! ([`agent_door::PROVIDER`]) to the door the desktop's host hands it
-//! ([`DesktopSession::serve_agent_door`]): the person's host, on a page.
+//! (`activity`), and carries the person's own asks of what only they reach
+//! (their agent door, [`agent_door::PROVIDER`], and their devices,
+//! [`identity_admin::PROVIDER`]) to the door the desktop's host hands it for
+//! each ([`DesktopSession::serve_person_door`]): the person's host, on a page.
 
 mod activity;
 #[cfg(test)]
@@ -24,7 +25,7 @@ mod agent_door_tests;
 
 pub use activity::{ActivityAsk, ActivityReads, ActivityRequests, activity_requests};
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -33,36 +34,20 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, agent_door, application_provider,
-    application_provider_record, pending, provider_workspace, workspace_activity as wire,
+    application_provider_record, identity_admin, pending, provider_workspace,
+    workspace_activity as wire,
 };
 use tilo_actions::{ActorKind, InvocationId};
 
 use tilo_lock::MutexRecover as _;
+
+use tilo_desktop_search::record_launch;
 
 use crate::DesktopHandle;
 use crate::navigation::ChromeEffect;
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
-
-/// The launch a [`crate::TileSource`] reads as opening `app` on its record `record` :
-/// `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]).
-pub const RECORD_LAUNCH: &str = "record:";
-
-/// The launch that opens `app` on its record `record` .
-#[must_use]
-pub fn record_launch(app: &str, record: &str) -> String {
-    format!("{RECORD_LAUNCH}{app}:{record}")
-}
-
-/// The app and record a [`record_launch`] names, or `None` for a plain launch.
-#[must_use]
-pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
-    launch
-        .strip_prefix(RECORD_LAUNCH)?
-        .split_once(':')
-        .filter(|(app, record)| !app.is_empty() && !record.is_empty())
-}
 
 /// The launch a [`crate::TileSource`] reads as opening `app` with the content whose hash is `hash`
 /// : `{CONTENT_LAUNCH}{app}:{hash}` ([`content_launch`]).
@@ -81,15 +66,7 @@ pub fn launched_content(launch: &str) -> Option<(&str, &str)> {
     launch
         .strip_prefix(CONTENT_LAUNCH)?
         .split_once(':')
-        .filter(|(app, hash)| !app.is_empty() && content_hash(hash))
-}
-
-/// Whether `hash` is a content address: 64 lowercase hex digits.
-fn content_hash(hash: &str) -> bool {
-    hash.len() == 64
-        && hash
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        .filter(|(app, hash)| !app.is_empty() && ui::content::valid_reference(hash))
 }
 
 /// An app a window asked to open, on one of its records, with content, or on its own, waiting for
@@ -181,6 +158,10 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
     })
 }
 
+/// The providers only the person reaches, each served by a door the
+/// desktop's host hands the session ([`DesktopSession::serve_person_door`]).
+pub const PERSON_PROVIDERS: [&str; 2] = [agent_door::PROVIDER, identity_admin::PROVIDER];
+
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It
 /// serves only what the desktop itself does: opening an app as a window of this desktop.
 pub struct DesktopSession {
@@ -188,10 +169,12 @@ pub struct DesktopSession {
     asked: Asked,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
     activity: Arc<activity::Door>,
-    /// Where the person's asks of their agent door go, once the host has one.
-    agent_door: std::sync::Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
-    /// The invocations admitted there, which it answers for.
-    door_invocations: std::sync::Mutex<HashSet<InvocationId>>,
+    /// Where the person's asks of each provider only they reach go, once the
+    /// host serves one.
+    person_doors: std::sync::Mutex<HashMap<String, Arc<dyn ActionHost + Send + Sync>>>,
+    /// The invocations a person's door admitted, and that door, which
+    /// answers for them.
+    door_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
     woken: Arc<AtomicBool>,
 }
 
@@ -237,7 +220,7 @@ pub fn serve(
             asked: Arc::clone(&asked),
             nodes: Arc::clone(&nodes),
             activity: Arc::clone(&activity),
-            agent_door: std::sync::Mutex::default(),
+            person_doors: std::sync::Mutex::default(),
             door_invocations: std::sync::Mutex::default(),
             woken,
         }),
@@ -251,22 +234,22 @@ pub fn serve(
 }
 
 impl DesktopSession {
-    /// Carry the person's asks of their agent door to `door` from now on.
-    pub fn serve_agent_door(&self, door: Arc<dyn ActionHost + Send + Sync>) {
-        *self.agent_door.lock_recover() = Some(door);
+    /// Carry the person's asks of `provider`, one only they reach
+    /// ([`PERSON_PROVIDERS`]), to `door` from now on.
+    pub fn serve_person_door(&self, provider: &str, door: Arc<dyn ActionHost + Send + Sync>) {
+        self.person_doors
+            .lock_recover()
+            .insert(provider.to_owned(), door);
     }
 
-    /// The agent door, when `id` is an invocation it admitted.
+    /// The person's door that admitted `id`, when one did.
     fn door_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionHost + Send + Sync>> {
-        if !self.door_invocations.lock_recover().contains(id) {
-            return None;
-        }
-        self.agent_door.lock_recover().clone()
+        self.door_invocations.lock_recover().get(id).cloned()
     }
 
-    /// Ask the agent door `request` for `caller`: the person themselves,
-    /// never an agent or an app acting for them.
-    fn ask_agent_door(
+    /// Ask the person's door for `request`'s provider for `caller`: the
+    /// person themselves, never an agent or an app acting for them.
+    fn ask_person_door(
         &self,
         caller: &Caller,
         request: InvokeRequest,
@@ -274,14 +257,23 @@ impl DesktopSession {
         if caller.actor().kind != ActorKind::Person {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let Some(door) = self.agent_door.lock_recover().clone() else {
+        let door = self
+            .person_doors
+            .lock_recover()
+            .get(&request.target.provider)
+            .cloned();
+        let Some(door) = door else {
             return Pending::ready(Err(ActionHostError::Unavailable {
-                reason: "No agent door answers here".into(),
+                reason: if request.target.provider == agent_door::PROVIDER {
+                    "No agent door answers here".into()
+                } else {
+                    "Your devices can't be reached from here".into()
+                },
             }));
         };
         self.door_invocations
             .lock_recover()
-            .insert(request.invocation);
+            .insert(request.invocation, Arc::clone(&door));
         door.invoke(caller, request)
     }
 
@@ -321,7 +313,9 @@ impl DesktopSession {
         // (`ApplicationLaunch::argument`).
         match &request.argument {
             InvokeArgument::None => Ok((app, None, None)),
-            InvokeArgument::Text(hash) if content_hash(hash) => Ok((app, None, Some(hash))),
+            InvokeArgument::Text(hash) if ui::content::valid_reference(hash) => {
+                Ok((app, None, Some(hash)))
+            }
             _ => Err(ActionHostError::Refused {
                 reason: "That isn't something an app can open".into(),
             }),
@@ -376,8 +370,8 @@ impl ActionHost for DesktopSession {
             }
             return self.activity.invoke(caller, request);
         }
-        if request.target.provider == agent_door::PROVIDER {
-            return self.ask_agent_door(caller, request);
+        if PERSON_PROVIDERS.contains(&request.target.provider.as_str()) {
+            return self.ask_person_door(caller, request);
         }
         if let Some(node) = request
             .target

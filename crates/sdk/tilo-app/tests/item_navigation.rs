@@ -131,29 +131,7 @@ fn framework_item_view_opens_exact_owner_item_in_live_ui() {
     assert!(!targets.contains_key(&format!("shown-page-{first_id}")));
     // Exact Widget metadata links this freshly published item address to
     // its control. Presence painting is narration, not another invocation.
-    let interaction = tilo_actions::SemanticInteraction {
-        version: tilo_actions::INTERACTION_VERSION,
-        invocation: tilo_actions::InvocationId::new(),
-        sequence: 1,
-        actor: tilo_actions::InteractionActor {
-            id: "page-agent".into(),
-            kind: tilo_actions::ActorKind::Agent,
-            for_person: Some("page-owner".into()),
-        },
-        phase: tilo_actions::InteractionPhase::Applying,
-        action: tilo_actions::InteractionAction {
-            id: "open".into(),
-            label: "Open".into(),
-            app: None,
-        },
-        resource: tilo_actions::ActionResource {
-            id: second.id.0.clone(),
-            kind: second.kind.clone(),
-            label: second.label.clone(),
-        },
-        anchor: tilo_actions::InteractionAnchor::Resource,
-        group: None,
-    };
+    let interaction = ui_core::headless::agent_acting(second.id.as_str(), "open");
     let locus = app.harness().targets()["show-page"];
     assert_eq!(app.harness().semantic_locus(&interaction), Some(locus));
     app.harness()

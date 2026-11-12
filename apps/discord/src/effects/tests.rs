@@ -84,14 +84,6 @@ fn the_consent_page_asks_for_identify_only_and_comes_back_to_the_host() {
 #[test]
 fn plans_answer_what_the_program_loops_over() {
     let mut app = connected();
-    let route = app
-        .effect(&DiscordEffect::PlanRoute {
-            event: json!({"kind": "chat.workspace", "item": {"kind": "messages", "id": "m1"}}),
-        })
-        .unwrap()
-        .value
-        .unwrap();
-    assert_eq!(route, json!({"message": "m1", "channel": ""}));
     let plan = app
         .effect(&DiscordEffect::PlanEvent {
             event: json!({

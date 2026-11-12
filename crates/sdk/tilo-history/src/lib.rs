@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use fluent::{FluentBundle, FluentResource};
 use tilo_actions::{
-    ActionContext, ActionKey, ActorKind, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp,
-    HistoryStep, Scalar, VerbCall,
+    ActionContext, ActionKey, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep,
+    Scalar, VerbCall,
 };
 use unic_langid::LanguageIdentifier;
 
@@ -196,7 +196,6 @@ fn framework(locale: &str) -> Rc<Catalogue> {
 #[derive(Clone, Copy, Debug)]
 pub struct Who<'a> {
     pub actor: &'a str,
-    pub kind: ActorKind,
     /// The display name of the person the actor acted for.
     pub for_person: Option<&'a str>,
     /// Whether the person the actor acted for is the reader.
@@ -370,11 +369,13 @@ impl<'a> Reader<'a> {
     }
 
     /// Who did it, as one line and as presence names them: "You",
-    /// "Ada via task 'Prepare Q3 financials'", "Morning · Shortcut".
+    /// "Ada via task 'Prepare Q3 financials'", "Claude for Ada".
     ///
     /// Anyone but the reader acted as a task, so the task names them: the
-    /// person under whose authority it was done, or the Shortcut that ran.
-    /// Without a named task, the actor as it is recorded.
+    /// person under whose authority it was done. Without a named task, the
+    /// actor as it is recorded, and whom it acted for: "for you" when that
+    /// person is the reader. What the actor is — an agent, a Shortcut, an
+    /// app, a bot — is the face beside the line, never words in it.
     pub fn actor(&self, who: &Who<'_>) -> String {
         let mut args = FluentArgs::new();
         args.set("actor", who.actor.to_owned());
@@ -398,13 +399,6 @@ impl<'a> Reader<'a> {
             args.set("task", task.label.to_owned());
             return self.framework_message("history-actor-via-task", &args);
         }
-        let named = match who.kind {
-            ActorKind::Agent => self.framework_message("history-actor-agent", &args),
-            ActorKind::Shortcut => self.framework_message("history-actor-shortcut", &args),
-            ActorKind::App => self.framework_message("history-actor-app", &args),
-            ActorKind::Bot => self.framework_message("history-actor-bot", &args),
-            ActorKind::Person => who.actor.to_owned(),
-        };
         let person = if who.for_reader {
             Some(self.framework_message("history-actor-for-you", &FluentArgs::new()))
         } else {
@@ -413,11 +407,11 @@ impl<'a> Reader<'a> {
         match person {
             Some(person) => {
                 let mut args = FluentArgs::new();
-                args.set("actor", named);
+                args.set("actor", who.actor.to_owned());
                 args.set("for", person);
                 self.framework_message("history-actor-for", &args)
             }
-            None => named,
+            None => who.actor.to_owned(),
         }
     }
 

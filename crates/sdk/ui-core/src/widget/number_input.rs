@@ -15,10 +15,12 @@
 //! padding and steppers; [`NumberInput::with_size`] keeps an explicit allocation, and long values
 //! then scroll in the field. [`NumberStepperFace`] paints the same steppers for a painted host.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 #[path = "number_input_component.rs"]
 mod component;
 use crate::widget::TaffyTreeExt;
@@ -943,7 +945,7 @@ impl Widget for NumberInput {
             face.paint_value(&mut ctx);
         } else {
             self.field
-                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
         }
 
         if disabled {
@@ -1131,7 +1133,7 @@ impl Widget for NumberInput {
         use crate::a11y::{AccessNode, AccessState, Role};
         let mut node = AccessNode::new(Role::SpinButton)
             .with_semantic_key(self.test_id().unwrap_or("number_input"))
-            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
             .with_value(self.format_value())
             .with_state(
                 AccessState::new()

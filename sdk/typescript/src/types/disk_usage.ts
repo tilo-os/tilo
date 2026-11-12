@@ -1,0 +1,42 @@
+/**
+ * Types for Disk Usage Analyzer (`so.tilo.disk-usage`), from the app's surface.
+ *
+ * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
+ * it again rather than editing it.
+ *
+ * `DiskUsage` is a `Resource` of the app's `disk-usage`, made by its factory with the
+ * resource's path (`disk-usage/<resource>`): its attributes are the app's fields
+ * (read-only ones `readonly`) and its methods are the app's actions, named in camel
+ * case and taking the arguments the wire takes them under. An action that takes
+ * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * cases carry fields is an object whose tag the app's schema names. An action whose
+ * name is one the interface already has is run with `action("…")`, which the file
+ * says where it is.
+ */
+
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
+
+/** Disk Usage Analyzer — `disk-usage`. */
+export interface DiskUsage extends tilo.Resource {
+}
+
+/** The `disk-usage` kind at `path`. */
+export function diskUsage(ws: tilo.Workspace, path: string): DiskUsage {
+  return resourceProxy(ws, path) as unknown as DiskUsage;
+}
+
+/** Recent folders — `disk-usage.recent-folders`. */
+export interface RecentFolders extends tilo.Resource {
+  devices: unknown;
+  remember(args: {
+    device: string;
+    folder: string;
+  }): Promise<tilo.Run | void>;
+}
+
+/** The `disk-usage.recent-folders` kind at `path`. */
+export function recentFolders(ws: tilo.Workspace, path: string): RecentFolders {
+  return resourceProxy(ws, path) as unknown as RecentFolders;
+}
+

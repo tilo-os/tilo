@@ -118,16 +118,28 @@ head_of() { curl -sS --max-time 20 -A "$browser" -o /dev/null -D - "${@:2}" "htt
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
+# Who a home host is and where its page dials it, as `tilo-relay page-host` prints it, and
+# as entry.json carries it: a JSON string.
+info='{"hostCert":{"device_label":"Commons workspace host","issued_at_ns":1},"address":{"endpointAddr":{"id":"ab12","addrs":[]},"relayUrl":"https://live.rooms.example/"}}'
+info_text=${info//\"/\\\"}
 entry TILO_WEB_HOME_NAME=X && fail "a home name without a host must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H \
+  && fail "a home host without who it is (TILO_WEB_HOME_HOST_INFO) must refuse to start"
+for bad in 'ab12' '{"a":"b\c"}' "{\"a\":\"b'c\"}" '{"a":"$b"}'; do
+  entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$bad" \
+    && fail "a home host's info that is not the plain JSON page-host prints must refuse to start: $bad"
+done
 entry TILO_WEB_HOME_DOOR=https://rooms.example/peer/v1/directory/ws/ \
   && fail "a home door without a host must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_FEEDBACK='c"x' \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_FEEDBACK='c"x' \
   && fail "a feedback channel that is not an id must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=https://rooms.example/join \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=https://rooms.example/join \
   && fail "a home door without a trailing / must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=http://rooms.example/ \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=http://rooms.example/ \
   && fail "a home door that is not https must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
+entry TILO_WEB_SHELF=http://shelf.example/i && fail "a shelf that is not an https address must refuse to start"
+entry TILO_WEB_SHELF=https://shelf.example/i && fail "a shelf that is not an address must refuse to start"
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"
 done
@@ -142,8 +154,10 @@ installer=$root/srv/tilo-install/install.sh
 [[ $(get / -A curl/8.9.1 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "curl at / must get the installer"
 [[ $(get / -A Wget/1.24 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "Wget at / must get the installer"
 [[ $(get /install.sh | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "/install.sh must be the installer"
-get / -A 'Mozilla/5.0' | grep -q '<!doctype html>' || fail "a browser at / must get the entry page"
-head_of /install.sh | grep -q '^content-type: text/x-shellscript' || fail "the installer must be served as a shell script"
+# Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
+# first match can cut off curl mid-write and fail the check on an answer that was right.
+grep -q '<!doctype html>' <<<"$(get / -A 'Mozilla/5.0')" || fail "a browser at / must get the entry page"
+grep -q '^content-type: text/x-shellscript' <<<"$(head_of /install.sh)" || fail "the installer must be served as a shell script"
 
 # The releases the installer downloads, from the store they are kept in (here a stand-in on the
 # loopback that sets a cookie and its own caching, and records what it was asked with).
@@ -206,14 +220,14 @@ csp=$(head_of / | grep '^content-security-policy:' || true)
 [[ $(get /entry.json) == '{"embedder":"https://site.example"}' ]] \
   || fail "entry.json embedder: $(get /entry.json)"
 
-start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons TILO_WEB_HOME_APP=so.tilo.chat
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
+start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_APP=so.tilo.chat
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example","info":"'"$info_text"'"},"app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json: $(get /entry.json)"
 
 # A workspace its host lists is joined through the door the host lists it at.
-start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons \
+start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" \
   TILO_WEB_HOME_DOOR=https://relay.example/peer/v1/directory/w1/
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://rooms.example/directory"}'
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example","info":"'"$info_text"'"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json with a door: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)
@@ -260,19 +274,100 @@ form_action=$(head_of /sign-in | grep '^content-security-policy:.*form-action' |
 # invitation: https://<site>/i/<handle>#<key>. A browser navigating there
 # gets the entry page, which reads the site's own configuration and files
 # (/entry.json, /v/…); the page's own request for the invitation — a caller
-# that asks for anything but the page — is the deployment's relay's to answer
-# (TILO_WEB_SHELF), never the page.
+# that asks for anything but the page — is the relay's to answer, the one the
+# site's home workspace is hosted on, which keeps the invitation under the
+# handle and is never given the key in the fragment. The relay here is a
+# stand-in on the loopback that keeps what it is given, as the relay's shelf
+# does; the site is started with a home host and nothing else, so the shelf it
+# leaves an invitation on is the one its entrypoint derives.
 handle=abcdefghijklmnop
 browser_accept='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+shelf_store=$scratch/shelf
+rm -rf "$shelf_store" && mkdir -p "$shelf_store"
+python3 -I - "$shelf_store" 18082 <<'PY' &
+import http.server, json, pathlib, sys
+store, port = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+
+class Shelf(http.server.BaseHTTPRequestHandler):
+    def asked(self):
+        with (store / "asked").open("a") as out:
+            out.write(f"{self.command} {self.path}\n")
+
+    def do_POST(self):
+        kept = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        (store / self.path.rsplit("/", 1)[-1]).write_bytes(kept)
+        self.asked()
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        self.asked()
+        path = store / self.path.rsplit("/", 1)[-1]
+        if not path.is_file():
+            self.send_response(410)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        held = json.loads(path.read_text())
+        # What a relay keeps and hands back: the sealed bytes, and the origin
+        # they admit into. Never the delete secret it was left with.
+        body = json.dumps({"sealed": held["sealed"], "host": held["host"]},
+                          separators=(",", ":")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Shelf).serve_forever()
+PY
+shelf_pid=$!
+start TILO_WEB_HOME_HOST=127.0.0.1:18082 TILO_WEB_HOME_NAME=Lounge "TILO_WEB_HOME_HOST_INFO=$info"
+# An inviter's device leaves the invitation its link names, and says when it
+# lapses and with which secret it may be taken back.
+sealed=c2VhbGVkIGludml0YXRpb24
+delete=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expires_at_ns=$(( ($(date +%s) + 600) * 1000000000 ))
+left=$(printf '{"sealed":"%s","expiresAtNs":%s,"delete":"%s","host":"https://relay.example"}' \
+  "$sealed" "$expires_at_ns" "$delete")
+status=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  --data "$left" "http://127.0.0.1:8080/i/$handle")
+[[ $status == 204 ]] \
+  || fail "a site with a home workspace must keep an invitation under its link's handle: $status"
+# Whoever the link reaches fetches it back, and gets the invitation and where
+# it admits into, byte for byte, with no key and no delete secret.
+answered=$(get "/i/$handle" -H 'Accept: application/octet-stream')
+[[ $answered == "{\"sealed\":\"$sealed\",\"host\":\"https://relay.example\"}" ]] \
+  || fail "the site must answer a link's handle with its invitation: $answered"
+grep -q "$delete" <<<"$answered" && fail "the site hands back the delete secret"
+# A handle nothing is kept under is the relay's answer, not the page's.
+grep -q '^HTTP/[0-9.]* 410' <(head_of /i/ponmlkjihgfedcba -H 'Accept: application/octet-stream') \
+  || fail "a link whose invitation is gone must say so"
+# A browser opening the same link gets the page, which asks for the invitation
+# itself.
 cmp -s <(get "/i/$handle" -H "Accept: $browser_accept") <(get /) \
   || fail "a sealed link must open the entry page"
 grep -q '^content-type: text/html' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
   || fail "a sealed link must be served as a page"
 grep -q '^cache-control: no-cache' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
   || fail "a sealed link's page must revalidate"
-# With no relay named there is no shelf: a request for the invitation is not
-# answered with the page, which would hand a stranger the editor instead of
-# nothing.
+# The page under the link loads its files relative to it (/i/v/…, as a
+# module fetch asks: no page): they are the site's files, not the shelf's.
+cmp -s <(get /i/apple-touch-icon.png -H 'Accept: */*') <(get /apple-touch-icon.png) \
+  || fail "a file the link's page loads relative to /i/ must be the site's own"
+# Both ways round went to the shelf the entrypoint derived, at the path the
+# relay serves it under: an invitation left, and invitations fetched.
+grep -q '^POST /i/' "$shelf_store/asked" && grep -q '^GET /i/' "$shelf_store/asked" \
+  || fail "the shelf under /i/ was not the one the site derived: $(cat "$shelf_store/asked")"
+kill "$shelf_pid" 2>/dev/null || true
+# With no home workspace there is no relay behind the site to keep one: a
+# request for the invitation is not answered with the page, which would hand a
+# stranger the editor instead of nothing.
+start
 shelf_answer=$(head_of "/i/$handle" -H 'Accept: application/octet-stream' | head -1)
 [[ $shelf_answer != 'HTTP/1.1 200 OK' ]] \
   || fail "a request for the invitation itself must not answer with the page"

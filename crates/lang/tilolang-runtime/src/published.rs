@@ -2,9 +2,9 @@
 //!
 //! An app's resources publish the verbs a person may run on them ([`ResourceSpec::actions`] in
 //! `tilo-actions`), and an app the session serves publishes them without a package ever loading
-//! here: Chat's channel is a record the session keeps, its `post` is a verb the session's own
+//! here: Chat's channel is a record the session keeps, its `send` is a verb the session's own
 //! service answers. A Rust view (and a tilolang one) names such a verb on the resource it shows
-//! by its published id — `cx.action(node, "press", "post")` — and the runtime sends it to the app
+//! by its published id — `cx.action(node, "press", "send")` — and the runtime sends it to the app
 //! that publishes it, exactly as it sends a declared action of another app to that app's door.
 //!
 //! The host hands the table in ([`crate::Runtime::set_published_actions`]) from the resources it

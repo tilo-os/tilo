@@ -70,6 +70,9 @@ struct Inner {
     fresh: bool,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
+    /// This participant's changes taken and put back ([`ConfinedReplica::put_back`]):
+    /// the next take returns them first.
+    kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
     /// (the parts of its chain), each mirrored as this one is.
     beside: BTreeMap<RecordId, AutoCommit>,
@@ -77,6 +80,19 @@ struct Inner {
     beside_dirty: bool,
     /// Content the worker holds, put again into a worker that replaces it.
     held: BTreeSet<String>,
+    /// The record's store asks its workspace's hosts for what it lacks
+    /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
+    /// answered they hold none of: told again to a worker that replaces it.
+    asks_workspace: Option<BTreeSet<String>>,
+}
+
+/// A worker's reply to a request that only says it was carried out.
+fn done(reply: Result<Reply, AppError>) -> Result<(), AppError> {
+    match reply? {
+        Reply::Done => Ok(()),
+        Reply::Failed(reason) => Err(worker_error(reason)),
+        _ => Err(worker_error("the worker answered out of turn")),
+    }
 }
 
 fn worker_error(reason: impl Into<String>) -> AppError {
@@ -149,7 +165,9 @@ impl ConfinedReplica {
                 dirty: true,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
+                kept: Vec::new(),
                 held: BTreeSet::new(),
+                asks_workspace: None,
             }),
         };
         if fresh {
@@ -268,6 +286,21 @@ impl ConfinedReplica {
                         }
                     }
                 }
+                // So do what the workspace was asked and answered.
+                if let Some(answered) = &inner.asks_workspace {
+                    let told = std::iter::once(Request::AskWorkspace).chain(answered.iter().map(
+                        |record| Request::Answered {
+                            record: record.clone(),
+                        },
+                    ));
+                    for request in told {
+                        match process.call(&request).map_err(worker_error)? {
+                            Reply::Done => {}
+                            Reply::Failed(reason) => return Err(worker_error(reason)),
+                            _ => return Err(worker_error("the worker answered out of turn")),
+                        }
+                    }
+                }
                 inner.process = Some(process);
                 inner.dirty = false;
                 inner.beside_dirty = false;
@@ -276,6 +309,58 @@ impl ConfinedReplica {
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => Err(worker_error("the worker named another record")),
         }
+    }
+
+    /// Take the record's store to come from its workspace's hosts:
+    /// [`crate::Replica::ask_workspace_for_missing`].
+    ///
+    /// # Errors
+    ///
+    /// The worker could not be told.
+    pub fn ask_workspace_for_missing(&self) -> Result<(), AppError> {
+        let mut inner = self.lock();
+        if inner.asks_workspace.is_some() {
+            return Ok(());
+        }
+        inner.asks_workspace = Some(BTreeSet::new());
+        let reply = self.call(&mut inner, &Request::AskWorkspace);
+        drop(inner);
+        done(reply)
+    }
+
+    /// What the record's store asks its workspace's hosts for:
+    /// [`crate::Replica::wanted_records`]. Empty when the worker cannot answer.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        let reply = self.call(&mut self.lock(), &Request::Wanted);
+        match reply {
+            Ok(Reply::Wanted(records)) => records
+                .iter()
+                .filter_map(|record| super::serve::parse_record(record))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The workspace's hosts hold none of `record`:
+    /// [`crate::Replica::workspace_answered`].
+    ///
+    /// # Errors
+    ///
+    /// The worker could not be told.
+    pub fn workspace_answered(&self, record: &RecordId) -> Result<(), AppError> {
+        let mut inner = self.lock();
+        if let Some(answered) = &mut inner.asks_workspace {
+            answered.insert(record.as_str().to_owned());
+        }
+        let reply = self.call(
+            &mut inner,
+            &Request::Answered {
+                record: record.as_str().to_owned(),
+            },
+        );
+        drop(inner);
+        done(reply)
     }
 
     /// Where the agent's last operation left it: [`crate::Replica::presence`].
@@ -298,6 +383,96 @@ impl ConfinedReplica {
                 crate::render::offered(serde_json::from_str(&text).unwrap_or_default())
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// Every operation the record publishes now, each in the row of the
+    /// resource holding it: [`crate::Replica::survey_rows`].
+    #[must_use]
+    pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let reply = self.call(&mut self.lock(), &Request::SurveyRows);
+        match reply {
+            Ok(Reply::Page { rows, .. }) => serde_json::from_str(&rows).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// One page of [`Self::survey_rows`] as `query` lists it: how many
+    /// operations it admits in all, and those from the `offset`th on, at most
+    /// `take`, each row where it stands. Only the page crosses from the
+    /// worker: a record holding thousands of items costs a page what a record
+    /// of ten does.
+    pub fn survey_page(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        (offset, take): (usize, usize),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        let Ok(query) = serde_json::to_string(query) else {
+            return (0, Vec::new());
+        };
+        let reply = self.call(
+            &mut self.lock(),
+            &Request::SurveyPage {
+                query,
+                can_render: crate::render::can_render(),
+                offset: u64::try_from(offset).unwrap_or(u64::MAX),
+                take: u64::try_from(take).unwrap_or(u64::MAX),
+            },
+        );
+        match reply {
+            Ok(Reply::Page { total, rows }) => (
+                usize::try_from(total).unwrap_or(usize::MAX),
+                serde_json::from_str(&rows).unwrap_or_default(),
+            ),
+            _ => (0, Vec::new()),
+        }
+    }
+
+    /// The keys `mutation` writes in `record`, as the worker holds that record
+    /// now, or `None` when it holds none of it.
+    pub fn changed_keys(
+        &self,
+        record: &ui::record::RecordId,
+        mutation: &DocumentMutation,
+    ) -> Option<Result<Vec<Vec<String>>, String>> {
+        let (snapshot, bytes) = match mutation {
+            DocumentMutation::Snapshot(bytes) => (true, bytes.clone()),
+            DocumentMutation::Incremental(bytes) => (false, bytes.clone()),
+        };
+        let answered = self.call(
+            &mut self.lock(),
+            &Request::ChangedKeys {
+                record: record.as_str().to_owned(),
+                snapshot,
+                bytes,
+            },
+        );
+        match answered {
+            Ok(Reply::Keys(text)) => {
+                match serde_json::from_str::<Option<Vec<Vec<String>>>>(&text) {
+                    Ok(keys) => keys.map(Ok),
+                    Err(error) => Some(Err(error.to_string())),
+                }
+            }
+            Ok(Reply::Failed(reason)) => Some(Err(reason)),
+            _ => None,
+        }
+    }
+
+    /// The one operation `address` names, as [`Self::survey`] lists it, or
+    /// `None`: what a host that already knows what it runs asks its record
+    /// for, rather than the whole listing.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        let address = serde_json::to_string(address).ok()?;
+        let answered = self.call(&mut self.lock(), &Request::Resolve { address });
+        match answered {
+            Ok(Reply::Descriptors(text)) => crate::render::offered(
+                serde_json::from_str::<Vec<ActionDescriptor>>(&text).unwrap_or_default(),
+            )
+            .into_iter()
+            .next(),
+            _ => None,
         }
     }
 
@@ -613,11 +788,41 @@ impl ConfinedReplica {
     pub fn take_mutation(&self) -> Result<Option<DocumentMutation>, AppError> {
         let mut inner = self.lock();
         let own = self.collect(&mut inner)?;
+        let mut kept = std::mem::take(&mut inner.kept);
         let whole = std::mem::take(&mut inner.fresh).then(|| inner.mirror.save());
         drop(inner);
+        let own = match own {
+            Some(own) if kept.is_empty() => Some(own),
+            Some(own) => {
+                kept.extend(own);
+                Some(kept)
+            }
+            None => (!kept.is_empty()).then_some(kept),
+        };
         Ok(whole
             .map(DocumentMutation::Snapshot)
             .or_else(|| own.map(DocumentMutation::Incremental)))
+    }
+
+    /// Give back `mutation`, taken by [`Self::take_mutation`] but not
+    /// written: the next take returns it again, before anything since. What
+    /// fails to be written alongside it (the records beside) must not take
+    /// it with it.
+    pub fn put_back(&self, mutation: DocumentMutation) {
+        let mut inner = self.lock();
+        match mutation {
+            // The whole record is in the mirror: it goes whole again.
+            DocumentMutation::Snapshot(_) => {
+                inner.fresh = true;
+                inner.kept.clear();
+            }
+            DocumentMutation::Incremental(bytes) => {
+                if !inner.fresh {
+                    let later = std::mem::replace(&mut inner.kept, bytes);
+                    inner.kept.extend(later);
+                }
+            }
+        }
     }
 
     /// Ask the worker for its changes and admit them to the mirror.
@@ -633,13 +838,22 @@ impl ConfinedReplica {
                 Ok(None)
             }
             Reply::Mutation(Some((false, bytes))) => {
-                match tilo_automerge_isolate::apply(
-                    &mut inner.mirror,
-                    &bytes,
-                    Dependencies::RequireComplete,
-                ) {
-                    Ok(Applied::Changed(_)) => Ok(Some(bytes)),
-                    Ok(Applied::MissingDependencies) => {
+                // What must be in the record is the worker's own change, not
+                // every change of the record: another participant's change
+                // that arrived before what it builds on waits in the mirror's
+                // queue, and is no reason to refuse this one. When the bytes
+                // name no single change of their own — a document, a bundle —
+                // only the whole record can be asked, as before.
+                let own = tilo_automerge_isolate::change_hashes(&bytes);
+                let dependencies = match &own {
+                    Some(_) => Dependencies::RetainOrphans,
+                    None => Dependencies::RequireComplete,
+                };
+                match tilo_automerge_isolate::apply(&mut inner.mirror, &bytes, dependencies) {
+                    Ok(Applied::Changed(_)) if holds(&mut inner.mirror, own.as_deref()) => {
+                        Ok(Some(bytes))
+                    }
+                    Ok(_) => {
                         inner.process = None;
                         Err(AppError::Merge(
                             "the worker's change builds on nothing the record holds".into(),
@@ -657,7 +871,11 @@ impl ConfinedReplica {
                     "the worker replaced a record it did not create",
                 ))
             }
-            Reply::Failed(reason) => Err(worker_error(reason)),
+            Reply::Failed(reason) => {
+                // The worker kept its changes: they are asked for again.
+                inner.dirty = true;
+                Err(worker_error(reason))
+            }
             _ => {
                 inner.process = None;
                 Err(worker_error("the worker answered out of turn"))
@@ -745,13 +963,29 @@ impl ConfinedReplica {
             DocumentMutation::Incremental(bytes) => (false, bytes),
         };
         let mut inner = self.lock();
-        // Admitted into a copy of its mirror, kept once the worker took it.
-        let mut candidate = match inner.beside.get(record) {
-            Some(mirror) => mirror.clone(),
-            None if snapshot => AutoCommit::new(),
+        // Admitted here before the worker sees it, as the held record's own
+        // changes are ([`Self::apply`]): a whole document into a copy of the
+        // part's mirror, kept once the worker took it; an increment into the
+        // mirror itself, which then holds more than the worker, never less.
+        // A part's mirror grows with every post: copying it for each one
+        // made a post cost what the part already holds.
+        let candidate = match inner.beside.get_mut(record) {
+            Some(mirror) if !snapshot => {
+                admit_incoming(mirror, bytes)?;
+                None
+            }
+            Some(mirror) => {
+                let mut candidate = mirror.clone();
+                admit_incoming(&mut candidate, bytes)?;
+                Some(candidate)
+            }
+            None if snapshot => {
+                let mut candidate = AutoCommit::new();
+                admit_incoming(&mut candidate, bytes)?;
+                Some(candidate)
+            }
             None => return Ok(()),
         };
-        admit_incoming(&mut candidate, bytes)?;
         let reply = self.call(
             &mut inner,
             &Request::ApplyRecord {
@@ -762,7 +996,12 @@ impl ConfinedReplica {
         );
         let result = match reply {
             Ok(Reply::Done) => {
-                inner.beside.insert(record.clone(), candidate);
+                if let Some(candidate) = candidate {
+                    inner.beside.insert(record.clone(), candidate);
+                }
+                // A write that waited for this part (a post made while the
+                // chain's newest part was on its way) is applied as it lands.
+                inner.beside_dirty = true;
                 Ok(())
             }
             Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
@@ -791,7 +1030,11 @@ impl ConfinedReplica {
         }
         let taken = match self.call(&mut inner, &Request::TakeRecordMutations)? {
             Reply::RecordMutations(taken) => taken,
-            Reply::Failed(reason) => return Err(worker_error(reason)),
+            Reply::Failed(reason) => {
+                // The worker kept its changes: they are asked for again.
+                inner.beside_dirty = true;
+                return Err(worker_error(reason));
+            }
             _ => {
                 inner.process = None;
                 return Err(worker_error("the worker answered out of turn"));
@@ -895,6 +1138,17 @@ fn admit_incoming(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), AppError> {
     tilo_automerge_isolate::apply(doc, bytes, Dependencies::RetainOrphans)
         .map(|_| ())
         .map_err(|error| AppError::Merge(error.to_string()))
+}
+
+/// Whether `doc` holds every change `own` names: a change of the worker's
+/// that waits in `doc`'s queue for a dependency it has not got is not held,
+/// and is never published as if it were whole. Changes the bytes did not name
+/// cannot be asked after, and are the whole record's business instead.
+fn holds(doc: &mut AutoCommit, own: Option<&[automerge::ChangeHash]>) -> bool {
+    own.is_none_or(|own| {
+        own.iter()
+            .all(|hash| doc.get_change_by_hash(hash).is_some())
+    })
 }
 
 /// Most bytes of a record's history admitted in one request: well under the
@@ -1048,5 +1302,127 @@ fn open_error(reason: &str, app_id: &str) -> AppError {
         AppError::UnknownApp(app_id.to_owned())
     } else {
         AppError::Launch(reason.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+    use automerge::transaction::Transactable as _;
+
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+    /// A replica of a new notes record, at the change that began it.
+    fn begun() -> ConfinedReplica {
+        let replica = ConfinedReplica::open(
+            &AppCatalogue::native(),
+            "so.tilo.notes",
+            WORKSPACE,
+            "maker",
+            &ReplicaActor::Agent,
+            Seed::New,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                replica.take_mutation().unwrap(),
+                Some(DocumentMutation::Snapshot(_))
+            ),
+            "a new record's genesis is what it first publishes"
+        );
+        replica
+    }
+
+    /// Two changes of another participant's on `replica`'s record, the second
+    /// building on the first, each on its own: what arrives out of order.
+    fn another_participants_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
+        let saved = replica.lock().mirror.save();
+        let mut doc = tilo_automerge_isolate::load(&saved).unwrap();
+        doc.set_actor(automerge::ActorId::random());
+        let began = doc.get_heads();
+        doc.put(automerge::ROOT, "theirs", "first").unwrap();
+        let first: Vec<u8> = doc
+            .get_changes(&began)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let after_first = doc.get_heads();
+        doc.put(automerge::ROOT, "theirs", "second").unwrap();
+        let second: Vec<u8> = doc
+            .get_changes(&after_first)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        (first, second)
+    }
+
+    /// Whether `replica`'s record holds every change `hashes` names.
+    fn recorded(replica: &ConfinedReplica, hashes: &[automerge::ChangeHash]) -> bool {
+        let mut inner = replica.lock();
+        holds(&mut inner.mirror, Some(hashes))
+    }
+
+    /// A change of the worker's own that waits for a dependency is not
+    /// published as if it were whole, and one of another participant's that
+    /// waits is no reason to refuse it.
+    #[test]
+    fn the_workers_change_is_published_though_anothers_waits_for_what_it_builds_on() {
+        let replica = begun();
+        let (first, second) = another_participants_two_changes(&replica);
+        // The second change arrives first: it builds on the first, which the
+        // record does not hold yet, so it waits in the record's queue.
+        replica
+            .apply(&DocumentMutation::Incremental(second.clone()))
+            .unwrap();
+        let waiting = tilo_automerge_isolate::change_hashes(&second).unwrap();
+        assert!(
+            !recorded(&replica, &waiting),
+            "the change that arrived first waits, and is not held"
+        );
+
+        // The app makes a change of its own while that one waits.
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("title".into(), "Made while another waited".into());
+        replica
+            .invoke(
+                &ActionAddress::new("notes.notebook", "new-note"),
+                &arguments,
+                false,
+            )
+            .expect("the app makes a note");
+
+        let taken = replica
+            .take_mutation()
+            .expect("a change of the app's own is published though another's waits")
+            .expect("the app changed the record");
+        let DocumentMutation::Incremental(bytes) = taken else {
+            panic!("an existing record publishes its changes, not the whole of it");
+        };
+        let own = tilo_automerge_isolate::change_hashes(&bytes).unwrap();
+        assert!(
+            recorded(&replica, &own),
+            "what was published is in the record"
+        );
+        // And what waited still waits: it was never taken as whole.
+        assert!(
+            !recorded(&replica, &waiting),
+            "a change waiting for what it builds on is not published as whole"
+        );
+
+        // The change it builds on arrives: both are the record's now.
+        replica
+            .apply(&DocumentMutation::Incremental(first))
+            .unwrap();
+        assert!(
+            recorded(&replica, &waiting),
+            "the change applies once what it builds on arrives"
+        );
     }
 }

@@ -6,22 +6,47 @@ use super::{
     desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_record,
     unix_now_ns, unpublished,
 };
+use crate::member_limits::Standing;
 use crate::workspace_access::WorkspaceOperation;
 
-/// Spends `peer`'s budget for one change, unless the relay's own user sent
-/// it: the host device and the bots a host-held root delegated must never
-/// turn a burst into refusals.
+/// Spends `peer`'s budget for one change as its `standing` is, unless the
+/// relay's own user sent it: the host device and the bots a host-held root
+/// delegated must never turn a burst into refusals.
 pub(super) fn over_change_limit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
+    standing: Standing,
 ) -> Option<crate::member_limits::Limited> {
     let limits = session.member_limits?;
     if peer.user_public_key == *session.own_user_public_key {
         return None;
     }
     limits
-        .admit_change(&peer.user_public_key, std::time::Instant::now())
+        .admit_change(&peer.user_public_key, standing, tilo_clock::now())
         .err()
+}
+
+/// How the change budget sees `peer` in `runtime`'s workspace: as an owner
+/// when it is their person's server key (its certificate says so, signed by
+/// their root), or when the workspace is their person's own; as a guest
+/// everywhere else.
+pub(super) fn change_standing(
+    peer: &AuthenticatedPeer,
+    runtime: &crate::workspace::WorkspaceRuntime,
+) -> Standing {
+    let own = peer.cert.capabilities.server_key
+        || runtime
+            .workspace_authority
+            .as_ref()
+            .and_then(|authority| Some((authority.workspaces()?, authority.workspace())))
+            .is_some_and(|(workspaces, workspace)| {
+                workspaces.owns(&peer.user_public_key, workspace)
+            });
+    if own {
+        Standing::Owner
+    } else {
+        Standing::Guest
+    }
 }
 
 /// Why `ws` keeps no more of `peer`'s writes: it is a person's own workspace
@@ -36,17 +61,13 @@ pub(super) async fn over_storage(
     if peer.user_public_key == *session.own_user_public_key {
         return None;
     }
-    let (workspaces, workspace, workspace_id) = {
-        let runtime = ws.lock().await;
-        let authority = runtime.workspace_authority.as_ref()?;
-        (
-            authority.workspaces()?,
-            authority.workspace().to_owned(),
-            runtime.store.workspace_id(),
-        )
-    };
+    let runtime = ws.lock().await;
+    let authority = runtime.workspace_authority.as_ref()?;
+    let workspaces = authority.workspaces()?;
+    let workspace = authority.workspace().to_owned();
+    drop(runtime);
     // Measuring walks the workspace's files.
-    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace, workspace_id))
+    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace))
         .await
         .ok()
         .flatten()
@@ -181,14 +202,16 @@ async fn admit_commit(
     {
         return refused("author does not match authenticated device");
     }
-    if let Some(limited) = over_change_limit(peer, session) {
+    let standing = change_standing(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, standing) {
         return refused(&limited.to_string());
     }
     if let Some(full) = over_storage(peer, session, &ws).await {
         return refused(&full);
     }
+    let channel = crate::peer::admission::channel_of(&delta);
     let Some(source) =
-        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
+        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish, channel).await?
     else {
         return refused(unpublished());
     };
@@ -301,7 +324,8 @@ impl AdmittedCommit {
 /// Why the workspace refuses `delta`, a page's commit, if it does: decided as a
 /// session's delta is ([`super::handle_delta`]), by what the change says it
 /// does against its author's grants, then, for the workspace's shared desktop,
-/// by what it does to what others made.
+/// by what it does to what others made, then by what the workspace's own copy
+/// of the record takes in.
 async fn commit_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
@@ -323,10 +347,12 @@ async fn commit_refusal(
     if let Some(reason) = desktop_refusal(ws, author, delta).await {
         return Some(reason);
     }
-    let reason = crate::surfaces::role_refusal(bytes, standings.as_deref(), author)?;
-    tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
-    file_refusal_of(ws, delta, &reason).await;
-    Some(reason)
+    if let Some(reason) = crate::surfaces::role_refusal(bytes, standings.as_deref(), author) {
+        tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+        file_refusal_of(ws, delta, &reason).await;
+        return Some(reason);
+    }
+    super::governor_refusal(ws, author, delta).await
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
@@ -343,7 +369,7 @@ async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
     };
     let tap = ws.lock().await.governor_tap.clone();
     if let Some((tap, body)) = tap.zip(governor_notice(delta)) {
-        super::state::tell_governor(&tap, *author_device_public_key, body).await;
+        super::state::tell_governor(ws, &tap, *author_device_public_key, body).await;
     }
 }
 

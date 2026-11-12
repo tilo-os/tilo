@@ -38,7 +38,9 @@ use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::element::utils::{
     Relocate, RelocateRenderElement, RescaleRenderElement,
 };
-use smithay::backend::renderer::{Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
+use smithay::backend::renderer::{
+    Bind, ExportMem, ImportAll, ImportDma, ImportMem, Offscreen, Renderer,
+};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
@@ -652,7 +654,7 @@ pub fn copy<R, T>(
     frame: &Frame,
 ) -> Result<Copied, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {
@@ -792,7 +794,7 @@ where
 /// The placeholders of what `output` shows a capture may not see, where it stands on it, in
 /// physical pixels: the windows of an app the session keeps private (one that closed included,
 /// while the desktop still animates it away), and the layers of a hosted surface that shows a
-/// secret (see [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]), and the lock
+/// secret (see [`protect`] and [`SurfaceHost::withholds_captures`](tilo_session_core::surface::SurfaceHost::withholds_captures)), and the lock
 /// screen while it is up. A capture draws them over the scene and under the pointer: a protected
 /// window or surface hides, one that merely passes behind it is covered along with it, which shows
 /// nothing it would not show anyway. A copy that is the session's own look ([`Held::Nothing`])
@@ -832,9 +834,15 @@ where
     }
     for host in state.hosts.iter().filter(|host| host.withholds_captures()) {
         for layer in host.layers() {
-            let at = (Point::<i32, Logical>::from(layer.location) - geometry.loc).to_f64();
-            let size = Size::<i32, Logical>::from((layer.size.0, layer.size.1))
-                .to_physical_precise_round(scale);
+            // Where the layer's pose draws it.
+            let (x, y, width, height) = layer.pose.rect((
+                f64::from(layer.location.0),
+                f64::from(layer.location.1),
+                f64::from(layer.size.0),
+                f64::from(layer.size.1),
+            ));
+            let at = Point::<f64, Logical>::from((x, y)) - geometry.loc.to_f64();
+            let size = Size::<f64, Logical>::from((width, height)).to_physical_precise_round(scale);
             if size.w > 0 && size.h > 0 {
                 placeholders.push(placeholder::<R>(
                     at.to_physical_precise_round(scale),
@@ -897,7 +905,7 @@ fn scene_elements<R>(
     held: Held,
 ) -> Option<SceneElements<R>>
 where
-    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Bind<Dmabuf>,
     R::TextureId: Clone + Send + 'static,
 {
     let (elements, offset, clear) = match scene {
@@ -967,7 +975,7 @@ pub(crate) fn read_back<R, T>(
     held: Held,
 ) -> Result<Screenshot, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {
@@ -999,7 +1007,7 @@ pub(crate) fn read_back_scaled<R, T>(
     max: (u32, u32),
 ) -> Result<Screenshot, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {

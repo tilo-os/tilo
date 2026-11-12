@@ -272,6 +272,9 @@ pub struct Message {
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
+    /// Sent from here and not written yet: the part it goes to is on its way
+    /// from the workspace. Shown as being sent, in a group of its own.
+    pub sending: bool,
 }
 
 impl Message {
@@ -344,12 +347,6 @@ pub struct AgentWork {
     pub state: AgentWorkState,
     /// Epoch seconds at which the agent entered `state`.
     pub since: i64,
-    /// How the agent came to choose what it chose, in the decider's own
-    /// words. `None` until something has actually decided — an empty
-    /// reasoning section would be a promise of an explanation that was never
-    /// given.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<AgentReasoning>,
     /// The run's working record of a failure, for whoever debugs it later: the
     /// transport's error, the partial answer, the provider's exposed reasoning.
     /// Never the reply's words, and shown only behind a disclosure.
@@ -367,33 +364,6 @@ pub struct AgentWork {
     /// [`AgentStep`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<AgentStep>,
-}
-
-/// How the agent decided, for a person reading the thread.
-///
-/// Recorded from the decision the agent actually took, so `route` cannot say
-/// a model chose when the deterministic floor did.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
-pub struct AgentReasoning {
-    /// Which path reached the decision — a model, or the agent's own keyword
-    /// vocabulary. Never cosmetic: a turn decided on the floor must be
-    /// findable as one afterwards.
-    pub route: AgentRoute,
-    /// The decider's own account of why. May be empty when the path that
-    /// decided had nothing to say beyond which path it was.
-    #[serde(default)]
-    pub why: String,
-}
-
-/// Which path chose the operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRoute {
-    /// A model was asked and its answer was in the workspace's exported catalogue.
-    Model,
-    /// No model decided — the agent matched the request against the words the
-    /// apps put on their own operations.
-    Floor,
 }
 
 /// One operation the agent dispatched, and what came of it.
@@ -482,7 +452,7 @@ impl AgentStepOutcome {
 }
 
 impl AgentWork {
-    /// What an agent reports of its work, refusing a state, route or outcome
+    /// What an agent reports of its work, refusing a state or outcome
     /// it does not name.
     pub fn from_update(update: &crate::record::WorkUpdate) -> Result<Self, String> {
         let text = |value: &Option<String>| value.clone().unwrap_or_default();
@@ -516,18 +486,6 @@ impl AgentWork {
             },
             other => return Err(format!("`{other}` is not a state of an agent's work")),
         };
-        let reasoning = match update.route.as_deref() {
-            None => None,
-            Some("model") => Some(AgentReasoning {
-                route: AgentRoute::Model,
-                why: text(&update.why),
-            }),
-            Some("floor") => Some(AgentReasoning {
-                route: AgentRoute::Floor,
-                why: text(&update.why),
-            }),
-            Some(other) => return Err(format!("`{other}` is not a route")),
-        };
         let mut trace = Vec::with_capacity(update.trace.len());
         for step in &update.trace {
             if step.id.is_empty() || step.id.len() > 128 {
@@ -553,35 +511,26 @@ impl AgentWork {
         Ok(Self {
             state,
             since: 0,
-            reasoning,
             failure_detail: update.detail.clone(),
             trace,
             stream: None,
         })
     }
 
-    /// Its state, reasoning and trace.
+    /// Its state and trace.
     #[must_use]
-    pub fn into_parts(self) -> (AgentWorkState, Option<AgentReasoning>, Vec<AgentStep>) {
-        (self.state, self.reasoning, self.trace)
+    pub fn into_parts(self) -> (AgentWorkState, Vec<AgentStep>) {
+        (self.state, self.trace)
     }
 
     pub fn new(state: AgentWorkState, since: i64) -> Self {
         Self {
             state,
             since,
-            reasoning: None,
             failure_detail: None,
             trace: Vec::new(),
             stream: None,
         }
-    }
-
-    /// The same record with the decider's account attached.
-    #[must_use]
-    pub fn because(mut self, reasoning: AgentReasoning) -> Self {
-        self.reasoning = Some(reasoning);
-        self
     }
 
     /// The same record carrying `trace`.
@@ -665,7 +614,7 @@ pub enum AgentWorkState {
     Refused,
 }
 
-/// A run of consecutive top-level messages by one author shown as a single
+/// A run of consecutive messages by one author shown as a single
 /// avatar + name header followed by stacked bodies.
 #[derive(Clone, Debug)]
 pub struct MessageGroup {
@@ -674,16 +623,19 @@ pub struct MessageGroup {
     pub message_indices: Vec<usize>,
 }
 
-/// Group consecutive **top-level** messages (parent == None) by the same
-/// author, shown the same way, within [`GROUP_WINDOW_SECS`]. A bridge's
-/// lines are all its own but each shows the outside person who wrote it,
-/// so a line in another appearance starts a group of its own. Threaded
-/// replies are excluded — they render inside the thread panel, not the
-/// main timeline.
-pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
+/// Group consecutive messages by the same author, shown the same way, within
+/// [`GROUP_WINDOW_SECS`]. A bridge's lines are all its own but each shows the
+/// outside person who wrote it, so a line in another appearance starts a
+/// group of its own.
+///
+/// With `threads`, a channel's replies (parent != None) are left out: they
+/// render inside the thread panel. Without it, as a direct conversation shows
+/// them, a reply stands where it was written, in time order among the
+/// messages around it, and groups like any other message.
+pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> {
     let mut groups: Vec<MessageGroup> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
-        if !m.is_top_level() {
+        if threads && !m.is_top_level() {
             continue;
         }
         let extend = groups.last().is_some_and(|g| {
@@ -693,6 +645,7 @@ pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
                     .and_then(|&last_idx| messages.get(last_idx))
                     .is_some_and(|prev| {
                         prev.appearance == m.appearance
+                            && prev.sending == m.sending
                             && (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS
                     })
         });
@@ -773,6 +726,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         }
     }
 
@@ -785,7 +739,7 @@ mod tests {
                 msg("b", "u1", 60, None),
                 msg("c", "u1", 120, None),
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
         }
@@ -796,7 +750,7 @@ mod tests {
                 msg("b", "u2", 30, None),       // author change
                 msg("c", "u2", 30 + 999, None), // gap > window
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 3);
         }
         // A bridge's lines split by the outside person each shows.
@@ -816,7 +770,7 @@ mod tests {
             msgs[0].appearance = shown("kim");
             msgs[1].appearance = shown("kim");
             msgs[2].appearance = shown("rae");
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 2);
             assert_eq!(groups[0].message_indices, vec![0, 1]);
             assert_eq!(groups[1].message_indices, vec![2]);
@@ -827,9 +781,21 @@ mod tests {
                 msg("a", "u1", 0, None),
                 msg("r", "u1", 10, Some("a")), // reply — not in the timeline
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].message_indices, vec![0]);
+        }
+        // A direct conversation shows its replies among the messages they
+        // answer, in time order, whoever wrote them.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("r", "u2", 10, Some("a")),
+                msg("b", "u1", 20, None),
+            ];
+            let groups = group_messages(&msgs, false);
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[1].message_indices, vec![1]);
         }
         // Phase: reply_count_and_participants.
         {
@@ -867,9 +833,7 @@ mod tests {
 
 #[cfg(test)]
 mod agent_record_tests {
-    use super::{
-        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
-    };
+    use super::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
 
     fn step(resource: &str, label: &str, outcome: AgentStepOutcome) -> AgentStep {
         AgentStep::authored(resource, label, outcome, 0)
@@ -877,8 +841,8 @@ mod agent_record_tests {
 
     #[test]
     fn agent_work_records_keep_their_wire_shape_across_versions() {
-        // Phase: a_record_without_reasoning_or_a_trace_still_parses.
-        // A record written by an older agent — one with neither field — still
+        // Phase: a_record_without_a_trace_still_parses.
+        // A record written by an older agent — one without it — still
         // reads. The whole record travels as a single JSON scalar in the shared
         // document, and a record that will not parse is deliberately read as no
         // claim about the agent at all; adding a field must not be what causes
@@ -888,7 +852,6 @@ mod agent_record_tests {
             let work: AgentWork = serde_json::from_str(old).expect("an older record still reads");
             assert_eq!(work.state, AgentWorkState::Taken);
             assert_eq!(work.since, 1000);
-            assert_eq!(work.reasoning, None);
             assert!(work.trace.is_empty());
             // Pinned as a literal, not round-tripped from `to_string`: a test that
             // generated the input with today's code would go on passing after a
@@ -899,27 +862,16 @@ mod agent_record_tests {
                 "the wire shape of a plain record changed"
             );
         }
-        // Phase: an_empty_reasoning_and_trace_are_absent_from_the_wire.
-        // And a record with nothing to add serialises back to what it was, so an
-        // agent that never decided anything does not start carrying an empty
-        // explanation nobody wrote.
+        // Phase: an_empty_trace_is_absent_from_the_wire.
         {
             let json = serde_json::to_string(&AgentWork::new(AgentWorkState::Taken, 1000))
                 .expect("serialise");
-            assert!(
-                !json.contains("reasoning"),
-                "empty reasoning leaked: {json}"
-            );
             assert!(!json.contains("trace"), "empty trace leaked: {json}");
         }
-        // Phase: a_reasoning_and_a_trace_survive_a_round_trip.
+        // Phase: a_trace_survives_a_round_trip.
         {
-            let work = AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42)
-                .because(AgentReasoning {
-                    route: AgentRoute::Model,
-                    why: "the request named the photograph".into(),
-                })
-                .with_trace(vec![
+            let work =
+                AgentWork::new(AgentWorkState::Done { did: "crop".into() }, 42).with_trace(vec![
                     step("photo:1", "Crop", AgentStepOutcome::Applied),
                     step("photo:1", "Rename", AgentStepOutcome::NoChange),
                     step(
@@ -933,12 +885,6 @@ mod agent_record_tests {
             let json = serde_json::to_string(&work).expect("serialise");
             let back: AgentWork = serde_json::from_str(&json).expect("parse");
             assert_eq!(back, work);
-            // The route is not decoration: a turn decided on the floor has to be
-            // findable as one afterwards.
-            assert!(
-                json.contains("\"route\":\"model\""),
-                "route missing: {json}"
-            );
         }
         // Phase: a_row_that_has_not_answered_yet_survives_the_wire.
         // A row that is still in flight survives the wire, and says so — what

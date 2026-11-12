@@ -6,7 +6,9 @@ terminal-target-manage = Manage environments…
 terminal-target-choose = Choose where this runs
 terminal-start-failed-title = The shell couldn’t start
 terminal-start-retry = Try again
+terminal-prompt = Command line
 terminal-restart = Restart shell
+terminal-runs-elsewhere = This session's shell runs on another device or for someone else. Restart shell to run one here.
 terminal-reconnecting = Reconnecting…
 terminal-held-title = This needs a Linux machine.
 terminal-held-add-card-message = Add a card to continue.
@@ -47,5 +49,58 @@ terminal-claim-pane = A new process took the session
 terminal-run = Asked the session to run { $command }
 terminal-rerun = Asked the session to run a command again
 terminal-rerun-test = Asked the session to run { $test } again
+terminal-stop = Stopped the command the session was running
 terminal-record-run = Ran { $command }
 terminal-remember = Remembered { $command }
+terminal-used = Remembered the environment this device opened last
+terminal-recent-environments-devices = Remembered the environment each device opened last
+terminal-link-in-output = Link in visible terminal output
+terminal-a11y-description = Shared terminal. Typing goes to the shell running on this device.
+terminal-a11y-graphics = { $count ->
+    [one] One picture shows in the terminal.
+   *[other] { $count } pictures show in the terminal.
+}
+terminal-session-ended = Session ended. The shell has exited, so typing no longer reaches it.
+terminal-session-exit-unknown = Session ended. The shell's exit status could not be read.
+terminal-session-input-unavailable = Session ended. Input is unavailable.
+terminal-session-read-failed = Session ended. The terminal can no longer read from the shell.
+
+## The close control of the terminal's own panels
+terminal-a11y-close = Close
+
+## Actions
+
+terminal-history = Command history
+terminal-history-remember = Remember a command
+terminal-effects-inspect-session = Inspect session
+terminal-effects-read-screen = Read output
+terminal-effects-inspect-editor = Inspect field
+terminal-effects-replace-editor-selection = Replace selection
+terminal-effects-send = Send text
+terminal-effects-interrupt = Interrupt process
+terminal-effects-clear = Clear screen
+terminal-effects-restart = Restart shell
+terminal-effects-paste = Paste
+terminal-effects-paste-primary = Paste selection
+terminal-effects-open-in = Open in…
+terminal-effects-create-environment = New environment
+terminal-effects-grant-folder = Share a folder
+terminal-effects-rename-environment = Rename environment
+terminal-effects-copy-visible = Copy visible output
+terminal-effects-copy-selection = Copy selected output
+terminal-effects-select-all = Select all output
+terminal-effects-history-top = Show oldest output
+terminal-effects-history-live = Return to live output
+terminal-effects-open-item = Show item
+terminal-effects-open-link = Open link
+terminal-session = Terminal
+terminal-session-run = Run command
+terminal-session-rerun = Run again
+terminal-session-rerun-test = Run test again
+terminal-session-stop = Stop command
+terminal-session-record-run = Record a run
+terminal-session-record-target = Record where the session runs
+terminal-session-record-relay-session = Record the reattached session
+terminal-session-claim-pane = Claim a pane
+terminal-recent-environments = Recent environments
+terminal-recent-environments-used = Record a used environment

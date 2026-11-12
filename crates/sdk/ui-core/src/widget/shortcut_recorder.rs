@@ -444,8 +444,9 @@ impl Widget for ShortcutRecorder {
             .contains(point)
             .then_some(winit::window::CursorIcon::Pointer)
     }
-    fn tooltip(&self) -> Option<&str> {
-        self.invalid.then_some("Shortcut unavailable")
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.invalid
+            .then_some(std::borrow::Cow::Borrowed("Shortcut unavailable"))
     }
     fn is_focusable(&self) -> bool {
         true
@@ -465,12 +466,14 @@ impl Widget for ShortcutRecorder {
         state.invalid = self.invalid;
         let mut node = AccessNode::new(Role::Button)
             .with_bounds(self.interaction.minimum_target_rect(self.rect))
-            .with_name("Change shortcut")
+            .with_name(crate::i18n::widget_format("widget-shortcut-change", &[]))
             .with_value(self.binding().accessible_label(self.platform))
             .with_state(state);
         if self.invalid {
-            node =
-                node.with_description("That shortcut is unavailable. Activate to choose another.");
+            node = node.with_description(crate::i18n::widget_format(
+                "widget-shortcut-unavailable",
+                &[],
+            ));
         }
         Some(node)
     }

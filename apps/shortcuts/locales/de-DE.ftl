@@ -1,0 +1,175 @@
+shortcuts-runs = Letzte Ausführungen
+shortcuts-runs-empty = Gestartete Ausführungen erscheinen hier.
+shortcuts-edit = Bearbeiten
+shortcuts-duplicate = Duplizieren
+shortcuts-run = Ausführen
+shortcuts-delete = Löschen
+shortcuts-library-unavailable = Gespeicherte Kurzbefehle sind hier nicht verfügbar
+shortcuts-saved-empty = Noch keine Kurzbefehle
+shortcuts-saved-empty-draft = Beschreibe oben einen, und der Agent entwirft ihn für dich.
+shortcuts-saved-empty-blank = Gespeicherte Kurzbefehle erscheinen hier.
+shortcuts-last-run = Letzte Ausführung
+shortcuts-input-placeholder = Wert eingeben
+shortcuts-blocks = Bausteine
+shortcuts-name = Name
+shortcuts-review = Prüfen und speichern …
+shortcuts-discard-button = Entwurf verwerfen
+shortcuts-catalogue-unavailable = Die Aktionen deiner Apps konnten nicht gelesen werden
+shortcuts-catalogue-empty = Noch keine App bietet hier Aktionen an.
+shortcuts-catalogue-loading = Die Aktionen deiner Apps werden gelesen …
+shortcuts-steps = Schritte
+shortcuts-steps-empty = Füge den ersten Schritt hinzu: eine Aktion deiner Apps oder einen Baustein.
+shortcuts-inputs = Eingaben
+shortcuts-input-name = Name der Eingabe
+shortcuts-input-type = Art der Eingabe
+shortcuts-add-input-button = Eingabe hinzufügen
+shortcuts-output = Ergebnis
+shortcuts-remove = Entfernen
+shortcuts-move-up = Nach oben
+shortcuts-move-down = Nach unten
+shortcuts-nest-step = In den Schritt darüber verschieben
+shortcuts-lift-step = Aus seinem Schritt herausziehen
+shortcuts-add-step-button = Schritt hinzufügen
+shortcuts-when-it-fails = Wenn dieser Schritt scheitert
+shortcuts-stop-the-shortcut = Den Kurzbefehl beenden
+shortcuts-try-again = Erneut versuchen
+shortcuts-do-these-instead = Stattdessen andere Schritte tun
+shortcuts-go-on-with-a-value = Mit einem Wert fortfahren
+shortcuts-add-the-steps-to-do-instead = Füge die stattdessen auszuführenden Schritte darunter hinzu
+shortcuts-close = Schließen
+shortcuts-fold-step = Seine Schritte ausblenden
+shortcuts-open-step = Seine Schritte einblenden
+shortcuts-show-text = Programmtext anzeigen
+shortcuts-show-blocks = Bausteine anzeigen
+shortcuts-text-view = Programmtext
+shortcuts-steps-read-only = Wechsle zurück zu den Bausteinen, um die Schritte zu ändern.
+shortcuts-condition = Bedingung
+shortcuts-then = Dann
+shortcuts-repeat = Für jedes Element
+shortcuts-otherwise = Sonst
+shortcuts-items = Elemente
+shortcuts-variable = Variablenname
+shortcuts-value = Wert
+shortcuts-question = Frage
+shortcuts-ai-input = Text
+shortcuts-ai-prompt = Anweisung
+shortcuts-grant-title = Diesen Kurzbefehl speichern?
+shortcuts-grant-explain = Beim Speichern darf dieser Kurzbefehl die hier aufgeführten App-Aktionen nutzen, und nichts anderes. Bei jeder Ausführung darf er eine nur nutzen, wenn auch die ausführende Person sie nutzen darf.
+shortcuts-grant-none = Er nutzt keine App-Aktionen und kann daher nichts in deinen Apps lesen oder ändern.
+shortcuts-grant-blocked = Behebe das, bevor du speicherst
+shortcuts-cancel = Abbrechen
+shortcuts-save = Kurzbefehl speichern
+shortcuts-describe = Beschreibe einen Kurzbefehl
+shortcuts-describe-placeholder = Zum Beispiel: Fasse jeden Morgen meine neuen Notizen zusammen und schick sie mir per Mail
+shortcuts-draft-it = Entwerfen
+shortcuts-drafting = Der Agent entwirft …
+shortcuts-draft-failed = Der Agent konnte ihn nicht entwerfen
+shortcuts-draft-problems = Prüfe das, bevor du speicherst
+shortcuts-open-drafted = Als Entwurf öffnen
+shortcuts-proposal = Ein Kurzbefehl für das, was du immer wieder tust
+shortcuts-ignore-proposal = Nicht mehr anbieten
+shortcuts-grant = Was er tun dürfte
+shortcuts-refine = Nach einer Ausführung ändern
+shortcuts-refine-placeholder = Zum Beispiel: Überspringe die, die archiviert sind
+shortcuts-refine-it = Änderung vorschlagen
+
+## Verlauf
+
+shortcuts-draft-name = Den Kurzbefehl { $item } umbenannt
+shortcuts-draft-shortcut = Einen Kurzbefehlsentwurf aus einem Vorschlag begonnen
+shortcuts-draft-proposal = Einen Kurzbefehlsentwurf aus wiederholter Arbeit begonnen
+shortcuts-ignore-proposal-history = Aufgehört, einen Kurzbefehl für wiederholte Arbeit anzubieten
+shortcuts-set-schedule = Den täglichen Zeitplan von { $item } geändert
+shortcuts-draft-output = Geändert, was { $item } zurückmeldet
+shortcuts-new-draft = Den Kurzbefehl { $name } begonnen
+shortcuts-open-shortcut = Einen gespeicherten Kurzbefehl zum Ändern geöffnet
+shortcuts-discard = Den Entwurf { $item } verworfen
+shortcuts-add-step = Einen Schritt zu { $item } hinzugefügt
+shortcuts-replace-step = Schritt { $path } von { $item } geändert
+shortcuts-bind-argument = { $param } von Schritt { $path } in { $item } gebunden
+shortcuts-remove-step = Schritt { $path } aus { $item } entfernt
+shortcuts-move-step = Schritt { $path } von { $item } verschoben
+shortcuts-add-input = Die Eingabe { $name } zu { $item } hinzugefügt
+shortcuts-remove-input = Die Eingabe { $name } aus { $item } entfernt
+shortcuts-schedule = Täglicher Zeitplan
+shortcuts-schedule-enabled = Einen täglichen Zeitplan nach lokaler Zeit einschalten
+shortcuts-schedule-hour = Lokale Stunde
+shortcuts-schedule-minute = Lokale Minute
+shortcuts-schedule-description = Sobald du den Kurzbefehl speicherst, läuft er jeden Tag zu dieser Zeit. Ist dieser Computer dann aus, läuft er einmal, sobald er wieder da ist.
+shortcuts-schedule-review = { $time }, Ortszeit dieses Geräts
+shortcuts-schedule-missed-once = Verpasste Läufe werden einmal ausgeführt.
+shortcuts-schedule-missed-skip = Verpasste Läufe werden übersprungen.
+
+shortcuts-no-matching-actions = Keine Aktionen passen zu diesem Filter
+
+## Fenster- und Barrierefreiheits-Texte
+shortcuts-a11y-window = Tastenkürzel
+
+## What the window shows
+shortcuts-running = Läuft…
+shortcuts-finished = Fertig
+shortcuts-finished-degraded = Fertig: { $detail }
+shortcuts-stopped = Gestoppt: { $detail }
+shortcuts-repeat-hint = In der Wiederholung ist jedes Element die Variable { $variable }
+shortcuts-problems = { $count ->
+    [one] { $count } Problem vor dem Speichern beheben
+   *[other] { $count } Probleme vor dem Speichern beheben
+}
+shortcuts-param-type-text = Text
+shortcuts-param-type-integer = Ganze Zahl
+shortcuts-param-type-number = Zahl
+shortcuts-param-type-boolean = Ja oder nein
+shortcuts-param-type-date-time = Datum und Uhrzeit
+shortcuts-param-type-secret = Geheimnis
+shortcuts-param-type-resource = Element aus einer App
+shortcuts-param-type-object = Gruppe von Werten
+shortcuts-param-type-array = Liste
+
+## What the last run of a shortcut came to
+shortcuts-not-run-yet = Noch nicht ausgeführt
+shortcuts-running-since = Läuft seit { $time }
+shortcuts-finished-at = Um { $time } beendet
+shortcuts-finished-at-degraded = Um { $time } beendet, mit Schritten, die zurückblieben: { $steps }
+shortcuts-stopped-at = Um { $time } gestoppt: { $reason }
+shortcuts-evidence = Du hast diese { $steps } { $steps ->
+    [one] Schritt
+   *[other] Schritte
+} { $times } Mal hintereinander gemacht.
+
+## Where a problem is, and what became of the last change
+shortcuts-problem-shortcut = Kurzbefehl
+shortcuts-problem-result = Ergebnis
+shortcuts-problem-a-step = Ein Schritt
+shortcuts-problem-step = Schritt { $number }
+shortcuts-deleted = “{ $name }” gelöscht
+shortcuts-not-finished = Konnte nicht abgeschlossen werden
+
+## Actions
+
+shortcuts-door-refresh = Kurzbefehle neu laden
+shortcuts-door-save = Kurzbefehl speichern
+shortcuts-door-run = Kurzbefehl ausführen
+shortcuts-door-delete = Kurzbefehl löschen
+shortcuts-door-describe = Mit dem Agenten entwerfen
+shortcuts-door-refine = Mit dem Agenten nachschärfen
+shortcuts-workbench = Kurzbefehle
+shortcuts-workbench-draft-proposal = Vorgeschlagenen Kurzbefehl öffnen
+shortcuts-workbench-ignore-proposal = Vorschlag nicht mehr anbieten
+shortcuts-workbench-allow-proposal = Vorschlag wieder anbieten
+shortcuts-workbench-new-draft = Neuer Kurzbefehl
+shortcuts-workbench-duplicate-draft = Entwurf duplizieren
+shortcuts-workbench-draft-shortcut = Kurzbefehl importieren
+shortcuts-workbench-open-shortcut = Gespeicherten Kurzbefehl bearbeiten
+shortcuts-workbench-duplicate-shortcut = Gespeicherten Kurzbefehl duplizieren
+shortcuts-workbench-set-schedule = Zeitplan festlegen
+shortcuts-workbench-discard = Entwurf verwerfen
+shortcuts-workbench-add-step = Schritt hinzufügen
+shortcuts-workbench-replace-step = Schritt ändern
+shortcuts-workbench-bind-argument = Argument binden
+shortcuts-workbench-remove-step = Schritt entfernen
+shortcuts-workbench-move-step = Schritt verschieben
+shortcuts-workbench-set-step-policy = Verhalten bei Fehlern festlegen
+shortcuts-workbench-set-nested = Schritt in anderen Block verschieben
+shortcuts-workbench-set-output = Ergebnis des Kurzbefehls festlegen
+shortcuts-workbench-add-input = Eingabe hinzufügen
+shortcuts-workbench-remove-input = Eingabe entfernen

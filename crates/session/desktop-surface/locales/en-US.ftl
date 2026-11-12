@@ -50,21 +50,6 @@ topbar-arrived-more = { $name } and { $count ->
     [one] one other
    *[other] { $count } others
 } are here
-topbar-clock-resume = Resume
-topbar-clock-pause = Pause
-topbar-clock-lap = Lap
-topbar-clock-add-minute = +1 min
-topbar-clock-close-stopwatch = Close floating stopwatch
-topbar-clock-close-timer = Close floating timer
-topbar-clock-floating-stopwatch = Floating stopwatch
-topbar-clock-floating-timer = Floating timer
-topbar-clock-floating-description = Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.
-topbar-clock-stopwatch = Stopwatch
-topbar-clock-timer = Timer
-topbar-clock-paused = Paused
-topbar-clock-running = Running
-topbar-clock-record-lap = Record lap
-topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
@@ -225,7 +210,6 @@ activity-pane-timeline = Timeline
 activity-pane-browse = Browse
 activity-pane-details = Details
 activity-resume-heading = Where you left off
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Resume
 activity-pending-edits = Waiting for current edits to finish
 activity-catch-up-quiet = { $workspace } · Nothing new needs your attention
@@ -608,11 +592,6 @@ workspace-settings-role-assign-placeholder = Role and collaborator
 workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
 workspace-settings-role-assign-named = Assign { $role }
 workspace-settings-role-assign-named-placeholder = Collaborator identity
-workspace-settings-app-action-placeholder = App, resource and action
-workspace-settings-app-action-grant = Let an app use another app's action
-workspace-settings-app-action-grant-description = Grant one application the use of one action on one resource another application publishes, in this workspace.
-workspace-settings-app-action-revoke = Stop an app using another app's action
-workspace-settings-app-action-revoke-description = Take back every grant letting one application use one action on one of another application's resources in this workspace.
 workspace-settings-title = Workspace Settings
 workspace-settings-close = Close Settings
 workspace-settings-tab-general = General
@@ -949,6 +928,7 @@ a11y-shell-sharing-change = Change what you share
 a11y-shell-follow-collaborator = Follow collaborator
 a11y-shell-follow = Follow { $name }
 a11y-shell-follow-description = Mirror this participant's live workspace view
+a11y-shell-stop-following = Stop following { $name }
 a11y-shell-invite = Invite people
 a11y-shell-invite-description = Create an authenticated workspace invitation
 a11y-shell-join = Join workspace
@@ -956,8 +936,7 @@ a11y-shell-join-description = Connect using an authenticated invitation
 a11y-shell-workspace-activity-description = Review grouped outcomes and what happened while you were away
 
 # Empty-workspace launchpad
-launchpad-title = Make something together
-launchpad-title-private = Start something
+launchpad-title = Start something
 launchpad-description = Choose a conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
@@ -968,7 +947,7 @@ launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
-launchpad-tasks-detail = Open the to-do list in Calendar
+launchpad-tasks-detail = Write down what needs doing
 launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
@@ -992,11 +971,6 @@ people-panel-here-count = { $count ->
     [one] You and 1 other
    *[other] You and { $count } others
 }
-people-panel-here-watching = { $count ->
-    [0] Just you
-    [one] You and 1 other
-   *[other] You and { $count } others
-}, { $watching } watching
 people-panel-section-people = People
 people-panel-section-agents = Agents
 people-panel-section-devices = Your devices
@@ -1023,30 +997,18 @@ people-panel-follow = Follow
 people-panel-stop-following = Stop
 
 # The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-unpin = Put back in the bar
+a11y-people-unpin = Put who is here back in the bar
+people-panel-screen-private = Keeps their place private
+people-panel-nothing-open = Nothing open on their screen
 people-panel-pin = Keep on screen
 a11y-people-pin = Keep who is here on screen
 a11y-people-overlay = Who is here
-people-overlay-title = { $count ->
-    [0] Just you
-    [one] 1 here
-   *[other] { $count } here
-}
-people-overlay-unpin = Put back in the bar
-people-overlay-follow-name = Follow { $name }
-people-overlay-doing-nothing = Here
-people-overlay-screen-private = { $name } keeps where they are to themselves
-people-overlay-empty-desk = Nothing open on { $name }’s screen
-people-overlay-message-placeholder = Message { $name }
-people-overlay-message-you = You
-people-overlay-send = Send
-people-overlay-own-status = What you're doing
-people-overlay-own-status-placeholder = What are you working on?
-people-overlay-own-status-clear = Clear what you're doing
 a11y-people-follow = Follow { $name }
 a11y-people-stop-following = Stop following { $name }
-launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
-launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
-launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
+launchpad-subtitle = Everyone in this workspace sees what you make here.
+launchpad-subtitle-private = Only you see what you make here until you invite someone.
+launchpad-subtitle-public = This workspace is public: anyone who joins sees what you make here.
 
 # The Alt+Tab window switcher.
 window-switcher-title = Switch windows
@@ -1079,8 +1041,7 @@ overview-presence-many = { $count } people are here
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
 browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
-browser-welcome-hint = Arrow keys move, Enter opens, Ctrl+K finds any app
-browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
+browser-welcome-hint = Arrow keys move, Enter opens
 
 # The workspace overview every desktop shows
 overview-title = Workspace overview
@@ -1118,11 +1079,16 @@ overview-tilo-host-self = Your own host
 overview-tilo-host-provider = Hosting provider
 overview-tilo-manage-billing = Manage billing
 overview-tilo-agent-everywhere = All your workspaces
-overview-tilo-agent-running = { $runs ->
-        [one] working now
+overview-tilo-agent-everywhere-lower = all your workspaces
+overview-tilo-agent-browser-pages = Operates web pages in Browser
+overview-tilo-agent-working = { $runs ->
+        [one] Working now
        *[other] { $runs } runs now
     }
 overview-tilo-revoke = Revoke
+overview-tilo-revoke-question = { $agent } loses access to { $reach } and stops now
+overview-tilo-revoke-access = Revoke access
+overview-tilo-keep = Keep
 overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace or strip to move it there.
 overview-strips-title = Strips in this workspace
@@ -1235,6 +1201,7 @@ strip-switcher-remove = Remove
 
 ## Reporting a problem by pointing at it
 feedback-report-problem = Report a problem…
+profile-action-devices-access = Devices and access
 feedback-picker-hint = Click what isn’t working. Shift-click or drag to pick more, scroll to widen, Esc to leave.
 feedback-picker-picked = { $count ->
     [one] 1 part picked. Shift-click or drag to pick more.
@@ -1306,6 +1273,15 @@ desk-look-window = See { $window } as a picture
 desk-read-window = Read what { $window } shows
 session-host-new-workspace = New workspace
 session-host-new-workspace-description = Make one on this computer
+session-host-branch-workspace = Branch workspace
+session-host-branch-workspace-description = A copy of this one that goes its own way
+desktop-branch-workspace-name = { $name } branch
+desktop-cannot-branch-workspace = This workspace holds what you can't read, so it can't be branched here
+session-branching-workspace = Branching { $name }
+session-branching-workspace-body = { $branch } opens once its records, files and environments are copied.
+session-branched-workspace = { $branch } is ready
+session-branched-workspace-body = It has what { $name } has, with you as its only member. Its chat stayed behind.
+session-branch-failed = { $branch } is not complete
 session-host-join-workspace = Join a workspace
 session-host-join-workspace-description = From its directory
 session-host-leave-workspace = Leave workspace
@@ -1323,9 +1299,13 @@ session-left-workspace = You left { $name }
 session-left-workspace-body = Its windows are gone from this computer. You can join it again from the workspace directory.
 session-deleted-workspace = { $name } is deleted
 session-deleted-workspace-body = It is gone from this computer and from your list of workspaces.
+session-owner-deleted-workspace = { $name } was deleted by its owner
+session-owner-deleted-workspace-body = It is gone from this computer, and nothing in it can be opened anymore.
 session-joined-workspace = You joined { $name }
 session-joined-workspace-body = It is open now, with everything its people keep in it.
 session-join-failed-title = Couldn't join the workspace
+session-awaiting-admission = This device isn't in { $name } yet
+session-awaiting-admission-body = { $host } hosts { $name } and has to take this device in first. Its apps here wait until this device reaches { $host } once.
 desktop-no-workspace = There is no workspace called { $name }
 desktop-joined-workspace-unknown = That workspace shares a workspace this computer cannot join
 desk-first-workspace = This is the first workspace
@@ -1425,6 +1405,7 @@ desktop-display-name = Display { $number }
 # What a person can do to one window, from its own menu.
 window-menu-reveal = Go to this window
 window-menu-rename = Name this window…
+window-tab-name = Window name
 window-menu-full-screen = Full screen
 window-menu-exit-full-screen = Exit full screen
 window-menu-maximize = Fill the strip
@@ -1489,9 +1470,72 @@ activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
 
-profile-agent-card = Open card
+profile-agent-card = See its work
 profile-agent-stop = Stop
 profile-agent-undo-run = Undo run
 profile-agent-take-over = Take over
 profile-agent-revoke = Revoke access
 profile-agent-now = Now
+task-programs-resource = Task programs
+task-programs-run = Run a program
+task-programs-run-detail = Runs a tilolang program as a step of the task's run, as the agent working the task, and answers what it read or changed.
+
+## What a grant covers when it covers the whole tree
+workspace-settings-scope-everything = Everything
+activity-grant-everything = Everything
+
+## Actions
+
+so-tilo-chrome-about = About Tilo
+so-tilo-chrome-activity = Workspace history
+so-tilo-chrome-branch-workspace = Branch the workspace
+so-tilo-chrome-close-activity = Close the history
+so-tilo-chrome-close-window = Close a window
+so-tilo-chrome-delete-workspace = Delete a workspace
+so-tilo-chrome-equalize = Equal widths
+so-tilo-chrome-fixed-shortcut = Run a fixed shortcut
+so-tilo-chrome-float = Float the window
+so-tilo-chrome-fullscreen = Full screen
+so-tilo-chrome-history = Window history
+so-tilo-chrome-join-workspace = Join a workspace
+so-tilo-chrome-leave-workspace = Leave a workspace
+so-tilo-chrome-maximize = Maximize a window
+so-tilo-chrome-move-strip = Move a strip
+so-tilo-chrome-move-tab = Move a tab
+so-tilo-chrome-new-group = New group
+so-tilo-chrome-new-strip = New strip
+so-tilo-chrome-new-workspace = New workspace
+so-tilo-chrome-notifications = Notification centre
+so-tilo-chrome-open-app = Open an app
+so-tilo-chrome-overview = Overview
+so-tilo-chrome-pan = Pan a strip
+so-tilo-chrome-quick-settings = Quick Settings
+so-tilo-chrome-rename = Rename
+so-tilo-chrome-reopen-closed = Reopen the closed window
+so-tilo-chrome-reveal-top-bar = Show the top bar
+so-tilo-chrome-scroll = Scroll a window
+so-tilo-chrome-set-width = Set the width
+so-tilo-chrome-share-window = Share a window
+so-tilo-chrome-shortcut = Run a shortcut
+so-tilo-chrome-show-app = Show an app
+so-tilo-chrome-show-person = Show a person
+so-tilo-chrome-show-strip = Show a strip
+so-tilo-chrome-show-strips = Show the strips
+so-tilo-chrome-split-right = Split right
+so-tilo-chrome-step-strip = Step through the strips
+so-tilo-chrome-stop-desktop-control = Stop the remote control
+so-tilo-chrome-switch-workspace = Switch workspace
+so-tilo-chrome-tilo-menu = Tilo menu
+so-tilo-chrome-toggle-collaborators = Who is here
+so-tilo-chrome-workspace-menu = Workspace menu
+so-tilo-chrome-workspace-settings = Workspace settings
+so-tilo-desk-choose-search-row = Choose a search result
+so-tilo-desk-close-tab = Close a window
+so-tilo-desk-focus = Focus a window
+so-tilo-desk-focus-display = Focus a display
+so-tilo-desk-force-quit-app = Force quit the app
+so-tilo-desk-launchpad = Choose a card
+so-tilo-desk-move-to-display = Move to another display
+so-tilo-desk-search = Search the desktop
+so-tilo-desk-step-focus = Step through the windows
+so-tilo-desk-wait-window = Keep waiting

@@ -5,10 +5,11 @@
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
+use tilo_session_core::notice::Notice;
 use tilolang::IdsLock;
 use tilolang_runtime::{Principal, ResourceRef, UiNode, Value};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::notices::{Notice, Notices, Tell};
+use tilolang_tilo::notices::Notices;
 use tilolang_tilo::publish::resource_id;
 use tilolang_tilo::records_service::{RecordService, reading_type};
 
@@ -305,7 +306,7 @@ fn tasks_root(service: &RecordService) -> tilo_actions::ResourceId {
 #[derive(Default)]
 struct Told(std::rc::Rc<std::cell::RefCell<Vec<Notice>>>);
 
-impl Tell for Told {
+impl tilo_session_core::notice::Notices for Told {
     fn show(&self, notice: &Notice) {
         self.0.borrow_mut().push(notice.clone());
     }
@@ -328,27 +329,6 @@ fn task(service: &mut RecordService, meta: &tilolang_runtime::Meta, title: &str)
     };
     service.settle();
     output.resources.first().cloned().expect("the task it made")
-}
-
-/// The service keeps every loaded package's records, so a launch of any of them is hosted: the
-/// address it names is the resource the app's views read their state from (its root), by the id
-/// the door publishes it at (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
-/// Whether a launch is hosted follows from the service keeping the record, never from per-app
-/// code.
-#[test]
-fn the_service_names_the_root_of_every_app_whose_record_it_keeps() {
-    let (service, meta) = service();
-    // The notes app's record is the notebook: the root the service publishes for it, by the
-    // root type's id (`root-<type id>`, as `Host::root_record` makes it).
-    let notebook = meta.roots.first().expect("the notes declare their root");
-    assert_eq!(
-        service.hosted(APP).as_deref(),
-        Some(resource_id(APP, &format!("root-{notebook}")).as_str()),
-        "the address is the app's root, as the door publishes it"
-    );
-    // A package this service loaded is hosted as one; an app it keeps nothing of is not, and
-    // its window opens its own record as every app did before the session served one.
-    assert_eq!(service.hosted("so.tilo.nowhere"), None);
 }
 
 #[test]
@@ -409,8 +389,12 @@ fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
         1,
         "the person it names sees it: {theirs:#?}"
     );
-    assert_eq!(theirs.show[0].opens.app, TASKS_APP);
-    assert_eq!(theirs.show[0].opens.resource, call);
+    let opens = theirs.show[0]
+        .place
+        .as_ref()
+        .expect("it opens what it names");
+    assert_eq!(opens.app, TASKS_APP);
+    assert_eq!(opens.resource, call);
     assert!(told.borrow().is_empty(), "this device is Ada's");
 
     // And once: the turn after tells nothing of it again.

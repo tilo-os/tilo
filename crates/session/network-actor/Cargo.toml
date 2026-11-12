@@ -35,6 +35,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+# Who a device is and the revision a fact carries, as every host reads them.
+tilo-fabric-core = { path = "../../collab/fabric-core" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
@@ -45,6 +47,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-room-host = { path = "../../hosting/tilo-room-host" }
 tilo-rt.workspace = true
+tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-window-share = { path = "../window-share" }
@@ -63,6 +66,10 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 fnv.workspace = true
+# The records a device's apps write: what a member's link carries and this
+# device's apps read.
+automerge.workspace = true
+tilo-automerge-isolate.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }

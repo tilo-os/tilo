@@ -6,7 +6,7 @@ use ::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use bytes::Bytes;
 use js_sys::{Reflect, Uint8Array};
 use send_wrapper::SendWrapper;
-use tilo_clock::Instant;
+use tilo_clock::time::Instant;
 use url::Url;
 use wasm_bindgen::{JsCast as _, JsValue};
 use web_sys::{
@@ -113,7 +113,7 @@ async fn send(redirects: Redirects, request: Request) -> Result<RawResponse, Net
     let outgoing = web_sys::Request::new_with_str_and_init(route.url.as_str(), &init)
         .map_err(|error| NetError::InvalidRequest(message(&error)))?;
 
-    let started = Instant::now();
+    let started = tilo_clock::now();
     let fetched = deadline(request.timeout, async {
         let global = global().ok_or_else(|| NetError::connect("this page has no fetch"))?;
         let fetch: js_sys::Function = get(&global, "fetch")
@@ -219,7 +219,7 @@ impl Body {
         Self(SendWrapper::new(Stream {
             reader,
             controller,
-            deadline: remaining.and_then(|remaining| Instant::now().checked_add(remaining)),
+            deadline: remaining.and_then(|remaining| tilo_clock::now().checked_add(remaining)),
         }))
     }
 
@@ -245,7 +245,7 @@ impl Stream {
         };
         let remaining = self
             .deadline
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            .map(|deadline| deadline.saturating_duration_since(tilo_clock::now()));
         let read = deadline(remaining, async {
             promise(reader.read())
                 .await

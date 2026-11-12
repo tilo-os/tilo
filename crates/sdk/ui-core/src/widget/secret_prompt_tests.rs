@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::{widget_format, widget_text};
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 use crate::testing::{Dispatch, dispatch};
 use winit::keyboard::ModifiersState;
@@ -282,7 +283,10 @@ fn a_short_pin_is_refused_in_place() {
     });
     assert_eq!(
         prompt.notice_line().map(|(line, _)| line),
-        Some(crate::i18n!("secret-prompt-attempts-left", "count" => 3u32))
+        Some(widget_format(
+            "secret-prompt-attempts-left",
+            &[("count", 3u32.into())]
+        ))
     );
     typed(&mut prompt, "12");
     dispatch(&mut prompt, &named_key(NamedKey::Enter));
@@ -317,7 +321,7 @@ fn a_puk_asks_for_a_new_pin_twice_and_refuses_a_mismatch() {
     assert!(prompt.take_outcome().is_none());
     assert_eq!(
         prompt.error(),
-        Some(crate::i18n!("secret-prompt-pins-differ").as_str())
+        Some(widget_text("secret-prompt-pins-differ").as_str())
     );
     assert_eq!(prompt.focused_field(), Some(FieldRole::ConfirmPin));
 
@@ -335,7 +339,7 @@ fn caps_lock_is_noticed_while_typing_a_secret() {
     assert!(prompt.caps_lock_on());
     assert_eq!(
         prompt.notice_line(),
-        Some((crate::i18n!("secret-prompt-caps-lock"), NoticeTone::Warning))
+        Some((widget_text("secret-prompt-caps-lock"), NoticeTone::Warning))
     );
     typed(&mut prompt, "a");
     assert!(!prompt.caps_lock_on());

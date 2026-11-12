@@ -16,7 +16,6 @@ tilo-callstream = { path = "../../collab/tilo-callstream" }
 # Codec negotiation and the real-time hardware and software encoders.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 # The codec name a page shared as a display list announces.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 serde.workspace = true
 thiserror.workspace = true

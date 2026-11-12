@@ -41,6 +41,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ViewCx};
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::page::{self, Frame, stack};
+use crate::resource::CATALOG;
 
 /// Display facts only; final installation still reprobes through the native helper.
 #[derive(Clone)]
@@ -370,7 +371,7 @@ impl SetupApp {
             worker_tx,
             worker_rx,
             worker_launcher,
-            status: "Choose an available experience to begin.".into(),
+            status: super::strings::t("imager-setup-status-choose-experience"),
             status_is_error: false,
             composed: ui::widget::Composed::default(),
             starts_when_live: false,
@@ -550,7 +551,7 @@ impl SetupApp {
         match self.desktop_flow.start_install() {
             Ok(()) => {
                 (self.desktop_offer)();
-                self.status = "Rechecking this host before download…".into();
+                self.status = super::strings::t("imager-setup-status-rechecking-before-download");
             }
             Err(error) => {
                 self.status = error;
@@ -583,18 +584,20 @@ impl SetupApp {
         self.status_is_error = false;
         match command {
             SetupCommand::Next => {
-                self.status = "Review is the last setup step.".into();
+                self.status = super::strings::t("imager-setup-status-review-last");
                 self.status_is_error = true;
             }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
                 if self.desktop_flow.cancel_download() {
-                    self.status = "Cancelling the package download…".into();
+                    self.status = super::strings::t("imager-setup-status-cancelling-package");
                 }
             }
             SetupCommand::RetryDesktop if self.retry_guided_desktop() => {}
             SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
-                Ok(()) => self.status = "Rechecking this host before retry…".into(),
+                Ok(()) => {
+                    self.status = super::strings::t("imager-setup-status-rechecking-before-retry");
+                }
                 Err(error) => {
                     self.status = error;
                     self.status_is_error = true;
@@ -605,61 +608,72 @@ impl SetupApp {
                 let result = if on_full_os_review {
                     self.internal_download_flow
                         .as_mut()
-                        .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                        .ok_or_else(|| {
+                            crate::setup::strings::t("imager-setup-error-download-unavailable")
+                        })
                         .and_then(|flow| {
-                            let key = flow
-                                .offered_selection()
-                                .ok_or("No Full Tilo download is currently offered.")?;
+                            let key = flow.offered_selection().ok_or(super::strings::t(
+                                "imager-setup-error-download-not-offered",
+                            ))?;
                             flow.start_selected(key)
                         })
                 } else {
-                    Err("Full Tilo downloads can start only from the Full Tilo review.".into())
+                    Err(super::strings::t("imager-setup-error-download-review-only"))
                 };
-                self.apply_internal_command_result(result, "Downloading Tilo…");
+                let pending = super::strings::t("imager-setup-status-downloading");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::PauseInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                    .ok_or_else(|| {
+                        crate::setup::strings::t("imager-setup-error-download-unavailable")
+                    })
                     .and_then(InternalDownloadFlow::pause);
-                self.apply_internal_command_result(result, "Pausing download…");
+                let pending = super::strings::t("imager-setup-status-pausing-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::ResumeInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No saved download is available.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-saved-download"))
                     .and_then(InternalDownloadFlow::resume);
-                self.apply_internal_command_result(result, "Downloading Tilo…");
+                let pending = super::strings::t("imager-setup-status-downloading");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::CancelInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                    .ok_or_else(|| {
+                        crate::setup::strings::t("imager-setup-error-download-unavailable")
+                    })
                     .and_then(InternalDownloadFlow::cancel);
-                self.apply_internal_command_result(result, "Cancelling download…");
+                let pending = super::strings::t("imager-setup-status-cancelling-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::DiscardInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No unfinished download data is available.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-unfinished-download"))
                     .and_then(InternalDownloadFlow::discard);
-                self.apply_internal_command_result(result, "Discarding unfinished download data…");
+                let pending = super::strings::t("imager-setup-status-discarding-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::ReleaseInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "No verified download is held.".to_string())
+                    .ok_or_else(|| super::strings::t("imager-setup-error-no-verified-download"))
                     .and_then(InternalDownloadFlow::release);
-                self.apply_internal_command_result(result, "Keeping download for later…");
+                let pending = super::strings::t("imager-setup-status-keeping-download");
+                self.apply_internal_command_result(result, &pending);
             }
             SetupCommand::InternalInstallUnavailable => {
-                self.status =
-                    "Installation has not started. Protected staging is not available yet.".into();
+                self.status = super::strings::t("imager-setup-status-staging-unavailable");
                 self.status_is_error = true;
             }
             SetupCommand::InstallInternal
@@ -731,9 +745,7 @@ impl SetupApp {
             if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
-                        self.status =
-                            "Tilo Desktop is installed and verified. Sign out when you are ready."
-                                .into();
+                        self.status = super::strings::t("imager-desktop-installed-sign-out");
                         self.status_is_error = false;
                     }
                     DesktopFlowState::Failed { message, .. } => {
@@ -752,7 +764,7 @@ impl SetupApp {
             if self.internal_download_revision != flow.revision() {
                 self.internal_download_revision = flow.revision();
                 if on_full_os_review {
-                    self.status.clone_from(&flow.presentation().title);
+                    self.status = super::strings::t(flow.presentation().title_key);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
                         Some(super::internal_cache::coordinator::Phase::Failed)
@@ -781,7 +793,8 @@ impl SetupApp {
         changed
     }
 
-    fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
+    fn button(&self, id: &str, key: &str, command: SetupCommand) -> Button {
+        let label = crate::setup::strings::t(key);
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
             SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
@@ -793,12 +806,12 @@ impl SetupApp {
         };
         if let (Some(actions), Some(effect)) = (&self.actions, effect) {
             return actions.bind_effect_invocation(
-                Button::new(id, label).control_size(ControlSize::Regular),
+                Button::new(id, &label).control_size(ControlSize::Regular),
                 &effect,
             );
         }
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label)
+        Button::new(id, &label)
             .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
@@ -806,86 +819,120 @@ impl SetupApp {
     /// Tilo Desktop on the review: what will happen, and on which computer.
     fn desktop_install_card(&self) -> Section {
         let detail = match self.desktop_flow.state() {
-            DesktopFlowState::Checking => {
-                "Checking this computer and the signed Tilo Desktop catalog…".to_string()
-            }
-            DesktopFlowState::Unavailable { host, .. } => {
-                format!("Tilo Desktop isn't available for {host} yet.")
-            }
+            DesktopFlowState::Checking => CATALOG.t("imager-desktop-checking"),
+            DesktopFlowState::Unavailable { host, .. } => CATALOG.t_args(
+                "imager-desktop-unavailable",
+                &[("host", ui::i18n::ArgValue::Text(host.clone()))],
+            ),
             DesktopFlowState::Ready(selection) => {
-                if selection.already_installed {
-                    format!(
-                        "Tilo Desktop {} is already installed on {}. Continue to check the Tilo session; approve the check when asked.",
-                        selection.release.version, selection.host
-                    )
-                } else {
-                    format!(
-                        "Tilo Desktop {} is ready for {}. Continue to download it; approve the installation when asked.",
-                        selection.release.version, selection.host
-                    )
-                }
+                let version = (
+                    "version",
+                    ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                );
+                let host = ("host", ui::i18n::ArgValue::Text(selection.host.clone()));
+                CATALOG.t_args(
+                    if selection.already_installed {
+                        "imager-desktop-already-installed"
+                    } else {
+                        "imager-desktop-ready"
+                    },
+                    &[version, host],
+                )
             }
-            DesktopFlowState::Downloading(selection) => format!(
-                "Downloading and checking Tilo Desktop {} for {}. Cancelling now stops before anything is installed.",
-                selection.release.version, selection.host
+            DesktopFlowState::Downloading(selection) => CATALOG.t_args(
+                "imager-desktop-downloading",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Authorizing(selection) => format!(
-                "Waiting for you to approve installing Tilo Desktop {} on {}.",
-                selection.release.version, selection.host
+            DesktopFlowState::Authorizing(selection) => CATALOG.t_args(
+                "imager-desktop-authorizing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Preparing(selection) => format!(
-                "Checking Tilo Desktop {} for {} once more before installing.",
-                selection.release.version, selection.host
+            DesktopFlowState::Preparing(selection) => CATALOG.t_args(
+                "imager-desktop-preparing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Installing(selection) => format!(
-                "Installing Tilo Desktop {} on {}. Closing setup does not stop the installation.",
-                selection.release.version, selection.host
+            DesktopFlowState::Installing(selection) => CATALOG.t_args(
+                "imager-desktop-installing",
+                &[
+                    (
+                        "version",
+                        ui::i18n::ArgValue::Text(selection.release.version.clone()),
+                    ),
+                    ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                ],
             ),
-            DesktopFlowState::Verifying(selection) => {
-                format!("Checking the installed Tilo session on {}.", selection.host)
-            }
+            DesktopFlowState::Verifying(selection) => CATALOG.t_args(
+                "imager-desktop-verifying",
+                &[("host", ui::i18n::ArgValue::Text(selection.host.clone()))],
+            ),
             DesktopFlowState::Installed { selection, result } => {
                 if self.guided_desktop.is_some() {
                     self.status.clone()
                 } else {
-                    format!(
-                        "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
-                        result.version, selection.host
+                    CATALOG.t_args(
+                        "imager-desktop-installed",
+                        &[
+                            ("version", ui::i18n::ArgValue::Text(result.version.clone())),
+                            ("host", ui::i18n::ArgValue::Text(selection.host.clone())),
+                        ],
                     )
                 }
             }
             DesktopFlowState::Failed { kind, message, .. } => {
-                let what = match kind {
-                    DesktopFailureKind::DownloadCancelled => "The download was cancelled.",
-                    DesktopFailureKind::AuthorizationCancelled => {
-                        "The installation was not approved."
-                    }
-                    DesktopFailureKind::AuthorizationRefused => {
-                        "Installing needs an administrator's approval."
-                    }
-                    DesktopFailureKind::WorkerLost => "Checking this computer stopped early.",
-                    DesktopFailureKind::Readiness => "This computer is not ready for Tilo Desktop.",
-                    DesktopFailureKind::Download => "The download failed.",
-                    DesktopFailureKind::NativeTransaction => "The installation failed.",
-                };
+                let what = CATALOG.t(match kind {
+                    DesktopFailureKind::DownloadCancelled => "imager-desktop-download-cancelled",
+                    DesktopFailureKind::AuthorizationCancelled => "imager-desktop-not-approved",
+                    DesktopFailureKind::AuthorizationRefused => "imager-desktop-needs-admin",
+                    DesktopFailureKind::WorkerLost => "imager-desktop-stopped-early",
+                    DesktopFailureKind::Readiness => "imager-desktop-not-ready",
+                    DesktopFailureKind::Download => "imager-desktop-download-failed",
+                    DesktopFailureKind::NativeTransaction => "imager-desktop-install-failed",
+                });
                 if self.desktop_only {
-                    format!("{what} {message}")
+                    CATALOG.t_args(
+                        "imager-desktop-failed",
+                        &[
+                            ("what", ui::i18n::ArgValue::Text(what)),
+                            ("detail", ui::i18n::ArgValue::Text(message.clone())),
+                        ],
+                    )
                 } else {
-                    format!("{what} {message} Your folder choices are kept; check again to retry.")
+                    CATALOG.t_args(
+                        "imager-desktop-failed-retry",
+                        &[
+                            ("what", ui::i18n::ArgValue::Text(what)),
+                            ("detail", ui::i18n::ArgValue::Text(message.clone())),
+                        ],
+                    )
                 }
             }
         };
         let retained = if self.desktop_only {
             super::strings::t("installer-desktop-keep-existing")
         } else {
-            match self.capabilities.platform.host {
-                HostOs::Windows => "Windows stays installed and remains the startup default.",
-                HostOs::Linux => {
-                    "Your Linux installation stays as it is and remains the default session."
-                }
-                HostOs::Other => "Your current system stays installed and remains the default.",
-            }
-            .to_owned()
+            CATALOG.t(match self.capabilities.platform.host {
+                HostOs::Windows => "imager-retained-windows",
+                HostOs::Linux => "imager-retained-linux",
+                HostOs::Other => "imager-retained-other",
+            })
         };
         Section::new(vec![Box::new(
             page::related()
@@ -896,7 +943,7 @@ impl SetupApp {
                 ))
                 .push(Box::new(Text::new(&retained).dimmed())),
         )])
-        .with_header(SectionHeader::heading("Tilo Desktop"))
+        .with_header(SectionHeader::heading(CATALOG.t("imager-section-desktop")))
     }
 
     fn internal_download_card(&self) -> Section {
@@ -906,9 +953,9 @@ impl SetupApp {
             let summary = if presentation.phase.is_none()
                 && let Some(error) = flow.catalog_error()
             {
-                error.to_string()
+                super::strings::t(error)
             } else {
-                presentation.summary.clone()
+                super::strings::t(presentation.sentence_key)
             };
             content = content.push(Box::new(
                 Text::new(&summary)
@@ -917,65 +964,68 @@ impl SetupApp {
             ));
             let mut actions = Row::new();
             let mut any = false;
-            for (shown, id, label, command) in [
+            for (shown, id, key, command) in [
                 (
                     flow.can_start(),
                     "setup.internal.start",
-                    "Download Tilo",
+                    "imager-setup-action-start-download",
                     SetupCommand::StartInternalDownload,
                 ),
                 (
                     flow.can_pause(),
                     "setup.internal.pause",
-                    "Pause download",
+                    "imager-setup-action-pause-download",
                     SetupCommand::PauseInternalDownload,
                 ),
                 (
                     flow.can_cancel(),
                     "setup.internal.cancel",
-                    "Cancel download",
+                    "imager-setup-action-cancel-download",
                     SetupCommand::CancelInternalDownload,
                 ),
                 (
                     flow.can_resume(),
                     "setup.internal.resume",
-                    "Resume download",
+                    "imager-setup-action-resume-download",
                     SetupCommand::ResumeInternalDownload,
                 ),
                 (
                     flow.can_release(),
                     "setup.internal.release",
-                    "Keep for later",
+                    "imager-setup-action-release-download",
                     SetupCommand::ReleaseInternalDownload,
                 ),
                 (
                     flow.can_discard(),
                     "setup.internal.discard",
-                    "Discard unfinished download",
+                    "imager-setup-action-discard-download",
                     SetupCommand::DiscardInternalDownload,
                 ),
             ] {
                 if shown {
-                    actions = actions.push(Box::new(self.button(id, label, command)));
+                    actions = actions.push(Box::new(self.button(id, key, command)));
                     any = true;
                 }
             }
             if any {
                 content = content.push(Box::new(actions));
             }
-            return Section::new(vec![Box::new(content)])
-                .with_header(SectionHeader::heading(presentation.title.clone()));
+            return Section::new(vec![Box::new(content)]).with_header(SectionHeader::heading(
+                super::strings::t(presentation.title_key),
+            ));
         }
-        let detail = self.internal_download_error.as_deref().unwrap_or(
-            "Tilo can't be downloaded on this computer, so installation has not started.",
-        );
+        let detail = self
+            .internal_download_error
+            .clone()
+            .unwrap_or_else(|| super::strings::t("imager-desktop-cannot-download"));
         content = content.push(Box::new(
-            Text::new(detail)
+            Text::new(&detail)
                 .with_id("setup.internal.status")
                 .with_live(Politeness::Assertive),
         ));
-        Section::new(vec![Box::new(content)])
-            .with_header(SectionHeader::heading("Full Tilo download"))
+        Section::new(vec![Box::new(content)]).with_header(SectionHeader::heading(
+            CATALOG.t("imager-section-full-download"),
+        ))
     }
 
     fn review_body(&self) -> Column {
@@ -985,8 +1035,7 @@ impl SetupApp {
                 .as_ref()
                 .is_some_and(SupportReport::blocks_install)
             {
-                "A component needed for the desktop is unsupported. Resolve it below, then check again."
-                    .to_string()
+                CATALOG.t("imager-desktop-unsupported-component")
             } else {
                 self.internal_readiness_text()
             };
@@ -1005,7 +1054,7 @@ impl SetupApp {
                 .push(Box::new(
                     self.button(
                         "setup.check.continue",
-                        &super::strings::t("installer-preview-continue"),
+                        "installer-preview-continue",
                         SetupCommand::Next,
                     )
                     .with_enabled(self.check_ready()),
@@ -1045,7 +1094,9 @@ impl SetupApp {
                 Section::new(vec![Box::new(
                     Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
                 )])
-                .with_header(SectionHeader::heading("Before installing")),
+                .with_header(SectionHeader::heading(
+                    CATALOG.t("imager-section-before-installing"),
+                )),
             ));
         }
         body
@@ -1072,7 +1123,7 @@ impl SetupApp {
             let primary = if experience == Experience::FullOs {
                 Some((
                     "setup.internal.install-unavailable",
-                    "Install Tilo",
+                    "imager-setup-internal-install",
                     SetupCommand::InternalInstallUnavailable,
                     false,
                 ))
@@ -1080,20 +1131,20 @@ impl SetupApp {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Ready(_) => Some((
                         "setup.install",
-                        "Install Tilo Desktop",
+                        "imager-setup-desktop-install",
                         SetupCommand::InstallDesktop,
                         true,
                     )),
                     DesktopFlowState::Downloading(_) => Some((
                         "setup.cancel-download",
-                        "Cancel download",
+                        "imager-setup-desktop-cancel",
                         SetupCommand::CancelDesktopDownload,
                         true,
                     )),
                     DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => {
                         Some((
                             "setup.retry-desktop",
-                            "Check again",
+                            "imager-setup-desktop-recheck",
                             SetupCommand::RetryDesktop,
                             true,
                         ))
@@ -1103,7 +1154,7 @@ impl SetupApp {
                     {
                         Some((
                             "setup.retry-desktop",
-                            "Try again",
+                            "installer-desktop-retry",
                             SetupCommand::RetryDesktop,
                             true,
                         ))
@@ -1111,15 +1162,15 @@ impl SetupApp {
                     DesktopFlowState::Installed { .. } => None,
                     _ => Some((
                         "setup.install",
-                        "Installing…",
+                        "imager-setup-internal-installing",
                         SetupCommand::InstallDesktop,
                         false,
                     )),
                 }
             };
-            if let Some((id, label, command, enabled)) = primary {
+            if let Some((id, key, command, enabled)) = primary {
                 nav = nav.push(Box::new(
-                    self.button(id, label, command)
+                    self.button(id, key, command)
                         .role(ButtonRole::Primary)
                         .with_enabled(enabled),
                 ));
@@ -1496,7 +1547,6 @@ impl SetupApp {
             .internal_download_flow
             .as_ref()
             .and_then(InternalDownloadFlow::consume_failure)
-            .map(str::to_string)
         {
             self.internal_install.abort_stage("download", detail);
             true
@@ -1791,7 +1841,7 @@ impl SetupApp {
                 Some(HostCommand::FirmwareSettings { .. }) => Some(Box::new(
                     self.button(
                         "setup.internal.firmware-settings",
-                        &t("imager-setup-internal-remedy-firmware"),
+                        "imager-setup-internal-remedy-firmware",
                         SetupCommand::InternalFirmwareSettings,
                     )
                     .with_enabled(idle_host),
@@ -1799,7 +1849,7 @@ impl SetupApp {
                 Some(HostCommand::DisableFastStartup) => Some(Box::new(
                     self.button(
                         "setup.internal.disable-fast-startup",
-                        &t("imager-setup-internal-remedy-fast-startup"),
+                        "imager-setup-internal-remedy-fast-startup",
                         SetupCommand::InternalDisableFastStartup,
                     )
                     .with_enabled(idle_host),
@@ -1822,7 +1872,7 @@ impl SetupApp {
         content = content.push(Box::new(
             self.button(
                 "setup.internal.recheck",
-                &t("imager-setup-internal-recheck"),
+                "imager-setup-internal-recheck",
                 SetupCommand::RecheckInternal,
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
@@ -1851,7 +1901,7 @@ impl SetupApp {
                             .push(Box::new(
                                 self.button(
                                     "setup.internal.retry",
-                                    &t("imager-setup-internal-resume-retry"),
+                                    "imager-setup-internal-resume-retry",
                                     SetupCommand::RetryInternal,
                                 )
                                 .with_enabled(enabled),
@@ -1859,7 +1909,7 @@ impl SetupApp {
                             .push(Box::new(
                                 self.button(
                                     "setup.internal.remove",
-                                    &t("imager-setup-internal-resume-remove"),
+                                    "imager-setup-internal-resume-remove",
                                     SetupCommand::RemoveInternal,
                                 )
                                 .with_enabled(enabled),
@@ -1944,49 +1994,44 @@ impl SetupApp {
     /// Review navigation for an offered Full Tilo: Install, or Restart now /
     /// Restart later once the installer is set to start.
     fn internal_nav(&self, mut nav: Row) -> Row {
-        let t = super::strings::t;
         let install = &self.internal_install;
         if install.can_restart() {
             if !install.restart_deferred() {
                 nav = nav.push(Box::new(self.button(
                     "setup.internal.restart-later",
-                    &t("imager-setup-internal-restart-later"),
+                    "imager-setup-internal-restart-later",
                     SetupCommand::RestartInternalLater,
                 )));
             }
             return nav.push(Box::new(
                 self.button(
                     "setup.internal.restart",
-                    &t("imager-setup-internal-restart-now"),
+                    "imager-setup-internal-restart-now",
                     SetupCommand::RestartInternal,
                 )
                 .role(ButtonRole::Primary)
                 .with_enabled(self.host_command_pending.is_none()),
             ));
         }
-        let label = if install.is_running() {
-            t("imager-setup-internal-installing")
+        let key = if install.is_running() {
+            "imager-setup-internal-installing"
         } else if install.pending().is_some() {
-            t("imager-setup-internal-continue")
+            "imager-setup-internal-continue"
         } else {
-            t("imager-setup-internal-install")
+            "imager-setup-internal-install"
         };
         nav.push(Box::new(
-            self.button(
-                "setup.internal.install",
-                &label,
-                SetupCommand::InstallInternal,
-            )
-            .role(ButtonRole::Primary)
-            .with_enabled(
-                install
-                    .install_blocker(self.internal_download_ready())
-                    .is_ok()
-                    && !self
-                        .support_report
-                        .as_ref()
-                        .is_some_and(SupportReport::blocks_install),
-            ),
+            self.button("setup.internal.install", key, SetupCommand::InstallInternal)
+                .role(ButtonRole::Primary)
+                .with_enabled(
+                    install
+                        .install_blocker(self.internal_download_ready())
+                        .is_ok()
+                        && !self
+                            .support_report
+                            .as_ref()
+                            .is_some_and(SupportReport::blocks_install),
+                ),
         ))
     }
 }
@@ -2227,6 +2272,7 @@ mod tests {
     use ui::time::Duration;
 
     include!("desktop_journey_tests.rs");
+    include!("setup_buttons_language_tests.rs");
 
     #[test]
     fn migration_intent_cannot_be_attached_outside_full_os_review() {
@@ -2363,7 +2409,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.status")
-                        .name_contains("Full Tilo download"),
+                        .name_contains("No Tilo download is offered right now."),
                 )
                 .unwrap();
             harness
@@ -2427,7 +2473,7 @@ mod tests {
             ready
                 .expect(
                     &SemanticExpectation::named("setup.internal.release")
-                        .name_contains("Keep for later")
+                        .name_contains("Keep download for later")
                         .enabled(true),
                 )
                 .unwrap();

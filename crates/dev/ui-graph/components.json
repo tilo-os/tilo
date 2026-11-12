@@ -1,5 +1,5 @@
 {
-  "format": 7,
+  "format": 8,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -328,6 +328,20 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "links",
+          "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now. A view names them, `links: nb.notes`.\nA view whose records are a collection answers the picker's text with them (`links_query`) rather than handing all of them: what it offers is then what the picker is open to show, and offering none while the picker is closed costs it no read of the collection.",
+          "type": {
+            "list": "link"
+          }
+        },
+        {
+          "name": "commands",
+          "doc": "The commands the editor's slash menu offers besides the block kinds, by their labels: choosing one reports it as `command`.",
+          "type": {
+            "list": "text"
+          }
         }
       ],
       "events": [
@@ -335,6 +349,28 @@
           "name": "open_reference",
           "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
           "value": "text"
+        },
+        {
+          "name": "links_open",
+          "doc": "The `[[` link picker opened or closed: what a view answering `links_query` keeps to offer records only while the picker shows them.",
+          "value": "bool"
+        },
+        {
+          "name": "links_query",
+          "doc": "The text typed into the open `[[` link picker, each time it changes: a view whose records are a collection asks the store for what it holds of it, and hands back `links` — a page of them, read when the picker shows it rather than on every frame of the document.",
+          "value": "text"
+        },
+        {
+          "name": "command",
+          "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
+          "value": "text"
+        },
+        {
+          "name": "headings",
+          "doc": "The document's headings, in the order they stand, each time they change. A view that draws an outline of the document keeps them as its state.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "bindings": [
@@ -1368,20 +1404,34 @@
       }
     },
     {
-      "name": "DayDivider",
-      "doc": "A day in a conversation: the divider a transcript draws over the first message of a local day, as its own described component (`ui.DayDivider`). A view that draws a conversation's rows itself marks its days with it, so the band, the rules and the label are the toolkit's and every transcript places the same divider.\nThe label is the day as the person reads it (\"Today\", \"Yesterday\", \"Sunday\", \"Jun 21\"); a view that draws its own rows reads it from the clock it already has, as a transcript does (`ConversationClock::day_label`).",
+      "name": "SectionDivider",
+      "doc": "A divider in a conversation: a caption centred in a band, ruled out to both sides, over the row where the part it opens begins — a day of the lines, or the place the reader's unread lines start. Both are this one component, told apart by the ink they are drawn in.\nA day's label is the day as the person reads it (\"Today\", \"Yesterday\", \"Sunday\", \"Jun 21\"); a view that draws its own rows reads it from the clock it already has, as a transcript does (`ConversationClock::day_label`). The place reading starts again says so in the person's language, which is the toolkit's word to say (`unread_label`): a divider in the accent that is given no words of its own says it.",
       "props": [
         {
-          "name": "day",
-          "doc": "The day, as the person reads it: \"Today\", \"Yesterday\", the weekday inside the last week, then the date.",
-          "type": "text",
-          "required": true,
+          "name": "label",
+          "doc": "What the divider says: the day it opens (\"Today\", \"Sunday\", \"Jun 21\"). Unsaid, it says what its tone marks: the toolkit's own word where the reader's unread lines start.",
+          "type": {
+            "option": "text"
+          },
           "positional": true
+        },
+        {
+          "name": "tone",
+          "doc": "What it marks, which sets its ink: a day of the conversation unless said, or the accent where the reader's unread lines start.",
+          "type": {
+            "choice": {
+              "name": "DividerTone",
+              "cases": [
+                "quiet",
+                "accent"
+              ]
+            }
+          }
         }
       ],
       "semantics": {
         "role": "Group",
-        "label": "day"
+        "label": "label"
       }
     },
     {
@@ -1409,23 +1459,6 @@
       ],
       "semantics": {
         "role": "List",
-        "label": "name"
-      }
-    },
-    {
-      "name": "UnreadDivider",
-      "doc": "The divider as a widget, for a list built of widgets: a band across its column with its label at its centre, over the first line the reader had not read.\nA described component, so a host that validates what an app sends builds it: a list told where the person stopped reading (`VirtualListProps::unseen_from`) stands one over the row of that item, and the host knows it from the toolkit's catalogue as it knows every other component.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What it is called, for assistive technology; empty for the toolkit's own word.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Group",
         "label": "name"
       }
     },
@@ -1618,14 +1651,7 @@
     },
     {
       "name": "Docked",
-      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column's page, a section's gap under the content and the page's gutter at its sides and below.",
-      "props": [
-        {
-          "name": "page_column",
-          "doc": "The bar stands in the page column the content is read at: the readable measure, its left edge and its width, so a reply answers the messages above it in their own column rather than across a wide window.",
-          "type": "bool"
-        }
-      ],
+      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column the content is read at, a section's gap under the content and the page's gutter at its sides and below.",
       "slots": [
         {
           "name": "content",
@@ -2283,7 +2309,7 @@
     },
     {
       "name": "Icon",
-      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. It says nothing to assistive technology, so the words beside it carry the meaning.",
+      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. One that stands on its own says what it means in `description`, read on hover; the words beside a glyph carry the meaning otherwise.",
       "props": [
         {
           "name": "icon",
@@ -2334,6 +2360,13 @@
                 ]
               }
             }
+          }
+        },
+        {
+          "name": "description",
+          "doc": "What the glyph means, where it stands on its own without words beside it: a mark saying why a service cannot be reached. Read on hover; the words a window says in full carry it to assistive technology.",
+          "type": {
+            "option": "text"
           }
         }
       ],
@@ -3132,9 +3165,20 @@
           "name": "can_go_back",
           "doc": "Whether the content's Back goes back now (a drill-down the app keeps).",
           "type": "bool"
+        },
+        {
+          "name": "nothing_listed",
+          "doc": "The window has nothing at all to list: what stands in `content` is the window's one empty state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).",
+          "type": "bool"
         }
       ],
       "slots": [
+        {
+          "name": "sidebar_actions",
+          "doc": "The sidebar's own controls, in its header: the action that makes the thing the sidebar lists (a \"+\"), where the thing a person adds then stands.",
+          "accepts": "view",
+          "many": true
+        },
         {
           "name": "sidebar",
           "doc": "The places of the app: a navigation list.",
@@ -3173,6 +3217,11 @@
         {
           "name": "back",
           "doc": "The content's Back was pressed."
+        },
+        {
+          "name": "search",
+          "doc": "The window's search holds this text now: the frame narrows what it lists to it, the way a place chosen in its sidebar narrows it. Empty when the search closed. A view that declares it says what the window's search writes; one that does not is searched in place by its document, or not at all.",
+          "value": "text"
         }
       ],
       "state": [
@@ -3321,7 +3370,7 @@
         },
         {
           "name": "header",
-          "doc": "The rail's title above the thumbnails: \"Pages\".",
+          "doc": "The rail's title above the thumbnails; \"Pages\" in the window's language when unset.",
           "type": {
             "option": "text"
           }
@@ -4169,7 +4218,7 @@
         },
         {
           "name": "speakers",
-          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
+          "doc": "The people of the conversation it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The view gives them, from the items the conversation holds; the drawer reads nothing of what the conversation is about to say who is in it.",
           "type": {
             "list": "principal"
           }
@@ -5321,7 +5370,7 @@
         },
         {
           "name": "fill",
-          "doc": "The tree takes the height it is given and scrolls inside itself, rather than sizing to the rows inside another scroll.",
+          "doc": "The tree takes the height it is given and scrolls inside itself, rather than sizing to the rows inside another scroll. Such a tree is the pane's list, so its rows stand on the pane's content edge (where the pane's header starts its title) with their lift bleeding past it, as every list in a column does — including a phone's window, where the pane is the whole screen and the rows keep the page gutter at its glass.",
           "type": "bool"
         },
         {
@@ -5381,6 +5430,14 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "removed",
+          "doc": "The rows standing in for nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
+          "accepts": {
+            "component": "TreeViewNode"
+          },
+          "many": true
         }
       ],
       "events": [
@@ -5396,14 +5453,40 @@
         },
         {
           "name": "drop",
-          "doc": "A node was dropped at the end of the top level, past every row: carries the node that moved.",
-          "value": "resource"
+          "doc": "A row was dropped just before another, or moved there by the keyboard: carries the row that moved and the row it lands before — none for the end of the top level.",
+          "value": "resource",
+          "at": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "into",
+          "doc": "A row was dropped inside another, at the end of its own, or indented there by the keyboard: carries the row that moved and the row it lands inside — none for the end of the top level, which stands inside no row.",
+          "value": "resource",
+          "at": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "after",
+          "doc": "A row was dropped just after another and all that stands under it, or moved there by the keyboard: carries the row that moved and the row it lands after. The view places it past that row's own, which only the view can name: what stands under them are rows the tree may not have built.",
+          "value": "resource",
+          "at": "resource"
         }
       ],
       "state": [
         {
           "name": "expanded",
-          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened.",
+          "doc": "The nodes open now, by the resource each stands for. Given, it is where the view says the tree is; without it the tree keeps what a person opened. A view that says it only while it narrows the tree — a search opens the branches to what it found — leaves the person's own folding as it was: what they had opened comes back when the view stops saying it.",
+          "type": {
+            "option": {
+              "list": "resource"
+            }
+          }
+        },
+        {
+          "name": "matching",
+          "doc": "The rows a search found, by the resource each stands for, when the tree shows what the search narrowed it to: the rows the tree shows that are not among them stand for where the found ones are, and read in the quietest ink. None, every row is one the tree shows for itself.",
           "type": {
             "option": {
               "list": "resource"
@@ -5572,13 +5655,27 @@
           }
         },
         {
+          "name": "view_title",
+          "doc": "The title of the view this list stands under, as the view's header reads it, and how many things it counts beside it (`view_count`): a list whose rows all stand in one group heads them with nothing when that heading says what the title already says — the same words, counting the same rows — since the title over the list says it once. The host fills both from the shell of the window the list stands in ([`VirtualList::in_view`]).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "view_count",
+          "doc": "How many things the view's title counts beside it (`view_title`).",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
           "name": "multi_select",
           "doc": "The list holds more than one selected row: a click with ctrl (or cmd) adds or takes away the row it lands on, one with shift takes the range from the last row chosen, and Escape puts the selection away. Without it a click chooses the one row the window shows.",
           "type": "bool"
         },
         {
           "name": "unseen_from",
-          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`UnreadDivider`](crate::widget::conversation::UnreadDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither. The list works out the row as it builds, so a list keeps its rows and only the two the divider moved between build again.",
           "type": {
             "option": "resource"
           }
@@ -7293,13 +7390,6 @@
           }
         },
         {
-          "name": "progress",
-          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"). Its node's [`TreeViewNodeProps::progress`] says it where the row gives none. Shown only when the branch is closed.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
           "name": "checkbox",
           "doc": "A checkbox at the start of the row: a task's done state, a selection. A press on it asks the node's [`TreeViewNodeProps::check`] instead of selecting the row.",
           "type": {
@@ -7344,6 +7434,25 @@
           }
         },
         {
+          "name": "presence",
+          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row as a list row shows it ([`crate::widget::ListItemProps::presence`]).",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "removed",
+          "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
+          "type": "bool"
+        },
+        {
+          "name": "depth",
+          "doc": "How deep it stands, when the view says it: 0 at the top level. Given, the tree indents the row by it rather than by the rows over it, so a row whose parent stands off screen keeps its place, and a tree whose rows the host renders as it shows them indents rows it never built.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
           "name": "above",
           "doc": "The node the view shows just over this one under the same parent: the place the actions offered on it take when one reads a place (`above`). None for a first child.",
           "type": {
@@ -7356,8 +7465,15 @@
           "type": "bool"
         },
         {
+          "name": "navigates",
+          "doc": "Whether activating the row opens the item it stands for in the window's own page, as a list's row does. `Some(false)` where the window draws the open item itself — a tree beside its page — and answers the activation: the row reports its events and opens nothing of the host's own, so the page the tree shows is the only one.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
           "name": "progress",
-          "doc": "How far the branch got while it is folded (\"1/3\"), which the owner counts of its own children: the same count names a list row and an outline node, so both say one thing. The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.",
+          "doc": "How far the branch got (\"1/3\"), which the owner counts of its own children: the same count names a list row and an outline node, so both say one thing, folded or open.",
           "type": {
             "option": "text"
           }
@@ -7383,19 +7499,24 @@
             "component": "MenuItem"
           },
           "many": true
+        },
+        {
+          "name": "toolbar",
+          "doc": "The controls the row shows over its trailing corner while it is hovered or holds focus: the quick action of the thing it stands for (a note's \"+\", a folder's), without opening a menu. A node that gives none shows no hover toolbar.",
+          "accepts": {
+            "component": "Button"
+          },
+          "many": true
+        },
+        {
+          "name": "change",
+          "doc": "What someone else changed of the row's resource that the person has not seen yet: the row shows it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).",
+          "accepts": {
+            "component": "ChangeMark"
+          }
         }
       ],
       "events": [
-        {
-          "name": "drop",
-          "doc": "A node was dropped just before this one, or moved here by the keyboard: carries the node that moved, so the owner places it before this one under the same parent.",
-          "value": "resource"
-        },
-        {
-          "name": "into",
-          "doc": "A node was dropped inside this one, at the end of its children, or indented here by the keyboard: carries the node that moved.",
-          "value": "resource"
-        },
         {
           "name": "check",
           "doc": "This node's checkbox was pressed: the owner toggles what the box stands for."
@@ -7440,6 +7561,13 @@
           }
         },
         {
+          "name": "read_by",
+          "doc": "Who else has read to it (`seen_by(c, m)`), in a transcript: their faces, small, once, on the line where their reading ends — each of them shows on no other line, and the author never beside their own words.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
           "name": "group",
           "doc": "The group the row is in, as the platform reads it over the group's first row: a day for a date. Rows of one group stand together under its heading, in the order they come.",
           "type": {
@@ -7475,6 +7603,11 @@
           "type": "bool"
         },
         {
+          "name": "done",
+          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
+          "type": "bool"
+        },
+        {
           "name": "above",
           "doc": "The item the view shows just over this one in its group: the place the actions offered on the row take when one reads a place (`above`). None for the first of a group.",
           "type": {
@@ -7506,6 +7639,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "opens",
+          "doc": "The row opens into a document of its own where it stands: what its view gives as `detail` comes once it stands open. The list's rows offer to open when this says so, whether or not one carries its document yet.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -7555,8 +7693,9 @@
         },
         {
           "name": "detail",
-          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).",
-          "accepts": "view"
+          "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them. Without a document, choosing the row opens the item elsewhere (`ui.VirtualList`'s `activate`).\nOnly the row standing open carries it: the runtime builds a row's document when the row opens and drops it when it closes, so a list of ten thousand rows on screen costs the one document a person reads.",
+          "accepts": "view",
+          "when_open": true
         }
       ],
       "semantics": {

@@ -27,14 +27,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use iroh::endpoint::{Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
 use tilo_live::plane::{self, Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
-    AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
-    VoiceRoute,
+    Admission, AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority,
+    SessionAuthorization,
 };
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
@@ -116,10 +117,14 @@ impl Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let Peer::Native(device) = peer else {
-            return Err(Denied);
-        };
+    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
+        Box::pin(std::future::ready(self.decide(peer, proof)))
+    }
+}
+
+impl Authority {
+    fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+        let Peer(device) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         if live::workspace_bytes(WORKSPACE) != Some(grant.workspace) {
             return Err(Denied);
@@ -220,10 +225,57 @@ fn serve(relay: &Relay, endpoint: &Endpoint) -> iroh::protocol::Router {
             native::handler(move |session: native::Session| {
                 let relay = relay.clone();
                 async move {
-                    let peer = Peer::Native(session.remote());
-                    relay
-                        .serve_session(VoiceRoute::negotiated(), session, peer)
-                        .await;
+                    let peer = Peer(session.remote());
+                    relay.serve_session(session, peer).await;
+                }
+            }),
+        )
+        .spawn()
+}
+
+/// The connections one relay accepted, by the device at the other end: what a
+/// test cuts to take a carrier away mid-session, which is what a network that
+/// dropped does to a real one.
+#[derive(Clone, Default)]
+struct Carriers(Arc<Mutex<BTreeMap<[u8; 32], Connection>>>);
+
+impl Carriers {
+    /// Cut `device`'s connection, as a network that went away does.
+    fn cut(&self, device: [u8; 32]) {
+        let connection = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&device)
+            .cloned()
+            .expect("the device dialled this relay");
+        connection.close(VarInt::from_u32(0), b"the network went away");
+    }
+}
+
+/// The relay role as [`serve`], remembering each connection it accepted so a
+/// test can cut one.
+fn serve_cuttable(
+    relay: &Relay,
+    endpoint: &Endpoint,
+    carriers: &Carriers,
+) -> iroh::protocol::Router {
+    let relay = relay.clone();
+    let carriers = carriers.clone();
+    iroh::protocol::Router::builder(endpoint.clone())
+        .accept(
+            native::ALPN,
+            native::handler(move |session: native::Session| {
+                let relay = relay.clone();
+                let carriers = carriers.clone();
+                async move {
+                    carriers
+                        .0
+                        .lock()
+                        .unwrap()
+                        .insert(session.remote(), session.connection().clone());
+                    let peer = Peer(session.remote());
+                    relay.serve_session(session, peer).await;
                 }
             }),
         )
@@ -272,14 +324,14 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
         Plane::local(&relay, &join(relay_key, authority.roster(), keys.clone())).unwrap();
 
     let a = Plane::join(
-        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
     let b = Plane::join(
-        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster.clone(), keys.clone()),
     )
@@ -346,7 +398,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     let c_endpoint = endpoint().await;
     let c_key = *c_endpoint.id().as_bytes();
     let refused = Plane::join(
-        &native::Iroh::new(c_endpoint, addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(c_endpoint, addr(&relay_endpoint))),
         &grant_for(b"cert-not-on-the-roster"),
         join(c_key, authority.roster(), keys.clone()),
     )
@@ -362,11 +414,10 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     let moved = Relay::new(authority.clone());
     let _moved_router = serve(&moved, &moved_endpoint);
     // The dial is the only handle to `a`'s iroh endpoint: dropping it closes
-    // the endpoint and the connection with it, so it lives as long as the
-    // plane dialled through it.
-    let carrier = native::Iroh::new(a_endpoint, addr(&moved_endpoint));
+    // the endpoint and the connection with it, so the plane keeps it for as
+    // long as it runs.
     let a_again = Plane::join(
-        &carrier,
+        Arc::new(native::Iroh::new(a_endpoint, addr(&moved_endpoint))),
         &grant_for(&a_cert),
         join(a_key, authority.roster(), keys.clone()),
     )
@@ -407,22 +458,20 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
     let _router = serve(&relay, &relay_endpoint);
 
     // `a` joins under the channel's first keys, `b` under the ones the
-    // channel moved to. The carriers hold each device's endpoint: dropping
-    // one closes the endpoint and the session with it, so they live as long
-    // as the planes.
+    // channel moved to. The dials hold each device's endpoint, and each plane
+    // keeps its dial: dropping one closes the endpoint and the session with
+    // it, so they live as long as the planes.
     let first = keys();
     let next = keys();
-    let a_carrier = native::Iroh::new(a_endpoint, addr(&relay_endpoint));
     let a = Plane::join(
-        &a_carrier,
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), first),
     )
     .await
     .unwrap();
-    let b_carrier = native::Iroh::new(b_endpoint, addr(&relay_endpoint));
     let b = Plane::join(
-        &b_carrier,
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, next.clone()),
     )
@@ -463,17 +512,15 @@ async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
 
     // `a` opens knowing only itself: the workspace had no other participant
     // when it joined. `b` is admitted afterwards, and `a` is told so.
-    let a_carrier = native::Iroh::new(a_endpoint, addr(&relay_endpoint));
     let a = Plane::join(
-        &a_carrier,
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, Roster::new([a_key]), keys.clone()),
     )
     .await
     .unwrap();
-    let b_carrier = native::Iroh::new(b_endpoint, addr(&relay_endpoint));
     let b = Plane::join(
-        &b_carrier,
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, Roster::new([a_key, b_key]), keys.clone()),
     )
@@ -536,14 +583,20 @@ async fn a_member_that_reached_another_relay_is_heard_here() {
 
     let keys = keys();
     let publisher = Plane::join(
-        &native::Iroh::new(publisher_endpoint.clone(), addr(&alpha_endpoint)),
+        Arc::new(native::Iroh::new(
+            publisher_endpoint.clone(),
+            addr(&alpha_endpoint),
+        )),
         &grant_for(&publisher_cert),
         join(publisher_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
     let member = Plane::join(
-        &native::Iroh::new(member_endpoint.clone(), addr(&beta_endpoint)),
+        Arc::new(native::Iroh::new(
+            member_endpoint.clone(),
+            addr(&beta_endpoint),
+        )),
         &grant_for(&member_cert),
         join(member_key, roster, keys),
     )
@@ -582,7 +635,7 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     let keys = keys();
 
     let a = Plane::join(
-        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
@@ -601,7 +654,7 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
 
     let joined = std::time::Instant::now();
     let b = Plane::join(
-        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
     )
@@ -636,6 +689,251 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     drop(b);
 }
 
+/// Everything `plane` heard on the presence track from `device` until `done`
+/// holds of it, publishing through `say` between looks as a heartbeat would;
+/// `what` names the wait.
+async fn hear_until(
+    plane: &Plane,
+    device: [u8; 32],
+    what: &str,
+    mut say: impl FnMut(),
+    done: impl Fn(&[Heard]) -> bool,
+) -> Vec<Heard> {
+    let since = std::time::Instant::now();
+    let mut drawn = Vec::new();
+    while !done(&drawn) {
+        assert!(
+            since.elapsed() < Duration::from_secs(5),
+            "{what} after {:?}: {drawn:?}",
+            since.elapsed()
+        );
+        say();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drawn.extend(
+            heard(plane, Track::Presence)
+                .into_iter()
+                .filter(|object| object.sender == device),
+        );
+    }
+    drawn
+}
+
+/// A device whose session ends and that joins again — `tilo mcp` run again on
+/// the same computer — is heard by a plane that stayed the whole time, every
+/// time. Each new session numbers its presence from one again, under the same
+/// name as the one before. Some sessions end before the next one joins, and
+/// the plane that stayed hears them leave; others are still held when the next
+/// one joins, as a killed process leaves its session until the relay notices,
+/// and the new one is heard all the same, and nothing of the old one after.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let session = || async {
+        Plane::join(
+            Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+            &grant_for(&a_cert),
+            join(a_key, roster.clone(), keys.clone()),
+        )
+        .await
+        .unwrap()
+    };
+    let first = session().await;
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    // The session the next run starts with, and the sequence it says next.
+    let mut current = Some((first, 1));
+    // Whether each session is still held when the next one joins.
+    for (run, lingers) in [false, true, false, true, false].into_iter().enumerate() {
+        let (a, mut sequence) = match current.take() {
+            Some(held) => held,
+            None => (session().await, 1),
+        };
+        let said = format!("run={run}").into_bytes();
+        let mut say = || {
+            a.publish(Track::Presence, sequence, &said)
+                .unwrap_or_else(|error| panic!("run {run}, frame {sequence}: {error}"));
+            sequence += 1;
+        };
+        hear_until(
+            &b,
+            a_key,
+            &format!("run {run}: the plane that stayed never heard the device"),
+            &mut say,
+            |drawn| drawn.iter().any(|object| object.body == said),
+        )
+        .await;
+        if lingers {
+            let next = session().await;
+            let next_said = format!("run={}", run + 1).into_bytes();
+            let mut next_sequence = 1;
+            hear_until(
+                &b,
+                a_key,
+                &format!(
+                    "run {}: a session that joined while the last was held is unheard",
+                    run + 1
+                ),
+                || {
+                    next.publish(Track::Presence, next_sequence, &next_said)
+                        .unwrap();
+                    next_sequence += 1;
+                },
+                |drawn| drawn.iter().any(|object| object.body == next_said),
+            )
+            .await;
+            drop(a);
+            // The old session goes as the relay notices it, and the new one is
+            // what the plane that stayed hears: the device is still here.
+            let mut later = Vec::new();
+            let held = std::time::Instant::now();
+            while held.elapsed() < Duration::from_secs(1) {
+                next.publish(Track::Presence, next_sequence, &next_said)
+                    .unwrap();
+                next_sequence += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                later.extend(
+                    heard(&b, Track::Presence)
+                        .into_iter()
+                        .filter(|object| object.sender == a_key),
+                );
+            }
+            assert!(
+                later.last().is_some_and(|object| object.body == next_said),
+                "run {run}: once the old session went, the device is not heard as the new \
+                 one: {later:?}"
+            );
+            current = Some((next, next_sequence));
+            continue;
+        }
+        drop(a);
+        hear_until(
+            &b,
+            a_key,
+            &format!("run {run}: the plane that stayed never heard the device leave"),
+            || {},
+            |drawn| drawn.iter().any(|object| object.body.is_empty()),
+        )
+        .await;
+    }
+}
+
+/// A carrier taken away under a plane mid-session — a Wi-Fi network that moved, a laptop that slept:
+/// the plane dials its relay again by itself, and while it is gone nobody it was reading is drawn as
+/// if they were still there. The member's next word arrives as soon as the carrier is back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let carriers = Carriers::default();
+    let _router = serve_cuttable(&relay, &relay_endpoint, &carriers);
+    let keys = keys();
+
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // The member says where they are, and the other plane draws them there.
+    a.publish(Track::Presence, 1, b"at=12,34").unwrap();
+    wait_until("the member is heard", || {
+        heard(&b, Track::Presence)
+            .iter()
+            .any(|object| object.body == b"at=12,34" && object.sender == a_key)
+    });
+
+    // The connection under the second plane goes away, as a dropped network does. It is not drawn
+    // where they last were — they are said to have left as the session carrying them did — and the
+    // plane itself is not over.
+    carriers.cut(b_key);
+    wait_until("the member is no longer drawn", || {
+        heard(&b, Track::Presence)
+            .iter()
+            .any(|object| object.sender == a_key && object.body.is_empty())
+    });
+    assert!(
+        !b.ended(),
+        "the plane outlasts the carrier it was opened on"
+    );
+
+    // It dials the relay again, and the member's next word is drawn on the same plane.
+    wait_until("the plane dialled its relay again", || {
+        relay.counters().accepted >= 3
+    });
+    let mut drawn: Vec<Heard> = Vec::new();
+    let mut sequence = 2;
+    let since = std::time::Instant::now();
+    while !drawn
+        .iter()
+        .any(|object| object.body == b"at=40,55" && object.sender == a_key)
+    {
+        assert!(
+            since.elapsed() < Duration::from_secs(10),
+            "the member is not drawn again on the plane whose carrier came back, in {:?}: \
+             {drawn:?}",
+            since.elapsed()
+        );
+        a.publish(Track::Presence, sequence, b"at=40,55").unwrap();
+        sequence = sequence.saturating_add(1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drawn.extend(
+            heard(&b, Track::Presence)
+                .into_iter()
+                .filter(|object| object.sender == a_key),
+        );
+    }
+    assert!(
+        !b.ended(),
+        "the plane the member is drawn on is the one that lost its carrier"
+    );
+
+    // And the plane says again on the carrier it dialled: what this device publishes reaches the
+    // member over the connection that replaced the one that went away.
+    let mut sequence = 1;
+    let since = std::time::Instant::now();
+    while !heard(&a, Track::Presence)
+        .iter()
+        .any(|object| object.body == b"desk=here" && object.sender == b_key)
+    {
+        assert!(
+            since.elapsed() < Duration::from_secs(10),
+            "the plane does not say on the carrier it dialled again, in {:?}",
+            since.elapsed()
+        );
+        b.publish(Track::Presence, sequence, b"desk=here").unwrap();
+        sequence = sequence.saturating_add(1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// One camera picture of `layer`, sealed and sent through `plane`.
 fn picture(
     layer: tilo_live::video::Layer,
@@ -646,6 +944,7 @@ fn picture(
     let (width, height) = layer.size(source);
     tilo_live::video::VideoObject {
         keyframe,
+        hdr: false,
         codec: tilo_live::video::Codec::H264,
         layer,
         sequence,
@@ -654,6 +953,29 @@ fn picture(
         height,
         payload: vec![0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }],
     }
+}
+
+/// One object of a window's page, as its publisher sends it.
+fn page_object(sequence: u64, whole: bool) -> tilo_live::page::PageObject {
+    tilo_live::page::PageObject {
+        whole,
+        sequence,
+        timestamp_us: sequence.saturating_mul(100_000),
+        payload: vec![0, 9, 9],
+    }
+}
+
+/// Everything `plane` received on `track` so far, decoded.
+fn pages(plane: &Plane, track: Track) -> Vec<tilo_live::page::PageObject> {
+    let mut objects = Vec::new();
+    while let Some(heard) = plane.try_recv() {
+        if heard.track == track
+            && let Ok(object) = tilo_live::page::PageObject::decode(&heard.body)
+        {
+            objects.push(object);
+        }
+    }
+    objects
 }
 
 /// Everything `plane` received on `track` so far, decoded.
@@ -686,14 +1008,14 @@ async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
     let a = Plane::join(
-        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
     let b = Plane::join(
-        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
     )
@@ -785,14 +1107,14 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
     let a = Plane::join(
-        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
     let b = Plane::join(
-        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
     )
@@ -851,5 +1173,196 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
             &picture(Layer::Low, Source::Screen, sequence, true)
         ),
         Err(plane::PlaneError::Unwanted)
+    );
+}
+
+/// One window's page travels the plane as its own sealed track: the publisher
+/// sends it only while a member shows it, the member's first object is a whole
+/// frame, and a member that joins while the page is up starts at a whole frame
+/// too — never at a patch of a frame it does not hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_windows_page_travels_only_while_a_member_shows_it() {
+    /// The window whose page the test publishes.
+    const TAB: u64 = 0x5EED_0000_0000_0007;
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint, c_endpoint) = (
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+    );
+    let (a_key, b_key, c_key) = (
+        *a_endpoint.id().as_bytes(),
+        *b_endpoint.id().as_bytes(),
+        *c_endpoint.id().as_bytes(),
+    );
+    let (a_cert, b_cert, c_cert) = (
+        authority.admit_device(a_key),
+        authority.admit_device(b_key),
+        authority.admit_device(c_key),
+    );
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    assert!(
+        a.wanted_pages().is_empty(),
+        "nobody shows the page yet: nothing is captured"
+    );
+
+    // The viewer shows the window's page: its track is asked for, and it
+    // starts with a whole frame.
+    b.show(a_key, &[Track::Page(TAB)]);
+    wait_until("the page is asked for", || a.wanted_pages() == [TAB]);
+    assert_eq!(a.take_page_keyframes(), [TAB]);
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the whole frame reaches the viewer", || {
+        let _ = a.send_page(TAB, &page_object(sequence, true));
+        sequence = sequence.saturating_add(1);
+        received.extend(pages(&b, Track::Page(TAB)));
+        !received.is_empty()
+    });
+    assert!(received[0].whole);
+    assert_eq!(received[0].payload, vec![0, 9, 9]);
+
+    // Its changes follow on the same track, without another whole frame.
+    let mut patches = Vec::new();
+    wait_until("the changes reach the viewer", || {
+        let _ = a.send_page(TAB, &page_object(sequence, false));
+        sequence = sequence.saturating_add(1);
+        patches.extend(pages(&b, Track::Page(TAB)));
+        patches.iter().any(|object| !object.whole)
+    });
+    assert!(
+        patches.iter().any(|object| !object.whole),
+        "a change travels without a new whole frame"
+    );
+
+    // A member that joins while the page is up starts at a whole frame: it
+    // could not apply a change to a frame it never had.
+    let c = Plane::join(
+        Arc::new(native::Iroh::new(c_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&c_cert),
+        join(c_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("the late member is admitted", || {
+        relay.counters().accepted == 3
+    });
+    c.show(a_key, &[Track::Page(TAB)]);
+    let mut late = Vec::new();
+    wait_until("the late viewer is handed a whole frame", || {
+        late.extend(pages(&c, Track::Page(TAB)));
+        !late.is_empty()
+    });
+    assert!(late[0].whole, "a viewer that joined late starts at a frame");
+
+    // Nobody watches any more: the page is not captured, and nothing of it is
+    // sent.
+    b.show(a_key, &[]);
+    c.show(a_key, &[]);
+    wait_until("the page is no longer shown", || {
+        a.wanted_pages().is_empty()
+    });
+    assert_eq!(
+        a.send_page(TAB, &page_object(sequence, false)),
+        Err(PlaneError::Unwanted)
+    );
+}
+
+/// A shared window travels as its own sealed track: published only while a
+/// member shows it, starting at a keyframe whose header says what a decoder
+/// starts from, and a member that joins while it is up asks for a keyframe of
+/// its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_window_travels_only_while_a_member_shows_it() {
+    use tilo_live::video::{Layer, Source};
+    /// The window the test shares.
+    const TAB: u64 = 0x5EED_0000_0000_0009;
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    let window = |sequence: u64, keyframe: bool| tilo_live::video::VideoObject {
+        width: 1000,
+        height: 700,
+        ..picture(Layer::High, Source::Screen, sequence, keyframe)
+    };
+    assert_eq!(
+        a.send_window(TAB, &window(0, true)),
+        Err(PlaneError::Unwanted),
+        "nobody shows the window: nothing of it is sent"
+    );
+
+    b.show(a_key, &[Track::Window(TAB, Layer::High)]);
+    wait_until("the window is asked for", || a.wanted_windows() == [TAB]);
+    assert_eq!(
+        a.take_window_keyframes(),
+        [TAB],
+        "a new viewer starts at a keyframe"
+    );
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the window reaches the viewer", || {
+        let _ = a.send_window(TAB, &window(sequence, sequence == 0));
+        sequence = sequence.saturating_add(1);
+        received.extend(pictures(&b, Track::Window(TAB, Layer::High)));
+        received.len() >= 2
+    });
+    assert!(received[0].keyframe, "the viewer starts at the keyframe");
+    assert_eq!(
+        (received[0].width, received[0].height, received[0].codec),
+        (1000, 700, tilo_live::video::Codec::H264),
+        "the keyframe says the window's own size and codec"
+    );
+    assert!(
+        a.wanted_pictures().is_empty(),
+        "a window is no call picture"
+    );
+
+    b.show(a_key, &[]);
+    wait_until("the window is no longer shown", || {
+        a.wanted_windows().is_empty()
+    });
+    assert_eq!(
+        a.send_window(TAB, &window(sequence, true)),
+        Err(PlaneError::Unwanted)
     );
 }

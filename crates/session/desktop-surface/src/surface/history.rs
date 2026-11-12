@@ -121,8 +121,9 @@ pub(super) trait Served: ActivityReads {
     fn begin_summary(&mut self);
     /// They stopped: what they were shown counts as seen.
     fn end_summary(&mut self);
-    /// Offer `view` to the app, at only what `author` did when named.
-    fn focus(&mut self, view: ActivityView, author: Option<String>);
+    /// Offer `view` to the app, at what `link` names when it names anything (one person's
+    /// doings, one run).
+    fn focus(&mut self, view: ActivityView, link: crate::activity::ActivityDeepLink);
     /// Whether a view is offered that the app has not shown yet.
     fn offers_focus(&self) -> bool;
     /// The model closes: remember what this device has now seen.
@@ -225,15 +226,11 @@ impl Served for WorkspaceActivity {
         self.pane.end_summary(self.workspace.raw());
     }
 
-    fn focus(&mut self, view: ActivityView, author: Option<String>) {
-        match author {
-            Some(author) => self
-                .pane
-                .focus_deep_link(&crate::activity::ActivityDeepLink {
-                    author: Some(author),
-                    ..crate::activity::ActivityDeepLink::default()
-                }),
-            None => self.pane.focus_view(pane_view(view)),
+    fn focus(&mut self, view: ActivityView, link: crate::activity::ActivityDeepLink) {
+        if link == crate::activity::ActivityDeepLink::default() {
+            self.pane.focus_view(pane_view(view));
+        } else {
+            self.pane.focus_deep_link(&link);
         }
     }
 

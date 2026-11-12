@@ -42,6 +42,7 @@ pub mod private;
 pub mod retained_home;
 #[cfg(unix)]
 pub mod socket;
+pub mod tree;
 
 /// Whether the native path itself names a regular file, without following a symlink.
 ///

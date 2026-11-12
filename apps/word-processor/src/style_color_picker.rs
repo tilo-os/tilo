@@ -24,6 +24,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::num;
+use ui::widget::DrawChild;
 
 const WIDTH: f64 = 236.0;
 
@@ -138,7 +139,7 @@ impl StyleColorPicker {
         let card = rect.inflate(inset, inset);
         ui::widget::floating_surface::paint(scene, transform, card, theme);
         let ink = theme.on_ground(ui::chrome::panel_ground(theme));
-        picker.draw(scene, transform, text_renderer, &ink, presence);
+        picker.draw_child(scene, transform, text_renderer, &ink, presence);
     }
 
     pub(super) fn handle_event(&mut self, args: EventArgs<'_>) -> PickerEvent {

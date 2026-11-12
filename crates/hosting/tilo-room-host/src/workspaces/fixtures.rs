@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::ChannelRoute;
@@ -37,7 +36,7 @@ pub fn governor() -> (SigningKey, DeviceCert) {
 #[must_use]
 pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let key = SigningKey::from_bytes(&[2; 32]);
+    let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
@@ -182,14 +181,27 @@ pub async fn test_host_taking_part(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> TestHost {
+    test_host_holding(state_root, key, cert, Arc::default()).await
+}
+
+/// [`test_host_taking_part`] whose device holds `keys`: the same keys open
+/// what a host before it on the same state sealed, as a device's channel
+/// service keeps its keys across a restart.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_holding(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    keys: Arc<TestChannelKeys>,
+) -> TestHost {
     host_on(
         state_root,
         key,
         cert,
-        Some(DeviceChannels {
-            keys: Arc::new(TestChannelKeys::default()),
-            sink: None,
-        }),
+        Some(DeviceChannels { keys, sink: None }),
         None,
     )
     .await
@@ -251,7 +263,7 @@ pub async fn admit_view_reader(
         .await
         .expect("a governed room");
     let mut workspace = state.lock().await;
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let mut candidate = workspace.peer().clone();
     candidate
         .admit_certificate(member.clone(), key, now)
@@ -260,6 +272,36 @@ pub async fn admit_view_reader(
     workspace
         .commit(candidate, key, now, |_, _| Ok(collaboration))
         .expect("the admission commits");
+}
+
+/// Project `workspace`'s members onto the relay's own runtime for it, as a
+/// settled decision does: what a member's change is decided against on its way
+/// in, before the workspace's governance reaches the relay by its own path.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance does not read.
+pub async fn project_standings(workspaces: &Workspaces, workspace: &str) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed room");
+    let (standings, workspace_id) = {
+        let governed = state.lock().await;
+        let standings = governed
+            .peer()
+            .governance()
+            .governed_standings(tilo_clock::wall())
+            .expect("the workspace's standings");
+        (standings, governed.workspace_id())
+    };
+    workspaces
+        .inner
+        .host
+        .access
+        .replace_standings(workspace_id, true, standings)
+        .await
+        .expect("the relay projects the workspace's standings");
 }
 
 /// Until when `workspace` restricts `person`, as `host` reads its policy.
@@ -277,7 +319,7 @@ pub async fn restricted_until(
         .workspace(workspace)
         .await
         .expect("a governed room");
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let permissions = state
         .lock()
         .await
@@ -337,8 +379,8 @@ pub fn signed_pre_admission_as(
 }
 
 /// One person's device joining `workspace` through its door, as a Tilo computer
-/// does: the challenge, the door's admission spent with the proof, then the
-/// Complete. Answers the Complete it sent and the host's answer.
+/// does: the door's invitation, the challenge it answers, then the Complete,
+/// which admits it. Answers the Complete it sent and the host's answer.
 ///
 /// # Panics
 ///
@@ -366,8 +408,9 @@ pub async fn door_join(
 }
 
 /// One person's device joining `workspace` through its door with `role`, as a Tilo
-/// computer does: the challenge, the door's admission spent with the proof,
-/// then the Complete. Answers the Complete it sent and the host's answer.
+/// computer does: the door's invitation, the challenge it answers, then the
+/// Complete, which admits it. Answers the Complete it sent and the host's
+/// answer.
 ///
 /// # Panics
 ///
@@ -388,7 +431,6 @@ pub async fn door_join_as(
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
         sign_join_proof,
     };
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
     let token = [seed; 8];
     let issued = workspaces
         .pre_admit(
@@ -418,18 +460,6 @@ pub async fn door_join_as(
         panic!("no challenge");
     };
     let proof = sign_join_proof(answer.challenge, device).unwrap();
-    let admitted = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
-            signature: proof.signature,
-            name: "Ada".into(),
-            token: token.to_vec(),
-        })
-        .await;
-    assert!(
-        matches!(admitted, JoinReply::Admitted { .. }),
-        "{admitted:?}"
-    );
     let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
     let response = service.handle(endpoint, complete.clone()).await;
     drop(service);

@@ -32,6 +32,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         photos::definition(),
         poker::definition(),
         scratchpad::definition(),
+        settings::definition(),
         sheets::definition(),
         shortcuts::definition(),
         slides::definition(),

@@ -92,6 +92,20 @@ impl Stamp {
         self.version.order()
     }
 
+    /// Whether this is the version of the same invocation as `other`: who made it, when and by
+    /// which action, over how many items and from what ([`Ends::same_invocation`]).
+    #[must_use]
+    pub fn same_invocation(&self, other: &Self) -> bool {
+        let (held, other) = (&self.version, &other.version);
+        held.who == other.who
+            && held.at == other.at
+            && held.action == other.action
+            && held.run == other.run
+            && held.count == other.count
+            && held.from.as_ref().map(ResourceRef::id_string)
+                == other.from.as_ref().map(ResourceRef::id_string)
+    }
+
     /// Whether this version comes before `other`.
     #[must_use]
     pub fn before(&self, other: &Self) -> bool {
@@ -235,6 +249,14 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
     let Some((stamp, action, run)) = read(change) else {
         return Vec::new();
     };
+    versions_of_action(&stamp, &action, run.as_ref())
+}
+
+/// [`versions_of`] of a change [`read`] once: what a reader of a chunk's whole log does for each
+/// of its changes, which an action's change is read for once rather than once a question.
+#[must_use]
+pub fn versions_of_action(stamp: &Stamp, action: &DynAction, run: Option<&Run>) -> Vec<Version> {
+    let run = run.cloned();
     // The items it put into a collection (`DynEdit::Insert`), in the order of the edits: an
     // action that posts two messages is a version of the channel that names both, so where a
     // run of new items begins is known without reading the collection.
@@ -284,6 +306,107 @@ pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Opt
     read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
+/// [`placed_of`] of a change [`read_change`] once: where the items its action placed are.
+#[must_use]
+pub fn placed_of_action(action: &DynAction) -> Vec<(String, String, String, Option<String>)> {
+    action.placed()
+}
+
+/// What a change says of itself beside its operations: its hash, when it was made, its first
+/// operation and its message. Reading what a change records needs no more, and a document
+/// answers these for its whole log without encoding a change's operations
+/// ([`automerge::Automerge::get_changes_meta`]): building a chunk's versions read its two
+/// thousand changes in some 70 ms as whole changes, and in 2 ms as these.
+pub trait ChangeHead {
+    /// The change's hash.
+    fn hash(&self) -> automerge::ChangeHash;
+    /// The message the change carries.
+    fn message(&self) -> Option<&str>;
+    /// When the change was made, in milliseconds since the epoch.
+    fn timestamp(&self) -> i64;
+    /// The counter of the change's first operation.
+    fn start_op(&self) -> u64;
+    /// The change whole, operations and all, as `mirror` (which holds it) has it.
+    fn whole<'a>(&'a self, mirror: &Doc) -> Option<std::borrow::Cow<'a, automerge::Change>>;
+}
+
+impl ChangeHead for automerge::Change {
+    fn hash(&self) -> automerge::ChangeHash {
+        automerge::Change::hash(self)
+    }
+
+    fn message(&self) -> Option<&str> {
+        automerge::Change::message(self)
+    }
+
+    fn timestamp(&self) -> i64 {
+        automerge::Change::timestamp(self)
+    }
+
+    fn start_op(&self) -> u64 {
+        automerge::Change::start_op(self).get()
+    }
+
+    fn whole<'a>(&'a self, _: &Doc) -> Option<std::borrow::Cow<'a, automerge::Change>> {
+        Some(std::borrow::Cow::Borrowed(self))
+    }
+}
+
+impl ChangeHead for automerge::ChangeMetadata<'_> {
+    fn hash(&self) -> automerge::ChangeHash {
+        self.hash
+    }
+
+    fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
+    fn start_op(&self) -> u64 {
+        self.start_op
+    }
+
+    fn whole<'a>(&'a self, mirror: &Doc) -> Option<std::borrow::Cow<'a, automerge::Change>> {
+        mirror
+            .committed_document()
+            .get_change_by_hash(&self.hash)
+            .map(std::borrow::Cow::Owned)
+    }
+}
+
+impl<C: ChangeHead + ?Sized> ChangeHead for &C {
+    fn hash(&self) -> automerge::ChangeHash {
+        (**self).hash()
+    }
+
+    fn message(&self) -> Option<&str> {
+        (**self).message()
+    }
+
+    fn timestamp(&self) -> i64 {
+        (**self).timestamp()
+    }
+
+    fn start_op(&self) -> u64 {
+        (**self).start_op()
+    }
+
+    fn whole<'a>(&'a self, mirror: &Doc) -> Option<std::borrow::Cow<'a, automerge::Change>> {
+        (**self).whole(mirror)
+    }
+}
+
+/// What a change of a package action says, read once: its version, its action, and the run it
+/// was made in. `None` for a change that is no action of a package (an undo, a merge), which
+/// [`step_stamp`] answers for.
+#[must_use]
+pub fn read_change(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, DynAction, Option<Run>)> {
+    read(change)
+}
+
 /// The edits `change` records, when it is a tilolang action's change: what a write the store
 /// made is the record's when the record's change holds the very edit it made.
 #[must_use]
@@ -314,15 +437,6 @@ pub fn at_lit(value: &FieldValue) -> Lit {
     Stamp::of_value(value).map_or(Lit::Absent, |stamp| Lit::Time(stamp.version.at))
 }
 
-/// The version `change` made, whoever made it: a package action's, or a step on the record
-/// (an undo, a revert).
-#[must_use]
-pub fn change_stamp(change: &automerge::Change) -> Option<Stamp> {
-    stamp_of(change)
-        .map(|(stamp, _)| stamp)
-        .or_else(|| step_stamp(change))
-}
-
 /// The version `change` made, and the resources it changed (as the runtime writes them), when
 /// it is a tilolang action's change.
 #[must_use]
@@ -333,10 +447,69 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
 
 /// The version `change` made, its action and its run, when it is a tilolang action's
 /// change.
-fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
+fn read(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, DynAction, Option<Run>)> {
+    parsed(change).read.clone()
+}
+
+/// What a change's message says: the context it records and, for a package action's change,
+/// [`read`]'s version, action and run.
+struct Parsed {
+    context: Option<tilo_actions::ActionContext>,
+    read: Option<(Stamp, DynAction, Option<Run>)>,
+}
+
+/// How many changes' messages [`parsed`] keeps: those of the changes one sync takes in.
+const PARSED_KEPT: usize = 32;
+
+thread_local! {
+    /// The messages of the changes read last, by hash, newest last.
+    static PARSED: std::cell::RefCell<std::collections::VecDeque<(automerge::ChangeHash, std::rc::Rc<Parsed>)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// The message of `change`, parsed once: a change never changes, and taking one in reads it
+/// for the edits it holds, the items it placed, the versions it made and whether it is a step,
+/// each a parse of its message and its action otherwise.
+fn parsed(change: &(impl ChangeHead + ?Sized)) -> std::rc::Rc<Parsed> {
+    let hash = change.hash();
+    let kept = PARSED.with(|kept| {
+        kept.borrow()
+            .iter()
+            .find(|(held, _)| *held == hash)
+            .map(|(_, parsed)| std::rc::Rc::clone(parsed))
+    });
+    if let Some(parsed) = kept {
+        return parsed;
+    }
     let context = change
         .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)?;
+        .and_then(tilo_actions::ActionContext::from_change_message);
+    let read = context
+        .as_ref()
+        .and_then(|context| read_context(change, context));
+    let parsed = std::rc::Rc::new(Parsed { context, read });
+    PARSED.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= PARSED_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back((hash, std::rc::Rc::clone(&parsed)));
+    });
+    parsed
+}
+
+/// The person `change` names as the one who made it, when its message names one.
+pub(crate) fn maker_of(change: &automerge::Change) -> Option<String> {
+    let parsed = parsed(change);
+    let invoker = parsed.context.as_ref()?.invoker.as_ref()?;
+    Some(invoker.actor.clone())
+}
+
+/// [`read`] of the context `context` that `change` records.
+fn read_context(
+    change: &(impl ChangeHead + ?Sized),
+    context: &tilo_actions::ActionContext,
+) -> Option<(Stamp, DynAction, Option<Run>)> {
     let encoded = context.action.as_ref()?;
     if encoded.type_id != ACTION_TYPE {
         return None;
@@ -359,7 +532,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
         .at
         .clone()
         .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
-    let run = run_of(&context);
+    let run = run_of(context);
     let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
@@ -368,10 +541,13 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
             action: action.action_id.clone(),
             run: run.clone(),
             change: hash,
-            op: change.start_op().get(),
+            op: change.start_op(),
             from: action.authorship.from.clone(),
             suggested_by: action.authorship.suggested_by.clone(),
             count: action.authorship.count.max(1),
+            gesture: context
+                .gesture
+                .map(|gesture| gesture.0.simple().to_string()),
             ..Version::default()
         },
     };
@@ -426,14 +602,7 @@ impl Ends {
     /// [`PROVISIONAL`] and the change that made it is not known yet.
     #[must_use]
     pub fn same_invocation(&self, other: &Self) -> bool {
-        let (held, other) = (&self.last.version, &other.last.version);
-        held.who == other.who
-            && held.at == other.at
-            && held.action == other.action
-            && held.run == other.run
-            && held.count == other.count
-            && held.from.as_ref().map(ResourceRef::id_string)
-                == other.from.as_ref().map(ResourceRef::id_string)
+        self.last.same_invocation(&other.last)
     }
 
     /// The newest version of it, as a mark of the resource reads it: what it did to the
@@ -546,6 +715,24 @@ fn versions_of_changes<'c>(
     out
 }
 
+/// The changes `step` marked at the record's root ([`undone_changes`]), whether it marked one
+/// undone or took the mark back (a redo): the changes whose resources the record holds as they
+/// left them, or no longer does.
+fn marked_by(step: &automerge::Change) -> Vec<String> {
+    let mut out = Vec::new();
+    for op in step.decode().operations {
+        if op.obj != automerge::legacy::ObjectId::Root {
+            continue;
+        }
+        if let automerge::legacy::Key::Map(key) = &op.key
+            && let Some(hash) = key.strip_prefix(tilo_actions::UNDONE_KEY)
+        {
+            out.push(hash.to_owned());
+        }
+    }
+    out
+}
+
 /// The changes the record marks undone (an undo, until a redo brings it back), by hash: a
 /// derivation of the whole log leaves them out.
 #[must_use]
@@ -596,7 +783,8 @@ pub fn ends_of<'c>(
     }
     let undone = undone_changes(mirror);
     // The resources the steps wrote, and those of the changes they took back: a step that
-    // undoes a removal writes nothing of the resource that comes back.
+    // undoes a removal writes nothing of the resource that comes back, and a step that makes
+    // it again (a redo) only takes the record's marker of it back.
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for step in &steps {
         touched.extend(
@@ -605,7 +793,8 @@ pub fn ends_of<'c>(
                 .map(|version| version.resource),
         );
     }
-    for hash in &undone {
+    let marked: BTreeSet<String> = steps.iter().flat_map(|step| marked_by(step)).collect();
+    for hash in undone.iter().chain(marked.iter()) {
         let Ok(hash) = hash.parse::<automerge::ChangeHash>() else {
             continue;
         };
@@ -646,10 +835,9 @@ pub fn ends_of<'c>(
 /// step. `None` for a package action's change, and for one that is nobody's step (an outside
 /// effect settling).
 #[must_use]
-pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
-    let context = change
-        .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)?;
+pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
+    let parsed = parsed(change);
+    let context = parsed.context.as_ref()?;
     if context
         .action
         .as_ref()
@@ -664,9 +852,9 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
             who: invoker.actor.clone(),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
-            run: run_of(&context),
+            run: run_of(context),
             change: hash,
-            op: change.start_op().get(),
+            op: change.start_op(),
             count: 1,
             ..Version::default()
         },
@@ -677,14 +865,18 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
 /// one per resource it wrote, by whoever took it, naming the fields it wrote.
 #[must_use]
 pub fn stepped(
-    change: &automerge::Change,
+    change: &(impl ChangeHead + ?Sized),
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Vec<Version> {
     let Some(stamp) = step_stamp(change) else {
         return Vec::new();
     };
-    let changed = crate::reads::changed_by(std::slice::from_ref(change), mirror, resources);
+    // What a step wrote is read off its operations, fetched for the steps alone.
+    let Some(whole) = change.whole(mirror) else {
+        return Vec::new();
+    };
+    let changed = crate::reads::changed_by(std::slice::from_ref(whole.as_ref()), mirror, resources);
     let mut by_resource: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for key in changed.docs.into_values().flatten() {
         let fields = by_resource.entry(key.resource).or_default();

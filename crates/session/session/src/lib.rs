@@ -5,7 +5,7 @@
 //! ([`tilo_desktop::desktop_host`]): the desk (backdrop, launchpad, the
 //! strips and window bars of the desktop surface) under the windows, and
 //! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
-//! the window policy of the desk's strips ([`tilo_surface_host::desktop`]),
+//! the window policy of the desk's strips ([`platform::surfaces::desktop`]),
 //! so each window is a tab of a strip; and the desktop's surface apps, each
 //! an ordinary app hosted on a layer of its own: the notification banners,
 //! quick settings, and setup over everything while a person first uses the
@@ -28,6 +28,8 @@
 // workspaces — what every host runs, the web page included.
 mod assembly;
 pub use assembly::Session;
+mod error;
+pub use error::Error;
 // Nothing compiled for the web reads this state yet: the roles that do land
 // with the batches that ungate them.
 #[cfg_attr(
@@ -43,11 +45,19 @@ mod activity_provider;
 mod continuations;
 pub mod host_actions;
 pub mod overlays;
+#[cfg(target_os = "linux")]
+mod record_reads;
 pub mod records;
 pub mod search;
+#[cfg(target_os = "linux")]
+mod search_agent;
 mod search_ask;
 mod session_actions;
-pub mod workspace_gate;
+// What a message from another member is, and whether the workspace's policy grants it: the gate
+// table every host asks, named here as the session always has.
+pub use tilo_session_client::gate as workspace_gate;
+// This device's workspaces, and the sealed channels their records travel in.
+pub use tilo_session_client::{channels, engine, membership};
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.
@@ -55,9 +65,7 @@ pub mod workspace_gate;
 mod a11y;
 #[cfg(target_os = "linux")]
 mod a11y_settings;
-#[cfg(target_os = "linux")]
-mod activity;
-#[cfg(target_os = "linux")]
+pub mod activity;
 mod activity_models;
 #[cfg(target_os = "linux")]
 pub mod agent_door;
@@ -69,15 +77,20 @@ mod ambient_brightness;
 mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;
-#[cfg(target_os = "linux")]
 mod app_names;
 #[cfg(target_os = "linux")]
 mod app_sheets;
 #[cfg(target_os = "linux")]
+pub mod app_tabs;
+#[cfg(target_os = "linux")]
 mod app_tiers;
+#[cfg(target_os = "linux")]
+pub mod apps;
 pub mod arrangement;
 #[cfg(target_os = "linux")]
 mod asks;
+#[cfg(target_os = "linux")]
+mod audio_output;
 #[cfg(target_os = "linux")]
 mod automation;
 #[cfg(target_os = "linux")]
@@ -103,17 +116,21 @@ mod cards;
 #[cfg(target_os = "linux")]
 mod certification;
 #[cfg(target_os = "linux")]
-mod channels;
-#[cfg(target_os = "linux")]
 mod chrome;
+#[cfg(target_os = "linux")]
+mod clipboard;
 #[cfg(target_os = "linux")]
 mod clock_wait;
 #[cfg(target_os = "linux")]
 mod collaboration;
 #[cfg(target_os = "linux")]
+pub mod comforts;
+#[cfg(target_os = "linux")]
 mod community;
 #[cfg(target_os = "linux")]
 mod config;
+#[cfg(target_os = "linux")]
+pub mod connectors;
 #[cfg(target_os = "linux")]
 mod content;
 #[cfg(target_os = "linux")]
@@ -126,8 +143,7 @@ mod controls;
 pub mod conversations;
 #[cfg(target_os = "linux")]
 mod desk;
-#[cfg(target_os = "linux")]
-mod desk_doc;
+pub mod desk_doc;
 #[cfg(target_os = "linux")]
 mod desk_migration;
 #[cfg(target_os = "linux")]
@@ -136,6 +152,7 @@ mod desk_resource;
 mod desk_restore;
 #[cfg(target_os = "linux")]
 pub mod desk_styles;
+mod desk_windows;
 #[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
@@ -150,8 +167,7 @@ mod devices;
 mod diagnostics;
 #[cfg(target_os = "linux")]
 mod dictation;
-#[cfg(target_os = "linux")]
-mod directory;
+pub mod directory;
 #[cfg(target_os = "linux")]
 mod display_confirm;
 #[cfg(target_os = "linux")]
@@ -165,15 +181,20 @@ mod display_sheet;
 #[cfg(target_os = "linux")]
 pub mod displays;
 #[cfg(target_os = "linux")]
+mod door_runs;
+#[cfg(target_os = "linux")]
+mod doors;
+#[cfg(target_os = "linux")]
 mod downloaded;
+#[cfg(target_os = "linux")]
+pub mod drives;
 #[cfg(target_os = "linux")]
 mod emoji;
 #[cfg(target_os = "linux")]
-mod engine;
+mod engine_records;
+mod engine_write;
 #[cfg(target_os = "linux")]
 mod env;
-#[cfg(target_os = "linux")]
-pub mod fabric;
 #[cfg(target_os = "linux")]
 mod feedback;
 #[cfg(target_os = "linux")]
@@ -183,13 +204,24 @@ mod file_clipboard;
 #[cfg(target_os = "linux")]
 pub mod files_daemon;
 #[cfg(target_os = "linux")]
+pub mod firstboot;
+#[cfg(target_os = "linux")]
+mod formats;
+#[cfg(target_os = "linux")]
 mod fs_authority;
+#[cfg(target_os = "linux")]
+mod governance;
 #[cfg(target_os = "linux")]
 mod held;
 mod here;
 #[cfg(target_os = "linux")]
 mod host_account;
 #[cfg(target_os = "linux")]
+mod host_shell;
+#[cfg(target_os = "linux")]
+pub mod hosted_browser;
+#[cfg(target_os = "linux")]
+mod hosted_workspaces;
 mod i18n;
 #[cfg(target_os = "linux")]
 pub mod identity;
@@ -201,14 +233,19 @@ mod import_readiness;
 mod input_method;
 #[cfg(target_os = "linux")]
 mod input_sources;
-#[cfg(target_os = "linux")]
-mod invite;
+pub mod invite;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
-#[cfg(target_os = "linux")]
 mod keyboard_shortcuts;
-#[cfg(target_os = "linux")]
 mod keys;
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "a page answers on its own loop: only a Linux session lands work done off it"
+    )
+)]
+mod landing;
 #[cfg(target_os = "linux")]
 mod launches;
 #[cfg(target_os = "linux")]
@@ -221,10 +258,7 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
-#[cfg(target_os = "linux")]
-mod membership;
-#[cfg(target_os = "linux")]
-pub mod mount;
+pub mod mentions;
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
@@ -237,16 +271,18 @@ pub mod notices;
 mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
+mod overview;
 #[cfg(target_os = "linux")]
 mod owner_session;
+#[cfg(target_os = "linux")]
+mod page_track;
 #[cfg(target_os = "linux")]
 mod pairing;
 #[cfg(target_os = "linux")]
 mod panels;
 #[cfg(target_os = "linux")]
 mod pass;
-#[cfg(target_os = "linux")]
-mod people;
+pub mod people;
 #[cfg(target_os = "linux")]
 mod personal;
 #[cfg(target_os = "linux")]
@@ -254,11 +290,15 @@ mod plane;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]
+mod power;
+#[cfg(target_os = "linux")]
 mod press_outside;
 #[cfg(target_os = "linux")]
 mod projection;
 #[cfg(target_os = "linux")]
 mod projection_video;
+#[cfg(target_os = "linux")]
+mod published_workspace;
 #[cfg(target_os = "linux")]
 mod questions;
 #[cfg(target_os = "linux")]
@@ -270,9 +310,15 @@ pub mod recovery;
 #[cfg(target_os = "linux")]
 mod remote_door;
 #[cfg(target_os = "linux")]
+mod render;
+#[cfg(target_os = "linux")]
+mod renewal;
+#[cfg(target_os = "linux")]
 mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
+#[cfg(target_os = "linux")]
+mod run_questions;
 #[cfg(target_os = "linux")]
 mod seams;
 #[cfg(target_os = "linux")]
@@ -286,10 +332,11 @@ mod service_sessions;
 #[cfg(target_os = "linux")]
 pub mod session_package;
 #[cfg(target_os = "linux")]
+mod settings_sync;
+#[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;
-#[cfg(target_os = "linux")]
 mod shared_desktop;
 #[cfg(target_os = "linux")]
 mod shared_displays;
@@ -304,26 +351,28 @@ mod slot_binding;
 #[cfg(target_os = "linux")]
 mod slot_views;
 #[cfg(target_os = "linux")]
+pub mod slots;
+#[cfg(target_os = "linux")]
 mod sockets;
 #[cfg(target_os = "linux")]
 pub mod startup;
-#[cfg(target_os = "linux")]
-mod status;
+pub mod status;
 #[cfg(target_os = "linux")]
 pub mod surfaces;
-#[cfg(target_os = "linux")]
-mod switcher;
+pub mod switcher;
 pub mod sync;
 #[cfg(target_os = "linux")]
 mod system_sounds;
-#[cfg(target_os = "linux")]
 mod task_programs;
+#[cfg(target_os = "linux")]
+mod task_programs_host;
 #[cfg(target_os = "linux")]
 mod task_undo;
 #[cfg(target_os = "linux")]
 pub mod termination;
 #[cfg(target_os = "linux")]
 pub mod test_control;
+mod tools;
 #[cfg(target_os = "linux")]
 pub mod turn_questions;
 #[cfg(target_os = "linux")]
@@ -332,6 +381,10 @@ pub mod unlock;
 mod unlock_history;
 #[cfg(target_os = "linux")]
 mod update_finish;
+#[cfg(target_os = "linux")]
+mod vpn;
+#[cfg(target_os = "linux")]
+mod wake;
 #[cfg(target_os = "linux")]
 mod wallpapers;
 #[cfg(target_os = "linux")]
@@ -347,7 +400,11 @@ mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
 #[cfg(target_os = "linux")]
+mod workspace_branch;
+#[cfg(target_os = "linux")]
 mod workspace_delete;
+#[cfg(target_os = "linux")]
+mod workspace_nodes;
 #[cfg(target_os = "linux")]
 mod workspace_settings;
 #[cfg(target_os = "linux")]

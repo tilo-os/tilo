@@ -16,7 +16,8 @@ use crate::join::{
 use crate::join_ledger::{
     Governed, JoinError, JoinLedger, Redeeming, invitation_workspace, request_digest,
 };
-use ed25519_dalek::SigningKey;
+use crate::owner::write::{SIGNED_RUNS, Signatures, UNSIGNED};
+use collab_types::signer::DeviceSigner;
 use std::future::Future;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
@@ -69,8 +70,8 @@ pub trait WorkspaceTxn {
 
 /// Where the workspaces a join is answered for live.
 pub trait JoinWorkspaces: Send + Sync {
-    /// The key this device signs the workspaces' governance with.
-    fn key(&self) -> &SigningKey;
+    /// This device's custody of the key it signs the workspaces' governance with.
+    fn signer(&self) -> &dyn DeviceSigner;
 
     /// Fresh randomness for a challenge.
     fn nonce(&self) -> Result<[u8; 32], JoinError>;
@@ -118,16 +119,30 @@ pub fn requested_workspace(request: &JoinTransportRequest, now: u64) -> Result<S
 
 /// Admit the verified `joins` to `workspace` in one governance change signed
 /// with `key`. Each is checked on its own and refused alone; everyone
-/// admitted is then committed, recorded in the workspace's ledger and sent,
-/// together. Answers each join in order.
+/// admitted is then committed and recorded in the workspace's ledger,
+/// together. Answers each join in order, with its admission: what the
+/// bootstrap says of the device, without the workspace's state, which
+/// [`crate::join_ledger::Governed::filled`] adds for a device it is sent to.
 pub fn admit(
     workspace: &mut dyn WorkspaceTxn,
     joins: &[Redeeming<'_>],
-    key: &SigningKey,
+    key: &dyn DeviceSigner,
+    now: u64,
+) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
+    admit_signed(workspace, joins, key, &|| Ok(()), now)
+}
+
+/// [`admit`], committing nothing unless `settled`: the turn signed all it wrote.
+fn admit_signed(
+    workspace: &mut dyn WorkspaceTxn,
+    joins: &[Redeeming<'_>],
+    key: &dyn DeviceSigner,
+    settled: &dyn Fn() -> Result<(), String>,
     now: u64,
 ) -> Result<Vec<Result<JoinBootstrap, JoinError>>, JoinError> {
     let mut candidate = workspace.governed().peer.clone();
     let refusals = workspace.ledger().admit(&mut candidate, joins, key, now);
+    settled().map_err(JoinError::new)?;
     for (join, refused) in joins.iter().zip(&refusals) {
         if let Some(error) = refused {
             tracing::warn!(
@@ -227,49 +242,72 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                     .await?
             }
             JoinTransportRequest::Complete(request) => {
-                let key = store.key().clone();
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        complete(workspace, remote_endpoint, &request, &key, now)
-                            .map(JoinTransportResponse::Complete)
-                    })
-                    .await?
+                self.signed(&workspace, |workspace, signed| {
+                    complete(workspace, remote_endpoint, &request, signed, now)
+                        .map(JoinTransportResponse::Complete)
+                })
+                .await?
             }
             JoinTransportRequest::MembershipChallenge(request) => {
                 let nonce = store.nonce()?;
-                let key = store.key().clone();
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        // A further device of someone the workspace has in it
-                        // needs no invitation: the workspace admits it as that
-                        // member's device, and it proves the membership it was
-                        // admitted as.
-                        admit_member_device(workspace, &request.device_cert, &key, now)?;
-                        let mut ledger = workspace.ledger().clone();
-                        let challenge = ledger.membership_challenge(
-                            &workspace.governed(),
-                            remote_endpoint,
-                            request,
-                            nonce,
-                            now,
-                        )?;
-                        workspace.stage_ledger(ledger);
-                        Ok(JoinTransportResponse::MembershipChallenge(
-                            MembershipChallengeResponse { challenge },
-                        ))
-                    })
-                    .await?
+                self.signed(&workspace, |workspace, signed| {
+                    // A further device of someone the workspace has in it
+                    // needs no invitation: the workspace admits it as that
+                    // member's device, and it proves the membership it was
+                    // admitted as.
+                    admit_member_device(workspace, &request.device_cert, signed, now)?;
+                    let mut ledger = workspace.ledger().clone();
+                    let challenge = ledger.membership_challenge(
+                        &workspace.governed(),
+                        remote_endpoint,
+                        request.clone(),
+                        nonce,
+                        now,
+                    )?;
+                    workspace.stage_ledger(ledger);
+                    Ok(JoinTransportResponse::MembershipChallenge(
+                        MembershipChallengeResponse { challenge },
+                    ))
+                })
+                .await?
             }
             JoinTransportRequest::MembershipComplete(request) => {
-                let key = store.key().clone();
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        membership_complete(workspace, remote_endpoint, &request, &key, now)
-                            .map(JoinTransportResponse::MembershipComplete)
-                    })
-                    .await?
+                self.signed(&workspace, |workspace, signed| {
+                    membership_complete(workspace, remote_endpoint, &request, signed, now)
+                        .map(JoinTransportResponse::MembershipComplete)
+                })
+                .await?
             }
         })
+    }
+}
+
+impl<S: JoinWorkspaces> JoinAnswer<S> {
+    /// Run `decide`, a change of `workspace` that signs as it goes, in one
+    /// signed turn of this device's signer: a run that asked for a signature
+    /// the signer has not given yet commits nothing, the signer signs what it
+    /// asked for outside the workspace's lock, and `decide` runs again.
+    async fn signed<T: Send>(
+        &self,
+        workspace: &str,
+        mut decide: impl FnMut(&mut dyn WorkspaceTxn, &Signatures) -> Result<T, JoinError> + Send,
+    ) -> Result<T, JoinError> {
+        let signer = self.0.signer();
+        let signatures = Signatures::of(signer);
+        for _ in 0..SIGNED_RUNS {
+            let ran = self
+                .0
+                .with_workspace(workspace, |held| decide(held, &signatures))
+                .await;
+            if !signatures
+                .sign_wanted(signer)
+                .await
+                .map_err(JoinError::new)?
+            {
+                return ran;
+            }
+        }
+        Err(JoinError::new(UNSIGNED))
     }
 }
 
@@ -279,7 +317,7 @@ fn complete(
     workspace: &mut dyn WorkspaceTxn,
     remote_endpoint: [u8; 32],
     request: &JoinCompleteRequest,
-    key: &SigningKey,
+    signed: &Signatures,
     now: u64,
 ) -> Result<JoinBootstrap, JoinError> {
     let request_id = request.proof.challenge.request_id;
@@ -304,9 +342,11 @@ fn complete(
         redemption: &redemption,
         name: None,
     }];
-    admit(workspace, &joins, key, now)?
+    let admitted = admit_signed(workspace, &joins, signed, &|| signed.settled(), now)?
         .pop()
-        .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))
+        .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))?;
+    // The device is sent the workspace as the admission committed it.
+    workspace.governed().filled(admitted)
 }
 
 /// Admit `device` to the workspace before it is challenged, when the workspace
@@ -317,7 +357,7 @@ fn complete(
 fn admit_member_device(
     workspace: &mut dyn WorkspaceTxn,
     device: &DeviceCert,
-    key: &SigningKey,
+    signed: &Signatures,
     now: u64,
 ) -> Result<(), JoinError> {
     let held = workspace
@@ -332,8 +372,9 @@ fn admit_member_device(
     let mut candidate = workspace.governed().peer.clone();
     candidate
         .governance_mut()
-        .admit_member_device(device, key, at(now))
+        .admit_member_device(device, signed, at(now))
         .map_err(JoinError::new)?;
+    signed.settled().map_err(JoinError::new)?;
     let ledger = workspace.ledger().clone();
     workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
     tracing::info!(
@@ -354,7 +395,7 @@ fn membership_complete(
     workspace: &mut dyn WorkspaceTxn,
     remote_endpoint: [u8; 32],
     request: &MembershipCompleteRequest,
-    key: &SigningKey,
+    signed: &Signatures,
     now: u64,
 ) -> Result<JoinBootstrap, JoinError> {
     let renewal = workspace.ledger().membership_renewal(
@@ -367,7 +408,8 @@ fn membership_complete(
         let mut candidate = workspace.governed().peer.clone();
         candidate
             .governance_mut()
-            .renew_member_certificate(&renewed, key, at(now))?;
+            .renew_member_certificate(&renewed, signed, at(now))?;
+        signed.settled().map_err(JoinError::new)?;
         let ledger = workspace.ledger().clone();
         workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
         tracing::info!(

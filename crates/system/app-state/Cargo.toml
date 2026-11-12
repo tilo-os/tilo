@@ -26,6 +26,8 @@ tilo-cli-kit = { version = "0.1.0", path = "../../runtime/cli" }
 durable-store = { version = "0.1.0", path = "../durable-store" }
 # The home directory bounds how far up directory syncs reach.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+# The clock that also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 automerge.workspace = true
 # Binds a load hint to the exact document bytes it was made for.

@@ -1786,11 +1786,11 @@ fn unavailable() -> String {
 fn send_all(network: &dyn FabricLink, out: Vec<Egress>) -> Result<(), String> {
     let mut first_error = None;
     for item in out {
-        if let Err(error) = network.send_personal_fabric_action(&item.target, item.action) {
+        if let Err(error) = network.try_send_personal_fabric_action(&item.target, item.action) {
             first_error.get_or_insert(error);
         }
     }
-    first_error.map_or(Ok(()), Err)
+    first_error.map_or(Ok(()), |error| Err(error.to_string()))
 }
 
 fn local_device(network: &dyn FabricLink) -> Result<DeviceId, String> {
@@ -1931,7 +1931,8 @@ pub fn identify(
         return Err(crate::i18n::t("speaker-error-speaker-unavailable"));
     }
     network
-        .send_personal_fabric_action(device, PersonalFabricAction::SpeakerIdentify { output })
+        .try_send_personal_fabric_action(device, PersonalFabricAction::SpeakerIdentify { output })
+        .map_err(|error| error.to_string())
         .map(|_| ())
 }
 
@@ -2034,7 +2035,7 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
     let answers = crate::calibration::drain_answers();
     if media_enabled {
         for (leader, action) in answers {
-            let _ = network.send_personal_fabric_action(&leader, action);
+            let _ = network.try_send_personal_fabric_action(&leader, action);
         }
     }
     reconcile_routes(network, &fabric, &local, media_enabled);

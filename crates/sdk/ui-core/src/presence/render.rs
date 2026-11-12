@@ -100,6 +100,14 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
+        // The caret is where they are, whether or not it wears their name:
+        // noted so a reader is told it too.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(rect),
+            selection: false,
+            saying: None,
+        });
         if self.is_agent(user) {
             draw_agent_identity_mark(
                 scene,
@@ -127,6 +135,14 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme).with_alpha_factor(0.35);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
+        // Where they select is told to a reader too: a peer's band is as much
+        // a place they are as their caret.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(rect),
+            selection: true,
+            saying: None,
+        });
     }
 
     /// Draw an authorship "marker": translucent underlay in the author's
@@ -234,9 +250,36 @@ impl PresenceCtx {
             is_agent,
         );
         self.note_caret_tag(CaretTag {
+            user: user.clone(),
             label: name.to_owned(),
             rect: transform.transform_rect_bbox(chip_rect),
         });
+        // Who is writing here, where: the caret this widget just painted in
+        // their name, as a reader is told it.
+        self.note_presence_mark(super::PresenceMark {
+            user: user.clone(),
+            rect: transform.transform_rect_bbox(caret_rect),
+            selection: false,
+            saying: None,
+        });
+    }
+
+    /// [`Self::draw_peer_caret_labeled_in`] for the caret of an action writing
+    /// into this text: `words` say who is writing and what they are doing
+    /// there ("Claude Code: Appending paragraph"), so a reader is told them
+    /// rather than that the peer is writing.
+    pub fn draw_action_caret_labeled_in(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        words: &str,
+        caret: LabeledCaret,
+    ) {
+        self.draw_peer_caret_labeled_in(scene, theme, text_renderer, transform, user, words, caret);
+        self.note_caret_saying(words);
     }
 
     /// Outline `rect` in the peer's colour — "this peer has *this object*
@@ -263,12 +306,29 @@ impl PresenceCtx {
         rect: Rect,
         radius: f64,
     ) {
+        self.draw_peer_outline_filled(scene, theme, transform, user, rect, radius, OUTLINE_FILL);
+    }
+
+    /// [`Self::draw_peer_outline`] with its wash at `fill` strength, under the same stroke: an
+    /// agent's would-click place stands at the outline's own strength and flashes brighter the
+    /// moment its step was taken ([`PresenceCtx::agent_locus_tint`]), never in a second layer over
+    /// the control's words.
+    pub(crate) fn draw_peer_outline_filled(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        transform: Affine,
+        user: &UserId,
+        rect: Rect,
+        radius: f64,
+        fill: f32,
+    ) {
         let color = color_for(self, user, theme);
         let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            color.with_alpha_factor(0.18),
+            color.with_alpha_factor(fill),
             None,
             &shape,
         );
@@ -341,16 +401,14 @@ impl PresenceCtx {
     /// Semantic actions label the actual control beside it, not in the row
     /// above it: that row often contains a notice explaining whether the action
     /// is available. Ordinary peer selections retain their existing name chips.
-    pub(crate) fn draw_action_outline_labeled_within(
+    pub(crate) fn draw_action_label_within(
         &self,
         ctx: &mut PaintCtx<'_>,
         user: &UserId,
         label: &str,
         rect: Rect,
-        radius: f64,
         bounds: Rect,
     ) {
-        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
         let gap = f64::from(ctx.theme.tokens.spacing.s1);
         let right = (bounds.x1 - rect.x1 - gap).max(0.0);
         let left = (rect.x0 - bounds.x0 - gap).max(0.0);
@@ -374,12 +432,13 @@ impl PresenceCtx {
         }
         let x = x.min(bounds.x1 - w).max(bounds.x0);
         let y = y.min(bounds.y1 - h).max(bounds.y0);
-        draw_name_chip_in(
-            ctx,
-            color_for(self, user, ctx.theme),
-            &label,
-            Rect::new(x, y, x + w, y + h),
-        );
+        let chip = Rect::new(x, y, x + w, y + h);
+        draw_name_chip_in(ctx, color_for(self, user, ctx.theme), &label, chip);
+        self.note_caret_tag(CaretTag {
+            user: user.clone(),
+            label,
+            rect: ctx.transform.transform_rect_bbox(chip),
+        });
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
@@ -421,6 +480,10 @@ impl PresenceCtx {
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
     }
 }
+
+/// How strong the wash under a presence outline stands: light enough that what the object says
+/// stays legible through it, strong enough that the colour reads as the person's.
+pub(crate) const OUTLINE_FILL: f32 = 0.18;
 
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
@@ -594,6 +657,17 @@ pub struct PillPlacement {
     pub tethered: bool,
 }
 
+/// `viewport` with its edges the right way round — an inverted one would
+/// otherwise clamp every pill to nothing.
+fn normalised(viewport: Rect) -> Rect {
+    Rect::new(
+        viewport.x0.min(viewport.x1),
+        viewport.y0.min(viewport.y1),
+        viewport.x0.max(viewport.x1),
+        viewport.y0.max(viewport.y1),
+    )
+}
+
 /// Place one name pill per peer so none overlap and none leaves `viewport`.
 /// Each pill tries the four corners around its pointer, taking the first
 /// clear of the viewport and every already-placed pill; only when all four
@@ -601,14 +675,7 @@ pub struct PillPlacement {
 /// Placement order is by position, not arrival, so a peer reconnecting
 /// doesn't reshuffle everyone else's names.
 pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlacement> {
-    // Normalise — an inverted `viewport` would otherwise clamp every pill
-    // to nothing.
-    let vp = Rect::new(
-        viewport.x0.min(viewport.x1),
-        viewport.y0.min(viewport.y1),
-        viewport.x0.max(viewport.x1),
-        viewport.y0.max(viewport.y1),
-    );
+    let vp = normalised(viewport);
 
     // Carries each request's original index alongside itself, so the sort
     // below never needs to index back into `pills`.
@@ -837,35 +904,106 @@ pub fn draw_peer_cursors(
 /// An agent's pointer at `tip` with its name tag, as every agent here is
 /// drawn: its mark in its colour, and beside it a pill with its face and
 /// `label`, kept inside `viewport`. What an agent's action marker paints, so
-/// an agent at work wears the same nametag as an agent pointing. Returns the
-/// bounds painted, in the scene's coordinates before `transform`.
+/// an agent at work wears the same nametag as an agent pointing. `locus` is
+/// the line the agent is acting on — the box its caret is in — whose text the
+/// tag must leave readable, and `ink` the words around it, which it never
+/// covers. Returns the bounds painted and the tag's own, in the scene's
+/// coordinates before `transform`.
 pub(super) fn draw_agent_nametag(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     (tip, viewport): (Point, Rect),
+    (locus, ink): (Rect, &[Rect]),
     label: &str,
     color: Color,
-) -> Rect {
+) -> (Rect, Rect) {
     let at = (tip.x, tip.y);
     draw_peer_pointer(scene, transform, theme, at, color, true);
     let size = peer_pill_size_for(text_renderer, theme, label, true);
     let mut bounds = pointer_bounds(at);
-    if let Some(place) = layout_peer_pills(viewport, &[PillRequest { at, size }]).first() {
-        draw_peer_pill_kind(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            place.rect,
-            label,
-            color,
-            true,
-        );
-        bounds = bounds.union(place.rect.inflate(FADE_EDGE, FADE_EDGE));
+    let place = if ink.is_empty() {
+        agent_nametag_rect(viewport, at, locus, size)
+    } else {
+        // Where the text around it is known, the tag takes the rule a caret's
+        // chip does: beside the pointer where no glyph is, else above the
+        // line, else below it — never over a word.
+        let vp = normalised(viewport);
+        let chip = super::LabeledCaret {
+            rect: bounds,
+            top: vp.y0,
+            ink: ink.to_vec(),
+            right: vp.x1,
+        }
+        .chip_rect(size.0, size.1);
+        let x = chip.x0.clamp(vp.x0, (vp.x1 - size.0).max(vp.x0));
+        let y = chip.y0.clamp(vp.y0, (vp.y1 - size.1).max(vp.y0));
+        Rect::new(x, y, x + size.0, y + size.1)
+    };
+    draw_peer_pill_kind(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        place,
+        label,
+        color,
+        true,
+    );
+    bounds = bounds.union(place.inflate(FADE_EDGE, FADE_EDGE));
+    (bounds.intersect(viewport), place)
+}
+
+/// Where an agent's name tag goes for a pointer at `tip` acting on `locus`,
+/// within `viewport`: level with the pointer and clear *above* the line it
+/// stands on, so the tag never covers the words the agent just wrote; it
+/// hangs below only when rising would leave the frame. A tag on the line
+/// turned "Following me puts this window in front of you" into "Follo…ndow
+/// in front of you" mid-sentence — the name is worth less than what the
+/// agent is saying.
+fn agent_nametag_rect(viewport: Rect, tip: (f64, f64), locus: Rect, size: (f64, f64)) -> Rect {
+    let (w, h) = size;
+    let vp = normalised(viewport);
+    let (top, bottom) = nametag_clearance(tip, locus, h);
+    let above = top - PILL_GAP - h;
+    let below = bottom + PILL_GAP;
+    let y = if above >= vp.y0 { above } else { below };
+    // Beside the pointer, and on its other side when the frame is narrower
+    // than the tag plus the gap.
+    let x = if tip.0 + RING_R + PILL_GAP + w <= vp.x1 {
+        tip.0 + RING_R + PILL_GAP
+    } else {
+        tip.0 - RING_R - PILL_GAP - w
+    };
+    let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
+    let y = y.clamp(vp.y0, (vp.y1 - h).max(vp.y0));
+    Rect::new(x, y, x + w, y + h)
+}
+
+/// The edges an agent's tag must stay clear of: the top of the line its
+/// caret is in, or else the top of its own pointer's ring, and the bottom of
+/// whichever of the two reaches lower. `locus` is only read as a line when
+/// it is short enough to be one — the bounds of a whole window the agent
+/// acts on are no line, and a tag hung from their far edge would fly off the
+/// pointer it belongs to.
+fn nametag_clearance(tip: (f64, f64), locus: Rect, height: f64) -> (f64, f64) {
+    let ring_top = tip.1 - RING_R;
+    let ring_bottom = tip.1 + RING_R;
+    let line = locus.height() > 0.0 && locus.height() <= 4.0 * height;
+    if line {
+        // The box a caret is published in is the caret's own: an editor draws it from the
+        // baseline down, while the words it is in rise above its top. One box's height above
+        // the caret clears the line the agent is writing on, which a tag hung from the caret's
+        // top landed across — the tag covered the words it named the agent for.
+        let above_the_line = locus.y0 - locus.height();
+        (ring_top.min(above_the_line), ring_bottom.max(locus.y1))
+    } else {
+        // What the frame knows of the action is a box: the pointer stands in the middle of what
+        // it acts on. A pointer in text is on a line of it, and the words of that line stand a
+        // line above the middle: one line's lift keeps the name off them.
+        (ring_top - height, ring_bottom + height)
     }
-    bounds.intersect(viewport)
 }
 
 /// How far above the pointer's tip a reaction starts.
@@ -1816,12 +1954,11 @@ mod tests {
             ] {
                 let mut scene = Scene::new();
                 let mut text = TextRenderer::new();
-                presence.draw_action_outline_labeled_within(
+                presence.draw_action_label_within(
                     &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
                     &user,
                     "Rename (Applying) - Quill",
                     control,
-                    f64::from(theme.tokens.radii.detail),
                     viewport,
                 );
                 let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);
@@ -1970,7 +2107,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             let user = UserId("charlie".to_string());
-            // Caret bar from y=40..60 at x=30..32. The chip sits above y=40.
+            // Caret bar from y=60..80 at x=30..32. The chip sits a line above it.
             ctx.draw_peer_caret_labeled(
                 &mut scene,
                 &theme,
@@ -1978,21 +2115,21 @@ mod tests {
                 Affine::IDENTITY,
                 &user,
                 "Charlie",
-                Rect::new(30.0, 40.0, 32.0, 60.0),
+                Rect::new(30.0, 60.0, 32.0, 80.0),
             );
 
             let mut r = OffscreenRenderer::new(120, 120);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // The caret bar itself, at (30, 50).
-            let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 50);
+            // The caret bar itself, at (30, 70).
+            let (br, bg, bb, _a) = OffscreenRenderer::sample(&rgba, 120, 30, 70);
             assert!(
                 bg > br && bg > bb && bg > 100,
                 "caret bar should be emerald, got ({br},{bg},{bb})"
             );
 
-            // The chip fill, a few pixels above the caret top (y ~ 33).
-            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 33);
+            // The chip fill, a line above the caret top (y ~ 28).
+            let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 120, 31, 28);
             assert!(
                 ca > 0,
                 "expected an opaque chip above the caret, got alpha {ca}"
@@ -2026,9 +2163,10 @@ mod tests {
             let mut r = OffscreenRenderer::new(160, 160);
             let rgba = r.render(&scene, Color::WHITE);
 
-            // The chip's own top edge is at caret.y0 - h - 2; a pixel just under
-            // its bottom edge should be the shadow, darker than the white ground.
-            let top = 60.0 - h - 2.0;
+            // The chip's own top edge is a line box above the caret, less its height and a
+            // gap; a pixel just under its bottom edge should be the shadow, darker than the
+            // white ground.
+            let top = 60.0 - 20.0 - h - 2.0;
             // `top + h + 1.0` collapses to a fixed in-bounds sample row (59) on
             // the 160px-tall offscreen canvas, regardless of the chip height it
             // was derived from.
@@ -3250,5 +3388,70 @@ mod tests {
             "a square: {painted:?}"
         );
         assert!(!float(":missing:").0);
+    }
+    /// The pill an agent's name is painted in, at the size the shots show.
+    fn nametag(tip: (f64, f64), locus: Rect, viewport: Rect) -> Rect {
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let size = peer_pill_size_for(&mut text, &theme, "Claude Code \u{b7} Agent", true);
+        agent_nametag_rect(viewport, tip, locus, size)
+    }
+
+    #[test]
+    fn an_agents_name_hangs_above_the_line_its_caret_is_in() {
+        // The mid-edit frame: the pointer stands on the line the agent is
+        // writing, and its name sat across that line's words. The box the
+        // caret publishes is its own, from the baseline down, while the words
+        // of the line rise above it.
+        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 260.0, 640.0, 289.0);
+        let caret = Rect::new(120.0, 272.0, 121.0, 289.0);
+        let tag = nametag((300.0, 282.0), caret, viewport);
+        assert!(tag.intersect(line).is_zero_area(), "off the line: {tag:?}");
+        assert!(tag.y1 <= line.y0, "above the line's words: {tag:?}");
+    }
+
+    #[test]
+    fn an_agents_name_keeps_one_gap_above_a_line_it_is_given_whole() {
+        let viewport = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 300.0, 640.0, 324.0);
+        let tag = nametag((300.0, 312.0), line, viewport);
+        assert!(
+            tag.y1 <= line.y0 - PILL_GAP,
+            "at least a gap above the line: {tag:?}"
+        );
+    }
+
+    #[test]
+    fn an_agents_name_hangs_below_only_when_there_is_no_room_above() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        // A first line at the very top of the frame: rising would leave it.
+        let line = Rect::new(120.0, 8.0, 640.0, 32.0);
+        let tag = nametag((300.0, 20.0), line, viewport);
+        assert!(tag.y0 >= line.y1, "below the line: {tag:?}");
+        assert!((tag.y0 - line.y1 - PILL_GAP).abs() < 0.01, "{tag:?}");
+    }
+
+    #[test]
+    fn an_agents_name_stays_inside_the_frame_beside_a_pointer_at_its_edge() {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let line = Rect::new(120.0, 300.0, 1276.0, 324.0);
+        let tag = nametag((1270.0, 312.0), line, viewport);
+        assert!(tag.x0 >= viewport.x0 && tag.x1 <= viewport.x1, "{tag:?}");
+        assert!(tag.intersect(line).is_zero_area(), "{tag:?}");
+    }
+
+    #[test]
+    fn a_pointer_acting_on_a_whole_window_hangs_its_name_from_its_own_ring() {
+        // The bounds of a window are no line: a tag hung from their top edge
+        // would fly far above the pointer it belongs to.
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let window = Rect::new(0.0, 0.0, 1280.0, 700.0);
+        let tag = nametag((300.0, 400.0), window, viewport);
+        assert!(tag.y1 < 400.0, "above the pointer: {tag:?}");
+        assert!(
+            400.0 - tag.y1 < 64.0,
+            "beside it, not across the frame: {tag:?}"
+        );
     }
 }

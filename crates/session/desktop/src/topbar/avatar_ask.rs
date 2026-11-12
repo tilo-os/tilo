@@ -1,38 +1,44 @@
 //! The ask about the person themselves, put to them from their own avatar
 //! ([`crate::chrome::AvatarAsk`]).
 //!
-//! Open, it is a small popover in the bar's own band, hanging left from the
-//! avatar and sized to its words: the question, what answering brings where
-//! there is room, "Not now" and the answer. Where it does not fit beside the
-//! clock's lane it takes that lane too, over the glance value it covers.
-//! Where the band cannot hold its words at all (a narrow bar, a compact one),
-//! it opens as a floating card under the band, hanging from the avatar, with
-//! the question on its first line and its chips on the next: the same words,
-//! the same controls, so the question is always shown where it can be
-//! answered. In the band it never covers a window's bar or content; the card
-//! under it stands above the windows, and takes the clicks in it, so the ask
-//! is never a surface the person cannot reach. A press anywhere else folds it
-//! into a dot on the avatar and still reaches what it was pressed on. Escape
-//! folds it too. A click on the avatar while it waits as the dot opens it
-//! again.
+//! Open, it is a small pill in the bar's own band, left of the avatar and of
+//! the faces, people button and notices beside it, sized to its words: the
+//! question, what answering brings where there is room, "Not now" and the
+//! answer. Where it does not fit beside the clock's lane it takes that lane
+//! too, over the glance value it covers, and a bar narrow enough to leave no
+//! room anywhere gives it the band up to the person's own face: the ask stands
+//! on the bar and on nothing else, whatever the width, and the face it stops
+//! short of is still the person's to press for their own card.
+//!
+//! It never leaves the band, so it can never cover a window's bar or content,
+//! and it can never be covered by the cards the bar opens: those hang below
+//! the band, from the control that opened them. Its question stands whole,
+//! never cut with an ellipsis: a bar with no room for the whole question —
+//! a phone's band, where the question and its answer do not both fit, or the
+//! band whose middle lane is the banner's that says whose view this is and
+//! offers Stop — leaves the ask waiting as the avatar's dot, which says what
+//! it asks to a reader and whose card offers it.
+//!
+//! A press anywhere else folds it into a dot on the avatar and still reaches
+//! what it was pressed on. Escape folds it too. A click on the avatar opens
+//! the person's own card, the ask open or folded: the card offers what the ask
+//! asks, so a press on their own face always shows them who they are here.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, TextRole, Theme,
     TopBarChrome, t,
 };
 use crate::chrome::AvatarAsk;
-use ui::text_render::TextWeight;
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-/// Below this the question elides to a word or two and stops asking anything: the ask then waits as
-/// the avatar's dot.
-const MIN_QUESTION_PX: f64 = 96.0;
+/// Below this the detail line is left out rather than cut to a stub.
+const MIN_DETAIL_PX: f64 = 96.0;
 
 /// Widest the detail line grows before it elides.
 const MAX_DETAIL_PX: f64 = 320.0;
 
-/// Where the open ask's parts were painted, for its hit tests: the surface it stands on (the pill
-/// in the band, or the card under it), and its chips.
+/// Where the open ask's parts were painted, for its hit tests: the pill it stands on in the band,
+/// and its chips.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct AskRects {
     pub pill: Rect,
@@ -62,8 +68,8 @@ impl TopBarChrome {
         self.ask.answer
     }
 
-    /// The open ask, hanging left from the avatar's left edge at `right_x` inside the bar's band;
-    /// returns where the controls before it end.
+    /// The open ask in the bar's band, ending at `right_x`: left of the avatar and of everything
+    /// else the bar draws on its right, so it never stands over them.
     pub(super) fn draw_avatar_ask(
         &mut self,
         scene: &mut Scene,
@@ -84,34 +90,67 @@ impl TopBarChrome {
         if self.own_chip().is_none() {
             return;
         }
-        // Beside the clock where its words fit there; a question the bar cannot hold beside the
-        // lane takes the lane's free room up to the clock, and, with no room there either, the
-        // clock too, rather than waiting where it cannot be read or answered.
         let gap = f64::from(theme.tokens.spacing.s4);
-        let limits = [
-            self.center_lane.x1 + gap,
-            self.center_rect.x1 + gap,
-            self.center_lane.x0 + gap,
-        ];
+        let seat = f64::from(theme.tokens.spacing.s3);
+        // The band's rooms for it, right to left. First the ones that keep the bar's own glance
+        // values — beside the clock's lane, the lane's free room up to the clock, the clock's lane —
+        // then the strip past the workspace's own chip, then the band itself: a bar too narrow to
+        // keep them all gives the ask the band, so the question stands on the bar and on nothing
+        // else, whatever the width.
+        // While this view follows someone the lane is the banner's, which says whose view it is and
+        // offers Stop: the ask never takes it (behind "Following Claude Code" its words were cut
+        // off), and stands either side of it instead.
+        let past_workspace = self.ws_pill_rect.x1 + gap;
+        let mut rooms = vec![Room::beside(right_x, self.center_lane.x1 + gap)];
+        if self.following {
+            rooms.push(Room::beside(self.center_lane.x0 - gap, past_workspace));
+        } else {
+            rooms.push(Room::beside(right_x, self.center_rect.x1 + gap));
+            rooms.push(Room::beside(right_x, self.center_lane.x0 + gap));
+            rooms.push(Room::beside(right_x, past_workspace));
+            // The band taken whole stops short of the person's own face and of the people beside
+            // it, which the bar draws at its end: each face stays its own to press, and the ask's
+            // answer never stands under one. On a phone the answer stood under the one face the
+            // bar shows, and a press meant for that face's card answered the ask instead.
+            let edge = f64::from(theme.tokens.spacing.s2);
+            let people = self.collaborators_rect();
+            let band_right = [self.own_avatar_rect, people]
+                .into_iter()
+                .filter(|rect| !rect.is_zero_area())
+                .map(|rect| rect.x0 - edge)
+                .fold(self.rect.x1 - seat, f64::min);
+            rooms.push(Room::band(self.rect.x0 + seat, band_right));
+        }
+        // The question stands whole wherever a room holds it. Its decline gives way first — a press
+        // anywhere else folds the ask — so the question is never dropped where its own words fit
+        // beside the answer alone. A room too narrow for the whole question is no room for it, and
+        // where none in the band holds it, the ask waits as the avatar's dot: a question cut with
+        // an ellipsis ("Keep your name an…") is not asked, and the person's own card, which the
+        // face opens, offers what it asks.
         let mut words = None;
-        for limit in limits {
-            words = AskWords::fit(&ask, right_x - limit, theme, text_renderer);
+        for with_later in [true, false] {
+            for room in &rooms {
+                if let Some(fit) =
+                    AskWords::fit(&ask, room.width(), with_later, theme, text_renderer)
+                {
+                    words = Some((fit, room));
+                    break;
+                }
+            }
             if words.is_some() {
                 break;
             }
         }
-        let Some(words) = words else {
-            // A bar too narrow for the words beside the avatar: the ask opens under the band, where
-            // a card holds them.
-            self.draw_avatar_ask_below(scene, transform, theme, text_renderer, right_x);
+        let Some((words, room)) = words else {
             return;
         };
         let pad = f64::from(theme.tokens.spacing.s2);
         let gap = f64::from(theme.tokens.spacing.s1);
+        let (right_x, width) = (room.right, room.pill_width(words.width(pad, gap)));
         // The bar's own band: never below it, where the windows' bars are.
         let top = (center_y - BAR_CONTROL_PX / 2.0).max(self.rect.y0);
         let bottom = (center_y + BAR_CONTROL_PX / 2.0).min(self.rect.y1);
-        let pill = Rect::new(right_x - words.width(pad, gap), top, right_x, bottom);
+        let pill = Rect::new(right_x - width, top, right_x, bottom);
         // The pill is a floating panel's body: the overlay ground and its inner hairline, from the
         // shared painter, on the bar.
         ui::widget::FloatingPanelFace::new()
@@ -132,119 +171,26 @@ impl TopBarChrome {
             pill.x1 - pad / 2.0,
             chip_top + chip_h,
         );
-        let later = Rect::new(
-            answer.x0 - gap - words.later_w,
-            chip_top,
-            answer.x0 - gap,
-            chip_top + chip_h,
-        );
+        let later = words.later.as_ref().map_or(Rect::ZERO, |later| {
+            let rect = Rect::new(
+                answer.x0 - gap - words.later_w,
+                chip_top,
+                answer.x0 - gap,
+                chip_top + chip_h,
+            );
+            let hovered = self.hovered_control();
+            ChipFace::new(rect, later)
+                .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_LATER))
+                .paint(scene, transform, text_renderer, theme);
+            rect
+        });
         let hovered = self.hovered_control();
-        ChipFace::new(later, &words.later)
-            .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_LATER))
-            .paint(scene, transform, text_renderer, theme);
         ChipFace::new(answer, &ask.answer)
             .style(ChipStyle::Live)
             .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_ANSWER))
             .paint(scene, transform, text_renderer, theme);
         self.ask = AskRects {
             pill,
-            answer,
-            later,
-        };
-    }
-
-    /// The open ask where the bar's band cannot hold its words: the same ask as a floating card
-    /// under the band, hanging from the avatar, the question and what answering brings on its first
-    /// line and its chips on the next. It stands above the windows, so the question is always read
-    /// and answered where it is shown.
-    pub(super) fn draw_avatar_ask_below(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        right_x: f64,
-    ) {
-        use ui::widget::floating_surface::{self, PanelAlign, PopoverSide};
-        use ui::widget::{ChipFace, ChipStyle};
-
-        let Some(ask) = self.chrome_avatar_ask().filter(|ask| ask.open) else {
-            return;
-        };
-        let tokens = &theme.tokens;
-        // Every floating card keeps the layer's standard margin from the screen's edges: the same
-        // room other anchored cards leave.
-        let margin = floating_surface::viewport_margin(theme);
-        let widest = (self.rect.width() - 2.0 * margin).max(0.0);
-        let pad = f64::from(tokens.spacing.s3);
-        let Some(words) = AskWords::fit_below(&ask, widest, theme, text_renderer) else {
-            return;
-        };
-        let gap = f64::from(tokens.spacing.s2);
-        let chip_h = ChipFace::height(theme);
-        let line_h = words.line_height(text_renderer, theme);
-        let question_line = words.question_w + words.detail_w;
-        let chips_w = words.later_w + gap + words.answer_w;
-        let card_h = pad + line_h + gap + chip_h + pad;
-        // Under the band, hanging from the avatar. The bar knows its own band, not the window under
-        // it: the card stands in the room the band leaves below it, which is where the desk's
-        // windows begin.
-        let below = f64::from(tokens.spacing.s2);
-        let window = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1 + below + card_h + margin,
-        );
-        let room = floating_surface::panel_room(window, theme);
-        let card_w = (question_line.max(chips_w) + 2.0 * pad)
-            .min(widest)
-            .min(room.width());
-        let anchor = Rect::new(
-            right_x,
-            self.rect.y1,
-            right_x + BAR_CONTROL_PX,
-            self.rect.y1,
-        );
-        let (card, _) = floating_surface::place_aligned(
-            anchor,
-            (card_w, card_h),
-            PopoverSide::Below,
-            PanelAlign::Trailing,
-            below,
-            room,
-        );
-        floating_surface::paint_card(scene, transform, card, theme);
-        words.paint(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            (card.x0 + pad, card.y0 + pad + line_h / 2.0),
-        );
-        let chip_top = card.y1 - pad - chip_h;
-        let answer = Rect::new(
-            card.x1 - pad - words.answer_w,
-            chip_top,
-            card.x1 - pad,
-            chip_top + chip_h,
-        );
-        let later = Rect::new(
-            answer.x0 - gap - words.later_w,
-            chip_top,
-            answer.x0 - gap,
-            chip_top + chip_h,
-        );
-        let hovered = self.hovered_control();
-        ChipFace::new(later, &words.later)
-            .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_LATER))
-            .paint(scene, transform, text_renderer, theme);
-        ChipFace::new(answer, &ask.answer)
-            .style(ChipStyle::Live)
-            .hovered(hovered.as_deref() == Some(Self::CONTROL_ASK_ANSWER))
-            .paint(scene, transform, text_renderer, theme);
-        self.ask = AskRects {
-            pill: card,
             answer,
             later,
         };
@@ -316,30 +262,23 @@ impl TopBarChrome {
                 } else if self.ask.later.contains(p) {
                     *handled = chrome.intent(ChromeIntent::PutOffAvatarAsk);
                     true
+                } else if self.own_avatar_rect.contains(p) {
+                    // The person's own face is theirs whoever else's surface reaches it: a bar too
+                    // narrow for the ask's words gives it the band, and the face stands drawn over
+                    // its end. The press goes on to the bar, which opens their own card — the card
+                    // offers what the ask asks.
+                    false
                 } else if self.ask.pill.contains(p) {
                     // Its own surface: nothing under it to reach.
                     *handled = true;
                     true
                 } else {
-                    // The avatar opens the profile card past the ask; a press anywhere else is the
-                    // person moving on.
-                    if !self.own_avatar_rect.contains(p) {
-                        let _ = chrome.intent(ChromeIntent::CollapseAvatarAsk);
-                    }
+                    // A press anywhere but the avatar is the person moving on from the ask.
+                    let _ = chrome.intent(ChromeIntent::CollapseAvatarAsk);
                     false
                 }
             }
             _ => false,
-        }
-    }
-
-    /// What a click on the avatar asks for: the ask waiting as its dot,
-    /// else the profile card.
-    pub(super) fn avatar_intent(&self) -> ChromeIntent {
-        if self.chrome_avatar_ask().is_some_and(|ask| !ask.open) {
-            ChromeIntent::OpenAvatarAsk
-        } else {
-            ChromeIntent::ToggleProfile
         }
     }
 
@@ -358,6 +297,46 @@ impl TopBarChrome {
     }
 }
 
+/// A room the bar's band gives the ask: the right end its pill hangs from, the leftmost edge it
+/// may reach, and whether it stands the room's whole width there.
+struct Room {
+    right: f64,
+    limit: f64,
+    /// The band itself, where the ask is what the bar is saying: it takes the room whole, so
+    /// nothing the bar draws stands clipped at its edge.
+    spans: bool,
+}
+
+impl Room {
+    /// A room the ask takes only the width its words need, the bar's own controls past it kept.
+    fn beside(right: f64, limit: f64) -> Self {
+        Self {
+            right,
+            limit,
+            spans: false,
+        }
+    }
+
+    /// The band from `left` to `right`, taken whole.
+    fn band(left: f64, right: f64) -> Self {
+        Self {
+            right,
+            limit: left,
+            spans: true,
+        }
+    }
+
+    fn width(&self) -> f64 {
+        self.right - self.limit
+    }
+
+    /// The pill's width for words this wide: the band's whole room where it spans it, and the
+    /// words' own width otherwise.
+    fn pill_width(&self, words: f64) -> f64 {
+        if self.spans { self.width() } else { words }
+    }
+}
+
 /// The open ask's words, fitted to the room the bar leaves it.
 struct AskWords {
     question: String,
@@ -365,38 +344,23 @@ struct AskWords {
     /// What answering brings, where there is room beside the question.
     detail: Option<String>,
     detail_w: f64,
-    later: String,
+    /// The decline, worn where the band has room for it beside the question: a bar too narrow for
+    /// both asks only the answer, and a press anywhere else declines.
+    later: Option<String>,
     later_w: f64,
     answer_w: f64,
 }
 
 impl AskWords {
-    /// Fit `ask` into `room` px of bar, or `None` where its question would not read: the chips
-    /// stand beside the question on the pill's one line.
+    /// Fit `ask` into `room` px of bar, or `None` where the question cannot stand there whole: the
+    /// chips stand beside the question on the pill's one line, `with_later` naming whether the
+    /// decline stands beside the answer. What answering brings is laid out beside the question
+    /// where the room left holds it, and left out below [`MIN_DETAIL_PX`] rather than cut to a
+    /// stub; the question itself is never cut.
     fn fit(
         ask: &AvatarAsk,
         room: f64,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) -> Option<Self> {
-        Self::fit_in(ask, room, true, theme, text_renderer)
-    }
-
-    /// Fit `ask` into the `room` px a card under the bar leaves for its question line, its chips
-    /// standing on a row of their own; `None` where its question would not read.
-    fn fit_below(
-        ask: &AvatarAsk,
-        room: f64,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) -> Option<Self> {
-        Self::fit_in(ask, room, false, theme, text_renderer)
-    }
-
-    fn fit_in(
-        ask: &AvatarAsk,
-        room: f64,
-        chips_beside: bool,
+        with_later: bool,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> Option<Self> {
@@ -405,41 +369,37 @@ impl AskWords {
         let tokens = &theme.tokens;
         let pad = f64::from(tokens.spacing.s2);
         let gap = f64::from(tokens.spacing.s1);
-        let later = t("notification-not-now");
-        let later_w =
-            ChipFace::intrinsic_width(&later, ChipLead::None, false, text_renderer, theme);
+        let later = with_later.then(|| t("notification-not-now"));
+        let later_w = later.as_ref().map_or(0.0, |later| {
+            ChipFace::intrinsic_width(later, ChipLead::None, false, text_renderer, theme)
+        });
         let answer_w =
             ChipFace::intrinsic_width(&ask.answer, ChipLead::None, false, text_renderer, theme);
-        let (question_style, detail_style) = Self::styles(theme);
-        let beside = if chips_beside {
+        let style = Self::style(theme);
+        let beside = if with_later {
             later_w + gap + answer_w + gap
         } else {
-            0.0
+            answer_w + gap
         };
         let room = room - 2.0 * pad - beside;
-        if room < MIN_QUESTION_PX {
+        let (question_w, _) = text_renderer.measure_style(&ask.question, None, &style);
+        let question_w = f64::from(question_w);
+        if question_w > room {
             return None;
         }
-        let (question_w, _) = text_renderer.measure_style(&ask.question, None, &question_style);
-        let question_w = f64::from(question_w).min(room);
-        let question = text_renderer.elide_to_width_style(
-            &ask.question,
-            ui::num::f32_of_f64(question_w),
-            &question_style,
-        );
         let detail_room = (room - question_w - pad).min(MAX_DETAIL_PX);
-        let detail = (detail_room >= MIN_QUESTION_PX && !ask.detail.is_empty()).then(|| {
+        let detail = (detail_room >= MIN_DETAIL_PX && !ask.detail.is_empty()).then(|| {
             text_renderer.elide_to_width_style(
                 &ask.detail,
                 ui::num::f32_of_f64(detail_room),
-                &detail_style,
+                &style,
             )
         });
         let detail_w = detail.as_ref().map_or(0.0, |detail| {
-            f64::from(text_renderer.measure_style(detail, None, &detail_style).0) + pad
+            f64::from(text_renderer.measure_style(detail, None, &style).0) + pad
         });
         Some(Self {
-            question,
+            question: ask.question.clone(),
             question_w,
             detail,
             detail_w,
@@ -449,26 +409,21 @@ impl AskWords {
         })
     }
 
-    fn styles(theme: &Theme) -> (ui::text_render::TextStyle, ui::text_render::TextStyle) {
-        let typography = &theme.tokens.typography;
-        (
-            typography
-                .style(TextRole::Caption)
-                .with_weight(TextWeight::Semibold),
-            typography.style(TextRole::Caption),
-        )
+    /// The one style the pill's words are measured and painted in: the bar's caption, as
+    /// [`ui::widget::FactsFace`] paints them. Measuring a heavier weight here cut questions the
+    /// regular weight there had room for.
+    fn style(theme: &Theme) -> ui::text_render::TextStyle {
+        theme.text(TextRole::Caption)
     }
 
     /// The whole pill's width with `pad` at its ends and `gap` between.
     fn width(&self, pad: f64, gap: f64) -> f64 {
-        pad + self.question_w + self.detail_w + gap + self.later_w + gap + self.answer_w + pad
-    }
-
-    /// How tall the question's line stands: the two facts beside each other.
-    fn line_height(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
-        use ui::widget::primitives::FactsFace;
-        let facts = self.facts();
-        FactsFace::new(&facts).height(text_renderer, theme)
+        let decline = if self.later.is_some() {
+            self.later_w + gap
+        } else {
+            0.0
+        };
+        pad + self.question_w + self.detail_w + gap + decline + self.answer_w + pad
     }
 
     /// The question and, where there is room, what answering it brings: two facts laid out with
@@ -578,6 +533,9 @@ mod tests {
                     rgb: (0xe0, 0x7a, 0x5f),
                     identity: String::new(),
                 }),
+                // The person may invite, as on the hosted page: the bar's right side carries the
+                // invite button too.
+                invite: crate::chrome::Invite::Offered,
                 ..DesktopChromeSnapshot::default()
             }
         }
@@ -638,8 +596,15 @@ mod tests {
 
     /// The real chrome over a desk with one window, at `viewport` .
     fn asking_desktop(viewport: (u32, u32)) -> (Framed<DesktopChrome>, Rc<Asking>) {
+        asking_desktop_over(viewport, &tree())
+    }
+
+    /// The real chrome over `tree` , at `viewport` , the ask open.
+    fn asking_desktop_over(
+        viewport: (u32, u32),
+        tree: &DesktopTree,
+    ) -> (Framed<DesktopChrome>, Rc<Asking>) {
         ui::i18n::I18nManager::init("en-US");
-        let tree = tree();
         let host = Rc::new(Asking {
             tree: tree.clone(),
             ask: RefCell::new(Some(AvatarAsk {
@@ -652,7 +617,7 @@ mod tests {
         });
         let (_desk, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
         let chrome: crate::chrome::Chrome = host.clone();
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        let bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
         let chrome = DesktopChrome::new(
             handle.clone(),
             "g".into(),
@@ -680,27 +645,295 @@ mod tests {
         ui::widget::Widget::get_rect(frame.bar())
     }
 
-    /// Open beside the avatar in a bar with room, the ask stands in the bar's band, its words and
-    /// its controls inside it.
+    /// With others here, the ask stands clear of their faces, the people button, the invite button
+    /// and the person's own avatar wherever the band has room beside them, and keeps the workspace's
+    /// own chip. The clock in turn keeps clear of the faces and the buttons beside them. A bar too
+    /// narrow for all of that gives the ask the band itself, which the band's own test holds; one
+    /// too narrow even for the whole question, a phone's, leaves the ask waiting as the dot on the
+    /// person's own face.
     #[test]
-    fn the_open_ask_stays_in_the_bar_band() {
-        for viewport in [(1440, 900), (1280, 720), (1920, 1080)] {
-            let (frame, _) = asking_desktop(viewport);
-            let ask = ask_rect(&frame);
-            assert!(!ask.is_zero_area(), "{viewport:?}: the ask is open");
-            let bar = bar_rect(&frame);
+    fn the_open_ask_never_stands_over_the_faces_or_the_people_button() {
+        let mut crowded = tree();
+        crowded.workspaces[0].collaborators = vec![
+            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
+            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
+        ];
+        for viewport in [(1280, 800), (1024, 768), (720, 900), (390, 844), (360, 780)] {
+            let (frame, _) = asking_desktop_over(viewport, &crowded);
+            let bar = frame.bar();
+            let ask = [bar.ask.pill, bar.ask.answer, bar.ask.later];
+            if ask[0].is_zero_area() {
+                assert!(
+                    !bar.own_avatar_rect.is_zero_area(),
+                    "{viewport:?}: with no room for the question, the ask waits on the face"
+                );
+                continue;
+            }
+            let others = [
+                ("faces", bar.avatar_stack_rect),
+                ("people button", bar.people_button_rect),
+                ("invite", bar.invite_rect),
+                ("own avatar", bar.own_avatar_rect),
+            ];
             assert!(
-                ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
-                "{viewport:?}: the ask {ask:?} stays in the bar {bar:?}"
+                !bar.collaborators_rect().is_zero_area(),
+                "{viewport:?}: who is here stands on the bar"
             );
-            assert!(
-                ask.x0 >= bar.x0 && ask.x1 <= bar.x1,
-                "{viewport:?}: the ask {ask:?} stays on the bar's width {bar:?}"
-            );
+            // The clock and the bar's right side stand apart: the faces that do not fit join the
+            // badge, and the clock moves left of the buttons, or aside.
+            for (name, rect) in others {
+                assert!(
+                    rect.intersect(bar.center_rect).is_zero_area(),
+                    "{viewport:?}: the {name} {rect:?} stands over the clock {:?}",
+                    bar.center_rect
+                );
+            }
+            // Below this the band has no room beside the workspace's chip: the ask may take it.
+            if viewport.0 >= 720 {
+                for part in ask {
+                    assert!(
+                        part.intersect(bar.ws_pill_rect).is_zero_area(),
+                        "{viewport:?}: the ask's {part:?} stands over the workspace {:?}",
+                        bar.ws_pill_rect
+                    );
+                }
+            }
+            // At every width, the faces and the buttons beside them stay their own to press.
+            for part in ask {
+                for (name, rect) in others {
+                    assert!(
+                        part.intersect(rect).is_zero_area(),
+                        "{viewport:?}: the ask's {part:?} stands over the {name} {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// On a phone the face beside the person's own is theirs to press with an ask open: a press on
+    /// it opens that person's card, never the ask's answer. Across the whole band, the answer of a
+    /// short ask stood under the one face a phone's bar shows, and the agent's card never opened.
+    #[test]
+    fn a_phones_face_opens_its_card_with_an_ask_open() {
+        let mut here = tree();
+        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
+        agent.role_id = Some("agent".into());
+        here.workspaces[0].collaborators = vec![agent];
+        for viewport in [(390, 844), (360, 780)] {
+            let (mut frame, host) = asking_desktop_over(viewport, &here);
+            *host.ask.borrow_mut() = Some(AvatarAsk {
+                question: "Keep it?".into(),
+                detail: String::new(),
+                answer: "Keep".into(),
+                open: true,
+            });
+            settle(&mut frame);
+            let face = frame
+                .bar()
+                .face_rect("agent")
+                .expect("the agent's face stands on the bar");
             let answer = frame.bar().avatar_ask_answer_rect();
             assert!(
-                ask.x0 <= answer.x0 && answer.x1 <= ask.x1,
-                "{viewport:?}: the answer {answer:?} stands inside the ask {ask:?}"
+                answer.intersect(face).is_zero_area(),
+                "{viewport:?}: the ask's answer {answer:?} stands clear of the face {face:?}"
+            );
+            host.intents.borrow_mut().clear();
+            Framed::harness_mut(&mut frame).click_at(face.center().x, face.center().y);
+            // The press folds the ask, as a press anywhere else does, and reaches the face.
+            let asked = host.intents.borrow().clone();
+            assert!(
+                asked.contains(&ChromeIntent::ShowPerson("agent".into()))
+                    && !asked.contains(&ChromeIntent::AnswerAvatarAsk),
+                "{viewport:?}: the face opens the agent's card, never the ask's answer: {asked:?}"
+            );
+        }
+    }
+
+    /// While this view follows someone, the middle lane is the banner's: the ask stands beside it
+    /// or waits as the avatar's dot, and never in it, at every width.
+    #[test]
+    fn the_open_ask_never_stands_in_the_following_banner() {
+        let mut followed = tree();
+        let mut agent = tilo_desktop_model::Collaborator::new("agent", "Claude Code");
+        agent.following = true;
+        followed.workspaces[0].collaborators = vec![agent];
+        for viewport in [(1280, 800), (1024, 768), (390, 844)] {
+            let (frame, _) = asking_desktop_over(viewport, &followed);
+            let bar = frame.bar();
+            assert!(bar.following, "{viewport:?}: the bar follows");
+            let lane = bar.center_lane;
+            assert!(
+                !lane.is_zero_area(),
+                "{viewport:?}: the banner keeps its lane"
+            );
+            let bar_rect = bar_rect(&frame);
+            for part in [bar.ask.pill, bar.ask.answer, bar.ask.later] {
+                if part.is_zero_area() {
+                    continue;
+                }
+                assert!(
+                    part.intersect(lane).is_zero_area(),
+                    "{viewport:?}: the ask's {part:?} stands in the banner's lane {lane:?}"
+                );
+                assert!(
+                    part.y0 >= bar_rect.y0 && part.y1 <= bar_rect.y1,
+                    "{viewport:?}: the ask's {part:?} leaves the bar's band {bar_rect:?}"
+                );
+            }
+            // Beside the banner with the band's room to spare, the question stands there rather
+            // than waiting as the dot.
+            if viewport.0 == 1280 {
+                assert!(
+                    !bar.ask.pill.is_zero_area(),
+                    "{viewport:?}: the ask stands beside the banner"
+                );
+                assert!(
+                    bar.ask.pill.x1 <= lane.x0,
+                    "{viewport:?}: the ask {:?} stands before the banner's lane {lane:?}",
+                    bar.ask.pill
+                );
+            }
+        }
+    }
+
+    /// The ask stands in the bar's band wherever it stands open, with faces on the bar and on a
+    /// phone: it is the band's or the avatar's dot, never a card under the band, where the
+    /// windows' own bars are. A bar too narrow for its whole question, a phone's, leaves it the
+    /// dot.
+    #[test]
+    fn the_open_ask_stays_in_the_bar_band() {
+        let mut crowded = tree();
+        crowded.workspaces[0].collaborators = vec![
+            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
+            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
+        ];
+        for viewport in [
+            (1920, 1080),
+            (1440, 900),
+            (1280, 800),
+            (1280, 720),
+            (1024, 768),
+            (720, 900),
+            (420, 800),
+            (390, 844),
+            (360, 780),
+        ] {
+            for tree in [&tree(), &crowded] {
+                let (frame, _) = asking_desktop_over(viewport, tree);
+                let ask = ask_rect(&frame);
+                if ask.is_zero_area() {
+                    assert!(
+                        !frame.bar().own_avatar_rect.is_zero_area(),
+                        "{viewport:?}: with no room for the question, the ask waits on the face"
+                    );
+                    continue;
+                }
+                let bar = bar_rect(&frame);
+                assert!(
+                    ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
+                    "{viewport:?}: the ask {ask:?} stays in the bar's band {bar:?}"
+                );
+                assert!(
+                    ask.x0 >= bar.x0 && ask.x1 <= bar.x1,
+                    "{viewport:?}: the ask {ask:?} stays on the bar's width {bar:?}"
+                );
+                let answer = frame.bar().avatar_ask_answer_rect();
+                assert!(
+                    ask.x0 <= answer.x0 && answer.x1 <= ask.x1,
+                    "{viewport:?}: the answer {answer:?} stands inside the ask {ask:?}"
+                );
+            }
+        }
+    }
+
+    /// The cards the bar opens hang under the band, from the control that opened them: a face's or
+    /// the person's own avatar's. The ask is the band's, so no card ever meets it, and answering
+    /// stays where it is shown.
+    #[test]
+    fn the_open_ask_never_meets_a_card_the_bar_opens() {
+        use ui::widget::floating_surface::{PanelAlign, PopoverSide, panel_room, place_aligned};
+
+        let mut crowded = tree();
+        crowded.workspaces[0].collaborators = vec![
+            tilo_desktop_model::Collaborator::new("agent", "Claude Code"),
+            tilo_desktop_model::Collaborator::new("ada", "Ada Lovelace"),
+        ];
+        let theme = Theme::dark();
+        let gap = f64::from(theme.tokens.spacing.s1);
+        for viewport in [(1280, 800), (720, 900), (390, 844)] {
+            let (frame, _) = asking_desktop_over(viewport, &crowded);
+            let bar = frame.bar();
+            let bar_rect = bar_rect(&frame);
+            let window = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
+            let room = panel_room(window, &theme);
+            let faces = bar.avatar_stack_rect;
+            let anchors = [("own avatar", bar.own_avatar_rect), ("faces", faces)];
+            for (name, anchor) in anchors {
+                if anchor.is_zero_area() {
+                    continue;
+                }
+                // The card a face or the avatar opens: under the band, trailing the anchor, in the
+                // room the layer keeps from the window's edges.
+                let (card, _) = place_aligned(
+                    anchor,
+                    (280.0, 320.0),
+                    PopoverSide::Below,
+                    PanelAlign::Trailing,
+                    gap,
+                    room,
+                );
+                assert!(
+                    card.y0 >= bar_rect.y1,
+                    "{viewport:?}: the {name}'s card {card:?} hangs under the band {bar_rect:?}"
+                );
+                for part in [bar.ask.pill, bar.ask.answer, bar.ask.later] {
+                    assert!(
+                        part.intersect(card).is_zero_area(),
+                        "{viewport:?}: the ask's {part:?} stands under the {name}'s card {card:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The question is asked whole or not at all: wherever the ask stands open, its pill sets every
+    /// glyph of "Keep your name and work?", never the fewer of "Keep your name an…", and where the
+    /// bar is too narrow for it the ask waits as the avatar's dot instead. A laptop's bar has the
+    /// room; a phone's does not, beside the answer's own chip.
+    #[test]
+    fn the_question_stands_whole_or_waits_as_the_dots() {
+        const QUESTION: &str = "Keep your name and work?";
+        let theme = Theme::dark();
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let whole = super::super::shot_tests::whole_question_glyphs(&theme, QUESTION);
+        for viewport in [
+            (1024, 768),
+            (1100, 800),
+            (1180, 800),
+            (1280, 800),
+            (1440, 900),
+            (420, 800),
+            (390, 844),
+            (360, 780),
+        ] {
+            let (frame, _) = asking_desktop(viewport);
+            let pill = ask_rect(&frame);
+            if pill.is_zero_area() {
+                // No room for the question: it waits as the dot on the person's own face.
+                assert!(
+                    !frame.bar().own_avatar_rect().is_zero_area(),
+                    "{viewport:?}: with no room for the question, the ask waits on the face"
+                );
+                continue;
+            }
+            // The glyphs painted where the question starts, in the caption the ask is set in: a
+            // question cut with an ellipsis sets fewer than the whole one.
+            let scene = Framed::harness(&frame).frame_render_input().scene;
+            let caption = theme.tokens.typography.size(TextRole::Caption);
+            let shown = super::super::shot_tests::glyphs_from(scene, pill, pill.x0 + pad, caption);
+            assert_eq!(
+                shown, whole,
+                "{viewport:?}: the question stands whole in its pill {pill:?}, not cut short"
             );
         }
     }
@@ -730,25 +963,29 @@ mod tests {
         assert!(host.ask.borrow().is_none(), "answered, the ask goes");
     }
 
-    /// A bar too narrow for the ask's words beside the avatar opens it as a card under the band,
-    /// hanging from the avatar: the question and its chips stand there, and the card takes its own
-    /// presses.
+    /// A bar too narrow for the ask's words beside its own controls opens it across the band: the
+    /// question and its chips stand there, on the bar and on nothing else, and the pill takes its
+    /// own presses. The person's own face keeps the last word on itself, so a press on it opens
+    /// their card wherever the ask reaches.
     #[test]
-    fn a_narrow_bar_opens_the_ask_as_a_card_under_the_band() {
+    fn a_narrow_bar_opens_the_ask_across_the_band() {
         let (mut frame, host) = asking_desktop((420, 800));
         let bar = bar_rect(&frame);
         let ask = ask_rect(&frame);
+        assert!(!ask.is_zero_area(), "the ask is open, across the band");
         assert!(
-            !ask.is_zero_area(),
-            "the ask is open, as a card under the band"
+            ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
+            "the ask {ask:?} stays in the bar's band {bar:?}"
         );
         assert!(
-            ask.y0 >= bar.y1,
-            "the card {ask:?} stands under the bar {bar:?}"
+            ask.x0 >= bar.x0 && ask.x1 <= bar.x1,
+            "the ask {ask:?} stays on the bar's width"
         );
+        let avatar = frame.bar().own_avatar_rect();
+        let answer = frame.bar().avatar_ask_answer_rect();
         assert!(
-            ask.x0 >= 0.0 && ask.x1 <= 420.0 && ask.x1 <= bar.x1,
-            "the card {ask:?} stays on the bar's width"
+            answer.intersect(avatar).is_zero_area(),
+            "the answer {answer:?} stands clear of the person's own face {avatar:?}, which is drawn over the ask"
         );
 
         // Its own surface takes the press: nothing under it, and the ask stays open rather than
@@ -759,18 +996,27 @@ mod tests {
         settle(&mut frame);
         assert!(
             host.intents.borrow().is_empty(),
-            "the card at {at:?} took the press"
+            "the pill at {at:?} took the press"
         );
         assert!(
             host.ask.borrow().as_ref().is_some_and(|ask| ask.open),
-            "a press on the card does not fold it"
+            "a press on the pill does not fold it"
         );
 
-        // Its answer stands in the card, and answering there reaches the host.
-        let answer = frame.bar().avatar_ask_answer_rect();
+        // The person's face opens their own card, which offers what the ask asks, however narrow the
+        // bar is and wherever the ask stands.
+        host.intents.borrow_mut().clear();
+        Framed::harness_mut(&mut frame).click_at(avatar.center().x, avatar.center().y);
+        assert_eq!(
+            *host.intents.borrow(),
+            [ChromeIntent::ToggleProfile],
+            "the face opens the person's own card"
+        );
+
+        // Its answer stands in the pill, and answering there reaches the host.
         assert!(
             ask.y0 <= answer.y0 && answer.y1 <= ask.y1,
-            "the answer {answer:?} is inside the card {ask:?}"
+            "the answer {answer:?} is inside the pill {ask:?}"
         );
         Framed::harness_mut(&mut frame).click_at(answer.center().x, answer.center().y);
         assert!(
@@ -782,10 +1028,18 @@ mod tests {
         assert!(host.ask.borrow().is_none(), "answered, the ask goes");
     }
 
-    /// Folded on a narrow bar, the ask waits as the avatar's dot and opens from it again.
+    /// On a narrow bar the ask opens in the band; folded, it waits as the avatar's dot; a press on the avatar then asks
+    /// for the person's own card, which offers what the ask asks, and leaves the ask folded.
     #[test]
-    fn a_narrow_bars_dot_opens_the_ask_again() {
+    fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
         let (mut frame, host) = asking_desktop((420, 800));
+        settle(&mut frame);
+        let bar = bar_rect(&frame);
+        let ask = ask_rect(&frame);
+        assert!(
+            !ask.is_zero_area() && ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
+            "the ask opens in the band {ask:?}, not under it {bar:?}"
+        );
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(
             host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),
@@ -798,17 +1052,16 @@ mod tests {
         );
         let avatar = frame.bar().own_avatar_rect();
         assert!(!avatar.is_zero_area(), "the own avatar is painted");
+        host.intents.borrow_mut().clear();
         Framed::harness_mut(&mut frame).click_at(avatar.center().x, avatar.center().y);
-        assert!(
-            host.ask.borrow().as_ref().is_some_and(|ask| ask.open),
-            "the avatar's dot opens the ask again"
+        assert_eq!(
+            *host.intents.borrow(),
+            [ChromeIntent::ToggleProfile],
+            "the avatar opens the person's own card"
         );
-        settle(&mut frame);
-        let bar = bar_rect(&frame);
-        let ask = ask_rect(&frame);
         assert!(
-            !ask.is_zero_area() && ask.y0 >= bar.y1,
-            "the ask opens as a card under the band {ask:?}, not in the band {bar:?}"
+            host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),
+            "the ask stays folded"
         );
     }
 }

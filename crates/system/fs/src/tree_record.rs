@@ -46,7 +46,7 @@ use crate::namespace::Namespace;
 
 /// The app whose person record a workspace's tree is: it declares the kind,
 /// and the daemon is its endpoint.
-pub const FILES_APP: &str = "so.tilo.file-explorer";
+pub use fs_protocol::tree::FILES_APP;
 
 /// How long the writer waits before dialing the session again after its
 /// connection ended: the session may restart under a daemon that outlives it.
@@ -251,12 +251,14 @@ impl TreePublisher {
             workspace_id: cluster.to_owned(),
             device_certificate: serde_json::to_vec(credentials.cert())
                 .context("this device's certificate is JSON")?,
-            proof: ed25519_dalek::Signer::sign(
-                credentials.signing_key(),
-                &tilo_identity_client::collaboration_join_signing_bytes(cluster),
-            )
-            .to_bytes()
-            .to_vec(),
+            proof: credentials
+                .signer()
+                .sign(tilo_identity_client::collaboration_join_signing_bytes(
+                    cluster,
+                ))
+                .await
+                .context("this device signs its join")?
+                .to_vec(),
         }
         .encode()
         .context("this device's join presentation encodes")?;
@@ -570,7 +572,7 @@ impl TreePublisher {
                     next_unordered_document_sequence(now),
                 ),
             };
-            sign_op(&mut op, self.credentials.signing_key())
+            sign_op(&mut op, self.credentials.signer())
                 .context("this device signs the change it publishes")?;
             let bytes = postcard::to_stdvec(&op).context("a signed change encodes")?;
             self.handle

@@ -15,12 +15,14 @@ path = "src/lib.rs"
 [features]
 # The dictionaries (the embedded English list, Hunspell) are not linked into
 # the checks: the program fetches their code the first time something checks
-# spelling and hands it over (`defer_dictionaries`, `install_dictionaries`).
+# spelling and hands it over (`DICTIONARIES`).
 # The browser desktop uses this to keep them out of its start module.
 lazy-dictionaries = []
 
 [dependencies]
 tilo-paths.workspace = true
+# The dictionaries' code, linked or fetched on first use (`DICTIONARIES`).
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Hunspell dictionaries (.aff/.dic) checked in-process, and the legacy
 # 8-bit encodings many of them declare with `SET`.
 spellbook = "0.4"

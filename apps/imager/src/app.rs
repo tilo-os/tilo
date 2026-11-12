@@ -46,6 +46,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
@@ -61,9 +62,10 @@ use ui::widget::{
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
-    TargetDriveIcon, TiloRelease, fmt_eta, fmt_rate, fmt_size,
+    TargetDriveIcon, TargetName, TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
+use crate::resource::CATALOG;
 use crate::resource::{Imager, ImagerEffect};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use ui::framework::{
@@ -71,21 +73,14 @@ use ui::framework::{
     LiveRow, RunMode,
 };
 use ui::tilo_resource::Effect as _;
+use ui::widget::DrawChild;
 
-const DROP_TITLE: &str = "Choose a disk image";
-const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
 struct SourceCheckActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl Drop for SourceCheckActivity {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
-
-const DROP_ACTION: &str = "Browse…";
-const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
-const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
-const PLAIN_BODY: &str =
-    "Setup options are only available for Tilo images. This image is written unchanged.";
 
 /// What a control on the wizard asked for. Controls only record the
 /// request; the wizard applies it with the document in hand.
@@ -114,15 +109,11 @@ pub(crate) enum Command {
 /// Where the controls of the composed page leave their requests.
 pub(crate) type Commands = Rc<RefCell<Vec<Command>>>;
 
-/// A button that records `command` when activated.
-pub(crate) fn command_button(
-    commands: &Commands,
-    id: &str,
-    label: &str,
-    command: Command,
-) -> Button {
+/// A button that records `command` when activated. `key` names its words in
+/// the crate's catalogue, never the words themselves.
+pub(crate) fn command_button(commands: &Commands, id: &str, key: &str, command: Command) -> Button {
     let sink = Rc::clone(commands);
-    Button::new(id, label).on_effect(move || sink.borrow_mut().push(command.clone()))
+    Button::new(id, &CATALOG.t(key)).on_effect(move || sink.borrow_mut().push(command.clone()))
 }
 
 /// A writer has finished reporting, possibly without a terminal progress packet.
@@ -734,10 +725,35 @@ impl ImagerApp {
     }
 }
 
+/// The catalogue message naming `step` in the station rail.
+fn step_message(step: Step) -> &'static str {
+    match step {
+        Step::Source => "imager-step-source",
+        Step::Drive => "imager-step-drive",
+        Step::Customize => "imager-step-customize",
+        Step::Confirm => "imager-step-confirm",
+        Step::Write => "imager-step-write",
+        Step::Done => "imager-step-done",
+    }
+}
+
 /// The complete legacy route, retained by unguided station regressions.
 #[cfg(test)]
-fn stepper_labels() -> [&'static str; 6] {
-    Step::all().map(|step| step.title())
+fn stepper_labels() -> [String; 6] {
+    Step::all().map(|step| crate::setup::strings::t(step_message(step)))
+}
+
+/// The machines `release` starts on, in the person's language.
+fn target_name(release: &TiloRelease) -> String {
+    match release.target_name() {
+        TargetName::Arm64 => CATALOG.t("imager-release-target-arm64"),
+        TargetName::X86_64 => CATALOG.t("imager-release-target-x86-64"),
+        TargetName::Media => CATALOG.t("imager-release-target-media"),
+        TargetName::Profile(profile) => CATALOG.t_args(
+            "imager-release-target-profile",
+            &[("profile", ui::i18n::ArgValue::Text(profile))],
+        ),
+    }
 }
 
 // =========================================================================
@@ -762,8 +778,8 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn button(&self, id: &str, label: &str, command: Command) -> Button {
-        command_button(&self.commands, id, label, command)
+    fn button(&self, id: &str, key: &str, command: Command) -> Button {
+        command_button(&self.commands, id, key, command)
     }
 
     /// Everything the composed page shows that can change while the step
@@ -879,7 +895,7 @@ impl ImagerApp {
         let mut stepper = ui::widget::Stepper::new(
             self.visible_steps()
                 .iter()
-                .map(|step| step.title().to_string())
+                .map(|step| crate::setup::strings::t(step_message(*step)))
                 .collect(),
         )
         .with_id("imager.stepper")
@@ -914,7 +930,7 @@ impl ImagerApp {
         let mut row = Row::new().no_wrap();
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             row = row.push(Box::new(
-                self.button("imager.back", "Back", Command::Back)
+                self.button("imager.back", "installer-preview-back", Command::Back)
                     .with_icon(Icon::ChevronLeft)
                     .control_size(ControlSize::Large),
             ));
@@ -925,13 +941,13 @@ impl ImagerApp {
             return row.push(Box::new(
                 self.button(
                     "imager.prepare-original-files",
-                    &crate::setup::strings::t(if preparing {
+                    if preparing {
                         "installer-original-preparing"
                     } else if self.status_is_error && !self.status.is_empty() {
                         "installer-original-retry"
                     } else {
                         "installer-original-prepare-button"
-                    }),
+                    },
                     Command::PrepareOriginalFiles,
                 )
                 .role(ButtonRole::Primary)
@@ -941,18 +957,23 @@ impl ImagerApp {
         }
         let primary = match self.step {
             Step::Source | Step::Drive => self
-                .button("imager.next", "Continue", Command::Next)
+                .button("imager.next", "installer-preview-continue", Command::Next)
                 .role(ButtonRole::Primary)
                 .with_enabled(self.can_advance(self.step)),
             Step::Customize => self
-                .button("imager.next", "Continue", Command::Next)
+                .button("imager.next", "installer-preview-continue", Command::Next)
                 .role(ButtonRole::Primary),
             Step::Confirm => {
-                let write = Button::new("imager.write", "Erase and write")
+                let write = Button::new("imager.write", &CATALOG.t("imager-write"))
                     .role(ButtonRole::Destructive)
                     .with_accessible_name(&self.target().map_or_else(
-                        || "Erase and write the selected drive".to_string(),
-                        |drive| format!("Erase and write {}", drive.dev_path()),
+                        || CATALOG.t("imager-write-driving"),
+                        |drive| {
+                            CATALOG.t_args(
+                                "imager-a11y-erase-drive",
+                                &[("drive", ArgValue::Text(drive.dev_path()))],
+                            )
+                        },
                     ));
                 // The button presses the drive's own published write, so the
                 // host asks for the drive's name before anything is erased,
@@ -972,9 +993,9 @@ impl ImagerApp {
                 self.button(
                     "imager.cancel-write",
                     if stopping {
-                        "Stopping…"
+                        "imager-write-cancelling"
                     } else {
-                        "Cancel write"
+                        "imager-write-cancel"
                     },
                     Command::CancelWrite,
                 )
@@ -984,15 +1005,15 @@ impl ImagerApp {
                 // A written drive that is still held can be let go here,
                 // instead of the window only saying it may be pulled out.
                 if self.offers_eject() {
-                    let eject = self.button("imager.eject", "Eject", Command::Eject);
+                    let eject = self.button("imager.eject", "imager-eject", Command::Eject);
                     row = row.push(Box::new(eject));
                 }
                 self.button(
                     "imager.start-over",
                     if self.progress.phase == JobPhase::Failed {
-                        "Review and retry"
+                        "imager-review-and-retry"
                     } else {
-                        "Start over"
+                        "imager-start-over"
                     },
                     Command::WriteAnother,
                 )
@@ -1036,12 +1057,13 @@ impl ImagerApp {
 
     /// The one fact under an image's name: what it is and whether it was
     /// verified.
-    fn source_secondary(&self, source: &Source) -> &'static str {
-        if self.source_is_official(source) {
-            "Official Tilo release, verified"
+    fn source_secondary(&self, source: &Source) -> String {
+        let message = if self.source_is_official(source) {
+            "installer-image-official"
         } else {
-            "Local image, written unchanged"
-        }
+            "installer-image-local"
+        };
+        CATALOG.t(message)
     }
 
     fn release_selected(&self, index: usize) -> bool {
@@ -1062,26 +1084,28 @@ impl ImagerApp {
 
     fn source_body(&self) -> Column {
         let sink = Rc::clone(&self.commands);
-        let mut body = page::body("Choose an image").push(Box::new(
-            DropZone::new("imager.drop", DROP_TITLE)
-                .message(DROP_MESSAGE)
-                .icon(Icon::Download)
-                .with_action(self.button("imager.browse", DROP_ACTION, Command::PickFile))
-                .on_files_view(move |files| {
-                    if let Some(file) = files.into_iter().next() {
-                        sink.borrow_mut().push(Command::Dropped(file));
-                    }
-                }),
-        ));
+        let mut body =
+            page::body(&crate::setup::strings::t("imager-page-choose-image")).push(Box::new(
+                DropZone::new("imager.drop", crate::setup::strings::t("imager-drop-title"))
+                    .message(crate::setup::strings::t("imager-drop-message"))
+                    .icon(Icon::Download)
+                    .with_action(self.button("imager.browse", "imager-browse", Command::PickFile))
+                    .on_files_view(move |files| {
+                        if let Some(file) = files.into_iter().next() {
+                            sink.borrow_mut().push(Command::Dropped(file));
+                        }
+                    }),
+            ));
         if let Some(source) = &self.source
             && !self.source_listed(source)
         {
+            let secondary = self.source_secondary(source);
             body = body.push(Box::new(Section::titled(
-                "Selected image",
+                CATALOG.t("imager-section-selected-image"),
                 vec![Box::new(
                     ListRow::new("imager.selected", &source.name)
                         .icon(Icon::Disc3)
-                        .secondary(self.source_secondary(source))
+                        .secondary(&secondary)
                         .meta(fmt_size(source.size))
                         .selected(true)
                         .checked(true),
@@ -1089,13 +1113,18 @@ impl ImagerApp {
             )));
         }
         let releases: Vec<Box<dyn Widget>> = if self.releases().is_empty() {
-            vec![Box::new(Text::new(NO_RELEASES).dimmed())]
+            vec![Box::new(
+                Text::new(&crate::setup::strings::t("imager-no-releases")).dimmed(),
+            )]
         } else {
             (0..self.releases().len())
                 .filter_map(|index| self.release_row(index))
                 .collect()
         };
-        body = body.push(Box::new(Section::titled("Tilo releases", releases)));
+        body = body.push(Box::new(Section::titled(
+            CATALOG.t("imager-section-releases"),
+            releases,
+        )));
         let recent = self.shown_recent();
         if !recent.is_empty() {
             let rows = recent
@@ -1103,10 +1132,11 @@ impl ImagerApp {
                 .filter_map(|index| {
                     let source = self.recent.get(index)?;
                     let sink = Rc::clone(&self.commands);
+                    let secondary = self.source_secondary(source);
                     Some(Box::new(
                         ListRow::new(format!("imager.recent.{index}"), &source.name)
                             .icon(Icon::Disc3)
-                            .secondary(self.source_secondary(source))
+                            .secondary(&secondary)
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))
@@ -1114,7 +1144,10 @@ impl ImagerApp {
                     ) as Box<dyn Widget>)
                 })
                 .collect();
-            body = body.push(Box::new(Section::titled("Recent", rows)));
+            body = body.push(Box::new(Section::titled(
+                CATALOG.t("imager-section-recent"),
+                rows,
+            )));
         }
         body
     }
@@ -1133,17 +1166,34 @@ impl ImagerApp {
                 .release_progress()
                 .and_then(|progress| progress.completed.zip(progress.total))
             {
-                Some((done, total)) if total > 0 => format!("{stage}, {}%", done * 100 / total),
+                Some((done, total)) if total > 0 => CATALOG.t_args(
+                    "imager-release-progress",
+                    &[
+                        ("stage", ui::i18n::ArgValue::Text(stage.to_string())),
+                        (
+                            "percent",
+                            ui::i18n::ArgValue::Number((done * 100 / total) as f64),
+                        ),
+                    ],
+                ),
                 _ => stage.to_string(),
             }
         } else if release.local_path.is_empty() {
-            format!(
-                "{}, {} channel, downloads first",
-                release.target_label(),
-                release.channel
+            CATALOG.t_args(
+                "imager-release-channel-downloads-first",
+                &[
+                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
+                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                ],
             )
         } else {
-            format!("{}, {} channel", release.target_label(), release.channel)
+            CATALOG.t_args(
+                "imager-release-channel",
+                &[
+                    ("target", ui::i18n::ArgValue::Text(target_name(release))),
+                    ("channel", ui::i18n::ArgValue::Text(release.channel.clone())),
+                ],
+            )
         };
         let mut row = ListRow::new(
             format!("imager.release.{}", release.selection_id()),
@@ -1172,7 +1222,7 @@ impl ImagerApp {
                 .as_ref()
                 .and_then(|actions| actions.effect(&ImagerEffect::CancelDownload))
         {
-            row = row.action_binding(Icon::X, "Cancel download", cancel);
+            row = row.action_binding(Icon::X, CATALOG.t("imager-release-cancel"), cancel);
         }
         Some(Box::new(row))
     }
@@ -1180,8 +1230,8 @@ impl ImagerApp {
     /// The drives to write to. Rescan is the window bar's
     /// ([`window_bar`]); the step's title stays the wizard's.
     fn drive_body(&self) -> Column {
-        let body = page::body("Choose a drive").push(Box::new(Text::new(
-            &self.required_capacity().map_or_else(
+        let body = page::body(&crate::setup::strings::t("imager-page-choose-drive")).push(
+            Box::new(Text::new(&self.required_capacity().map_or_else(
                 || crate::setup::strings::t("installer-media-capacity-checking"),
                 |required| {
                     crate::setup::strings::t_args(
@@ -1189,12 +1239,13 @@ impl ImagerApp {
                         &[("required", fmt_size(required).into())],
                     )
                 },
-            ),
-        )));
+            ))),
+        );
         let visible = self.visible_targets();
         if visible.is_empty() {
             return body.push(Box::new(
-                EmptyState::new(EMPTY_DRIVES).with_icon(Icon::HardDrive),
+                EmptyState::new(crate::setup::strings::t("imager-empty-drives"))
+                    .with_icon(Icon::HardDrive),
             ));
         }
         let required = self.required_capacity();
@@ -1204,15 +1255,19 @@ impl ImagerApp {
                 let fits = required.is_some_and(|required| drive.fits(required));
                 // A drive that cannot be chosen says why, on its own row: a
                 // control that is off with no reason reads as a fault.
+                let contents = crate::contents::drive_contents(
+                    drive.partitions.len(),
+                    &drive.partition_names(),
+                );
                 let secondary = match required.filter(|required| !drive.fits(*required)) {
                     Some(required) => crate::setup::strings::t_args(
                         "installer-media-drive-too-small",
                         &[
-                            ("contents", drive.contents_summary().into()),
+                            ("contents", contents.into()),
                             ("required", fmt_size(required).into()),
                         ],
                     ),
-                    None => format!("{}, {}", drive.dev_path(), drive.contents_summary()),
+                    None => ui::format::list(&[drive.dev_path(), contents]),
                 };
                 let row = ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
                     .with_enabled(fits)
@@ -1234,10 +1289,14 @@ impl ImagerApp {
     }
 
     fn customize_body(&self) -> Column {
-        let mut body = page::body("Prepare the setup");
+        let mut body = page::body(&crate::setup::strings::t("imager-page-prepare-setup"));
         if let Some(source) = &self.source {
             body = body.push(Box::new(
-                Text::new(&format!("Selected image: {}", source.name)).with_role(TextRole::Caption),
+                Text::new(&CATALOG.t_args(
+                    "imager-selected-image",
+                    &[("name", ArgValue::Text(source.name.clone()))],
+                ))
+                .with_role(TextRole::Caption),
             ));
         }
         if let Some(binding) = self
@@ -1246,11 +1305,17 @@ impl ImagerApp {
             .and_then(|actions| actions.effect(&ImagerEffect::ExportConfig))
         {
             body = body.push(Box::new(
-                Button::new("imager.export-config", "Preview embedded setup").on_action(binding),
+                Button::new(
+                    "imager.export-config",
+                    &CATALOG.t("imager-preview-embedded"),
+                )
+                .on_action(binding),
             ));
         }
         if !self.needs_manual_customization() {
-            return body.push(Box::new(Text::new(PLAIN_BODY).dimmed()));
+            return body.push(Box::new(
+                Text::new(&crate::setup::strings::t("imager-plain-body")).dimmed(),
+            ));
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
@@ -1303,23 +1368,30 @@ impl ImagerApp {
     }
 
     /// The erase warning: louder for a fixed or system disk.
-    fn confirm_warning(&self) -> (String, &'static str) {
+    fn confirm_warning(&self) -> (String, String) {
+        let t = crate::setup::strings::t;
         let device = self
             .target()
-            .map_or_else(|| "the drive".to_string(), TargetDrive::dev_path);
+            .map_or_else(|| t("imager-drive-unnamed"), TargetDrive::dev_path);
         let system = self.target().is_some_and(|d| d.is_system);
         let internal = self.target().is_some_and(|d| !d.removable);
         let title = if system {
-            "This is your system disk".to_string()
+            t("imager-confirm-system-disk")
         } else if internal {
-            format!("Everything on the internal disk {device} is erased")
+            crate::setup::strings::t_args(
+                "imager-confirm-internal-disk",
+                &[("device", ArgValue::Text(device))],
+            )
         } else {
-            format!("Everything on {device} is erased")
+            crate::setup::strings::t_args(
+                "imager-confirm-disk",
+                &[("device", ArgValue::Text(device))],
+            )
         };
         let message = if system {
-            "Everything on it, the running system included, is erased. This cannot be undone."
+            t("imager-confirm-system-consequence")
         } else {
-            "This cannot be undone."
+            t("imager-confirm-consequence")
         };
         (title, message)
     }
@@ -1352,16 +1424,17 @@ impl ImagerApp {
             return page::body(&t(heading))
                 .push(Box::new(Text::new(&t(body)).with_role(TextRole::Body)));
         }
-        let title = match self.action {
-            Action::Install => "Review and install",
-            Action::Flash => "Review and write",
+        let title_key = match self.action {
+            Action::Install => "imager-page-review-install",
+            Action::Flash => "imager-page-review-write",
         };
+        let title = crate::setup::strings::t(title_key);
         let review = self
             .review_rows()
             .into_iter()
             .map(|(label, value)| Property::new(label, value))
             .collect();
-        let mut body = page::body(title).push(Box::new(PropertyList::new(review)));
+        let mut body = page::body(&title).push(Box::new(PropertyList::new(review)));
         if self.offers_write_setup() {
             body = body.push(page::form_block(crate::write_setup::form(
                 &self.profile,
@@ -1376,7 +1449,7 @@ impl ImagerApp {
         let consequence = if self.writer().is_available() || self.shot_confirmation_ready {
             consequence
         } else {
-            "This computer can't write drives yet."
+            crate::setup::strings::t("imager-writer-unavailable")
         };
         body.push(Box::new(
             page::related().push(Box::new(Banner::error(warning).with_message(consequence))),
@@ -1384,11 +1457,20 @@ impl ImagerApp {
     }
 
     /// The active phase, its share done, and what it is called.
-    fn phase(&self) -> (f64, &'static str) {
+    fn phase(&self) -> (f64, String) {
         match (self.progress.phase, self.action) {
-            (JobPhase::Verifying, _) => (self.progress.verify_frac, "Verifying"),
-            (_, Action::Install) => (self.progress.write_frac, "Installing"),
-            (_, Action::Flash) => (self.progress.write_frac, "Writing"),
+            (JobPhase::Verifying, _) => (
+                self.progress.verify_frac,
+                crate::setup::strings::t("imager-phase-verifying"),
+            ),
+            (_, Action::Install) => (
+                self.progress.write_frac,
+                crate::setup::strings::t("imager-phase-installing"),
+            ),
+            (_, Action::Flash) => (
+                self.progress.write_frac,
+                crate::setup::strings::t("imager-phase-writing"),
+            ),
         }
     }
 
@@ -1417,20 +1499,23 @@ impl ImagerApp {
         if let Some(src) = &self.source
             && let Some(eta) = self.progress.eta_secs(src.size)
         {
-            meta.push(format!("about {} left", fmt_eta(eta)));
+            meta.push(crate::setup::strings::t_args(
+                "imager-writing-eta",
+                &[("time", ui::i18n::ArgValue::Text(fmt_eta(eta)))],
+            ));
         }
-        let next = if self.progress.phase == JobPhase::Verifying {
-            "Reading the drive back to check every byte."
+        let next = CATALOG.t(if self.progress.phase == JobPhase::Verifying {
+            "imager-writing-verify-now"
         } else {
-            "Then the drive is read back and checked."
-        };
+            "imager-writing-verify-next"
+        });
         let mut lines = page::related();
         if !meta.is_empty() {
             lines = lines.push(Box::new(
                 Self::centred(&meta.join(", "), TextRole::Body).numeric(),
             ));
         }
-        lines = lines.push(Box::new(Self::centred(next, TextRole::Body).dimmed()));
+        lines = lines.push(Box::new(Self::centred(&next, TextRole::Body).dimmed()));
         let mut body = page::stack()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
@@ -1438,9 +1523,12 @@ impl ImagerApp {
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             body = body.push(Box::new(
                 Self::centred(
-                    &format!(
-                        "{} to {}. Keep the drive connected until this finishes.",
-                        src.name, tgt.model
+                    &CATALOG.t_args(
+                        "imager-writing-from-to",
+                        &[
+                            ("source", ui::i18n::ArgValue::Text(src.name.clone())),
+                            ("target", ui::i18n::ArgValue::Text(tgt.model.clone())),
+                        ],
                     ),
                     TextRole::Caption,
                 )
@@ -1528,7 +1616,7 @@ impl ImagerApp {
                     command_button(
                         &self.commands,
                         "imager.review-changed-files",
-                        &t(reason.button_key()),
+                        reason.button_key(),
                         Command::ReviewChangedPreparedFiles,
                     )
                     .role(ButtonRole::Primary),
@@ -1541,21 +1629,21 @@ impl ImagerApp {
             return body.push(Box::new(command_button(
                 &self.commands,
                 "imager.cancel-prepared-medium",
-                &t("installer-media-cancel"),
+                "installer-media-cancel",
                 Command::CancelPreparedMedium,
             )));
         }
         body = body.push(Box::new(command_button(
             &self.commands,
             "imager.retry-prepared-medium",
-            &t("installer-media-retry"),
+            "installer-media-retry",
             Command::RetryPreparedMedium,
         )));
         body.push(Box::new(
             command_button(
                 &self.commands,
                 "imager.prepared-medium",
-                &t("installer-media-choose-filesystem"),
+                "installer-media-choose-filesystem",
                 Command::PrepareMedium,
             )
             .with_enabled(!busy),
@@ -1572,7 +1660,7 @@ impl ImagerApp {
             (
                 ProgressRing::new(1.0)
                     .value("100%")
-                    .caption("Verified")
+                    .caption(crate::setup::strings::t("installer-state-verified"))
                     .size(ProgressRingSize::Large)
                     .tone(Tone::Success),
                 headline,
@@ -1583,7 +1671,7 @@ impl ImagerApp {
             (
                 ProgressRing::new(frac)
                     .value(format!("{:.0}%", frac * 100.0))
-                    .caption("Stopped")
+                    .caption(crate::setup::strings::t("installer-state-stopped"))
                     .size(ProgressRingSize::Large)
                     .tone(Tone::Danger),
                 if self.action == Action::Install {
@@ -1675,9 +1763,9 @@ impl ImagerApp {
             self.select_source(&source);
             Ok(Effected::done())
         } else {
-            let message = "That file is not a readable disk image.";
-            self.set_status(message);
-            Err(message.into())
+            let message = crate::setup::strings::t("imager-image-unreadable");
+            self.set_status(&message);
+            Err(message)
         }
     }
     fn download_release(&mut self, index: usize, release: TiloRelease) {
@@ -2425,12 +2513,21 @@ impl ImagerApp {
             .map(|s| s.name.clone())
             .unwrap_or_default();
         let mut message = if outcome.phase == JobPhase::Success {
-            format!("Done — {name} {} and verified", self.action.past())
+            crate::setup::strings::t_args(
+                match self.action {
+                    Action::Install => "imager-install-done",
+                    Action::Flash => "imager-write-done",
+                },
+                &[("name", ArgValue::Text(name))],
+            )
         } else {
             outcome.error.clone().unwrap_or_else(|| {
-                format!(
-                    "{} failed. Reconnect the drive, then review and retry.",
-                    self.action.title()
+                crate::setup::strings::t_args(
+                    match self.action {
+                        Action::Install => "imager-install-failed",
+                        Action::Flash => "imager-write-failed",
+                    },
+                    &[("name", ArgValue::Text(name))],
                 )
             })
         };
@@ -3474,7 +3571,7 @@ impl Widget for ImagerApp {
         }
         // The framework paints the window ground; the page is toolkit widgets.
         if let Some(composed) = self.composed.element_mut() {
-            composed.draw(scene, transform, text_renderer, theme, presence);
+            composed.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3852,6 +3949,38 @@ mod tests {
         }
     }
 
+    /// The wizard's buttons name their words in the crate's catalogue, so a
+    /// German window reads them in German.
+    #[test]
+    fn the_wizards_buttons_read_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        catalog.set_locale("de-DE");
+        let mut labels = Vec::new();
+        for step in [Step::Source, Step::Customize] {
+            let (mut app, doc) = seeded_app();
+            app.step = step;
+            let host = harness(app, doc, (960, 720));
+            labels.extend(
+                host.a11y_nodes()
+                    .into_iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned)),
+            );
+        }
+        catalog.set_locale("en-US");
+        for german in ["Zurück", "Weiter", "Durchsuchen…"] {
+            assert!(
+                labels.iter().any(|label| label == german),
+                "{german} is missing from {labels:?}"
+            );
+        }
+        assert!(
+            labels
+                .iter()
+                .all(|label| !matches!(label.as_str(), "Back" | "Continue" | "Browse…")),
+            "the source language is left in the German window: {labels:?}"
+        );
+    }
+
     /// Accessible semantics, selection labels, live regions and tab order.
     #[test]
     #[allow(
@@ -3967,6 +4096,43 @@ mod tests {
             && n.value().is_some()));
     }
 
+    /// The writer's progress caption, the time left and the stations read in
+    /// the window's language.
+    #[test]
+    fn the_writers_progress_and_stations_read_in_the_windows_language() {
+        let catalog = &crate::resource::CATALOG;
+        let previous = catalog.current_locale();
+        catalog.set_locale("de-DE");
+        let mut app = ImagerApp::new();
+        app.action = Action::Install;
+        let (_, caption) = app.phase();
+        app.action = Action::Flash;
+        let (_, writing) = app.phase();
+        let stations: Vec<String> = Step::all()
+            .iter()
+            .map(|step| crate::setup::strings::t(step_message(*step)))
+            .collect();
+        let eta = crate::setup::strings::t_args(
+            "imager-writing-eta",
+            &[("time", ui::i18n::ArgValue::Text("3 Minuten".into()))],
+        );
+        catalog.set_locale(&previous);
+        assert_eq!(caption, "Wird installiert");
+        assert_eq!(writing, "Wird geschrieben");
+        assert_eq!(
+            stations,
+            [
+                "Quelle",
+                "Laufwerk",
+                "Anpassen",
+                "Prüfen",
+                "Schreiben",
+                "Fertig"
+            ]
+        );
+        assert_eq!(eta, "noch etwa 3 Minuten");
+    }
+
     /// Step stations and headings at compact and wide layouts.
     #[test]
     #[allow(
@@ -3976,8 +4142,8 @@ mod tests {
     fn step_rail_keeps_six_stations_inside_the_viewport() {
         assert_eq!(ImagerApp::new().visible_steps(), Step::all());
         assert_eq!(stepper_labels().len(), 6);
-        assert_eq!(stepper_labels().first(), Some(&"Source"));
-        assert_eq!(stepper_labels().last(), Some(&"Done"));
+        assert_eq!(stepper_labels().first().map(String::as_str), Some("Source"));
+        assert_eq!(stepper_labels().last().map(String::as_str), Some("Done"));
         for viewport in [(1280, 800), (320, 640)] {
             let (app, doc) = seeded_app();
             let h = harness(app, doc, viewport);
@@ -4082,7 +4248,7 @@ mod tests {
                     if n.role() == ui::accesskit::Role::ProgressIndicator
                         && matches!(
                             n.label(),
-                            Some("Source" | "Drive" | "Customize" | "Confirm" | "Write" | "Done")
+                            Some("Source" | "Drive" | "Customize" | "Review" | "Write" | "Done")
                         )
                     {
                         stepper = Some(r);
@@ -4408,9 +4574,9 @@ mod tests {
         assert_eq!(
             app.visible_steps()
                 .iter()
-                .map(Step::title)
+                .map(|step| crate::setup::strings::t(step_message(*step)))
                 .collect::<Vec<_>>(),
-            ["Source", "Drive", "Confirm", "Write", "Done"]
+            ["Source", "Drive", "Review", "Write", "Done"]
         );
         assert_eq!(app.stepper_current(), 2);
         app.go_to_station(2);

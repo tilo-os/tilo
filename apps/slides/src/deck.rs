@@ -400,13 +400,29 @@ impl SlideData {
     }
 }
 
+impl Deck {
+    /// What the record holds: the title and theme, and the slides in their order, each with the
+    /// elements it holds.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "slides.deck",
-    label = "Deck",
     initialize = Deck::starter,
     search = crate::search::entries,
     facts = crate::outline::facts,
-    answer = Deck::outline
+    answer = Deck::outline,
+    read_content = Deck::read_document
 )]
 impl Deck {
     /// Add slide

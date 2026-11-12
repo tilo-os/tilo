@@ -182,12 +182,7 @@ impl ChatApp {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
-                if let Some(hit) = self.hit_at(self.last_mouse) {
-                    self.on_right_click(hit);
-                    *handled = true;
-                }
-            }
+            } => self.handle_right_press(event, scale, modifiers, doc, handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -438,6 +433,57 @@ impl ChatApp {
             None => {}
         }
         focus_requested
+    }
+
+    /// A secondary press: the text field under the pointer opens its own menu
+    /// on the words there, as every editor does; everywhere else the surface
+    /// offers what it can do at the place.
+    fn handle_right_press(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) {
+        if self.focused_text_field_takes_secondary_press(event, scale, modifiers, doc) {
+            *handled = true;
+            return;
+        }
+        if let Some(hit) = self.hit_at(self.last_mouse) {
+            self.on_right_click(hit);
+            *handled = true;
+        }
+    }
+
+    /// A secondary press inside a text field is that field's: the field takes
+    /// the keyboard, as a left press gives it, and opens its own menu on the
+    /// words under the pointer — cut, copy and paste — rather than the
+    /// surface's menu for the place. Whether a field took the press.
+    fn focused_text_field_takes_secondary_press(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let Some(hit @ (Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit)) =
+            self.hit_at(self.last_mouse)
+        else {
+            return false;
+        };
+        self.on_hit(hit.clone(), doc);
+        let taken = match hit {
+            Hit::FocusMain => self.composer_main.handle(event, scale, modifiers, doc),
+            Hit::FocusThread => self.composer_thread.handle(event, scale, modifiers, doc),
+            _ => self.edit_input.handle(event, scale, modifiers, doc),
+        };
+        if taken {
+            // The menu stands over the timeline, drawn with the field that
+            // opened it as a field the person is in.
+            self.set_composer_focus();
+        }
+        taken
     }
 
     /// A left-button release: ends any overlay drag or composer
@@ -694,8 +740,11 @@ impl ChatApp {
                 self.open_participant_menu(id);
                 return;
             }
-            // A message, or its bar: the message's whole menu.
-            Hit::MessageMenu { msg } | Hit::MessageBar { msg, .. } | Hit::MessageMore { msg } => {
+            // A message, its bar or the chip of what it shares: the message's whole menu.
+            Hit::MessageMenu { msg }
+            | Hit::MessageBar { msg, .. }
+            | Hit::MessageMore { msg }
+            | Hit::OpenResource { msg, .. } => {
                 self.open_message_menu(msg, self.last_mouse);
                 return;
             }
@@ -811,7 +860,13 @@ impl ChatApp {
             Hit::HostModel(command) => {
                 self.activate_model_control(&command);
             }
-            Hit::Send => self.send_focused(doc),
+            Hit::Send | Hit::RetrySend => self.send_focused(doc),
+            Hit::ThreadSend => {
+                // The thread's box sends its own draft, to the message it
+                // answers, even where the conversation's box had the caret.
+                self.focus = Focus::Thread;
+                self.send_focused(doc);
+            }
             Hit::UndoDelete => self.undo_delete(),
             Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ThreadScroll(end) => {
@@ -823,10 +878,10 @@ impl ChatApp {
                 };
                 self.thread_scroll.set_offset_y(target);
             }
-            Hit::AgentReasoning(id) => {
+            Hit::AgentReasoning(id) | Hit::AgentWork(id) => {
                 self.thread_follow = false;
-                if !self.expanded_reasoning.remove(&id) {
-                    self.expanded_reasoning.insert(id);
+                if !self.expanded_agent.remove(&id) {
+                    self.expanded_agent.insert(id);
                 }
             }
             Hit::EmojiGroup(group) => self.emoji_picker.select_group(group),
@@ -866,9 +921,6 @@ impl ChatApp {
             Hit::StopSharingLiveContext => {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
-            }
-            Hit::CopyResourceLink { msg, attachment } => {
-                self.begin_resource_navigation(&msg, attachment);
             }
             Hit::OpenResource { msg, attachment } => self.open_shared_resource(&msg, attachment),
             Hit::ReplayRecording(message) => self.replay_recording(&message),
@@ -1335,6 +1387,7 @@ impl ChatApp {
                         );
                     }
                 }
+                MenuAction::CopyLink => self.copy_shared_link(&id),
                 MenuAction::CopyText => {
                     if let Some(text) = self.message(&id).map(|m| m.text.clone()) {
                         // A clipboard that refuses says so where it can;
@@ -1737,7 +1790,7 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Posting is a write into the workspace: gated by the OS permission
+        // Sending is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
             return;
@@ -1751,28 +1804,29 @@ impl ChatApp {
             return;
         }
         let body = self.focused_composer().clips();
-        // Posting is the record's `post`, the verb the palette and agents
-        // use; the post binds `@name` to participants once, so no reader
-        // re-parses the body to work out who it was addressed to. The draft
-        // is the writer's own and is emptied in their own record once the
-        // post is taken; a refused post keeps it, to send again, and says
-        // so beside the composer.
-        let posted = self.try_apply_part(
-            doc,
-            ChatPart::POST.with(chat_part::Post {
-                message: NewMessage {
-                    channel: item(&self.active_channel),
-                    text,
-                    parent: parent.as_deref().map(item),
-                    quoted: None,
-                    body: Some(body),
-                    attachments: Vec::new(),
-                    mentions: None,
-                    written: None,
-                },
-            }),
-        );
-        if let Err(reason) = posted {
+        // The press sends what the draft holds to the conversation shown, as
+        // Chat's `send` does: the action an agent's send and the desk's
+        // send-to box run, answered here in the press that asked for it. The
+        // post binds `@name` to participants once, so no reader re-parses the
+        // body to work out who it was addressed to. The draft is the writer's
+        // own and is emptied in their own record once the send is taken; a
+        // refused send keeps it, to send again, and says so beside the
+        // composer.
+        let to = [ui::floating_surface::Recipient::found(
+            ui::floating_surface::RecipientKind::Conversation,
+            self.active_channel.clone(),
+            self.active_channel.clone(),
+        )];
+        let sending = crate::direct::SendMessage {
+            to: &to,
+            attached: Vec::new(),
+            text: &text,
+            parent,
+            body: Some(body),
+            opens: false,
+        };
+        let sent = self.send_message(sending, &crate::projection::read(doc.doc()));
+        if let Err(reason) = sent {
             self.not_sent = Some(reason);
             return;
         }

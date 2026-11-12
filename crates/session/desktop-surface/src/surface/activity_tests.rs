@@ -7,6 +7,7 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_actions::{InvocationUpdate, InvocationUpdate::Item};
 use tilo_desktop_model::WorkspaceSlot;
+use ui::automerge::AutoCommit;
 use ui::{Arrival, RemoteActions};
 
 use super::*;
@@ -38,7 +39,7 @@ impl TileSource for Activity {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         (app == wire::APP_ID).then(|| Tab {
             id,
             title: "Activity".into(),

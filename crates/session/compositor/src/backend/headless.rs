@@ -52,6 +52,7 @@ use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interva
 use crate::pacing::Pacing;
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 struct HeadlessOutput {
     output: Output,
@@ -71,6 +72,8 @@ struct HeadlessOutput {
     due: Instant,
     /// What the frames have cost, for the lead.
     pacing: Pacing,
+    /// The clock's reading when the display last showed a frame; `None` before its first.
+    shown_at: Option<Instant>,
     /// Switched off: nothing is drawn, the image goes black.
     dark: bool,
     /// The gamma ramp the simulated display engine applies to what it shows (screenshots), not to
@@ -78,6 +81,13 @@ struct HeadlessOutput {
     gamma: Option<crate::gamma::Ramp>,
     /// What the panel is configured to show, as a real sink's EDID and signal would say.
     colour: tilo_color_pipeline::hdr_display::DisplayCapabilities,
+}
+
+/// When the display's pacing reads the clock: the process's monotonic clock, which a test holds
+/// still, so a frame is due at the instant its grid says rather than at the instant the machine
+/// got round to drawing it.
+fn pacing_now() -> Instant {
+    tilo_clock::now()
 }
 
 /// The vertical blank after `blank` that is still ahead of `drawn` : one refresh on, or the first
@@ -120,7 +130,8 @@ impl HeadlessOutput {
     /// being how long building one takes.
     fn showed(&mut self, started: Instant) {
         let interval = self.interval();
-        let built = Instant::now();
+        let built = pacing_now();
+        self.shown_at = Some(started);
         self.pacing.queued(started, built, interval);
         // This display has no blank to report: the image holds the frame as soon as it is built,
         // and `next_blank` is the grid that keeps frames to one per refresh.
@@ -132,7 +143,8 @@ impl HeadlessOutput {
 
     /// What changed shows at once: the next blank is now, and the frame for it is built now.
     fn restart_grid(&mut self) {
-        self.next_blank = Instant::now();
+        self.shown_at = None;
+        self.next_blank = pacing_now();
         self.due = self.next_blank;
         self.pacing = Pacing::default();
     }
@@ -403,15 +415,17 @@ impl Backend for HeadlessBackend {
             .map_err(|error| failed("output image", error))?;
         state.gamma.set_size(&config.name, Some(GAMMA_SIZE));
         let damage = OutputDamageTracker::from_output(&output);
+        let started = pacing_now();
         self.outputs.push(HeadlessOutput {
             output,
             place: config.position,
             damage,
             target,
             drawn: false,
-            next_blank: Instant::now(),
-            due: Instant::now(),
+            next_blank: started,
+            due: started,
             pacing: Pacing::default(),
+            shown_at: None,
             dark: false,
             gamma: None,
             colour: config.colour,
@@ -485,9 +499,12 @@ impl Backend for HeadlessBackend {
             }
             // The display shows one frame per refresh: what changed is built one lead before the
             // blank that shows it, so a frame it is not yet time to build leaves what it owes still
-            // owed.
-            let started = Instant::now();
-            if started < output.due {
+            // owed. A clock that has not moved since the frame the display last showed never
+            // reaches that blank, and a display that waits for time that does not pass shows
+            // nothing again: it draws the frame it owes.
+            let started = pacing_now();
+            let clock_moved = output.shown_at.is_none_or(|shown| started > shown);
+            if clock_moved && started < output.due {
                 continue;
             }
             // Nothing new to show: an idle output draws nothing.
@@ -554,16 +571,17 @@ impl Backend for HeadlessBackend {
                     )
                     .map_err(|error| failed("render output", error))?
             };
+            let damage = rendered.damage.map(Vec::as_slice).unwrap_or_default();
             if tracing::enabled!(tracing::Level::DEBUG) {
-                trace_passes(
-                    &elements,
-                    rendered.damage.map(Vec::as_slice).unwrap_or_default(),
-                    &output.output,
-                );
+                trace_passes(&elements, damage, &output.output);
             }
             output.drawn = true;
             state.frame_shown(&output.output);
-            output.showed(started);
+            // A frame that changed no pixel is not put on the display, as a display's backend
+            // queues no flip for it: the next change is drawn at once rather than a refresh later.
+            if !damage.is_empty() {
+                output.showed(started);
+            }
         }
         Ok(())
     }
@@ -636,8 +654,8 @@ impl Backend for HeadlessBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         crate::backdrop::draw(&mut self.renderer, state, region, request)
     }
 

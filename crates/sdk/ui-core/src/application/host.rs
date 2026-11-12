@@ -128,43 +128,6 @@ impl NativeProcessHost {
         named: Option<RecordId>,
         inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        // The session's document host keeps this app's record: this process
-        // opens none, and its window reads the session's readings and submits
-        // over its one connection (`docs/architecture/apps.md` §8 step 2).
-        if let Some(resource) = crate::application::session_hosted_resource() {
-            let records = self.host.records_for(definition)?;
-            let saved = self
-                .host
-                .views
-                .load(self.instance_id)
-                .map_err(LaunchError::Restore)?;
-            let context = HostContext::prepare_session_hosted(
-                definition,
-                HostContextInputs {
-                    records,
-                    views: self.host.views.clone(),
-                    device_id: self.host.device_id.clone(),
-                    instance_id: self.instance_id,
-                    permissions: self.host.permissions.clone(),
-                    author: self.host.author.clone(),
-                    action_context: self.host.action_context.clone(),
-                },
-                &resource,
-            )?;
-            let restore = saved.map_or(RestoreInput::None, RestoreInput::Local);
-            return Ok(PreparedComponentInputs {
-                context,
-                target: LaunchTarget::Record {
-                    checkout: RecordCheckout::new(
-                        RecordId::parse(&resource).unwrap_or_else(RecordId::package_primary),
-                        definition.record_kind.clone(),
-                    ),
-                    reveal: None,
-                },
-                restore,
-                runner_inputs: inputs,
-            });
-        }
         let kind = definition.record_kind.clone();
         match named {
             Some(id) => self.host.prepare_record(
@@ -470,133 +433,6 @@ fn launcher_workspace(workspace: Option<&str>) -> Result<(String, bool), LaunchE
 }
 
 impl HostContext {
-    /// Whether the session's document host keeps this app's record: the
-    /// process holds none of it and reads the readings it publishes over its
-    /// one connection (`docs/architecture/apps.md` §8 step 2).
-    #[must_use]
-    pub fn hosted(&self) -> bool {
-        self.hosted_resource.is_some()
-    }
-
-    /// The resource address the session's document host publishes this app's record at, when it
-    /// keeps it ([`Self::hosted`]): what the app reads its state from and submits its actions
-    /// against.
-    #[must_use]
-    pub fn hosted_resource(&self) -> Option<&str> {
-        self.hosted_resource.as_deref()
-    }
-
-    /// Supply the connection the app reads the session's readings over and
-    /// submits its actions to, in place of the one the launcher made it: what
-    /// a host that runs the app inside itself (a test's document host, a
-    /// capture's fixture) does, and nothing a launch the session makes needs
-    /// (`docs/designs/app-language/one-app-model.md` §4).
-    pub fn provide_connection<T: 'static>(&mut self, connection: T) {
-        self.connection = Some(std::rc::Rc::new(connection));
-    }
-
-    /// The connection supplied by [`Self::provide_connection`], when a host
-    /// did; `None` for a launch, whose connection is the launcher's.
-    #[must_use]
-    pub fn supplied_connection<T: 'static>(&self) -> Option<&T> {
-        self.connection.as_ref()?.downcast_ref()
-    }
-}
-
-// A context for a launch the session's document host serves: the app's
-// process opens no record, holds no key and reaches no transport, and reads
-// the session's readings and submits to its door over the one connection the
-// launch holds (`docs/architecture/apps.md` §8 step 2,
-// `docs/designs/app-language/one-app-model.md` §4).
-impl HostContext {
-    /// The context of a launch the session's document host serves. `resource`
-    /// is the address the session publishes the app's record at: the context
-    /// names the record kind and the view's instance, so a view restores what
-    /// it kept, but its record store holds nothing of it.
-    ///
-    /// # Errors
-    /// Rejects invalid identifiers, a denied capability, and a record store
-    /// of another app's namespace.
-    pub fn prepare_session_hosted(
-        definition: &ApplicationDefinition,
-        inputs: HostContextInputs,
-        resource: &str,
-    ) -> Result<Self, LaunchError> {
-        let HostContextInputs {
-            records,
-            views,
-            device_id,
-            instance_id,
-            permissions,
-            author,
-            action_context,
-        } = inputs;
-        validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
-        validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
-        validate_identity(&device_id).map_err(LaunchError::Restore)?;
-        validate_identity(&author.0).map_err(LaunchError::Restore)?;
-        match records.canonical_namespace() {
-            Some((_, package, _)) if package == definition.app_id() => {}
-            _ => return Err(LaunchError::BindingMismatch),
-        }
-        for required in &definition.required {
-            if !permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
-        }
-        let wake_scope = crate::wake::WakeScope::new();
-        records.wake_on_arrival(wake_scope.handle());
-        Ok(Self {
-            app_id: definition.app_id().to_owned(),
-            instance_id,
-            device_id,
-            records,
-            views,
-            // The record the session publishes: named for the window's view
-            // and its saved state, never opened here.
-            record: crate::record::RecordCheckout::new(
-                crate::record::RecordId::parse(resource)
-                    .unwrap_or_else(crate::record::RecordId::package_primary),
-                definition.record_kind.clone(),
-            ),
-            reservation: None,
-            initialization: None,
-            permissions,
-            host_person: author.clone(),
-            author,
-            action_context,
-            writes_as_author: false,
-            wake_scope,
-            construction: std::rc::Rc::new(()),
-            lifetime_id: uuid::Uuid::new_v4(),
-            queued_controls: std::rc::Rc::default(),
-            search_requests: std::rc::Rc::default(),
-            control_domain: crate::control_custody::ControlDomain::new(),
-            closing: std::rc::Rc::new(std::cell::Cell::new(false)),
-            services: crate::host::current(),
-            models: crate::models::Models::default(),
-            provider_admin: crate::models::ProviderAdministration::default(),
-            retirement: None,
-            content: None,
-            open_file: None,
-            capture: None,
-            settings: crate::storage::SettingsDocument::Session,
-            person: None,
-            workspace: None,
-            files: None,
-            replacement: std::rc::Rc::default(),
-            launch_arguments: Vec::new(),
-            handoff: None,
-            launch_options: Vec::new(),
-            private: false,
-            lent: Vec::new(),
-            hosted_resource: Some(resource.to_owned()),
-            connection: None,
-        })
-    }
-}
-
-impl HostContext {
     /// The binding a component's controls, History and effects act under.
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         crate::bound_dispatch::CallbackBinding {
@@ -612,7 +448,6 @@ impl HostContext {
             device_id: self.device_id.clone(),
             records: self.records.clone(),
             checkout: self.record.clone(),
-            hosted: self.hosted_resource.is_some(),
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             host_person: self.host_person.clone(),
@@ -620,27 +455,6 @@ impl HostContext {
             writes_as_author: self.writes_as_author,
         }
     }
-}
-
-/// The name of the variable a launch carries when the session's document
-/// host keeps the app's record: its value is the resource address the session
-/// publishes there (`docs/architecture/apps.md` §8 step 2).
-pub const HOSTED_RESOURCE_ENV: &str = "TILO_HOSTED_RESOURCE";
-
-/// The resource address the session's document host keeps for this launch's
-/// app, when the session launched it: what the app reads its state from and
-/// submits its actions against, over its one connection
-/// (`docs/designs/app-language/one-app-model.md` §4). `None` for a launch
-/// the session did not make, and for every app whose record it keeps here.
-///
-/// Read here, in the native runner, as every other host input the process
-/// carries is: the portable toolkit is handed the value, never reads it.
-#[must_use]
-pub fn session_hosted_resource() -> Option<String> {
-    std::env::var(HOSTED_RESOURCE_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 /// One app's launcher-owned profile in one workspace, opened by the trusted

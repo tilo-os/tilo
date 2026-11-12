@@ -5,8 +5,8 @@ mod agent;
 mod confirm;
 #[path = "mcp_content.rs"]
 mod content;
-#[path = "mcp_narration.rs"]
-mod narration;
+#[path = "mcp_get.rs"]
+mod get;
 #[path = "mcp_page.rs"]
 mod page;
 #[path = "mcp_providers.rs"]
@@ -19,7 +19,7 @@ mod schema;
 mod step;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use step::{STEP, SURFACE_STRUCTURED};
+use step::{STEP, STEP_TITLE, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -102,16 +102,23 @@ pub struct McpServer<H> {
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
-    /// Who is told what this session's actions on records are doing as they
-    /// go ([`Acting`]); `None` for a door that shows nobody its agent.
-    narration: Option<Narration>,
-    /// The record and action of each invocation still being told, by id.
-    narrating: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, Acting>>,
+    /// The records this session's calls made or changed since the door that
+    /// shows its agent last took them ([`McpServer::take_changed`]).
+    changed: std::sync::Mutex<Vec<ActedRecord>>,
+    /// The record each of this session's changes still running is changing,
+    /// by invocation id: `tilo_status` answers its link once it finished.
+    changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// The invocations of this session a watch follows, oldest first, each
+    /// with where its latest phase falls in the watch's sequence
+    /// ([`crate::mcp::watch`]).
+    pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
 }
+
+pub use agent::{PersonStep, literals_in};
+pub use agent::{TaskHosts, TaskProgram};
 
 /// The record an agent call worked in: the app's id and the workspace's
 /// record id, as the provider of the resource the call resolved names it.
-/// What a door that shows its agent present says the agent acts in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActedRecord {
     /// The app's stable id (`so.tilo.notes`).
@@ -120,11 +127,6 @@ pub struct ActedRecord {
     pub record: String,
 }
 
-pub use agent::{PersonStep, literals_in};
-pub use agent::{TaskHosts, TaskProgram};
-use narration::ended;
-pub use narration::{Acting, Narration};
-
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -132,7 +134,7 @@ pub enum Surface {
     /// `tilo_status`, `tilo_cancel`: a directory browsed by peer and
     /// resource id, for clients that parse it.
     Classic,
-    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`: apps and
+    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`: apps and
     /// resources addressed by name, answered as text. What an AI agent in a
     /// terminal is served.
     Agent,
@@ -142,7 +144,9 @@ pub enum Surface {
 /// step that runs a shell command in the workspace.
 const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
      History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
-     them; tilo_read reads a resource; tilo_do runs an action. To run a shell command in the \
+     them; tilo_read reads a resource; tilo_do runs an action, and answers the link to a record \
+     it changed; tilo_link answers the link to what a path names, for the person to open it. \
+     To run a shell command in the \
      workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
      args {command: \"...\"}: it answers with the command line, the directory it ran in, its \
      exit status and its output. Nothing needs opening first: the first command starts your own \
@@ -692,17 +696,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             devices: None,
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
-            narration: None,
-            narrating: std::sync::Mutex::default(),
+            changed: std::sync::Mutex::default(),
+            changing: std::sync::Mutex::default(),
+            runs: std::sync::Mutex::default(),
         }
-    }
-
-    /// Tell `narration` what this session's actions on records are doing
-    /// as they go ([`Acting`]).
-    #[must_use]
-    pub fn with_narration(mut self, narration: Narration) -> Self {
-        self.narration = Some(narration);
-        self
     }
 
     /// The record this session's last agent call worked in, when the
@@ -728,6 +725,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.devices = devices;
         self
     }
+    /// The agent this connection is goes by `name` , as the person's desk calls it: what its
+    /// changes are shown by wherever they are read.
+    #[must_use]
+    pub fn agent_named(mut self, name: &str) -> Self {
+        self.caller = self.caller.clone().named(name);
+        self
+    }
+
     /// Offer the tools `surface` names.
     #[must_use]
     pub fn with_surface(mut self, surface: Surface) -> Self {
@@ -1302,6 +1307,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if self.host.content_puts().is_some() {
             tools.extend(put::tool_definitions());
         }
+        if self.host.content_gets().is_some() {
+            tools.extend(get::tool_definitions());
+        }
         if self.devices.is_some() {
             tools.push(crate::remote_door::tool_definition());
         }
@@ -1319,6 +1327,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             id: id.into(),
             label: label.into(),
             kind: "agent-run".into(),
+            title: None,
         });
         self
     }
@@ -1413,12 +1422,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let step = self.step_gesture(metadata, invocation.as_deref())?;
+        let title = Self::step_title(metadata)?;
         let structured = metadata
             .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        STEP.scope(step, self.call_named(parse::<ToolCall>(params), structured))
-            .await
+        STEP.scope(
+            step,
+            STEP_TITLE.scope(
+                title,
+                self.call_named(parse::<ToolCall>(params), structured),
+            ),
+        )
+        .await
     }
     /// [`Self::call_tool`], inside the call's undo step.
     async fn call_named(
@@ -1429,6 +1445,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match call {
             Ok(call) if put::is_put_tool(&call.name) => {
                 Ok(self.put_call(&call.name, call.arguments).await)
+            }
+            Ok(call) if get::is_get_tool(&call.name) => {
+                Ok(self.get_call(&call.name, call.arguments, structured).await)
             }
             Ok(call) if call.name == crate::remote_door::DEVICES_TOOL => match &self.devices {
                 Some(devices) => {
@@ -1534,6 +1553,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
                     kind: "agent-run".into(),
+                    title: None,
                 });
             }
             run.as_ref().map(|run| run.id.clone())
@@ -1565,14 +1585,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(provider) => tilo_actions::remote::provider_workspace(provider).is_some(),
         };
         tokio::time::timeout(
-            HOST_ANSWER_WAIT,
+            QUERY_ANSWER_WAIT,
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
         .map_err(|_| {
             BridgeError::from(format!(
                 "the desktop's actions did not answer within {} s",
-                HOST_ANSWER_WAIT.as_secs()
+                QUERY_ANSWER_WAIT.as_secs()
             ))
         })?
         .ok_or_else(|| BridgeError::from("the desktop's actions stopped answering"))?
@@ -2072,7 +2092,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
                 let invocation = invocation_id(&a.invocation_id)?;
-                let mut value = self.status(invocation)?;
+                let mut value = self.status(invocation).await?;
                 self.attach_images(invocation, &mut value, true, None).await;
                 Ok(value)
             }
@@ -2084,7 +2104,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await
                     .ok_or("the host dropped the request")?
                     .map_err(BridgeError::Host)?;
-                self.status(invocation)
+                self.status(invocation).await
             }
             _ => Err("Unknown tool".into()),
         }
@@ -2386,7 +2406,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // Best effort: the app is open whether or not its directory reads.
         let page = match peer {
             Some(peer) if self.detail() == Detail::Compact || file_open => {
-                self.first_directory(peer).await.ok()
+                self.directory_page(&peer.to_string()).await.ok()
             }
             _ => None,
         };
@@ -2757,22 +2777,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(any_file)
     }
-    /// A just-opened instance's [`Self::directory`] once it lists a
-    /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
-    /// publish again while it starts (binding its document), and a page read
-    /// in between is empty, which leaves the caller to query again.
-    async fn first_directory(&self, peer: u64) -> Result<(CataloguePage, bool), String> {
-        let provider = peer.to_string();
-        let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
-        loop {
-            let (page, truncated) = self.directory_page(&provider).await?;
-            let listed = !page.rows.is_empty();
-            if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Ok((page, truncated));
-            }
-            tokio::time::sleep(FIRST_DIRECTORY_POLL).await;
-        }
-    }
     async fn directory(&self, provider: &str) -> Result<Value, String> {
         let (page, truncated) = self.directory_page(provider).await?;
         Ok(self.directory_value(&page, truncated))
@@ -2869,9 +2873,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         loop {
             // Asked before observing, so a change in between still wakes it.
             let change = self.host().next_change(&self.caller(), &id);
-            let state = self.host().observe(&self.caller(), &id);
+            let state = self.observed(id).await;
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
-                self.narrate(id, None, ended(&state.update), state.left_at.clone());
                 return Ok(state_json(id, state));
             }
             let Some(deadline) =
@@ -2936,13 +2939,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .take()
             .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
         let revision = request.revision.clone().unwrap_or_default();
-        let invocation = request.invocation;
-        self.narrate(
-            invocation,
-            Some(&request.target),
-            tilo_actions::InteractionPhase::Locating,
-            None,
-        );
         let patience = wait.max(HOST_ANSWER_WAIT);
         let Ok(answer) = tokio::time::timeout(
             patience,
@@ -2957,14 +2953,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.remember_effect(invocation, effect);
         }
         let answer = answer.ok_or_else(|| BridgeError::from("Unavailable"))?;
-        let phase = match &answer {
-            Ok(_) => tilo_actions::InteractionPhase::Applying,
-            Err(error) => tilo_actions::InteractionPhase::Failed {
-                code: None,
-                message: error.to_string(),
-            },
-        };
-        self.narrate(invocation, None, phase, None);
         answer
             .map(|_| Admission::Answered)
             .map_err(BridgeError::Host)
@@ -2973,23 +2961,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.agent_run().map(|run| tilo_actions::ActionContext {
-            group: Some(run),
-            invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
-            gesture: STEP.try_with(|step| *step).ok(),
-            ..tilo_actions::ActionContext::default()
+        self.agent_run().map(|mut run| {
+            // A call naming the run it is a step of (`_meta` run.title) is
+            // attributed to that name, which is what people read in history
+            // and see in presence, not the connection's own label. It says so
+            // as its own title too: a host that names the run itself still
+            // calls it what the agent asked for.
+            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone)
+                && !title.is_empty()
+            {
+                run.label.clone_from(&title);
+                run.title = Some(title);
+            }
+            tilo_actions::ActionContext {
+                group: Some(run),
+                invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+                gesture: STEP.try_with(|step| *step).ok(),
+                ..tilo_actions::ActionContext::default()
+            }
         })
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
         self.caller.clone()
-    }
-    fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
-        self.host()
-            .observe(&self.caller(), &id)
-            .as_ref()
-            .map(|state| state_json(id, state))
-            .ok_or_else(|| UNOWNED.into())
     }
     async fn resources(&self, params: Value) -> Result<Value, String> {
         #[derive(Deserialize)]
@@ -3080,21 +3074,23 @@ fn unanswered_admission(id: tilo_actions::InvocationId, patience: std::time::Dur
         ),
     })
 }
-/// How long the host may take at least to answer a catalogue query or to
-/// admit an invocation. A query not answered by then fails; an admission is
-/// answered as pending with its invocation id, to be invoked again.
+/// How long the host may take at least to admit an invocation: one not
+/// admitted by then is answered as pending with its invocation id, to be
+/// invoked again.
 const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a catalogue query waits for its answer. A workspace's host
+/// reading a record whose keys are still on their way waits up to ten seconds
+/// for them, then refuses it rather than answer from half of it: the first
+/// listing of an app just opened on a busy host takes that long, and a query
+/// given up sooner told the agent the desktop did not answer while the host
+/// was still getting the answer.
+const QUERY_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
-/// and published what it offers.
+/// and published its catalogue.
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where a workspace `open`'s answer names the instance it started.
 const OPENED_PEER: &str = "/update/output/value/peer_id";
-/// How long an `open` waits more for the new instance's directory to list a
-/// resource when it reads empty, as while the app publishes again binding
-/// its document, and how often it looks: two query turns cost more.
-const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
-const FIRST_DIRECTORY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new

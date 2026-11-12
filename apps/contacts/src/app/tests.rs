@@ -16,6 +16,7 @@ use ui::a11y::{AccessNode, Role};
 use ui::tilo_resource::{Invoke, Replica};
 use ui::time::Duration;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::widget::DrawChild;
 use vello::kurbo::Point;
 
 fn target(app: &ContactsApp, id: &str) -> Rect {
@@ -1021,7 +1022,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     app.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     // Encoding the scene is enough to exercise every draw path; the
     // GPU blit is covered by the `--shots` harness.
     let _ = &scene;
@@ -3905,10 +3906,20 @@ impl Live {
     }
 
     fn recompose(&mut self) {
+        self.reached();
         self.app
             .harness()
             .recompose()
             .expect("contacts frame lays out");
+    }
+
+    /// A test called the surface itself (a selection, an import decision), not
+    /// through an event: reach it through the harness, which says so, so the
+    /// component's next pass runs and shows what it changed.
+    fn reached(&mut self) {
+        self.app
+            .with_widget(|_: &mut ContactsApp| ())
+            .expect("the contacts surface is hosted");
     }
 
     /// Deliver one window event to the app. What it submits applies on
@@ -4851,7 +4862,10 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     );
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("an empty book is named to someone who may only view it");
-    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert_eq!(
+        state.description(),
+        Some(crate::account_editor::CATALOG.t(VIEW_ONLY_MESSAGE).as_str())
+    );
     assert!(
         state.children().is_empty(),
         "the empty state offers no New contact to someone who may only view"
@@ -4860,7 +4874,10 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     viewer.settle();
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("the list beside a viewer's form names the empty book");
-    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert_eq!(
+        state.description(),
+        Some(crate::account_editor::CATALOG.t(VIEW_ONLY_MESSAGE).as_str())
+    );
 }
 
 #[test]

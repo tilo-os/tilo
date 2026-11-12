@@ -3,15 +3,11 @@
 //! default, and the person's own choice still wins over what the run staged.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
-    const TASKS: &str = super::common::TASKS_SOURCE;
+    const TASKS: &str = crate::common::TASKS_SOURCE;
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     /// An app installed in a workspace of its own: its actions runnable, its views openable.

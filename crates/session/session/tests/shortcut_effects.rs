@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -28,7 +26,7 @@ use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_session::mount::shell::WINDOW_MENU;
+use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
 use tilo_sheets::Seat as _;
 use tilo_test_env::ScopedEnv;
@@ -409,6 +407,27 @@ fn the_session_answers_every_shortcut_of_its_side() {
             other => panic!("{other:?} is the session's and has no proof here"),
         }
     }
+}
+
+/// The clipboard panel Super+V asks for is up in the pass the key is pressed in, beside a caret
+/// nothing waits for: no frame goes by with the key answered and the panel still down.
+#[test]
+fn super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in() {
+    let _panel = panel_environment();
+    let mut session = session_with(desk_tree());
+    key(&mut session, KEY_LEFT_META, true);
+    session
+        .compositor()
+        .input(InputEvent::Key {
+            keycode: KEY_V,
+            pressed: true,
+        })
+        .expect("the key");
+    session.step(REFRESH).expect("a pass");
+    assert!(
+        session.quick_settings_open(),
+        "the pass that ran Super+V put the panel up"
+    );
 }
 
 /// The chord a menu row shows, by the row's id.

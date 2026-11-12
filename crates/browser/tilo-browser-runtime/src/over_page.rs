@@ -11,6 +11,7 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::{LengthPercentageAuto, NodeId, Position, Style, TaffyTree};
 use ui::vello::Scene;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, Element, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
@@ -30,6 +31,187 @@ pub(crate) trait OverSheet {
 
     /// What this part of the page is called.
     fn sheet_name(&self) -> &'static str;
+}
+
+/// A sheet the person opens: the directory and the invite sheet.
+pub(crate) trait PageSheet: OverSheet {
+    fn open(&self);
+    fn is_open(&self) -> bool;
+}
+
+/// The sheets' code: the session's directory and invite sheets and the
+/// workspace directory's store behind both. The browser desktop fetches it
+/// the first time the person opens one (`deferred-sheets`).
+#[derive(Clone, Copy)]
+pub struct SheetsCode {
+    directory: MakeDirectory,
+    invite: MakeInvite,
+}
+
+type MakeDirectory = fn(
+    crate::shell::HostRequests,
+    Option<&crate::directory::PageDirectoryConfig>,
+    &Wake,
+) -> Box<dyn PageSheet>;
+
+type MakeInvite = fn(
+    crate::shell::HostRequests,
+    Option<&crate::invite::PageInviteConfig>,
+    crate::desktop::Shared,
+    tilo_desktop::here::Here,
+    Option<u32>,
+    &Wake,
+) -> Box<dyn PageSheet>;
+
+type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// The sheets' code where it is linked.
+#[must_use]
+pub fn builtin_sheets() -> SheetsCode {
+    SheetsCode {
+        directory: crate::directory::make,
+        invite: crate::invite::make,
+    }
+}
+
+ui::lazy_code! {
+    /// The sheets' code.
+    pub static SHEETS: SheetsCode = builtin_sheets, feature = "deferred-sheets";
+}
+
+/// A sheet made the first time the person opens it: until its code is in,
+/// the open waits for it.
+pub(crate) struct LazySheet {
+    make: Box<dyn Fn(SheetsCode) -> Box<dyn PageSheet>>,
+    sheet: Option<Box<dyn PageSheet>>,
+    asked: std::cell::Cell<bool>,
+}
+
+impl LazySheet {
+    pub(crate) fn directory(
+        requests: crate::shell::HostRequests,
+        config: Option<&crate::directory::PageDirectoryConfig>,
+        wake: &Wake,
+    ) -> Self {
+        let (config, wake) = (config.cloned(), std::sync::Arc::clone(wake));
+        Self::new(Box::new(move |code| {
+            (code.directory)(std::rc::Rc::clone(&requests), config.as_ref(), &wake)
+        }))
+    }
+
+    pub(crate) fn invite(
+        requests: crate::shell::HostRequests,
+        config: Option<&crate::invite::PageInviteConfig>,
+        shared: crate::desktop::Shared,
+        here: tilo_desktop::here::Here,
+        peer: Option<u32>,
+        wake: &Wake,
+    ) -> Self {
+        let (config, wake) = (config.cloned(), std::sync::Arc::clone(wake));
+        Self::new(Box::new(move |code| {
+            (code.invite)(
+                std::rc::Rc::clone(&requests),
+                config.as_ref(),
+                shared.clone(),
+                std::rc::Rc::clone(&here),
+                peer,
+                &wake,
+            )
+        }))
+    }
+
+    fn new(make: Box<dyn Fn(SheetsCode) -> Box<dyn PageSheet>>) -> Self {
+        Self {
+            make,
+            sheet: None,
+            asked: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Open the sheet: at once when it is made, else as the page next
+    /// follows it, once its code is in.
+    pub(crate) fn open(&self) {
+        self.asked.set(true);
+        self.open_asked();
+    }
+
+    fn open_asked(&self) {
+        if let Some(sheet) = self.sheet.as_ref().filter(|_| self.asked.get()) {
+            sheet.open();
+            self.asked.set(false);
+        }
+    }
+
+    /// Make the sheet once its code is in and the person asked for it.
+    fn take_up(&mut self) {
+        if self.sheet.is_none()
+            && self.asked.get()
+            && let Some(code) = SHEETS.get()
+        {
+            self.sheet = Some((self.make)(code));
+        }
+        self.open_asked();
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.is_open())
+    }
+}
+
+impl OverSheet for LazySheet {
+    fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool {
+        self.take_up();
+        self.sheet
+            .as_mut()
+            .is_some_and(|sheet| sheet.follow_sheet(show, missing))
+    }
+
+    fn drawn(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.drawn())
+    }
+
+    fn sheet_name(&self) -> &'static str {
+        self.sheet
+            .as_ref()
+            .map_or("sheet", |sheet| sheet.sheet_name())
+    }
+}
+
+/// The sheet an agent's question is drawn on, made once the questions' code
+/// is in: until then the page shows no question, because nothing has asked it
+/// one ([`crate::questions`]).
+pub(crate) struct LazyQuestions {
+    sheet: Option<Box<dyn OverSheet>>,
+}
+
+impl LazyQuestions {
+    pub(crate) fn new() -> Self {
+        Self { sheet: None }
+    }
+}
+
+impl OverSheet for LazyQuestions {
+    fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool {
+        if self.sheet.is_none()
+            && crate::questions::answering()
+            && let Some(code) = crate::questions::QUESTIONS.get()
+        {
+            self.sheet = Some((code.sheet)());
+        }
+        self.sheet
+            .as_mut()
+            .is_some_and(|sheet| sheet.follow_sheet(show, missing))
+    }
+
+    fn drawn(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.drawn())
+    }
+
+    fn sheet_name(&self) -> &'static str {
+        self.sheet
+            .as_ref()
+            .map_or("questions", |sheet| sheet.sheet_name())
+    }
 }
 
 /// `sheet`, drawn over the whole page: out of the page's flow, with the sheet
@@ -143,7 +325,7 @@ impl<S: OverSheet + 'static> Widget for OverPage<S> {
         presence: &PresenceCtx,
     ) {
         if let Some(content) = self.content.as_mut() {
-            content.draw(scene, transform, text, theme, presence);
+            content.draw_child(scene, transform, text, theme, presence);
         }
     }
 

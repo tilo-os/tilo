@@ -1590,3 +1590,77 @@ fn a_failed_record_save_reaches_the_caller() {
     );
     assert!(error.contains("the disk is full"), "{error}");
 }
+
+/// A record the workspace's index names is one the store lists with the name
+/// the index gives it, though no window of this device started it: what a
+/// window on another device, or an agent in a hosted workspace, published
+/// here is reached again.
+#[test]
+fn a_record_the_index_names_is_listed_with_its_name_though_no_window_started_it() {
+    let tmp = tempfile::tempdir().expect("a store");
+    let documents = native(tmp.path());
+    let (package, workspace) = ("so.tilo.pdf-viewer", "22222222-2222-4222-8222-222222222222");
+    let kind = RecordKind::new("markup");
+    let started = RecordCheckout::new(RecordId::window_default(7), kind.clone());
+    let published = RecordCheckout::new(
+        RecordId::derived("annotations", &RecordId::minted()),
+        kind.clone(),
+    );
+    // A window of this device started one of them…
+    {
+        let store = RecordStore::new(RecordSet::open_in(
+            Rc::clone(&documents),
+            package,
+            workspace,
+        ));
+        store.open_record(&started);
+        store.flush().expect("saved");
+    }
+    // …and the workspace holds another a window elsewhere made, which the
+    // workspace's own document names as the reader calls it.
+    let mut published_doc = AutoCommit::new();
+    assert!(init_scoped(
+        &mut published_doc,
+        &published.id,
+        &kind,
+        workspace,
+        Some(workspace)
+    ));
+    let _landing =
+        transfer::install(&documents, package, workspace, &mut published_doc).expect("kept");
+    let mut index_doc = AutoCommit::new();
+    assert!(index::reference(&mut index_doc, &published.id, &kind));
+    assert!(index::set_name(
+        &mut index_doc,
+        &published.id,
+        Some("application.pdf")
+    ));
+    let _landing =
+        transfer::install_workspace_document(&documents, package, workspace, &mut index_doc)
+            .expect("the workspace's index is kept");
+
+    let store = RecordStore::new(RecordSet::open_in(
+        Rc::clone(&documents),
+        package,
+        workspace,
+    ));
+    let listed = store.workspace_records(&kind);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|(id, _, name)| (id.clone(), name.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (published.id.clone(), Some("application.pdf".to_owned())),
+            (started.id.clone(), None),
+        ],
+        "both are listed, and the index's name comes with the one it names"
+    );
+    assert!(
+        store
+            .window_records(&kind)
+            .iter()
+            .all(|(id, _)| id == &started.id),
+        "a name in the index does not make a record one a window started"
+    );
+}

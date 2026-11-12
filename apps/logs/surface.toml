@@ -5,13 +5,44 @@ kind = "logs.journal"
 label = "System journal"
 version = 1
 fields = [
-  { path = "severity", type = "Priority" },
-  { path = "unit", type = "Atom" },
-  { path = "boot", type = "Atom" },
-  { path = "search", type = "String" },
+  { path = "severity", type = { named = "Priority" } },
+  { path = "unit", type = "text" },
+  { path = "boot", type = "text" },
+  { path = "search", type = "text" },
 ]
 
 [[resources.verbs]]
 id = "clear-filters"
 kind = "undoable"
+
+[[resources.verbs]]
+id = "refresh"
+kind = "read"
+
+[[resources.verbs]]
+id = "set-live-tail"
+kind = "read"
+params = [
+  { name = "enabled", type = { option = "bool" }, required = false },
+]
+
+[[resources.verbs]]
+id = "select-entry"
+kind = "read"
+params = [
+  { name = "entry_id", type = "text", required = true },
+]
+
+[[resources.types]]
+name = "Priority"
+cases = [
+  { name = "emerg" },
+  { name = "alert" },
+  { name = "crit" },
+  { name = "err" },
+  { name = "warning" },
+  { name = "notice" },
+  { name = "info" },
+  { name = "debug" },
+]
 

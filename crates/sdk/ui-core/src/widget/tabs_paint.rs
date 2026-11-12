@@ -44,6 +44,38 @@ impl PersonSeen {
 }
 
 impl TabBar {
+    /// Remember that `widget` painted `text` as its ink stands at `rect`
+    /// ([`TabBar::painted_labels`]).
+    pub(super) fn record_label(&self, widget: &'static str, text: &str, rect: Rect) {
+        if text.is_empty() || rect.area() <= 0.0 {
+            return;
+        }
+        self.painted_labels
+            .borrow_mut()
+            .push(crate::window_toolbar::BarLabel::new(widget, text, rect));
+    }
+
+    /// The words the bar painted in its last drawing, each at the place its ink stands: the
+    /// window's name in its tab, its location, a notice, the words its row's pickers show. No
+    /// widget lays them out, so nothing else reports them, and two of them drawn in one place
+    /// are two words a person cannot read.
+    #[must_use]
+    pub fn painted_labels(&self) -> Vec<crate::window_toolbar::BarLabel> {
+        let mut labels = self.painted_labels.borrow().clone();
+        labels.extend_from_slice(self.toolbar_row.painted_labels());
+        // The same words at the same place are one label: a bar crossing between two rows of
+        // slots paints the pair that leaves and the pair that comes in.
+        let mut seen = std::collections::HashSet::new();
+        labels.retain(|label| {
+            seen.insert((
+                label.widget,
+                label.text.clone(),
+                label.rect.map(f64::to_bits),
+            ))
+        });
+        labels
+    }
+
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
     pub(super) fn draw_fresh(
         &mut self,
@@ -54,6 +86,8 @@ impl TabBar {
         presence: &PresenceCtx,
     ) {
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
+        // The words of the drawing about to be made replace the ones it replaces.
+        self.painted_labels.borrow_mut().clear();
         self.busy_drawn =
             (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::motion::frame_now()));
         // Guards one stale frame after a detach/insert mutates `tabs` outside the
@@ -102,9 +136,7 @@ impl TabBar {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
-        self.draw_desktop_control_chip(scene, transform, tr, theme);
-        self.draw_dev_build_chip(scene, transform, tr, theme);
-        self.draw_shared_chip(scene, transform, tr, theme, presence);
+        self.draw_opened_by_chip(scene, transform, tr, theme);
         if self.window_controls {
             // The window's own controls: one pill, and the app's History
             // toggle standing on the window's ground before it.
@@ -122,7 +154,7 @@ impl TabBar {
                 crate::widget::window_controls::ControlsState {
                     hovered: self.hover_control,
                     pressed: self.pressed_control,
-                    maximized: self.maximized,
+                    resize: self.resize,
                     lifts: [
                         self.control_lifts[0].level(now),
                         self.control_lifts[1].level(now),
@@ -189,6 +221,7 @@ impl TabBar {
                 on: open,
                 enabled: true,
                 destructive: false,
+                primary: false,
             },
         );
     }
@@ -236,17 +269,6 @@ impl TabBar {
                 });
             }
         }
-        // The faces the share mark shows draw as their people look now.
-        self.shared.for_each_person(&self.tabs, |tab, user| {
-            seen.push(PersonSeen {
-                tab,
-                colour: presence.color_for(user),
-                dims: presence.availability_of(user).dims(),
-                agent: presence.is_agent(user),
-                name: presence.names.get(user).cloned(),
-                user: user.clone(),
-            });
-        });
         seen
     }
 
@@ -280,15 +302,7 @@ impl TabBar {
                 at += 1;
             }
         }
-        let mut same = true;
-        let mut shared = 0;
-        self.shared.for_each_person(&self.tabs, |tab, user| {
-            same &= seen
-                .get(at + shared)
-                .is_some_and(|drawn| drawn.matches(tab, user, presence));
-            shared += 1;
-        });
-        same && at + shared == seen.len()
+        at == seen.len()
     }
 
     /// [`Widget::draw`] — a bar at rest whose own state, theme, placement
@@ -313,6 +327,15 @@ impl TabBar {
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
             self.draw_fresh(own, transform, tr, theme, presence);
         });
+        // What this drawing shows, before the slots take their places again: a bar that re-places
+        // them under it keeps the drawing for no replay.
+        let drawn = self.paint_epoch;
+        // Drawing measures the slots' labels: where that leaves the slots short of the room they
+        // need, they take their places again and the strip's "+" gives its up, so the bar settles
+        // instead of painting its next frame over a row it has since moved.
+        if self.toolbar_row.take_measured() && self.strip_squeezes_slots() {
+            self.lay_out_toolbar_row();
+        }
         crate::scene_parts::append(scene, &own, parts.as_ref(), None);
         #[cfg(test)]
         {
@@ -322,7 +345,7 @@ impl TabBar {
         // pose of a busy arc it shows.
         let seen = self.people_seen(presence);
         self.painted = self.at_rest().then(|| PaintedBar {
-            epoch: self.paint_epoch,
+            epoch: drawn,
             transform,
             theme: theme.clone(),
             seen,

@@ -5,16 +5,17 @@
 //! are handed the node's keys through the relay's admission decision rather
 //! than admitted to each channel a second time. The host owner's page acts
 //! on a sealed record through the host; another member of the workspace sees the
-//! change arrive sealed and authored by the host; that member is refused
-//! when it asks the host to act; and a new record the host opens goes out
-//! sealed on a channel the members can join.
+//! change arrive sealed and authored by the host; that member, an editor,
+//! has the host make an edit as theirs, sealed the same way, and opens a new
+//! record too; and a new record the host opens goes out sealed on a channel
+//! the members can join.
 
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
-    application_open_target,
+    CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, application_open_target,
 };
 use tilo_peer_state::join::MemberRole;
 
@@ -208,52 +209,49 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         sheet_names(&seen)
     );
 
-    // That member, an editor of the workspace, is no person the host's workspace
-    // actions serve: refused before anything is queued, so nothing runs.
-    let refused = member
-        .invoke(request(
-            &provider,
-            new_sheet,
-            sheet_named("Not through the host"),
-        ))
+    // That member, an editor of the workspace, has the host make the edit as
+    // theirs: it is saved sealed on the record's channel like the owner's.
+    let theirs = member
+        .invoke(request(&provider, new_sheet, sheet_named("By the member")))
         .await;
-    assert_eq!(
-        refused.status,
-        ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
-        }
+    assert!(
+        matches!(theirs.status, ReceiptStatus::Completed { .. }),
+        "an editor's edit runs through the host: {theirs:?}"
     );
-    // The owner's next invocation runs on the service's one thread: once it
-    // is answered, anything queued before it has run.
-    let opened = page
-        .invoke(InvokeRequest {
-            on_behalf_of: None,
-            invocation: InvocationId::new(),
-            target: application_open_target(&workspace.workspace, SHEETS),
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        })
-        .await;
+    let with_theirs = until_retained(
+        &hosted,
+        workspace.workspace_id,
+        &route,
+        host_key,
+        by_host.len() + 1,
+    )
+    .await;
+    assert!(
+        with_theirs.iter().all(|sealed| *sealed),
+        "the member's change is delivered sealed: {with_theirs:?}"
+    );
+    // The member, an editor, opens a new record through the host, as the
+    // owner does.
+    let open = |invocation| InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: application_open_target(&workspace.workspace, SHEETS),
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let by_member = member.invoke(open(InvocationId::new())).await;
+    assert!(
+        matches!(by_member.status, ReceiptStatus::Completed { .. }),
+        "an editor opens a new record through the host: {by_member:?}"
+    );
+    let opened = page.invoke(open(InvocationId::new())).await;
     let ReceiptStatus::Completed { output } = &opened.status else {
         panic!("the owner opens a new Sheets record through the host: {opened:?}");
     };
-    assert_eq!(
-        retained_by(&hosted, workspace.workspace_id, &route, host_key)
-            .await
-            .len(),
-        by_host.len(),
-        "the refused invocation wrote nothing"
-    );
-    let seen = member.mount(&route);
-    assert!(
-        !sheet_names(&seen).contains(&"Not through the host".to_owned()),
-        "{:?}",
-        sheet_names(&seen)
-    );
 
     // The new record's first change goes out sealed on a channel the host
     // opened for it, and a member joins that channel and reads it.

@@ -90,13 +90,10 @@ fn members_key() -> StateKey {
     )
 }
 
-/// How many of those who spoke last a rich input's drawer offers first (chat.md).
-const SPEAKERS: usize = 5;
-
-/// How many of a document's last changes the drawer looks back over for them: who spoke
-/// longer ago than that is a member like any other, and the cost stays the same however long
-/// the conversation's history grows.
-const RECENT: usize = 200;
+/// How many of a conversation's last items a rich input's drawer looks back over for its
+/// people: who spoke longer ago than that is a member like any other, and the cost stays the
+/// same however long the conversation grows.
+const RECENT: usize = 50;
 
 impl Core {
     /// Take the workspace's members now, and how its grants decide who reads what (`None`:
@@ -170,6 +167,51 @@ impl Core {
             .cloned()
     }
 
+    /// Who spoke in the conversation of `items`: who made them, most recent first, each once,
+    /// at most `max` of them. It reads the last [`RECENT`] items and no more — the items
+    /// themselves, never a history of what they are about — so a drawer's cost is bounded by
+    /// the conversation and it runs again when one of those items' makers is made.
+    fn said_by(&self, items: i32, max: usize) -> HResult<Vec<Value>> {
+        let items = match self.val(items)? {
+            Value::List(items) => items,
+            Value::Coll(coll) => self.coll_take_end(&coll, RECENT)?,
+            other => {
+                return trap(format!(
+                    "speakers: expected the items of a conversation, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let mut said: Vec<Value> = Vec::new();
+        for item in items.iter().rev().take(RECENT) {
+            if said.len() >= max {
+                break;
+            }
+            let Value::Ref(r) = item else {
+                continue;
+            };
+            // Who made an item of an app this runtime does not run is in its history, kept
+            // where that app runs: none of it is held here.
+            if crate::foreign::is_foreign(&r.target) {
+                continue;
+            }
+            let created = self
+                .store
+                .borrow()
+                .version_end(&r.target, false)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+            self.read_versions_of(&r.target);
+            let Some(created) = created else {
+                continue;
+            };
+            let who = Value::Principal(Principal::new(created.who));
+            if !said.contains(&who) {
+                said.push(who);
+            }
+        }
+        Ok(said)
+    }
+
     pub(crate) fn members_import(
         &self,
         imp: crate::abi::Imp,
@@ -193,23 +235,8 @@ impl Core {
                 self.ret_h(principals(readers))
             }
             Imp::Speakers => {
-                let target = self.ref_arg(a.h(0)?)?;
-                // Who wrote a resource of an app this runtime does not run is in its history,
-                // kept where that app runs: none of it is held here.
-                if crate::foreign::is_foreign(&target.target) {
-                    return self.ret_h(Value::List(Vec::new()));
-                }
-                let said = self
-                    .store
-                    .borrow()
-                    .recent_authors(&target.target, SPEAKERS, RECENT)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&target.target);
-                self.ret_h(Value::List(
-                    said.into_iter()
-                        .map(|who| Value::Principal(Principal::new(who)))
-                        .collect(),
-                ))
+                let max = usize::try_from(a.long(1)?).unwrap_or(0);
+                self.ret_h(Value::List(self.said_by(a.h(0)?, max)?))
             }
             Imp::PrincipalKind => {
                 let who = self.principal_arg(a.h(0)?)?;
@@ -238,7 +265,7 @@ impl Core {
     }
 }
 
-fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
+pub(crate) fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
     Value::List(
         members
             .map(|member| Value::Principal(member.who.clone()))

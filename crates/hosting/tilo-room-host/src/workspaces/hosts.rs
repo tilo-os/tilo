@@ -10,7 +10,7 @@
 //! device to the workspace as one of the owner's, which is how the workspace's
 //! governance tells every member it may hold the workspace.
 
-use std::time::SystemTime;
+use std::sync::Arc;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
@@ -86,7 +86,7 @@ impl Workspaces {
         let hint = self
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         if candidate
             .governance_mut()
@@ -98,6 +98,53 @@ impl Workspaces {
             self.settle(governed).await?;
         }
         Ok(())
+    }
+
+    /// Name this host's own signed address in every workspace it governs,
+    /// after where it answers changed: what their governance names is where
+    /// members and invitees dial this host.
+    pub(super) async fn name_own_hosts(&self) {
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for workspace in workspaces {
+            let mut workspace = workspace.lock().await;
+            if let Err(error) = self.name_own_host(&mut workspace).await {
+                tracing::error!(
+                    workspace = %workspace.workspace(),
+                    %error,
+                    "the host's address is not named in the workspace's governance"
+                );
+            }
+        }
+    }
+
+    /// Follow the relays this host answers through: each change of home relay
+    /// is named in the workspaces it governs, so an invitation always carries
+    /// an address a stranger can dial. A host that has lost its relays names
+    /// nothing: the address it named stays what a workspace says, and a member
+    /// reaches it again through the relay once it comes back.
+    pub(super) fn follow_own_address(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let workspaces = Arc::downgrade(&self.inner);
+        let following =
+            tilo_endpoint_reachability::follow(&self.inner.host.endpoint, &runtime, move |_| {
+                let workspaces = workspaces.clone();
+                async move {
+                    let Some(inner) = workspaces.upgrade() else {
+                        return;
+                    };
+                    Self { inner }.name_own_hosts().await;
+                }
+            });
+        let _ = self.inner.own_address.set(following);
     }
 
     /// Change which hosts `workspace`'s governance names with `change`, as its
@@ -121,7 +168,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         if change(candidate.governance_mut(), &host.key, now)? {
             governed.commit(candidate, &host.key, now, |record, _| {
@@ -462,4 +509,37 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
     postcard::to_stdvec(value)
         .map(hex::encode)
         .map_err(|error| error.to_string())
+}
+
+impl Workspaces {
+    /// The signed Iroh address a joining device dials to redeem an
+    /// invitation of `workspace`: the relay this host is reached through and
+    /// the addresses a stranger can dial, never the ones only the network
+    /// around this host knows (`tilo_delivery_protocol::workspace_join::reachable`).
+    pub(super) fn transport_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let host = &self.inner.host;
+        // An invitation is handed to whoever the link reaches, so what this
+        // host answers at inside its own network stays out of it.
+        let endpoint_addr =
+            tilo_delivery_protocol::workspace_join::reachable(&host.endpoint.addr());
+        let packet_relay_url = endpoint_addr
+            .relay_urls()
+            .next()
+            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: host.mode,
+            room: workspace.workspace().to_owned(),
+            workspace_id: workspace.workspace_id(),
+            endpoint_addr,
+            host_user_public_key: host.cert.user_public_key,
+            host_device_certificate: host.cert.clone(),
+            packet_relay_url,
+        }
+        .transport_hint(&host.key)
+        .map_err(|error| CollaborationError::new(error.to_string()))
+    }
 }

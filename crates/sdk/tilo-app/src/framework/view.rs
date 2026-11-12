@@ -67,8 +67,23 @@ type BindList<R> = Vec<(Weak<()>, Bind<R>)>;
 
 /// The edits views bound to their local state
 /// ([`ViewCx::bind_declarations`]), each tied to the view scope that bound
-/// it.
-pub(crate) struct Bindings<R: Resource>(Rc<RefCell<BindList<R>>>);
+/// it, with a count of how many times that list changed: what a publication
+/// reads to know whether the edits it built are still the whole list.
+pub(crate) struct Bindings<R: Resource>(Rc<RefCell<Bound<R>>>);
+
+struct Bound<R: Resource> {
+    list: BindList<R>,
+    generation: u64,
+}
+
+impl<R: Resource> Default for Bound<R> {
+    fn default() -> Self {
+        Self {
+            list: Vec::new(),
+            generation: 0,
+        }
+    }
+}
 
 impl<R: Resource> Clone for Bindings<R> {
     fn clone(&self) -> Self {
@@ -81,11 +96,33 @@ impl<R: Resource> Bindings<R> {
         Self(Rc::default())
     }
 
+    /// How many bound edits the views hold, and how many times that list
+    /// changed: a publication that read the same generation reads the same
+    /// views.
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.borrow().generation
+    }
+
+    /// Register the edit `bind` a view published.
+    pub(crate) fn push(&self, alive: Weak<()>, bind: Bind<R>) {
+        let mut bound = self.0.borrow_mut();
+        bound.list.push((alive, bind));
+        bound.generation = bound.generation.wrapping_add(1);
+    }
+
     /// Every live view's bound edits over `state`.
     pub(crate) fn declarations(&self, state: &R::State) -> Vec<ActionDecl<R>> {
-        let mut bindings = self.0.borrow_mut();
-        bindings.retain(|(alive, _)| alive.strong_count() > 0);
-        bindings.iter().flat_map(|(_, bind)| bind(state)).collect()
+        let mut bounds = self.0.borrow_mut();
+        let before = bounds.list.len();
+        bounds.list.retain(|(alive, _)| alive.strong_count() > 0);
+        if bounds.list.len() != before {
+            bounds.generation = bounds.generation.wrapping_add(1);
+        }
+        bounds
+            .list
+            .iter()
+            .flat_map(|(_, bind)| bind(state))
+            .collect()
     }
 }
 
@@ -573,10 +610,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         if let Some(gate) = &self.gate {
             gate.read_while_unmounted();
         }
-        self.bindings
-            .0
-            .borrow_mut()
-            .push((self.alive.clone(), Box::new(bind)));
+        self.bindings.push(self.alive.clone(), Box::new(bind));
     }
 
     /// The resource's published actions, for binding controls built outside

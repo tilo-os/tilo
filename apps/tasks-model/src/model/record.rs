@@ -157,12 +157,28 @@ fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     issue.comments.push(id, message);
 }
 
+impl Tracker {
+    /// What the record holds: the issues, in the order the board shows them, and the projects
+    /// and areas above them.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "tasks.tracker",
-    label = "Tasks",
     params = tracker,
     search = crate::model::search::entries,
-    effects = crate::model::TasksEffect
+    effects = crate::model::TasksEffect,
+    read_content = Tracker::read_document
 )]
 impl Tracker {
     /// Create an issue.

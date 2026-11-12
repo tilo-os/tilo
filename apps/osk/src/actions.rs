@@ -104,43 +104,43 @@ impl SetPreference {
 #[effect(operation = "osk.keyboard")]
 pub enum OskEffect {
     /// Set the letter layout text fields open in.
-    #[effect(kind = "read", label = "Set keyboard layout")]
+    #[effect(kind = "read")]
     SetLayout {
         #[param("Letter layout", choices = LAYOUT_NAMES)]
         value: String,
     },
     /// Set the keyboard's key size.
-    #[effect(kind = "read", label = "Set keyboard size")]
+    #[effect(kind = "read")]
     SetSize {
         #[param("Key size", choices = KEYBOARD_SIZES)]
         value: String,
     },
     /// Enable or disable the suggestion bar.
-    #[effect(kind = "read", label = "Set suggestions")]
+    #[effect(kind = "read")]
     SetSuggestions {
         #[param("Enabled")]
         value: bool,
     },
     /// Enable or disable autocorrection, independently of suggestions.
-    #[effect(kind = "read", label = "Set autocorrect")]
+    #[effect(kind = "read")]
     SetAutocorrect {
         #[param("Enabled")]
         value: bool,
     },
     /// Set the typing language independently of the letter layout.
-    #[effect(kind = "read", label = "Set typing language")]
+    #[effect(kind = "read")]
     SetTypingLanguage {
         #[param("Typing language", choices = TYPING_LANGUAGES)]
         value: String,
     },
     /// Enable or disable adapting to what this person types.
-    #[effect(kind = "read", label = "Set personalization")]
+    #[effect(kind = "read")]
     SetPersonalization {
         #[param("Enabled")]
         value: bool,
     },
     /// Replace this person's recent emoji list.
-    #[effect(kind = "read", label = "Set recent emoji")]
+    #[effect(kind = "read")]
     SetEmojiRecents {
         #[param("Recent emoji, most recent first")]
         value: Vec<String>,
@@ -149,7 +149,7 @@ pub enum OskEffect {
     ///
     /// Learned word rankings, tap positions, kept words and recent emoji;
     /// the personalization preference stays as it is.
-    #[effect(row, kind = "read", destructive, label = "Clear learned suggestions")]
+    #[effect(row, kind = "read", destructive)]
     ClearPersonal,
 }
 

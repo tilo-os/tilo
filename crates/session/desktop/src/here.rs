@@ -1,20 +1,20 @@
-//! Who is here in a hosted workspace and what they are doing.
-//! Two sources meet here. A workspace's live layer names the members present now (people and
-//! agents), their colour, the record they focus and an agent's own activity line. The host answers
-//! the `HereRequest` the page posts over its session with each person's one-line status and a
-//! summary of their last minutes, built from the titles of the actions they took
-//! (`tilo_relay_protocol::web::HereRequest`). Neither is written to
-//! the workspace's desktop document: the bar, the People popover and the windows read them as
-//! ambient presence.
+//! Who is here in a workspace and what they are doing.
+//!
+//! Who is here is the workspace's live layer alone: the members present now (people and agents),
+//! each device's certified person, the record they focus, and the one line each says of what they
+//! are doing — a person's own words or what their device read off their steps, an agent's own
+//! activity. Every device, a page or a native desktop, publishes its own line there and reads
+//! everyone else's from there. None of it is written to the workspace's desktop document: the bar,
+//! the People popover and the windows read it as ambient presence.
+//!
 //! A person may be here from several devices at once (each browser tab is a device of its own).
-//! They are one person here: the host's lines pair each device with its person, devices of one
-//! person show once, and this page's person's other devices are this page's person, never someone
-//! else.
-use std::collections::HashMap;
+//! They are one person here: each device's certificate names its person, devices of one person
+//! show once, and this page's person's other devices are this page's person, never someone else.
+use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::Shown;
-use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent, Workspace};
+use tilo_desktop_model::{Collaborator, DesktopTree, Status, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -30,10 +30,6 @@ pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 /// The most bytes of a person's own words, as their live presence carries them (a participant's
 /// activity line).
 const MAX_OWN_WORDS_BYTES: usize = 96;
-
-/// How long a host line keeps a person listed without the live layer to say they are present: a
-/// page posts every 20 seconds while open.
-const HOST_ONLY_FRESH_MS: u64 = 90_000;
 
 /// How long a device that dropped out of the live layer still counts as here: back within it, it
 /// never left. A page renews its live grant every few minutes by reconnecting, which drops every
@@ -56,16 +52,17 @@ pub struct LiveMember {
     pub device: String,
     #[serde(default)]
     pub focus: Option<Focus>,
-    /// An agent's own activity line.
+    /// What they are doing: an agent's own activity line, or a person's status.
     #[serde(default)]
     pub activity: Option<String>,
+    /// Their device read `activity` off the steps they took, rather than anyone saying it.
+    #[serde(default)]
+    pub automatic: bool,
     /// Where within the workspace's desktop a person is: the id of the strip they are on, as their
     /// presence names it.
     #[serde(default)]
     pub place: Option<String>,
-    /// The person (user root, hex) this page is certified as: given for the page's own entry only,
-    /// which knows its certificate. Other members' persons come from the host's lines, which the
-    /// host authenticated.
+    /// The person (user root, hex) the device is certified as, once its certificate was heard.
     #[serde(default)]
     pub user: Option<String>,
     /// The member's latest wave at someone here.
@@ -86,6 +83,12 @@ pub struct LiveMember {
     /// `None` when they are in none.
     #[serde(default)]
     pub call: Option<String>,
+    /// The colour they wear, `#rrggbb`, as their shell publishes it: the one
+    /// they chose in their own card, or the one their identity derives.
+    /// Empty for a member that said none, whose colour is settled from their
+    /// identity here ([`HereState::colors`]).
+    #[serde(default)]
+    pub colour: String,
 }
 
 impl LiveMember {
@@ -100,6 +103,7 @@ impl LiveMember {
             device: shown.device.clone(),
             focus: shown.focus.clone(),
             activity: shown.activity.clone(),
+            automatic: shown.automatic,
             place: shown.place.clone(),
             user: shown.user.clone(),
             wave: shown.wave.clone(),
@@ -108,33 +112,9 @@ impl LiveMember {
             // An agent has no availability of its own: it is always at work.
             availability: (!shown.agent).then(|| shown.availability.clone()),
             call: shown.call.clone(),
+            colour: shown.colour.clone(),
         }
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct HostLine {
-    pub device: String,
-    /// The person's user root (hex), as the host authenticated them.
-    #[serde(default)]
-    pub user: String,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub recent: String,
-    /// Model prose that passed the host's grounding check.
-    #[serde(default)]
-    pub generated: bool,
-    /// The window (tab id, hex) they focus in the workspace's shared desktop.
-    #[serde(default)]
-    pub window: Option<String>,
-    #[serde(default)]
-    pub updated_ms: u64,
-    /// When the person last changed their kept profile (name, picture).
-    #[serde(default)]
-    pub profile_ms: u64,
 }
 
 /// A line of text and who wrote it: the person, a model, or the host reading it plainly off what
@@ -172,8 +152,8 @@ pub struct PersonDevice {
 pub struct Person {
     /// Their live publisher (the device key for a person), hex.
     pub id: String,
-    /// The person (user root, hex) as the host authenticated them, once its lines say: the id that
-    /// stays theirs on every device.
+    /// The person (user root, hex) their device's certificate names: the id that stays theirs on
+    /// every device.
     pub user: Option<String>,
     /// What everyone here calls them: the person's name, whichever of their devices is the one
     /// listed.
@@ -195,10 +175,6 @@ pub struct Person {
     /// presence focuses (`focused_app`).
     pub place: Option<String>,
     pub status: Option<Line>,
-    pub recent: Option<Line>,
-    /// Where their windows are on their screen, as their live presence says: a person's only, from
-    /// the first of their devices that says.
-    pub screen: Option<Screen>,
     /// How available they said they were, from their presence: the face dims while they are away or
     /// idle.
     pub availability: ui::Availability,
@@ -207,15 +183,11 @@ pub struct Person {
 }
 
 impl Person {
-    /// The app following them brings forward where no window here shows their record: the one in
-    /// front on their screen, else (an agent has no screen) the app of the record they act in.
+    /// The app following them brings forward where no window here shows their record: the app their
+    /// presence focuses, as their screen's front window says it.
     #[must_use]
     pub fn followed_app(&self) -> Option<&str> {
-        self.screen
-            .as_ref()
-            .and_then(|screen| screen.windows.iter().find(|window| window.focused))
-            .map(|window| window.app.as_str())
-            .or(self.focus_app.as_deref())
+        self.focus_app.as_deref()
     }
 }
 
@@ -225,24 +197,24 @@ pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
     members: Option<Vec<LiveMember>>,
     /// Why this page cannot join the live layer at all, in the words it shows in the members'
-    /// place: a browser without WebTransport.
+    /// place: a live plane that could not be reached.
     unavailable: Option<String>,
     /// This page itself: its publisher, name and colour.
     own: Option<LiveMember>,
-    lines: Vec<HostLine>,
-    /// When `lines` arrived, Unix milliseconds.
-    lines_at_ms: u64,
+    /// What this device read off its person's own recent steps: the line it publishes for them
+    /// while they share an automatic status and said nothing themselves.
+    own_reading: Option<String>,
     watching: u32,
     /// Bumped on every change, for the bar's snapshot revision.
     revision: u64,
     /// The ids last registered on window presence, to forget who left.
     registered: Vec<String>,
-    /// What this page's person lets the host say about them: only [`ui::StatusSharing::Automatic`]
-    /// sends their actions.
+    /// What this page's person lets their device say about them: only
+    /// [`ui::StatusSharing::Automatic`] publishes what it read off their steps.
     sharing: ui::StatusSharing,
     /// What this page's person says they are doing, in their own words: it travels on their live
-    /// presence and leads what everyone here reads of them, before anything the host words
-    /// automatically.
+    /// presence and leads what everyone here reads of them, before anything their device reads off
+    /// their steps.
     own_words: Option<String>,
     /// The other people's devices already announced as here; `None` until the first roster arrived
     /// ([`HereState::take_arrivals`]).
@@ -262,10 +234,9 @@ pub struct HereState {
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
-    /// Every agent present, by publisher: its name, what it last said it was doing, and when it was
-    /// last here (Unix milliseconds), so one gone for good is said to have finished
-    /// ([`HereState::take_agents_finished`]).
-    working_agents: HashMap<String, (String, Option<String>, u64)>,
+    /// Every agent present, by publisher: its name and when it was last here (Unix milliseconds),
+    /// so one gone for good is said to have finished ([`HereState::take_agents_finished`]).
+    working_agents: HashMap<String, (String, u64)>,
 }
 
 /// An agent that left the workspace: its work is over.
@@ -274,16 +245,18 @@ pub struct AgentFinished {
     pub publisher: String,
     /// Its name ("Claude Code").
     pub label: String,
-    /// What it last said it was doing.
-    pub last: Option<String>,
 }
 
-/// What an agent's newest run did, as its finished notice says it: how many of its actions
-/// changed a record (a command it ran or a page it read changed none), and the workspace it
-/// worked in, when the history names it.
+/// What an agent's newest run did, as its finished notice says it: the run, as the history keeps
+/// it, so one run is told once however many sessions of the agent worked it; how many of its
+/// actions changed a record (a command it ran or a page it read changed none); what it worked, in
+/// the words its card lists the run by ("Edited Launch notes", or the instruction as the person
+/// phrased it); and the workspace it worked in, when the history names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSummary {
+    pub run: String,
     pub changes: usize,
+    pub worked: String,
     pub workspace: Option<String>,
 }
 
@@ -296,7 +269,6 @@ impl AgentFinished {
         &self,
         runs: &tilo_actions::remote::workspace_activity::Runs,
     ) -> Option<RunSummary> {
-        use tilo_actions::remote::workspace_activity::ActionView;
         let client = ui::presence::agent_client(&self.label);
         let run = runs
             .runs
@@ -304,19 +276,75 @@ impl AgentFinished {
             .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
             .max_by_key(|run| run.last_ms)?;
         Some(RunSummary {
-            changes: run
-                .actions
-                .iter()
-                .filter(|action| {
-                    matches!(
-                        action.view,
-                        ActionView::File { .. } | ActionView::Record { .. }
-                    )
-                })
-                .count(),
+            run: run.id.clone(),
+            changes: run.changes(),
+            worked: run.instruction.trim().to_owned(),
             workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
         })
     }
+}
+
+/// Console, where an agent's card is.
+const AGENTS_APP: &str = "so.tilo.console";
+/// The action key of a finished notice's choice that opens the card of the agent of the client
+/// after it.
+pub const AGENT_CARD_ACTION: &str = "agent-card:";
+
+/// The notice that `agent` finished: what its run changed and where, when `summary` says
+/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the run
+/// worked, in the words its card lists it by ("Edited Launch notes"), never what the agent was
+/// doing (it is done); with its own face and its card one choice away.
+///
+/// `None` when there is nothing to tell: a run that changed nothing, or one `told` already says
+/// a notice told of, as another session of the same agent that worked it did.
+pub fn finished_notice(
+    agent: &AgentFinished,
+    summary: Option<&RunSummary>,
+    told: &mut std::collections::BTreeSet<String>,
+) -> Option<tilo_desktop_surface::notifications::Notification> {
+    use tilo_desktop_surface::i18n::{t, t_args};
+    if let Some(summary) = summary
+        && (summary.changes == 0 || !told.insert(summary.run.clone()))
+    {
+        return None;
+    }
+    let name = || agent.label.clone().into();
+    let title = match summary {
+        Some(RunSummary {
+            changes,
+            workspace: Some(workspace),
+            ..
+        }) => t_args(
+            "workspace-notice-agent-finished-in",
+            &[
+                ("agent", name()),
+                ("count", (*changes).into()),
+                ("workspace", workspace.clone().into()),
+            ],
+        ),
+        Some(RunSummary {
+            changes,
+            workspace: None,
+            ..
+        }) => t_args(
+            "workspace-notice-agent-finished-changes",
+            &[("agent", name()), ("count", (*changes).into())],
+        ),
+        None => t_args("workspace-notice-agent-finished", &[("agent", name())]),
+    };
+    let body = summary.map_or_else(String::new, |summary| summary.worked.clone());
+    let client = ui::presence::agent_client(&agent.label);
+    let mut notice = tilo_desktop_surface::notifications::Notification::new(title, body)
+        .with_agent_from(agent.label.clone(), agent.publisher.clone())
+        .with_app_id(AGENTS_APP)
+        // It is the agent's news, said in its name wherever notices are grouped by who sent them;
+        // the banner, which leads with the agent's face, shows no source line repeating it.
+        .with_app_name(agent.label.clone());
+    notice.actions = vec![(
+        format!("{AGENT_CARD_ACTION}{client}"),
+        t("workspace-notice-agent-card"),
+    )];
+    Some(notice)
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -329,14 +357,6 @@ fn line(text: &str, source: crate::collaborators::LineSource) -> Option<Line> {
     })
 }
 
-/// A line of the host's: model prose, or what it read off their actions.
-fn host_line(text: &str, generated: bool) -> Option<Line> {
-    line(
-        text,
-        crate::collaborators::LineSource::generated_if(generated),
-    )
-}
-
 /// How available a member said they were: their presence's word, and the default — available — when
 /// they said nothing of it.
 fn availability_of(member: &LiveMember) -> ui::Availability {
@@ -347,12 +367,43 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
         .unwrap_or(ui::Availability::Available)
 }
 
-/// What someone says they are doing in their own words, as their live presence carries it.
-fn own_words(member: &LiveMember) -> Option<Line> {
+/// The name a member goes by here, as their presence says it.
+fn member_name(member: &LiveMember) -> Option<&str> {
+    Some(member.label.trim()).filter(|label| !label.is_empty())
+}
+
+/// The row already listed for the agent at `device`: the same publisher, or the same person's
+/// agent going by the same name (one agent heard through two publishers). Two sessions of one
+/// client are told apart by their names ("Claude Code #2"), so they stay two rows.
+fn same_agent<'a>(
+    people: &'a mut [Person],
+    device: &str,
+    user: Option<&str>,
+    label: &str,
+) -> Option<&'a mut Person> {
+    let label = label.trim();
+    people.iter_mut().find(|row| {
+        row.agent
+            && (row.id == device
+                || (!label.is_empty()
+                    && row.label == label
+                    && user.is_some()
+                    && row.user.as_deref() == user))
+    })
+}
+
+/// What `member` says they are doing, as their live presence carries it: their own words (an
+/// agent's activity is its own), or what their device read off their steps.
+fn said_line(member: &LiveMember) -> Option<Line> {
+    let source = if member.automatic {
+        crate::collaborators::LineSource::Observed
+    } else {
+        crate::collaborators::LineSource::Written
+    };
     member
         .activity
         .as_deref()
-        .and_then(|text| line(text, crate::collaborators::LineSource::Written))
+        .and_then(|text| line(text, source))
 }
 
 impl HereState {
@@ -370,6 +421,12 @@ impl HereState {
             && let Some(user) = own.user.as_deref()
         {
             ui::people_photos::alias(&own.publisher, user);
+        }
+        // Each device wears its person's picture.
+        for member in self.members.iter().flatten() {
+            if let Some(user) = member.user.as_deref().filter(|user| !user.is_empty()) {
+                ui::people_photos::alias(&member.publisher, user);
+            }
         }
         let members = self.members.clone().unwrap_or_default();
         self.hear_waves(&members);
@@ -393,22 +450,6 @@ impl HereState {
     #[must_use]
     pub fn unavailable(&self) -> Option<&str> {
         self.unavailable.as_deref()
-    }
-
-    pub fn set_lines(&mut self, lines: Vec<HostLine>, now_ms: u64) -> bool {
-        self.lines_at_ms = now_ms;
-        if self.lines == lines {
-            return false;
-        }
-        self.lines = lines;
-        // Each device wears its person's picture.
-        for line in &self.lines {
-            if !line.user.is_empty() {
-                ui::people_photos::alias(&line.device, &line.user);
-            }
-        }
-        self.revision = self.revision.wrapping_add(1);
-        true
     }
 
     /// Someone's picture changed: what shows them is drawn again.
@@ -468,9 +509,24 @@ impl HereState {
         arrived
     }
 
+    /// The clients of the agents present now ([`ui::presence::agent_client`]): "Claude Code" for a
+    /// "Claude Code #2".
+    fn agent_clients_here(&self) -> std::collections::BTreeSet<&str> {
+        self.members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind == "agent")
+            .map(|member| ui::presence::agent_client(&member.label))
+            .collect()
+    }
+
     /// The agents that left since the last call, each once: gone from the live layer for longer than
     /// a reconnect takes (`REJOIN_QUIET_MS`), so a page renewing its grant is no agent finishing.
     /// An agent's finishing is news the person did not cause, which a notice says.
+    ///
+    /// An agent's client restarts its session often (a new `tilo mcp` per restart), each a
+    /// publisher of its own working the same run: an agent is finished once no session of its
+    /// client is here, and its sessions that left are said finished together, as one.
     pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
         let Some(members) = &self.members else {
             return Vec::new();
@@ -479,32 +535,71 @@ impl HereState {
             let held = self
                 .working_agents
                 .entry(member.publisher.clone())
-                .or_insert_with(|| (member.label.clone(), None, now_ms));
+                .or_insert_with(|| (member.label.clone(), now_ms));
             held.0.clone_from(&member.label);
-            if let Some(activity) = member.activity.as_deref().filter(|a| !a.trim().is_empty()) {
-                held.1 = Some(activity.to_owned());
-            }
-            held.2 = now_ms;
+            held.1 = now_ms;
         }
-        let mut finished: Vec<AgentFinished> = self
+        let due = self.agents_due();
+        let gone: Vec<(String, (String, u64))> = self
             .working_agents
-            .extract_if(|_, (_, _, seen)| now_ms.saturating_sub(*seen) >= REJOIN_QUIET_MS)
-            .map(|(publisher, (label, last, _))| AgentFinished {
-                publisher,
-                label,
-                last,
+            .extract_if(|_, (label, _)| {
+                due.get(ui::presence::agent_client(label))
+                    .is_some_and(|at| *at <= now_ms)
             })
+            .collect();
+        // One per client: the session that was here last speaks for it.
+        let mut by_client: std::collections::BTreeMap<String, (String, String, u64)> =
+            std::collections::BTreeMap::new();
+        for (publisher, (label, seen)) in gone {
+            let client = ui::presence::agent_client(&label).to_owned();
+            let entry = by_client
+                .entry(client)
+                .or_insert_with(|| (publisher.clone(), label.clone(), seen));
+            if (seen, &publisher) > (entry.2, &entry.0) {
+                *entry = (publisher, label, seen);
+            }
+        }
+        let mut finished: Vec<AgentFinished> = by_client
+            .into_values()
+            .map(|(publisher, label, _)| AgentFinished { publisher, label })
             .collect();
         finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
         finished
+    }
+
+    /// When an agent that left is next due to be said finished, on the clock
+    /// [`Self::take_agents_finished`] is handed: the reconnect's grace after it was last here.
+    /// `None` while every agent seen is still here, or another session of its client is. A page
+    /// draws only when something changes, and nothing changes when an agent stays gone: it wakes
+    /// for this, or the notice waits for whatever draws next.
+    #[must_use]
+    pub fn next_agent_finished_ms(&self) -> Option<u64> {
+        self.agents_due().into_values().min()
+    }
+
+    /// When each client none of whose sessions is here is due to be said finished: the reconnect's
+    /// grace after the last of its sessions was here, so a session back within it was never gone.
+    fn agents_due(&self) -> HashMap<String, u64> {
+        let here = self.agent_clients_here();
+        let mut due: HashMap<String, u64> = HashMap::new();
+        for (label, seen) in self.working_agents.values() {
+            let client = ui::presence::agent_client(label);
+            if here.contains(client) {
+                continue;
+            }
+            let at = seen.saturating_add(REJOIN_QUIET_MS);
+            let entry = due.entry(client.to_owned()).or_insert(at);
+            *entry = (*entry).max(at);
+        }
+        due
     }
 
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
     /// workspace before. The first roster this page sees is who was already here, not arrivals;
     /// this page's person and agents are never announced, and leaving is not news. A device back
     /// within `REJOIN_QUIET_MS` of dropping out never left, and another device of someone here is
-    /// not them arriving. One whose name is not known yet (neither their presence nor the host's
-    /// lines carry it) is announced once it is, by that name, as the bar shows them.
+    /// not them arriving. One whose name is not known yet (their presence has not said it) is
+    /// announced once it is, by that name, as the bar shows them.
     pub fn take_arrivals(&mut self, now_ms: u64) -> Vec<String> {
         let Some(members) = &self.members else {
             return Vec::new();
@@ -534,7 +629,7 @@ impl HereState {
                 .is_some_and(|at| now_ms.saturating_sub(*at) < REJOIN_QUIET_MS);
             let person = self.person_of(id);
             if !before.contains(id) && !back && !persons.contains(&person) {
-                let Some(name) = self.member_name(member) else {
+                let Some(name) = member_name(member) else {
                     continue;
                 };
                 arrived.push(labels.label(person, name));
@@ -550,22 +645,6 @@ impl HereState {
         });
         self.announced = Some(announced);
         arrived
-    }
-
-    /// The name a member goes by here: what their presence says, else the host's line for their
-    /// device.
-    fn member_name<'a>(&'a self, member: &'a LiveMember) -> Option<&'a str> {
-        Some(member.label.trim())
-            .filter(|label| !label.is_empty())
-            .or_else(|| self.line_label(&member.publisher))
-    }
-
-    fn line_label(&self, device: &str) -> Option<&str> {
-        self.lines
-            .iter()
-            .find(|line| line.device == device)
-            .map(|line| line.label.trim())
-            .filter(|label| !label.is_empty())
     }
 
     pub fn set_watching(&mut self, watching: u32) -> bool {
@@ -630,14 +709,30 @@ impl HereState {
             .filter(|_| self.sharing != ui::StatusSharing::Off)
     }
 
-    /// What everyone here reads of this person: their own words, else the host's automatic line
-    /// while they share one.
+    /// What this device read off its person's own recent steps, `None` while they took none lately.
+    /// Whether that changed anything.
+    pub fn set_own_reading(&mut self, reading: Option<String>) -> bool {
+        let reading = reading
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        if self.own_reading == reading {
+            return false;
+        }
+        self.own_reading = reading;
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// What everyone here reads of this person, as this device publishes it: their own words, else
+    /// what it read off their steps while they share an automatic status.
     pub fn own_doing(&self) -> Option<Line> {
         self.shared_words()
             .and_then(|words| line(words, crate::collaborators::LineSource::Written))
             .or_else(|| {
-                self.own_status()
+                self.own_reading
+                    .as_deref()
                     .filter(|_| self.sharing == ui::StatusSharing::Automatic)
+                    .and_then(|text| line(text, crate::collaborators::LineSource::Observed))
             })
     }
 
@@ -663,29 +758,20 @@ impl HereState {
             .filter(|user| !user.is_empty())
     }
 
-    /// The person the device `publisher` is a device of: as the host's lines say, else as the
-    /// device's own certificate says; `None` before either.
+    /// The person the device `publisher` is a device of, as its certificate says; `None` before it
+    /// was heard.
     pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
         {
             return Some(own);
         }
-        self.lines
+        self.members
             .iter()
-            .find(|line| line.device == publisher && !line.user.is_empty())
-            .map(|line| line.user.as_str())
-            .or_else(|| {
-                // The live layer carries what each member was certified as before any host has
-                // spoken: enough to count two of their devices as one person, and never ours as
-                // someone else.
-                self.members
-                    .iter()
-                    .flatten()
-                    .find(|member| member.publisher == publisher)
-                    .and_then(|member| member.user.as_deref())
-                    .filter(|user| !user.is_empty())
-            })
+            .flatten()
+            .find(|member| member.publisher == publisher)
+            .and_then(|member| member.user.as_deref())
+            .filter(|user| !user.is_empty())
     }
 
     /// Who `publisher` counts as: its person where known, else the device itself, so devices of one
@@ -727,9 +813,7 @@ impl HereState {
         let mut names = HashMap::new();
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
             let agent = member.kind == "agent";
-            let label = self
-                .member_name(member)
-                .map_or_else(guest_label, str::to_owned);
+            let label = member_name(member).map_or_else(guest_label, str::to_owned);
             let key = if agent {
                 member.publisher.as_str()
             } else {
@@ -744,16 +828,6 @@ impl HereState {
             );
         }
         names
-    }
-
-    /// Where `person` 's windows are: the layout of the first of their devices in the live layer
-    /// that says.
-    fn screen_of(&self, person: &str) -> Option<Screen> {
-        self.members
-            .iter()
-            .flatten()
-            .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
-            .find_map(|member| member.layout.as_ref().and_then(Screen::from_layout))
     }
 
     /// Whether `publisher` is this page or another device of its person.
@@ -772,47 +846,28 @@ impl HereState {
             .filter(|label| !label.is_empty())
     }
 
-    /// The name and colour presence shows for the person `user` (their user root, hex): their
-    /// page's, found through the host's lines, which pair each device with its person. `None` for
-    /// someone not here now.
-    /// Of a person's devices, the one live here names them, as the bar of who is here does: a
-    /// device they left (a page reloaded, a tab closed) keeps its line a while, with the name it
-    /// went by before they chose theirs.
+    /// The name and colour presence shows for the person `user` (their user root, hex): the name
+    /// their devices here go by, told apart as everywhere here names them. `None` for someone not
+    /// here now.
     pub fn person(&self, user: &str) -> Option<(String, (u8, u8, u8))> {
-        let member_of = |device: &str| {
-            self.members
-                .iter()
-                .flatten()
-                .chain(self.own.as_ref())
-                .find(|member| member.publisher == device)
-        };
         let mut devices = self
-            .lines
+            .members
             .iter()
-            .filter(|line| !line.user.is_empty() && line.user == user)
-            .map(|line| (line, member_of(&line.device)));
+            .flatten()
+            .chain(self.own.as_ref())
+            .filter(|member| {
+                member.kind != "agent" && self.user_of(&member.publisher) == Some(user)
+            });
         let first = devices.next()?;
-        let (line, member) = std::iter::once(first)
+        let named = std::iter::once(first)
             .chain(devices)
-            .find(|(_, member)| member.is_some())
+            .find(|member| member_name(member).is_some())
             .unwrap_or(first);
-        let label = member
-            .map(|member| member.label.trim())
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| line.label.trim());
-        let label = if label.is_empty() {
-            guest_label()
-        } else {
-            label.to_owned()
-        };
-        // Told apart by their person's name, as everywhere here names them.
-        let person_of = self.person_of(&line.device).to_owned();
-        let label = self.labels().label(&person_of, &label);
-        // A device that left the live layer keeps its line a while: their person's own colour then,
-        // as when alone here.
+        let label = member_name(named).map_or_else(guest_label, str::to_owned);
+        let label = self.labels().label(user, &label);
         let rgb = self
             .colors()
-            .get(&line.device)
+            .get(&named.publisher)
             .copied()
             .unwrap_or_else(|| ui::presence::user_color(user));
         Some((label, rgb))
@@ -825,81 +880,81 @@ impl HereState {
     }
 
     /// What colour everyone here is drawn in, by live publisher, this page included. Settled over
-    /// the whole workspace at once ([`ui::presence::assign_peer_colors`]): two people here together
+    /// the whole workspace at once ([`ui::presence::settle_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every page, seeing the same
     /// workspace, settles it alike. A person is settled by who they are (their user root) so their
-    /// other devices wear their colour; an agent by its own publisher. The colour a page publishes
-    /// for itself is not consulted: a page picking alone cannot know who else is here, which is how
-    /// two visitors came to wear the same one.
-    /// A person's device is in the live layer before either the host's lines or its own certificate
-    /// pairs it with its person. Until they do it has no entry here, and takes no part in the
+    /// other devices wear their colour; an agent by its own publisher, in the colour what it is
+    /// wears ([`ui::presence::participant_color`]) — the one its own shell publishes and its face,
+    /// its card and its marks wear in every app.
+    ///
+    /// The colour someone claims for themselves is the one they wear: it is the colour they chose
+    /// in their own card, or the one their identity derives, as their shell publishes it — the same
+    /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
+    /// two people who chose alike still read apart; this page's own person is honoured first, so
+    /// nobody here is ever drawn in their colour.
+    ///
+    /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
     /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
     /// colour keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
-        let present: Vec<(&str, &str)> = match &self.members {
-            Some(members) => members
-                .iter()
-                .chain(self.own.as_ref())
-                .filter_map(|member| {
-                    let id = member.publisher.as_str();
-                    if member.kind == "agent" {
-                        Some((id, id))
-                    } else {
-                        self.user_of(id).map(|user| (id, user))
-                    }
-                })
-                .collect(),
-            // Without the live layer the host's lines are who is here, each already known to the
-            // host.
-            None => self
-                .lines
-                .iter()
-                .map(|line| line.device.as_str())
-                .map(|id| (id, self.user_of(id).unwrap_or(id)))
-                .chain(self.own_id().and_then(|id| Some((id, self.user_of(id)?))))
-                .collect(),
-        };
-        let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
-        let settled = ui::presence::assign_peer_colors(&keys, &[]);
-        let mut colors: HashMap<String, (u8, u8, u8)> = present
-            .into_iter()
-            .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
-            .collect();
-        // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
-        // caret of it; one this build does not know keeps the hue it settled on.
-        for member in self.members.iter().flatten().filter(|m| m.kind == "agent") {
-            if let Some(hue) = ui::tokens::PresenceHue::of_agent_client(&member.label) {
-                colors.insert(member.publisher.clone(), ui::presence::identity_rgb(hue));
-            }
-        }
-        colors
-    }
-
-    /// This page's own line from the host.
-    pub fn own_status(&self) -> Option<Line> {
-        let own = self.own_id()?;
-        self.lines
+        // Each device here, by the person it is (an agent by its own
+        // publisher), with the colour its shell claimed where it claimed one and the
+        // one its kind wears where it claimed none: [`ui::presence::participant_color`],
+        // the rule every surface asks.
+        let present: Vec<Present<'_>> = self
+            .members
             .iter()
-            .find(|line| line.device == own)
-            .and_then(|own| host_line(&own.status, own.generated))
+            .flatten()
+            .chain(self.own.as_ref())
+            .filter_map(|member| {
+                let id = member.publisher.as_str();
+                let agent = member.kind == "agent";
+                let key = if agent { id } else { self.user_of(id)? };
+                let claimed = ui::presence::parse_hex_color(&member.colour);
+                Some((
+                    id,
+                    key,
+                    claimed,
+                    ui::presence::participant_color(key, agent),
+                ))
+            })
+            .collect();
+        let chosen: HashMap<String, (u8, u8, u8)> = present
+            .iter()
+            .filter_map(|(_, key, claimed, _)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
+            .collect();
+        let naturals: Vec<(&str, (u8, u8, u8))> = present
+            .iter()
+            .map(|(_, key, _, natural)| (*key, *natural))
+            .collect();
+        // This page's own person is settled first: their colour is theirs, and nobody here is
+        // drawn in it.
+        let own = self
+            .own_id()
+            .and_then(|own| present.iter().find(|(id, _, _, _)| *id == own))
+            .map(|(_, key, _, _)| *key);
+        let settled = ui::presence::settle_colors_of(&naturals, &chosen, own);
+        present
+            .into_iter()
+            .filter_map(|(id, key, _, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
+            .collect()
     }
 
     /// Everyone present but this page, people first, then agents, each in the order they arrived.
-    /// `tree` and `records` (each window's record) place them in this desktop.
-    /// `app_name` names an app by its id, for where someone is.
+    /// `tree` and `records` (each window's record) place them in this desktop. `app_name` names an
+    /// app by its id, for where someone is.
     pub fn people(
         &self,
         tree: &DesktopTree,
-        records: &[(TabId, String)],
+        records: &[(TabId, String, String)],
         app_name: &dyn Fn(&str) -> Option<String>,
-        now_ms: u64,
     ) -> Vec<Person> {
-        let host = |device: &str| self.lines.iter().find(|line| line.device == device);
         let colors = self.colors();
         let mut people: Vec<Person> = Vec::new();
         // Who each listed person counts as (`person_of`), beside `people` .
         let mut persons: Vec<&str> = Vec::new();
         for member in self.members.iter().flatten() {
+            // An agent is known by the session it declared, never by what it is called.
             let agent = member.kind == "agent";
             let person = if agent {
                 member.publisher.as_str()
@@ -909,34 +964,46 @@ impl HereState {
             if (!agent && self.is_own_person(&member.publisher)) || persons.contains(&person) {
                 continue;
             }
+            if agent
+                && let Some(row) = same_agent(
+                    &mut people,
+                    &member.publisher,
+                    self.user_of(&member.publisher),
+                    &member.label,
+                )
+            {
+                // The same agent heard through a second publisher is one row: the first line it
+                // said is kept, the other fills in.
+                if row.status.is_none() {
+                    row.status = said_line(member);
+                }
+                continue;
+            }
             persons.push(person);
-            let line_of = host(&member.publisher);
             // An agent names the record it works in; a person's page says which window they are in.
             let tab = member
                 .focus
                 .as_ref()
-                .and_then(|focus| window_of(tree, records, focus))
-                .or_else(|| line_of.and_then(|l| shown_window(tree, l)));
-            // Their own words first (an agent's activity is its own), else what the host read off
-            // what they did.
-            let status = own_words(member)
-                .or_else(|| line_of.and_then(|l| host_line(&l.status, l.generated)));
+                .and_then(|focus| window_of(tree, records, focus));
+            let status = said_line(member);
             let place = match tab {
-                Some(tab) => worded_place(tree, tab, app_name, status.as_ref()),
+                Some(tab) => worded_place(
+                    tree,
+                    tab,
+                    member.focus.as_ref().map(|focus| focus.app.as_str()),
+                    app_name,
+                    status.as_ref(),
+                ),
                 None => focused_app(member, app_name, status.as_ref()),
             };
             people.push(Person {
                 id: member.publisher.clone(),
                 user: self.user_of(&member.publisher).map(str::to_owned),
-                label: [
-                    member.label.as_str(),
-                    line_of.map_or("", |l| l.label.as_str()),
-                    member.device.as_str(),
-                ]
-                .into_iter()
-                .map(str::trim)
-                .find(|label| !label.is_empty())
-                .map_or_else(guest_label, str::to_owned),
+                label: [member.label.as_str(), member.device.as_str()]
+                    .into_iter()
+                    .map(str::trim)
+                    .find(|label| !label.is_empty())
+                    .map_or_else(guest_label, str::to_owned),
                 devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
                 agent,
@@ -944,45 +1011,8 @@ impl HereState {
                 focus_app: member.focus.as_ref().map(|focus| focus.app.clone()),
                 place,
                 status,
-                recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
-                screen: if agent { None } else { self.screen_of(person) },
                 availability: availability_of(member),
                 call: member.call.as_deref().and_then(ui::CallPresence::decode),
-            });
-        }
-        // Without the live layer the host's lines are all there is; a line the person stopped
-        // refreshing has left.
-        let fresh = |l: &HostLine| {
-            self.members.is_none()
-                && now_ms.saturating_sub(self.lines_at_ms) < HOST_ONLY_FRESH_MS
-                && !self.is_own_person(&l.device)
-        };
-        for l in self.lines.iter().filter(|l| fresh(l)) {
-            let person = self.person_of(&l.device);
-            if persons.contains(&person) {
-                continue;
-            }
-            persons.push(person);
-            let tab = shown_window(tree, l);
-            let status = host_line(&l.status, l.generated);
-            people.push(Person {
-                id: l.device.clone(),
-                user: Some(l.user.clone()).filter(|user| !user.is_empty()),
-                label: Some(l.label.trim())
-                    .filter(|label| !label.is_empty())
-                    .map_or_else(guest_label, str::to_owned),
-                devices: self.devices_of(&l.device),
-                rgb: color_in(&colors, &l.device),
-                agent: false,
-                tab,
-                focus_app: None,
-                place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
-                status,
-                recent: host_line(&l.recent, l.generated),
-                screen: None,
-                // The host's lines say what a person does, never whether they are at their machine.
-                availability: ui::Availability::Available,
-                call: None,
             });
         }
         people.compact_sort_by_key(|person| person.agent);
@@ -1004,9 +1034,8 @@ impl HereState {
         Some(self.labels().label(&id, own))
     }
 
-    /// The numbers the people here are told apart by, this page's own person included: the live
-    /// layer's people, else the host's lines. Keyed by person, so two devices of one person are one
-    /// name to number.
+    /// The numbers the people here are told apart by, this page's own person included. Keyed by
+    /// person, so two devices of one person are one name to number.
     fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
         let mut named: Vec<(&'a str, String)> = Vec::new();
         // One name per person, whoever of theirs spoke first: a device that has not said whose it
@@ -1020,30 +1049,12 @@ impl HereState {
             Some(_) => {}
             None => named.push((id, name)),
         };
-        if let Some(members) = &self.members {
-            for member in members.iter().chain(self.own.as_ref()) {
-                if member.kind == "agent" {
-                    continue;
-                }
-                let label = self
-                    .member_name(member)
-                    .map_or_else(guest_label, str::to_owned);
-                add(&mut named, self.person_of(&member.publisher), label);
+        for member in self.members.iter().flatten().chain(self.own.as_ref()) {
+            if member.kind == "agent" {
+                continue;
             }
-        } else {
-            for line in &self.lines {
-                let label = self
-                    .line_label(&line.device)
-                    .map_or_else(guest_label, str::to_owned);
-                add(&mut named, self.person_of(&line.device), label);
-            }
-            if let Some(own) = &self.own {
-                add(
-                    &mut named,
-                    self.person_of(&own.publisher),
-                    own.label.trim().to_owned(),
-                );
-            }
+            let label = member_name(member).map_or_else(guest_label, str::to_owned);
+            add(&mut named, self.person_of(&member.publisher), label);
         }
         ui::presence::ParticipantLabels::new(named.iter().map(|(id, name)| (*id, name.as_str())))
     }
@@ -1116,6 +1127,12 @@ impl HereState {
     }
 }
 
+/// One device here as the settlement reads it: its publisher, the person it
+/// is (an agent, itself), the colour its shell claimed for that person where it
+/// claimed one, and the colour its kind wears where it claimed none
+/// ([`ui::presence::participant_color`]).
+type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
+
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
 /// workspace has not settled one for it.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
@@ -1130,32 +1147,24 @@ pub fn guest_label() -> String {
     "Guest".to_owned()
 }
 
-/// The window a host line says its person is in, when the active workspace has it.
-fn shown_window(tree: &DesktopTree, line: &HostLine) -> Option<TabId> {
-    let tab = u64::from_str_radix(line.window.as_deref()?, 16).ok()?;
-    tree.active_workspace()?
-        .tabs()
-        .any(|t| t.id == tab)
-        .then_some(tab)
-}
-
 /// The window showing `focus` : the record's window, else the first window of its app.
-fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> Option<TabId> {
-    let tabs: HashMap<TabId, &str> = tree
+fn window_of(
+    tree: &DesktopTree,
+    records: &[(TabId, String, String)],
+    focus: &Focus,
+) -> Option<TabId> {
+    let shown: HashSet<TabId> = tree
         .active_workspace()
         .into_iter()
         .flat_map(Workspace::tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::LocalApp { app_id, .. } => Some((tab.id, app_id.as_str())),
-            _ => None,
-        })
+        .map(|tab| tab.id)
         .collect();
     records
         .iter()
-        .find(|(tab, record)| {
-            *record == focus.record && tabs.get(tab).is_some_and(|app| *app == focus.app)
+        .find(|(tab, app, record)| {
+            *record == focus.record && *app == focus.app && shown.contains(tab)
         })
-        .map(|(tab, _)| *tab)
+        .map(|(tab, _, _)| *tab)
 }
 
 /// Where the window `tab` is, in words beside `status` : "Strip · App". The strip is named only
@@ -1165,6 +1174,7 @@ fn window_of(tree: &DesktopTree, records: &[(TabId, String)], focus: &Focus) -> 
 fn worded_place(
     tree: &DesktopTree,
     tab: TabId,
+    focus_app: Option<&str>,
     app_name: &dyn Fn(&str) -> Option<String>,
     status: Option<&Line>,
 ) -> Option<String> {
@@ -1176,10 +1186,13 @@ fn worded_place(
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|t| t.id == tab)?;
+        // The app the window runs: from its tile where the desk's own model names it, else from
+        // the app its presence focuses (a window drawn by its app's own surface names none here).
         let app = match &tab.tile {
             TileContent::LocalApp { app_id, .. } => app_name(app_id),
             _ => None,
         }
+        .or_else(|| focus_app.and_then(app_name))
         .unwrap_or_else(|| tab.title.clone());
         let app = Some(app.trim())
             .filter(|app| !app.is_empty())
@@ -1206,6 +1219,17 @@ fn focused_app(
         .then(|| crate::collaborators::in_app(app))
 }
 
+/// What `person` says they are doing, as the workspace's own model keeps it: their words, trimmed,
+/// and whether software said them for them rather than they typing them.
+fn doing(person: &Person) -> Option<Status> {
+    let line = person.status.as_ref()?;
+    let text = line.text.trim();
+    (!text.is_empty()).then(|| Status {
+        text: text.to_owned(),
+        automatic: line.automatic(),
+    })
+}
+
 /// Whether `text` says `name`: its words, in order, among `text`'s,
 /// whatever their case.
 fn names(text: &str, name: &str) -> bool {
@@ -1219,13 +1243,23 @@ fn names(text: &str, name: &str) -> bool {
     !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
+/// `rgb` as the `#rrggbb` a roster row's colour is written in.
+fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 /// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
 /// tree, never written to the workspace's document.
-pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
+pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
     let active = tree.active;
     let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.slot == active) else {
         return;
     };
+    // Following is said again each frame, like where everyone is: someone no longer followed, or
+    // no longer here, carries none.
+    for known in &mut workspace.collaborators {
+        known.following = false;
+    }
     for person in people {
         // Who a known member is belongs to the workspace; where they are and how available they are
         // is presence's, and is said again every frame.
@@ -1234,22 +1268,52 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             .iter_mut()
             .find(|c| c.id == person.id)
         {
+            // Whose view this desk follows: the bar keeps that face when it is too narrow to stand
+            // everyone's. Following names a publisher, which is a person's own device as often as
+            // the person.
+            known.following = following.is_some_and(|followed| {
+                followed == person.id || person.devices.iter().any(|device| device.id == followed)
+            });
             known.active_tab = person.tab;
+            // The colour everyone here draws them in, as their pointer wears it: one colour per
+            // person on every face of them, whatever an older row said.
+            known.cursor_color = Some(hex_of(person.rgb));
+            known.in_app.clone_from(&person.focus_app);
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
+            // What they are doing now, as their device publishes it: an agent's line is what it
+            // works on, which is the only "where" a roster row has for software.
+            known.status = doing(person);
+            // Software is said on every frame too. A row this page already held (a roster it synced,
+            // or one an older build wrote) carries no marker, and every surface reads the marker to
+            // know an agent is an agent: it would draw as a person — a circle where software wears a
+            // rounded square — for as long as the row exists.
+            if person.agent {
+                known.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.to_owned());
+            } else if known.role_id.as_deref() == Some(crate::collaborators::AGENT_ROLE_MARKER) {
+                // Software that stopped saying it runs here is not drawn as one: the row outlives
+                // the line that named it.
+                known.role_id = None;
+            }
             continue;
         }
-        let (r, g, b) = ui::presence::user_color(&person.id);
+        let follows = following.is_some_and(|followed| {
+            followed == person.id || person.devices.iter().any(|device| device.id == followed)
+        });
         workspace.collaborators.push(Collaborator {
+            following: follows,
             id: person.id.clone(),
             name: person.label.clone(),
             active_tab: person.tab,
-            // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
-            // one person all wear the one colour.
-            cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            in_app: person.focus_app.clone(),
+            // The colour their pointer is drawn in on this desk (`HereState::colors`, settled over
+            // everyone here), so a face, a pill and a caret for one person all wear the one colour,
+            // and their face on the bar matches the one their own bar shows them.
+            cursor_color: Some(hex_of(person.rgb)),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
             call: person.call.as_ref().map(ui::CallPresence::encode),
+            status: doing(person),
             ..Collaborator::default()
         });
     }
@@ -1267,6 +1331,7 @@ mod tests {
             device: String::new(),
             focus: None,
             activity: (kind == "agent").then(|| "Reading the notes".into()),
+            automatic: false,
             place: None,
             user: None,
             wave: None,
@@ -1274,6 +1339,7 @@ mod tests {
             following: None,
             availability: None,
             call: None,
+            colour: String::new(),
         }
     }
 
@@ -1295,6 +1361,7 @@ mod tests {
                 record: "0123456789abcdef".into(),
             }),
             activity: Some("Editing notes/Welcome".into()),
+            user: Some("aa".into()),
             ..member("claude", "agent", "Claude Code")
         };
         here.set_members(
@@ -1303,26 +1370,13 @@ mod tests {
                 own,
                 member("ada", "person", "Ada"),
                 claude,
-                member("theirs", "agent", "Codex"),
+                LiveMember {
+                    user: Some("bb".into()),
+                    ..member("theirs", "agent", "Codex")
+                },
             ]),
         );
-        here.set_lines(
-            vec![
-                HostLine {
-                    device: "claude".into(),
-                    user: "aa".into(),
-                    label: "Claude Code".into(),
-                    ..HostLine::default()
-                },
-                HostLine {
-                    device: "theirs".into(),
-                    user: "bb".into(),
-                    ..HostLine::default()
-                },
-            ],
-            0,
-        );
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let people = here.people(&DesktopTree::default(), &[], &|_| None);
         let ids: Vec<&str> = people.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1352,8 +1406,8 @@ mod tests {
         assert!(here.take_own_agents_arrived().is_empty(), "met once");
     }
 
-    /// A finished agent's notice counts what its newest run changed: its record and file edits,
-    /// not the commands it ran or pages it read, and names the workspace the history gives it.
+    /// A finished agent's notice counts what its newest run changed: each change of its record and
+    /// file edits, not the commands it ran or pages it read, and names the workspace the history gives it.
     #[test]
     fn a_finished_agent_says_how_many_changes_its_run_made_and_where() {
         use tilo_actions::remote::workspace_activity as wire;
@@ -1369,6 +1423,7 @@ mod tests {
                 from: "aa".into(),
                 to: "ab".into(),
             },
+            changes: 2,
             at_ms: 1,
             summary: String::new(),
             view,
@@ -1433,15 +1488,17 @@ mod tests {
         let finished = AgentFinished {
             publisher: "claude".into(),
             label: "Claude Code".into(),
-            last: None,
         };
         assert_eq!(
             finished.summary(&runs),
             Some(RunSummary {
-                changes: 4,
+                run: "mcp:Claude Code #29".into(),
+                changes: 8,
+                worked: String::new(),
                 workspace: Some("Storefront".into()),
             }),
-            "its newest run, counting the four records it changed and not the command"
+            "its newest run, counting the two changes of each of its four record edits and not the \
+             command"
         );
         let unknown = AgentFinished {
             label: "Cursor".into(),
@@ -1479,74 +1536,84 @@ mod tests {
             [AgentFinished {
                 publisher: "claude".into(),
                 label: "Claude Code".into(),
-                last: Some("Editing notes/Welcome".into()),
             }]
         );
         assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
     }
 
-    /// A person's screen is their device's layout; an agent has none, even when its frame says one.
+    /// An agent's client restarting its session is a new publisher working on: the agent has not
+    /// finished while any session of it is here, and once the last leaves its sessions are said
+    /// finished as one, by the one here last.
     #[test]
-    fn a_person_s_layout_is_their_screen_and_an_agent_shows_none() {
-        let layout = MemberLayout {
-            size: [800, 600],
-            windows: vec![MemberWindow {
-                app: "so.tilo.notes".into(),
-                record: "0123456789abcdef".into(),
-                rect: [0, 0, 10_000, 10_000],
-                focused: true,
-            }],
-        };
+    fn an_agent_restarting_its_session_finishes_once() {
         let mut here = HereState::default();
-        here.set_members(
-            None,
-            Some(vec![
-                LiveMember {
-                    layout: Some(layout.clone()),
-                    ..member("ada", "person", "Ada")
-                },
-                LiveMember {
-                    layout: Some(layout.clone()),
-                    ..member("bot", "agent", "Scribe")
-                },
-            ]),
+        let session = |publisher: &str| member(publisher, "agent", "Claude Code");
+        here.set_members(None, Some(vec![session("first")]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        // Its client restarts it: the first session left, a second works on.
+        here.set_members(None, Some(vec![session("second")]));
+        assert!(here.take_agents_finished(2_000).is_empty());
+        let later = 3_000 + REJOIN_QUIET_MS * 2;
+        assert!(
+            here.take_agents_finished(later).is_empty(),
+            "the first session left long ago, but the agent is still here"
         );
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
-        let ada = people.iter().find(|p| p.id == "ada").expect("Ada");
-        assert_eq!(ada.screen, Screen::from_layout(&layout));
-        assert!(ada.screen.is_some());
-        let bot = people.iter().find(|p| p.id == "bot").expect("the agent");
-        assert_eq!(bot.screen, None);
+        assert_eq!(
+            here.next_agent_finished_ms(),
+            None,
+            "nothing is due while it is here"
+        );
+        here.set_members(None, Some(Vec::new()));
+        assert_eq!(here.next_agent_finished_ms(), Some(later + REJOIN_QUIET_MS));
+        assert_eq!(
+            here.take_agents_finished(later + REJOIN_QUIET_MS),
+            [AgentFinished {
+                publisher: "second".into(),
+                label: "Claude Code".into(),
+            }],
+            "one notice for the agent, from the session here last"
+        );
+        assert!(here.take_agents_finished(later * 3).is_empty(), "said once");
+        assert_eq!(here.next_agent_finished_ms(), None);
     }
 
-    /// A person is named as their page's presence names them, found through the host's line pairing
-    /// their device with their user root.
+    /// An agent that left is due to be said finished once the reconnect's grace has passed since
+    /// it was last here, so the page can wake for it; none is due while it is here.
+    #[test]
+    fn an_agent_gone_is_due_once_its_grace_passes() {
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![member("claude", "agent", "Claude Code")]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        assert_eq!(here.next_agent_finished_ms(), None, "it is still here");
+        here.set_members(None, Some(Vec::new()));
+        assert_eq!(here.next_agent_finished_ms(), Some(1_000 + REJOIN_QUIET_MS));
+        assert_eq!(here.take_agents_finished(1_000 + REJOIN_QUIET_MS).len(), 1);
+        assert_eq!(
+            here.next_agent_finished_ms(),
+            None,
+            "said, nothing more is due"
+        );
+    }
+
+    /// A person's screen is their device's layout; an agent has none, even when its frame says one.
     #[test]
     fn a_person_is_named_by_their_pages_presence() {
         let mut here = HereState::default();
-        here.set_members(None, Some(vec![member("ada-device", "person", "Ada")]));
-        let line = |device: &str, user: &str, label: &str| HostLine {
-            device: device.into(),
-            user: user.into(),
-            label: label.into(),
-            ..HostLine::default()
+        let device = |publisher: &str, user: &str, label: &str| LiveMember {
+            user: Some(user.into()),
+            ..member(publisher, "person", label)
         };
-        here.set_lines(
-            vec![
-                line("ada-device", "ada-root", "Ada (host)"),
-                line("ben-device", "ben-root", "Ben"),
-                line("cy-device", "cy-root", ""),
-            ],
-            1,
+        here.set_members(
+            None,
+            Some(vec![
+                device("ada-device", "ada-root", "Ada"),
+                device("cy-device", "cy-root", ""),
+            ]),
         );
         assert_eq!(
             here.person("ada-root"),
-            Some(("Ada".to_owned(), ui::presence::user_color("ada-root"))),
-            "alone here, a person wears their own identity's colour"
-        );
-        assert_eq!(
-            here.person("ben-root"),
-            Some(("Ben".to_owned(), ui::presence::user_color("ben-root")))
+            Some(("Ada".to_owned(), here.colors()["ada-device"])),
+            "named and coloured as the bar draws her"
         );
         assert_eq!(
             here.person("cy-root").map(|(name, _)| name),
@@ -1600,7 +1667,10 @@ mod tests {
     #[test]
     fn a_reconnect_or_repeat_from_someone_here_is_not_a_second_arrival() {
         let me = member("me", "person", "Quinn");
-        let ben = member("ben", "person", "Ben");
+        let ben = LiveMember {
+            user: Some("ben-root".into()),
+            ..member("ben", "person", "Ben")
+        };
         let mut here = HereState::default();
         here.set_members(Some(me.clone()), Some(vec![me.clone()]));
         assert!(here.take_arrivals(0).is_empty());
@@ -1623,34 +1693,18 @@ mod tests {
             here.set_members(Some(me.clone()), Some(vec![me.clone(), ben.clone()]));
             assert!(here.take_arrivals(at + 300).is_empty(), "Ben never left");
         }
-        let line = |device: &str| HostLine {
-            device: device.into(),
-            user: "ben-root".into(),
-            label: "Ben".into(),
-            ..HostLine::default()
+        let ben_tab = LiveMember {
+            user: Some("ben-root".into()),
+            ..member("ben-tab", "person", "Ben")
         };
-        here.set_lines(vec![line("ben"), line("ben-tab")], 700_000);
-        here.set_members(
-            Some(me.clone()),
-            Some(vec![me, ben, member("ben-tab", "person", "Ben")]),
-        );
+        here.set_members(Some(me.clone()), Some(vec![me, ben, ben_tab]));
         assert!(here.take_arrivals(700_000).is_empty(), "his other tab");
     }
 
-    /// A visitor's other page (another tab, or one they left, whose host line outlives it a while)
-    /// has a line from before they named themselves. The host lists lines by device key, not by
-    /// which page is live, so either may come first. Whichever does, the name a window row gives
-    /// its holder is the one the bar of who is here shows. A visitor's presence can arrive before
-    /// it carries their name: the notice names them as the bar does, from the host's line, and
-    /// waits for a name rather than calling them a guest.
+    /// A visitor's presence can arrive before it carries their name: the notice waits for the name
+    /// rather than calling them a guest, and names them as the bar does once their presence says it.
     #[test]
     fn a_visitor_is_announced_by_the_name_the_bar_shows() {
-        let line = |device: &str, label: &str| HostLine {
-            device: device.into(),
-            user: format!("{device}-root"),
-            label: label.into(),
-            ..HostLine::default()
-        };
         let me = member("me", "person", "Quinn");
         let mut here = HereState::default();
         here.set_members(Some(me.clone()), Some(vec![me.clone()]));
@@ -1659,68 +1713,13 @@ mod tests {
             Some(me.clone()),
             Some(vec![me.clone(), member("dolphin", "person", "")]),
         );
-        here.set_lines(vec![line("dolphin", "Quiet Dolphin")], 1);
-        assert_eq!(here.take_arrivals(1), ["Quiet Dolphin"]);
-        // Nobody names the next one yet: they wait, then arrive by name.
+        assert!(here.take_arrivals(1).is_empty(), "no name yet");
         here.set_members(
             Some(me.clone()),
-            Some(vec![
-                me,
-                member("dolphin", "person", ""),
-                member("otter", "person", ""),
-            ]),
+            Some(vec![me, member("dolphin", "person", "Quiet Dolphin")]),
         );
-        assert!(here.take_arrivals(1).is_empty(), "no name yet");
-        here.set_lines(
-            vec![
-                line("dolphin", "Quiet Dolphin"),
-                line("otter", "Brave Otter"),
-            ],
-            2,
-        );
-        assert_eq!(here.take_arrivals(1), ["Brave Otter"]);
-        assert!(here.take_arrivals(1).is_empty(), "announced once");
-    }
-
-    #[test]
-    fn a_holders_name_is_the_bars_whatever_order_the_host_lists_their_devices() {
-        let line = |device: &str, label: &str| HostLine {
-            device: device.into(),
-            user: "visitor-root".into(),
-            label: label.into(),
-            ..HostLine::default()
-        };
-        let tree = DesktopTree::default();
-        // The first page arrives before its visitor chose a name.
-        let mut here = HereState::default();
-        here.set_members(None, Some(vec![member("tab-before", "person", "")]));
-        here.set_lines(vec![line("tab-before", "")], 1);
-        assert_eq!(
-            here.person("visitor-root").map(|(name, _)| name),
-            Some(guest_label())
-        );
-        // Their live page goes by the name they chose; the earlier one is gone from the live layer,
-        // but its line is still listed.
-        here.set_members(
-            None,
-            Some(vec![member("tab-now", "person", "Curious Beaver")]),
-        );
-        for lines in [
-            vec![line("tab-before", ""), line("tab-now", "Curious Beaver")],
-            vec![line("tab-now", "Curious Beaver"), line("tab-before", "")],
-        ] {
-            here.set_lines(lines, 2);
-            let bar: Vec<String> = here
-                .people(&tree, &[], &|_| None, 2)
-                .into_iter()
-                .map(|person| person.label)
-                .collect();
-            assert_eq!(bar, ["Curious Beaver"]);
-            assert_eq!(
-                here.person("visitor-root").map(|(name, _)| name),
-                bar.first().cloned()
-            );
-        }
+        assert_eq!(here.take_arrivals(2), ["Quiet Dolphin"]);
+        assert!(here.take_arrivals(3).is_empty(), "announced once");
     }
 
     /// Where someone is says only what their status line does not: no strip in a workspace of one,
@@ -1761,7 +1760,8 @@ mod tests {
             text: text.into(),
             source: crate::collaborators::LineSource::Observed,
         };
-        let place = |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, &app, line);
+        let place =
+            |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
         assert_eq!(
             place(&tree, None),
             Some("Chat".into()),
@@ -1797,18 +1797,13 @@ mod tests {
             ui::presence::user_color("visitor-0"),
             ui::presence::user_color("visitor-13")
         );
-        let line = |device: &str| HostLine {
-            device: device.into(),
-            user: device.into(),
-            ..HostLine::default()
+        let certified = |device: &str| LiveMember {
+            user: Some(device.into()),
+            ..member(device, "person", device)
         };
         let page = |own: &str, other: &str| {
             let mut here = HereState::default();
-            here.set_members(
-                Some(member(own, "person", own)),
-                Some(vec![member(other, "person", other)]),
-            );
-            here.set_lines(vec![line(own), line(other)], 1);
+            here.set_members(Some(certified(own)), Some(vec![certified(other)]));
             here
         };
         let first = page("visitor-0", "visitor-13");
@@ -1821,11 +1816,170 @@ mod tests {
         assert_eq!(first.colors(), second.colors(), "every page settles alike");
         assert_eq!(first.own_rgb(), Some(second.colors()["visitor-0"]));
         let tree = DesktopTree::default();
-        let shown = first.people(&tree, &[], &|_| None, 0);
+        let shown = first.people(&tree, &[], &|_| None);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
     }
 
-    /// Someone whose device is live here before the host's lines pair it with their person is drawn
+    /// An agent that announces the colour the person themselves wears does not wear it: the
+    /// person keeps their own colour, on their own ring and everywhere else, and the agent reads
+    /// apart from them.
+    #[test]
+    fn an_agent_never_wears_the_persons_own_colour() {
+        let mine = ui::presence::user_color("me-root");
+        let hex = format!("#{:02x}{:02x}{:02x}", mine.0, mine.1, mine.2);
+        let claiming = |member: &mut LiveMember| {
+            member.colour.clone_from(&hex);
+            member.clone()
+        };
+        let person = claiming(&mut LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Pat")
+        });
+        // The agent's face names no client this build knows, so it wears what it was given.
+        let agent = claiming(&mut member("helper", "agent", "Helper #1"));
+        let mut here = HereState::default();
+        here.set_members(Some(person), Some(vec![agent]));
+        assert_eq!(
+            here.own_rgb(),
+            Some(mine),
+            "the person wears their own colour"
+        );
+        assert_ne!(
+            here.colors().get("helper").copied(),
+            Some(mine),
+            "no member is drawn in the person's own colour"
+        );
+        // A client hue the person themselves wears is not worn by its agent either.
+        let orange = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
+        let orange_hex = format!("#{:02x}{:02x}{:02x}", orange.0, orange.1, orange.2);
+        let mut here = HereState::default();
+        here.set_members(
+            Some(LiveMember {
+                user: Some("me-root".into()),
+                colour: orange_hex,
+                ..member("me", "person", "Pat")
+            }),
+            Some(vec![member("claude", "agent", "Claude Code #1")]),
+        );
+        assert_ne!(
+            here.colors().get("claude").copied(),
+            Some(orange),
+            "the agent steps aside from the colour the person wears"
+        );
+        assert_eq!(here.own_rgb(), Some(orange));
+    }
+
+    /// One agent wears one colour on every surface that draws it: the desk's faces and the cards in
+    /// its windows, the People list's row, the bar's face, and the colour its own apps paint its
+    /// card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
+    /// never a colour a surface picked for itself.
+    #[test]
+    fn an_agent_wears_one_colour_on_every_surface() {
+        let helper = "agent:helper@host";
+        let (r, g, b) = ui::presence::participant_color(helper, true);
+        let announced = hex_of((r, g, b));
+        let me = LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Pat")
+        };
+        // The agent's own session publishes its colour with its face, as every session does.
+        let agent = LiveMember {
+            user: Some("helper-root".into()),
+            colour: announced,
+            ..member(helper, "agent", "Helper #1")
+        };
+        let mut here = HereState::default();
+        here.set_members(Some(me), Some(vec![agent]));
+
+        let tree = DesktopTree::default();
+        let people = here.people(&tree, &[], &|_| None);
+        let listed = people
+            .iter()
+            .find(|person| person.id == helper)
+            .expect("the agent is listed");
+        let mut presence = PresenceCtx::empty();
+        here.register_windows(&people, &mut presence);
+        assert_eq!(
+            (
+                here.colors().get(helper).copied(),
+                listed.rgb,
+                presence.color_for(&UserId(helper.into())),
+                ui::presence::participant_color(helper, true),
+            ),
+            (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
+            "the board, its people row, the windows and every app settle one colour"
+        );
+
+        // The bar and the People list read the workspace's rows, which this page fills from its
+        // board: the same colour again.
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk")],
+            ..DesktopTree::default()
+        };
+        tree.active = tree.workspaces[0].slot;
+        overlay_collaborators(&mut tree, &people, None);
+        let rows = crate::collaborators::collaborator_roster_rows(&tree, "me-root");
+        let row = rows
+            .iter()
+            .find(|row| row.id == helper)
+            .expect("the agent has a row in the People list");
+        assert_eq!(
+            row.color,
+            vello::peniko::Color::from_rgb8(r, g, b),
+            "the People list"
+        );
+        let mut bar =
+            crate::topbar::TopBarChrome::from_tree_with_local_user(&tree, "me-root".into());
+        bar.sync_from_tree(&tree);
+        assert_eq!(
+            bar.collaborator_colors(),
+            [vello::peniko::Color::from_rgb8(r, g, b)],
+            "the face on the bar"
+        );
+    }
+
+    /// The colour someone chose in their own card is the colour they wear here,
+    /// on their own page and on everyone else's, and whoever else's identity
+    /// names the same one steps to a free entry: one person, one colour, on the
+    /// bar, in the People list and in every app they edit in.
+    #[test]
+    fn a_person_wears_the_colour_they_chose_and_the_others_step_aside() {
+        let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+        let hex = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
+        let claiming = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            colour: hex.clone(),
+            ..member(device, "person", device)
+        };
+        let quiet = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            ..member(device, "person", device)
+        };
+        let mut own_page = HereState::default();
+        own_page.set_members(
+            Some(claiming("me", "me-root")),
+            Some(vec![quiet("bo", "bo-root")]),
+        );
+        assert_eq!(own_page.colors()["me"], violet, "they wear what they chose");
+        assert_eq!(own_page.own_rgb(), Some(violet), "and see themselves in it");
+        let mut peer_page = HereState::default();
+        peer_page.set_members(
+            Some(quiet("bo", "bo-root")),
+            Some(vec![claiming("me", "me-root")]),
+        );
+        assert_eq!(
+            peer_page.colors()["me"],
+            violet,
+            "every page paints them in it too"
+        );
+        assert_ne!(
+            peer_page.colors()["bo"],
+            violet,
+            "whoever else lands on it steps aside"
+        );
+    }
+
+    /// Someone whose device is live here before its certificate pairs it with their person is drawn
     /// neutral, never in a colour their device would key that changes once their person is known:
     /// the face on the bar, the People list's and the windows' all wear their workspace colour from
     /// the first frame it is known, and none before.
@@ -1843,7 +1997,7 @@ mod tests {
         );
         let tree = DesktopTree::default();
         let shown = |here: &mut HereState| {
-            let people = here.people(&tree, &[], &|_| None, 0);
+            let people = here.people(&tree, &[], &|_| None);
             let mut presence = PresenceCtx::empty();
             here.register_windows(&people, &mut presence);
             (people[0].rgb, presence.color_for(&UserId("ben-tab".into())))
@@ -1859,14 +2013,15 @@ mod tests {
             Some(ui::presence::assign_peer_colors(&["me-root"], &[])["me-root"]),
             "this page knows its own person"
         );
-        here.set_lines(
-            vec![HostLine {
-                device: "ben-tab".into(),
-                user: "ben-root".into(),
-                label: "Ben".into(),
-                ..HostLine::default()
-            }],
-            1,
+        here.set_members(
+            here.own.clone(),
+            Some(vec![
+                here.own.clone().expect("this page"),
+                LiveMember {
+                    user: Some("ben-root".into()),
+                    ..member("ben-tab", "person", "Ben")
+                },
+            ]),
         );
         let settled = ui::presence::assign_peer_colors(&["me-root", "ben-root"], &[]);
         assert_eq!(shown(&mut here), (settled["ben-root"], settled["ben-root"]));
@@ -1877,7 +2032,7 @@ mod tests {
         assert!(painted.g().abs_diff(painted.b()) <= 1, "{painted:?}");
     }
 
-    /// A person's devices wear one colour (the person's, once the host pairs each device with
+    /// A person's devices wear one colour (the person's, once each device's certificate names
     /// them), and the presence every window draws from learns it for each device, so a second tab's
     /// pointer matches too.
     #[test]
@@ -1885,21 +2040,19 @@ mod tests {
         let mut here = HereState::default();
         here.set_members(
             Some(member("me", "person", "Me")),
-            Some(vec![
-                member("ada-laptop", "person", "Ada"),
-                member("ada-phone", "person", "Ada"),
-            ]),
+            Some(
+                ["ada-laptop", "ada-phone"]
+                    .map(|device| LiveMember {
+                        user: Some("ada-root".into()),
+                        ..member(device, "person", "Ada")
+                    })
+                    .to_vec(),
+            ),
         );
-        let line = |device: &str| HostLine {
-            device: device.into(),
-            user: "ada-root".into(),
-            ..HostLine::default()
-        };
-        here.set_lines(vec![line("ada-laptop"), line("ada-phone")], 1);
         let colors = here.colors();
         assert_eq!(colors["ada-laptop"], colors["ada-phone"]);
         let tree = DesktopTree::default();
-        let people = here.people(&tree, &[], &|_| None, 0);
+        let people = here.people(&tree, &[], &|_| None);
         let mut presence = PresenceCtx::empty();
         here.register_windows(&people, &mut presence);
         for device in ["ada-laptop", "ada-phone"] {
@@ -1915,27 +2068,20 @@ mod tests {
         }
     }
 
-    /// What someone is doing reads their own words first, then a model's line, then the host's
-    /// plain reading of what they did: each marked by who wrote it, so nothing automatic passes for
-    /// their words.
+    /// What someone is doing is the one line their device publishes, marked by who wrote it: their
+    /// own words, or what their device read off their steps, so nothing automatic passes for their
+    /// words.
     #[test]
-    fn their_own_words_lead_then_a_models_then_the_hosts_reading() {
+    fn their_own_words_and_their_devices_reading_are_told_apart() {
         use crate::collaborators::LineSource;
         let mut here = HereState::default();
         let mut ada = member("ada", "person", "Ada");
-        let bo = member("bo", "person", "Bo");
-        let cy = member("cy", "person", "Cy");
+        let mut cy = member("cy", "person", "Cy");
         ada.activity = Some("  Reviewing the launch plan ".into());
-        here.set_members(Some(member("me", "person", "Me")), Some(vec![ada, bo, cy]));
-        here.set_lines(
-            vec![
-                host("ada", "Working in Chat", false),
-                host("bo", "Drafting the welcome note", true),
-                host("cy", "Working in Chat", false),
-            ],
-            1,
-        );
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        cy.activity = Some("Working in Chat".into());
+        cy.automatic = true;
+        here.set_members(Some(member("me", "person", "Me")), Some(vec![ada, cy]));
+        let people = here.people(&DesktopTree::default(), &[], &|_| None);
         let said: Vec<(&str, LineSource)> = people
             .iter()
             .filter_map(|person| person.status.as_ref())
@@ -1945,23 +2091,22 @@ mod tests {
             said,
             [
                 ("Reviewing the launch plan", LineSource::Written),
-                ("Drafting the welcome note", LineSource::Generated),
                 ("Working in Chat", LineSource::Observed),
             ]
         );
         assert!(!people[0].status.as_ref().is_some_and(Line::automatic));
-        assert!(people[2].status.as_ref().is_some_and(Line::automatic));
+        assert!(people[1].status.as_ref().is_some_and(Line::automatic));
     }
 
     /// This person's own words are what their page publishes and what
     /// everyone reads of them, unless they share nothing; without words,
-    /// the host's automatic line, only while they share one.
+    /// what their device read off their steps, only while they share it.
     #[test]
     fn this_persons_own_words_lead_unless_they_share_nothing() {
         use crate::collaborators::LineSource;
         let mut here = HereState::default();
         here.set_members(Some(member("me", "person", "Me")), Some(Vec::new()));
-        here.set_lines(vec![host("me", "Working in Notes", false)], 1);
+        here.set_own_reading(Some("Working in Notes".into()));
         assert_eq!(
             here.own_doing().map(|line| (line.text, line.source)),
             Some(("Working in Notes".into(), LineSource::Observed))
@@ -1981,6 +2126,14 @@ mod tests {
         here.set_sharing(ui::StatusSharing::Automatic);
         here.set_own_words(Some("   ".into()));
         assert_eq!(here.own_words(), None, "only spaces clear them");
+        assert_eq!(
+            here.own_doing().map(|line| line.text),
+            Some("Working in Notes".into()),
+            "their device's reading again"
+        );
+        here.set_sharing(ui::StatusSharing::ManualOnly);
+        assert_eq!(here.own_doing(), None, "a reading only while they share it");
+        here.set_sharing(ui::StatusSharing::Automatic);
         here.set_own_words(Some("x".repeat(ui::MAX_STATUS_CHARS + 20)));
         assert_eq!(
             here.own_words().map(|words| words.chars().count()),
@@ -1994,40 +2147,22 @@ mod tests {
         );
     }
 
-    fn host(device: &str, status: &str, generated: bool) -> HostLine {
-        HostLine {
-            device: device.into(),
-            user: format!("{device}-root"),
-            label: "From host".into(),
-            status: status.into(),
-            recent: "Edited the text of Welcome note.".into(),
-            generated,
-            updated_ms: 1,
-            profile_ms: 0,
-            window: None,
-        }
-    }
-
     #[test]
-    fn people_join_live_members_with_host_lines_and_leave_out_this_page() {
+    fn people_are_the_live_members_and_leave_out_this_page() {
         let mut here = HereState::default();
         here.set_members(
             Some(member("me", "person", "Me")),
             Some(vec![
                 member("bot", "agent", "Scribe"),
                 member("me", "person", "Me"),
-                member("ann", "person", ""),
+                LiveMember {
+                    device: "Framework 16".into(),
+                    ..member("ann", "person", "")
+                },
             ]),
         );
-        here.set_lines(
-            vec![
-                host("ann", "Drafting Welcome note in Notes", true),
-                host("me", "Mine", false),
-            ],
-            0,
-        );
         let tree = DesktopTree::default();
-        let people = here.people(&tree, &[], &|_| None, 0);
+        let people = here.people(&tree, &[], &|_| None);
         let ids: Vec<_> = people.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -2035,16 +2170,8 @@ mod tests {
             "people first, agents after, never this page"
         );
         assert_eq!(
-            people[0].label, "From host",
-            "the host's label names a silent member"
-        );
-        assert_eq!(people[0].rgb, here.colors()["ann"]);
-        assert_eq!(
-            people[0].status,
-            Some(Line {
-                text: "Drafting Welcome note in Notes".into(),
-                source: crate::collaborators::LineSource::Generated,
-            })
+            people[0].label, "Framework 16",
+            "a member who has not named themselves goes by their device's name"
         );
         assert!(people[1].agent);
         assert_eq!(
@@ -2052,13 +2179,85 @@ mod tests {
             Some("Reading the notes"),
             "an agent's line is its own activity"
         );
-        assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
     }
 
-    /// A member's own certificate names the person it is a device of, before any host line says so:
-    /// their devices count as one person then too.
+    /// One agent is one row, however it reaches this desk: its live presence lists it with its
+    /// colour and what it says it is doing, the person's own agent included; the same agent heard
+    /// through a second publisher is not drawn twice; a second session of the client stays its own
+    /// row.
     #[test]
-    fn a_members_certificate_pairs_their_devices_before_the_host_says() {
+    fn one_agent_is_one_row_whichever_way_it_is_heard() {
+        let tree = DesktopTree::default();
+        let live_agent = |publisher: &str, label: &str| LiveMember {
+            user: Some("ann-root".into()),
+            activity: Some("Looking at the apps".into()),
+            ..member(publisher, "agent", label)
+        };
+        let rows = |here: &HereState, label: &str| {
+            here.people(&tree, &[], &|_| None)
+                .into_iter()
+                .filter(|person| person.label == label)
+                .collect::<Vec<_>>()
+        };
+        let me = LiveMember {
+            user: Some("ann-root".into()),
+            ..member("me", "person", "Me")
+        };
+
+        // The person's own agent, heard on the live layer.
+        let mut here = HereState::default();
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![
+                member("bob", "person", "Bob"),
+                live_agent("claude", "Claude Code"),
+            ]),
+        );
+        let listed = rows(&here, "Claude Code");
+        assert_eq!(listed.len(), 1, "one row for one agent: {listed:?}");
+        assert!(listed[0].agent, "never one of the person's devices");
+        assert_eq!(
+            listed[0].rgb,
+            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            "in its client's colour"
+        );
+        assert_eq!(
+            listed[0]
+                .status
+                .as_ref()
+                .map(|line| (line.text.as_str(), line.source)),
+            Some((
+                "Looking at the apps",
+                crate::collaborators::LineSource::Written
+            )),
+            "its activity line, as its own words"
+        );
+
+        // The same agent through a second publisher, and a second session of the client.
+        here.set_members(
+            Some(me),
+            Some(vec![
+                live_agent("claude", "Claude Code"),
+                live_agent("claude-presence", "Claude Code"),
+                live_agent("claude-2", "Claude Code #2"),
+            ]),
+        );
+        assert_eq!(
+            rows(&here, "Claude Code").len(),
+            1,
+            "one agent heard twice is one row"
+        );
+        assert_eq!(
+            rows(&here, "Claude Code #2").len(),
+            1,
+            "a second session is its own row"
+        );
+    }
+
+    /// A member's own certificate names the person it is a device of: their devices count as one
+    /// person.
+    #[test]
+    fn a_members_certificate_pairs_their_devices() {
         let mut here = HereState::default();
         let certified = |publisher: &str, label: &str| LiveMember {
             user: Some("ann-root".into()),
@@ -2071,7 +2270,7 @@ mod tests {
                 certified("phone", "Phone"),
             ]),
         );
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let people = here.people(&DesktopTree::default(), &[], &|_| None);
         assert_eq!(people.len(), 1, "two devices of one person are one face");
         assert_eq!(people[0].user.as_deref(), Some("ann-root"));
         assert_eq!(people[0].label, "Framework 16");
@@ -2096,17 +2295,19 @@ mod tests {
             activity: None,
             ..member(publisher, "person", publisher)
         };
+        let mut ben = working("ben", "so.tilo.notes");
+        ben.activity = Some("Drafting Welcome in Notes".into());
+        ben.automatic = true;
         here.set_members(
             None,
             Some(vec![
                 working("ann", "so.tilo.notes"),
-                working("ben", "so.tilo.notes"),
+                ben,
                 working("cy", "so.tilo.unknown"),
             ]),
         );
-        here.set_lines(vec![host("ben", "Drafting Welcome in Notes", false)], 0);
         let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
-        let people = here.people(&DesktopTree::default(), &[], &app, 0);
+        let people = here.people(&DesktopTree::default(), &[], &app);
         let place = |id: &str| {
             people
                 .iter()
@@ -2167,8 +2368,8 @@ mod tests {
             }]),
         );
         let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
-        let held = [(7, digest.to_owned())];
-        let people = here.people(&tree, &held, &app, 0);
+        let held = [(7, "so.tilo.notes".to_owned(), digest.to_owned())];
+        let people = here.people(&tree, &held, &app);
         let ann = people
             .iter()
             .find(|person| person.id == "ann")
@@ -2194,7 +2395,7 @@ mod tests {
             Some(everyone.clone()),
         );
         let labels: Vec<String> = mine
-            .people(&tree, &[], &|_| None, 0)
+            .people(&tree, &[], &|_| None)
             .into_iter()
             .map(|person| person.label)
             .collect();
@@ -2208,7 +2409,7 @@ mod tests {
         assert_eq!(theirs.own_shown().as_deref(), Some("ada (1)"));
         assert!(
             theirs
-                .people(&tree, &[], &|_| None, 0)
+                .people(&tree, &[], &|_| None)
                 .iter()
                 .any(|person| person.label == "Ada (2)")
         );
@@ -2220,42 +2421,22 @@ mod tests {
         assert_eq!(mine.own_shown().as_deref(), Some("Ada"), "alone, no number");
     }
 
-    #[test]
-    fn host_lines_alone_list_people_only_while_fresh_and_without_the_live_layer() {
-        let mut here = HereState::default();
-        here.set_lines(vec![host("ann", "Editing", false)], 1_000);
-        let tree = DesktopTree::default();
-        assert_eq!(here.people(&tree, &[], &|_| None, 2_000).len(), 1);
-        assert!(
-            here.people(&tree, &[], &|_| None, 1_000 + HOST_ONLY_FRESH_MS)
-                .is_empty()
-        );
-        here.set_members(Some(member("me", "person", "Me")), Some(Vec::new()));
-        assert!(
-            here.people(&tree, &[], &|_| None, 2_000).is_empty(),
-            "the live layer says who is present"
-        );
-    }
-
     /// Two tabs of one person are two devices of theirs: listed once to everyone else, and to
     /// either tab never as someone else.
     #[test]
     fn a_persons_devices_are_one_person() {
-        let line = |device: &str, user: &str| HostLine {
-            device: device.into(),
-            user: user.into(),
-            label: device.into(),
-            ..HostLine::default()
-        };
         let on = |publisher: &str, place: &str| LiveMember {
             place: Some(place.into()),
+            user: Some(
+                if publisher == "ben-tab" {
+                    "ben-root"
+                } else {
+                    "ada-root"
+                }
+                .into(),
+            ),
             ..member(publisher, "person", "Ada")
         };
-        let lines = vec![
-            line("ada-tab-1", "ada-root"),
-            line("ada-tab-2", "ada-root"),
-            line("ben-tab", "ben-root"),
-        ];
         let members = vec![
             on("ada-tab-1", "10"),
             on("ada-tab-2", "11"),
@@ -2273,9 +2454,8 @@ mod tests {
             }),
             Some(members.clone()),
         );
-        ben.set_lines(lines.clone(), 0);
         let ids: Vec<_> = ben
-            .people(&tree, &[], &|_| None, 0)
+            .people(&tree, &[], &|_| None)
             .into_iter()
             .map(|p| p.id)
             .collect();
@@ -2290,29 +2470,12 @@ mod tests {
             }),
             Some(members),
         );
-        ada.set_lines(lines.clone(), 0);
         let ids: Vec<_> = ada
-            .people(&tree, &[], &|_| None, 0)
+            .people(&tree, &[], &|_| None)
             .into_iter()
             .map(|p| p.id)
             .collect();
         assert_eq!(ids, ["ben-tab", "bot"]);
-
-        let mut host_only = HereState::default();
-        host_only.set_members(
-            Some(LiveMember {
-                user: Some("ben-root".into()),
-                ..on("ben-tab", "12")
-            }),
-            None,
-        );
-        host_only.set_lines(lines, 0);
-        let ids: Vec<_> = host_only
-            .people(&tree, &[], &|_| None, 1)
-            .into_iter()
-            .map(|p| p.id)
-            .collect();
-        assert_eq!(ids, ["ada-tab-1"]);
     }
 
     /// A person's devices are listed under their name, each as it calls itself and as it said it
@@ -2326,42 +2489,23 @@ mod tests {
                 LiveMember {
                     device: "Framework 16".into(),
                     availability: Some("available".into()),
+                    user: Some("ada-root".into()),
                     ..member("ada-laptop", "person", "Ada")
                 },
                 LiveMember {
                     device: "ThinkPad".into(),
                     availability: Some("focusing".into()),
+                    user: Some("ada-root".into()),
                     ..member("ada-handheld", "person", "Ada")
                 },
                 LiveMember {
                     device: "Mac".into(),
+                    user: Some("ben-root".into()),
                     ..member("ben", "person", "Ben")
                 },
             ]),
         );
-        let lines = vec![
-            HostLine {
-                device: "ada-laptop".into(),
-                user: "ada-root".into(),
-                label: "Ada".into(),
-                ..HostLine::default()
-            },
-            HostLine {
-                device: "ada-handheld".into(),
-                user: "ada-root".into(),
-                label: "Ada".into(),
-                ..HostLine::default()
-            },
-            HostLine {
-                device: "ben".into(),
-                user: "ben-root".into(),
-                label: "Ben".into(),
-                ..HostLine::default()
-            },
-        ];
-        here.set_lines(lines, 0);
-
-        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let people = here.people(&DesktopTree::default(), &[], &|_| None);
         let ada = people
             .iter()
             .find(|person| person.id == "ada-laptop")
@@ -2393,6 +2537,112 @@ mod tests {
         );
     }
 
+    /// Whose view this desk follows is said on their row and no other's, each frame: the bar keeps
+    /// that face when it has room for only one.
+    #[test]
+    fn collaborators_overlay_marks_whom_this_desk_follows() {
+        let mut tree = DesktopTree::default();
+        let workspace = tilo_desktop_model::WorkspaceSlot::default();
+        tree.workspaces
+            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
+        tree.active = workspace;
+        let people: Vec<Person> = ["ada", "cc"]
+            .into_iter()
+            .map(|id| Person {
+                id: id.into(),
+                user: None,
+                label: id.into(),
+                devices: Vec::new(),
+                rgb: (1, 2, 3),
+                agent: id == "cc",
+                tab: None,
+                focus_app: None,
+                place: None,
+                status: None,
+                availability: ui::Availability::Available,
+                call: None,
+            })
+            .collect();
+        overlay_collaborators(&mut tree, &people, Some("cc"));
+        let following: Vec<String> = tree
+            .active_workspace()
+            .expect("a workspace")
+            .collaborators
+            .iter()
+            .filter(|c| c.following)
+            .map(|c| c.id.clone())
+            .collect();
+        assert_eq!(following, ["cc"], "the followed one, and only they");
+        // Stopping says so on every row, not just the one that was followed.
+        overlay_collaborators(&mut tree, &people, None);
+        assert!(
+            tree.active_workspace()
+                .expect("a workspace")
+                .collaborators
+                .iter()
+                .all(|c| !c.following),
+            "nobody is followed"
+        );
+    }
+
+    /// What someone says they are doing reaches their row each frame, both on a row this page
+    /// already holds and on one it writes now: an agent whose work the bar shows is never a name
+    /// with nothing under it.
+    #[test]
+    fn collaborators_overlay_carries_what_they_are_doing() {
+        let mut tree = DesktopTree::default();
+        let workspace = tilo_desktop_model::WorkspaceSlot::default();
+        tree.workspaces
+            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
+        tree.active = workspace;
+        let person = |status: Option<Line>| Person {
+            id: "cc".into(),
+            user: None,
+            label: "Claude Code".into(),
+            devices: Vec::new(),
+            rgb: (1, 2, 3),
+            agent: true,
+            tab: None,
+            focus_app: None,
+            place: None,
+            status,
+            availability: ui::Availability::Available,
+            call: None,
+        };
+        let said = Line {
+            text: "  Writing in Launch notes ".into(),
+            source: crate::collaborators::LineSource::Observed,
+        };
+        overlay_collaborators(&mut tree, &[person(Some(said.clone()))], None);
+        let row = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.collaborators.first())
+            .expect("overlaid");
+        assert_eq!(
+            row.status.as_ref().map(|status| status.text.as_str()),
+            Some("Writing in Launch notes"),
+            "their words, trimmed"
+        );
+        assert!(
+            row.status.as_ref().is_some_and(|status| status.automatic),
+            "read off what it did, never typed by it"
+        );
+        // The same row again, with the line it says a moment later.
+        overlay_collaborators(&mut tree, &[person(Some(said))], None);
+        // A line of nothing but spaces says nothing, and neither does a row nothing said of.
+        let blank = Line {
+            text: "   ".into(),
+            source: crate::collaborators::LineSource::Written,
+        };
+        overlay_collaborators(&mut tree, &[person(Some(blank))], None);
+        overlay_collaborators(&mut tree, &[person(None)], None);
+        let row = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.collaborators.first())
+            .expect("still overlaid");
+        assert_eq!(row.status, None, "nothing said of it now");
+    }
+
     #[test]
     fn collaborators_overlay_marks_agents_and_keeps_existing_rows() {
         let mut tree = DesktopTree::default();
@@ -2411,12 +2661,10 @@ mod tests {
             focus_app: None,
             place: None,
             status: None,
-            recent: None,
-            screen: None,
             availability: ui::Availability::Available,
             call: None,
         }];
-        overlay_collaborators(&mut tree, &people);
+        overlay_collaborators(&mut tree, &people, None);
         let workspace = tree.active_workspace().expect("a workspace");
         let bot = workspace
             .collaborators
@@ -2424,13 +2672,12 @@ mod tests {
             .find(|c| c.id == "bot")
             .expect("overlaid");
         assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        let (r, g, b) = ui::presence::user_color("bot");
         assert_eq!(
             bot.cursor_color.as_deref(),
-            Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
-            "the colour their pointer is drawn in"
+            Some("#010203"),
+            "the colour everyone here draws them in, as their pointer wears it"
         );
-        overlay_collaborators(&mut tree, &people);
+        overlay_collaborators(&mut tree, &people, None);
         assert_eq!(
             tree.active_workspace().map(|w| w
                 .collaborators
@@ -2438,6 +2685,115 @@ mod tests {
                 .filter(|c| c.id == "bot")
                 .count()),
             Some(1)
+        );
+    }
+
+    /// A roster row this page already held is marked as software on every frame: presence says an
+    /// agent is an agent, and a row written before that (or by a host that lists the agent among its
+    /// members) would otherwise wear a person's face — a circle where software wears a square.
+    #[test]
+    fn an_agent_already_on_the_roster_still_wears_the_agent_marker() {
+        let mut tree = DesktopTree::default();
+        let slot = tilo_desktop_model::WorkspaceSlot::default();
+        let mut workspace = tilo_desktop_model::Workspace::new(slot, "Design");
+        workspace
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new("bot", "Scribe"));
+        tree.workspaces.push(workspace);
+        tree.active = slot;
+        let people = vec![Person {
+            id: "bot".into(),
+            user: None,
+            label: "Scribe".into(),
+            devices: Vec::new(),
+            rgb: (1, 2, 3),
+            agent: true,
+            tab: None,
+            focus_app: None,
+            place: None,
+            status: None,
+            availability: ui::Availability::Available,
+            call: None,
+        }];
+        overlay_collaborators(&mut tree, &people, None);
+        let workspace = tree.active_workspace().expect("a workspace");
+        let bot = workspace
+            .collaborators
+            .iter()
+            .find(|c| c.id == "bot")
+            .expect("the row it held");
+        assert_eq!(
+            bot.role_id.as_deref(),
+            Some(crate::collaborators::AGENT_ROLE_MARKER),
+            "an agent's face is software's, whichever frame wrote its row"
+        );
+        assert!(crate::collaborators::collaborator_is_agent(
+            Some(workspace),
+            bot,
+            u64::MAX
+        ));
+    }
+
+    fn finished_agent(publisher: &str) -> AgentFinished {
+        AgentFinished {
+            publisher: publisher.into(),
+            label: "Claude Code".into(),
+        }
+    }
+
+    fn run_summary(run: &str, changes: usize, worked: &str) -> RunSummary {
+        RunSummary {
+            run: run.into(),
+            changes,
+            worked: worked.into(),
+            workspace: Some("Workspace".into()),
+        }
+    }
+
+    /// A finished notice wears the agent's own face, not a person's initials, and says what the run
+    /// worked under its title, in its card's words, never the live status it had while it worked.
+    #[test]
+    fn a_finished_notice_says_what_the_run_worked_with_the_agents_face() {
+        let mut told = std::collections::BTreeSet::new();
+        let notice = finished_notice(
+            &finished_agent("claude"),
+            Some(&run_summary("run-1", 8, "Edited Launch notes")),
+            &mut told,
+        )
+        .expect("a run that changed records is told");
+        assert_eq!(notice.title, "Claude Code finished: 8 changes in Workspace");
+        assert_eq!(notice.body, "Edited Launch notes");
+        let from = notice.from.expect("it is from the agent");
+        assert!(from.agent, "the agent's square face, in its client's tint");
+        assert_eq!(from.identity, "claude");
+    }
+
+    /// One run is one notice, however many of the agent's sessions worked it; a session whose run
+    /// changed nothing tells nothing.
+    #[test]
+    fn one_run_is_told_once_and_a_run_of_no_changes_not_at_all() {
+        let mut told = std::collections::BTreeSet::new();
+        let run = run_summary("run-1", 8, "Edited Launch notes");
+        assert!(finished_notice(&finished_agent("first"), Some(&run), &mut told).is_some());
+        assert!(
+            finished_notice(&finished_agent("second"), Some(&run), &mut told).is_none(),
+            "the second session of the same run"
+        );
+        assert!(
+            finished_notice(
+                &finished_agent("third"),
+                Some(&run_summary("run-2", 0, "")),
+                &mut told
+            )
+            .is_none(),
+            "a run that changed nothing"
+        );
+        let unknown = finished_notice(&finished_agent("fourth"), None, &mut told)
+            .expect("without the history, it still says the agent finished");
+        assert_eq!(unknown.title, "Claude Code finished");
+        assert!(
+            unknown.body.is_empty(),
+            "and claims no status it no longer has"
         );
     }
 }

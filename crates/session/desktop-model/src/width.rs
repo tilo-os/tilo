@@ -215,6 +215,15 @@ impl WindowWidth {
     /// output's right edge.
     pub fn resolve(&self, strip_usable_px: f64) -> f64 {
         let usable = strip_usable_px.max(1.0);
+        // A phone's strip is one window wide, whatever width a window keeps for wider screens:
+        // a share or a tier chosen on a desktop would stand two slivers side by side there, too
+        // narrow for any app's layout. Each window takes the strip, and the strip moves between
+        // them.
+        if usable < SIDE_BY_SIDE_MIN_PX {
+            return usable
+                .round()
+                .clamp(min_group_px(usable), max_group_px(usable));
+        }
         // Rounded: a client's geometry is integers, and a fractional width
         // would leave sub-pixel seams between groups.
         let px = (usable * self.fraction()).round();
@@ -430,6 +439,18 @@ mod tests {
         // A phone's strip is one window wide: no sliver, no neighbour peeking.
         assert!((WindowWidth::Normal.resolve(326.0) - 326.0).abs() < f64::EPSILON);
         assert!((WindowWidth::Normal.resolve(600.0) - SIDE_BY_SIDE_MIN_PX).abs() < f64::EPSILON);
+        // So is every other width there: a share, a tier or a resize chosen on a wider screen.
+        for width in [
+            WindowWidth::Narrow,
+            WindowWidth::Wide,
+            WindowWidth::Fraction(500),
+            WindowWidth::Fraction(250),
+        ] {
+            assert!(
+                (width.resolve(326.0) - 326.0).abs() < f64::EPSILON,
+                "{width:?} on a phone"
+            );
+        }
         assert!((WindowWidth::Wide.resolve(2496.0) - 2496.0).abs() < f64::EPSILON);
         assert!((WindowWidth::Fraction(667).resolve(2496.0) - 1665.0).abs() < f64::EPSILON);
     }

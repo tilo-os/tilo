@@ -23,18 +23,32 @@ use ui::widget::Element;
 
 use crate::model::{Article, Feed, Fetched, Filter, Folder, Library, Outline, tag_key};
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
 /// How many tags the library publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;
 
+impl Library {
+    /// What the record holds: the feeds, their folders and articles, and what was read, starred
+    /// or tagged.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "feeds.library",
-    label = "Feeds",
     children = Library::places,
     search = crate::search::entries,
     version = 2,
-    migrate = crate::model::upgrade
+    migrate = crate::model::upgrade,
+    read_content = Library::read_document
 )]
 impl Library {
     /// Add a subscription.
@@ -286,7 +300,7 @@ impl ResourceApp for FeedsShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 
     #[cfg(feature = "samples")]

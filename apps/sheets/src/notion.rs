@@ -10,6 +10,7 @@
 //! `table_row` children, and a `child_database` names the table it stands
 //! for.
 
+use crate::resource::CATALOG;
 use std::collections::BTreeMap;
 
 use serde_json::Value;
@@ -35,7 +36,7 @@ pub struct ImportedTable {
 /// what the caller already fetched.
 pub fn tables(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_EXPORT_BYTES {
-        return Err(ui::i18n!("sheets-notion-too-big"));
+        return Err(CATALOG.t("sheets-notion-too-big"));
     }
     let tables = if looks_like_archive(bytes) {
         tables_from_archive(bytes)?
@@ -43,10 +44,10 @@ pub fn tables(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
         tables_from_listing(bytes)?
     };
     if tables.is_empty() {
-        return Err(ui::i18n!("sheets-notion-no-tables"));
+        return Err(CATALOG.t("sheets-notion-no-tables"));
     }
     if tables.len() > MAX_IMPORTED_TABLES {
-        return Err(ui::i18n::I18nManager::format(
+        return Err(crate::resource::CATALOG.t_args(
             "sheets-notion-too-many-tables",
             &[(
                 "limit",
@@ -65,7 +66,7 @@ fn looks_like_archive(bytes: &[u8]) -> bool {
 /// The CSV files of an export archive, in name order.
 fn tables_from_archive(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     let mut parts = read_zip_parts(bytes, &archive_limits())
-        .map_err(|_| ui::i18n!("sheets-notion-archive-invalid"))?;
+        .map_err(|_| CATALOG.t("sheets-notion-archive-invalid"))?;
     // A view's name is its file's, so the order a reader meets them in is
     // the order the tables arrive: sorted, the same archive always lands as
     // the same sheets.
@@ -128,7 +129,7 @@ fn table_name(name: &str) -> String {
         })
         .map_or(stem, |(title, _)| title.trim());
     if cleaned.is_empty() {
-        ui::i18n!("sheets-notion-imported-table")
+        CATALOG.t("sheets-notion-imported-table")
     } else {
         cleaned.to_owned()
     }
@@ -138,14 +139,14 @@ fn table_name(name: &str) -> String {
 /// each `child_database` with the rows a sibling hands it.
 fn tables_from_listing(bytes: &[u8]) -> Result<Vec<ImportedTable>, String> {
     let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| ui::i18n!("sheets-notion-unreadable"))?;
+        serde_json::from_slice(bytes).map_err(|_| CATALOG.t("sheets-notion-unreadable"))?;
     let blocks: Vec<&Value> = match &value {
         Value::Array(entries) => entries.iter().collect(),
         Value::Object(_) => value
             .get("results")
             .and_then(Value::as_array)
             .map_or_else(|| vec![&value], |results| results.iter().collect()),
-        _ => return Err(ui::i18n!("sheets-notion-unreadable")),
+        _ => return Err(CATALOG.t("sheets-notion-unreadable")),
     };
     let mut tables = Vec::new();
     for block in blocks {
@@ -180,7 +181,7 @@ fn table_of(block: &Value) -> Option<ImportedTable> {
         csv.push('\n');
     }
     (!csv.is_empty()).then(|| ImportedTable {
-        name: table_name_of(block).unwrap_or_else(|| ui::i18n!("sheets-notion-imported-table")),
+        name: table_name_of(block).unwrap_or_else(|| CATALOG.t("sheets-notion-imported-table")),
         csv,
     })
 }
@@ -232,7 +233,7 @@ fn database_of(block: &Value) -> Option<ImportedTable> {
         csv.push('\n');
     }
     Some(ImportedTable {
-        name: table_name_of(block).unwrap_or_else(|| ui::i18n!("sheets-notion-imported-table")),
+        name: table_name_of(block).unwrap_or_else(|| CATALOG.t("sheets-notion-imported-table")),
         csv,
     })
 }
@@ -309,9 +310,9 @@ fn property_text(property: &Value) -> String {
             .and_then(Value::as_bool)
             .map(|checked| {
                 if checked {
-                    ui::i18n!("sheets-notion-yes")
+                    CATALOG.t("sheets-notion-yes")
                 } else {
-                    ui::i18n!("sheets-notion-no")
+                    CATALOG.t("sheets-notion-no")
                 }
             })
             .unwrap_or_default(),

@@ -147,3 +147,53 @@ diffmerge-take-ours = Took ours for a change
 diffmerge-take-theirs = Took theirs for a change
 diffmerge-take-both = Took both sides for a change
 diffmerge-resolve = Resolved a change by hand
+
+## Accessibility
+diff-a11y-open-two-files = Open these two files as a comparison
+diff-a11y-no-files = No files loaded
+diff-a11y-start-comparison = Use Open files to start a local comparison.
+diff-a11y-status = Comparison status
+diff-a11y-window = Diff and Merge
+diff-a11y-window-description = Compare local files or resolve a shared three-way merge
+diff-a11y-switch-diff-source = Switch the visible local diff source
+diff-a11y-show-change = Show this local change block
+diff-a11y-switch-merge-source = Switch the visible merge source
+diff-a11y-resolve-hunk = Resolve this shared merge hunk
+diff-a11y-merge-group = Three-way merge
+diff-a11y-one-source = One source is visible at a time. Use Left and Right Arrow to switch source.
+diff-a11y-side-by-side = Base, ours, and theirs are shown side by side.
+
+diff-a11y-folders-truncated = Only the first part of the folders was compared
+diff-a11y-choose-file = Choose a file to compare it
+
+## Facts, property labels and section titles
+diffmerge-a11y-change-lines = Change { $change }: lines { $first } through { $last }
+diffmerge-a11y-show-file = Show { $source } file
+diffmerge-a11y-changes = { $changes ->
+    [one] One change. Scroll to review the aligned source lines.
+   *[other] { $changes } changes. Scroll to review the aligned source lines.
+}
+diffmerge-a11y-between = Diff between { $left } and { $right }
+diffmerge-a11y-for-change = { $choice } for change { $change }
+diffmerge-a11y-show-source = Show { $source } source
+
+## Actions
+
+diffmerge-effects-open-files = Open files
+diffmerge-effects-open-one = Open one file
+diffmerge-effects-save-merged = Save merged result
+diffmerge-effects-save-merged-as = Save merged result as…
+diffmerge-effects-compare-folders = Compare folders
+diffmerge-effects-load-sample = Load sample
+diffmerge-effects-show-diff = Two-way diff
+diffmerge-effects-show-merge = Three-way merge
+diffmerge-effects-previous-change = Previous change
+diffmerge-effects-next-change = Next change
+diffmerge-effects-show = Show change
+diffmerge-session = Diff & Merge
+diffmerge-session-open-comparison = Compare two texts
+diffmerge-session-open-merge = Merge three texts
+diffmerge-session-take-ours = Take ours
+diffmerge-session-take-theirs = Take theirs
+diffmerge-session-take-both = Take both
+diffmerge-session-resolve = Resolve with custom text

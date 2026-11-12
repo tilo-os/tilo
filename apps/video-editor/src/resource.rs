@@ -42,7 +42,6 @@ fn instant(at: f64) -> Result<f64, Refusal> {
 
 #[resource(
     kind = "video-editor.project",
-    label = "Project",
     params = video_project,
     search = crate::search::project_entries,
     read_content = crate::agent_timeline::read_timeline,
@@ -83,14 +82,14 @@ impl Project {
     }
 
     /// Mark where a render begins.
-    #[action]
+    #[action(label = "video-editor-mark-in-button")]
     pub fn mark_in(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
         self.set_mark_in(instant(at)?);
         Ok(())
     }
 
     /// Mark where a render ends.
-    #[action]
+    #[action(label = "video-editor-mark-out-button")]
     pub fn mark_out(&mut self, #[param("Seconds on the timeline")] at: f64) -> Result<(), Refusal> {
         self.set_mark_out(instant(at)?);
         Ok(())
@@ -552,7 +551,7 @@ impl Project {
     }
 
     /// Add an effect to a clip.
-    #[action(item = clips)]
+    #[action(item = clips, label = "video-editor-add-effect-button")]
     pub fn add_effect(
         &mut self,
         clip: &Id,
@@ -822,7 +821,7 @@ pub fn reveal_effect(
     }
 }
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// The editor as a framework app: one window, the whole editor.
 pub struct VideoEditor;
@@ -980,5 +979,27 @@ mod reach_tests {
     #[test]
     fn a_drive_of_every_scenario_reaches_every_published_action_3() {
         walk(3);
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("video-editor-delete"), "Einen Clip gelöscht");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("video-editor-delete"), "Deleted a clip");
     }
 }

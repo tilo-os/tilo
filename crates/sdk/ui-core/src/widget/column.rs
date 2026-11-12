@@ -185,6 +185,11 @@ impl Column {
 }
 
 impl Widget for Column {
+    /// Its children, as its layout node stacks them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,

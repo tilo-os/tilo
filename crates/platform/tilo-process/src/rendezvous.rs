@@ -22,7 +22,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The meeting point beside one resource.
 pub struct Rendezvous(backend::Rendezvous);
@@ -75,7 +75,7 @@ impl Rendezvous {
         timeout: Duration,
         mut greet: impl FnMut(&Connection) -> io::Result<()>,
     ) -> io::Result<Joined> {
-        let started = Instant::now();
+        let started = tilo_clock::now();
         loop {
             if let Ok(connection) = self.0.connect().map(Connection)
                 && greet(&connection).is_ok()

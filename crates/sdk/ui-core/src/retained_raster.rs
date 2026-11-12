@@ -656,6 +656,9 @@ pub struct RetainedFrames {
     scratch: Option<crate::render_bump_recovery::Scratch>,
     /// The target may show a frame with geometry missing.
     lost: bool,
+    /// Bounds what a frame draws outside its parts, for its copies
+    /// ([`Self::repaint_copying`]).
+    bounds: crate::scene_parts::DrawBounds,
 }
 
 impl RetainedFrames {
@@ -699,6 +702,70 @@ impl RetainedFrames {
                 .filter(|rect| !rect.is_zero_area())
                 .collect(),
         )
+    }
+
+    /// [`Self::repaint`] for a host that moves the pixels of the target
+    /// before it repaints: what hinted parts say moved
+    /// ([`crate::scene_parts::DamageHint::copies`]) is copied, in order,
+    /// and then the rest repainted. A copy that cannot be made exactly (its
+    /// content drawn through a fading layer, something unbounded drawn over
+    /// it) repaints where it lands instead.
+    pub fn repaint_copying(
+        &mut self,
+        scene: &Scene,
+        parts: Option<&crate::scene_parts::SectionParts>,
+        key: TargetKey,
+    ) -> (Repaint, Vec<crate::scroll_copy::DeviceCopy>) {
+        let full = |unknown| (Repaint::Full(unknown), Vec::new());
+        if self.lost {
+            return full(Unknown::LostGeometry);
+        }
+        let Some(parts) = parts else {
+            return full(Unknown::NoParts);
+        };
+        let Some((last, last_parts, last_key)) = &self.last else {
+            return full(Unknown::NoFrame);
+        };
+        if *last_key != key {
+            return full(Unknown::Target);
+        }
+        let section = match crate::scene_parts::damage_with_copies(
+            last,
+            last_parts,
+            scene,
+            parts,
+            &mut self.bounds,
+        ) {
+            Ok(section) => section,
+            Err(unproven) => return full(Unknown::Unproven(unproven)),
+        };
+        let target = Rect::new(0.0, 0.0, f64::from(key.width), f64::from(key.height));
+        let damage = section
+            .rects
+            .into_iter()
+            .map(|rect| {
+                key.to_device
+                    .transform_rect_bbox(rect)
+                    .expand()
+                    .inflate(1.0, 1.0)
+                    .intersect(target)
+            })
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
+        let presented = crate::scene_parts::present_copies(
+            &section.copies,
+            damage,
+            &[],
+            key.to_device,
+            (key.width, key.height),
+        );
+        let raster = presented
+            .raster
+            .into_iter()
+            .map(|rect| rect.expand().intersect(target))
+            .filter(|rect| !rect.is_zero_area())
+            .collect();
+        (Repaint::Regions(raster), presented.copies)
     }
 
     /// `scene`, drawn with `parts`, is what the target with `key` shows now.

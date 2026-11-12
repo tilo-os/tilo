@@ -273,10 +273,13 @@ fn immutable_system_binary(path: &Path) -> bool {
 /// The identity a trusted caller of the management interface must have.
 #[must_use]
 pub fn trusted_managers() -> Vec<AppId> {
-    ["/usr/bin/shell", "/usr/libexec/tilo/tilo-secret-service"]
-        .iter()
-        .filter_map(|path| AppId::parse(&format!("binary:{path}")))
-        .collect()
+    [
+        "/usr/bin/tilo-session",
+        "/usr/libexec/tilo/tilo-secret-service",
+    ]
+    .iter()
+    .filter_map(|path| AppId::parse(&format!("binary:{path}")))
+    .collect()
 }
 
 /// The `/proc` the service reads, overridable only in tests.

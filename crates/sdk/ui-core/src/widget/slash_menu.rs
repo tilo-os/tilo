@@ -9,6 +9,7 @@
 //! card a shortcut opens over the whole app; this is a compact popover
 //! anchored at the caret.
 
+use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::widget::block_editor::{BlockKind, CalloutKind};
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
@@ -19,6 +20,9 @@ pub enum SlashCommand {
     Block(BlockKind),
     /// Link another page, through the editor's link picker.
     LinkPage,
+    /// Embed another record: the editor's picker chooses one, and the block is nothing but a
+    /// live projection of it.
+    EmbedPage,
     /// A command the editor's host answers; see
     /// [`BlockEditor::take_slash_request`](crate::widget::block_editor::BlockEditor::take_slash_request).
     Host(SlashHostCommand),
@@ -27,13 +31,17 @@ pub enum SlashCommand {
 /// A slash command only the editor's host can carry out. A host offers the
 /// ones it answers with
 /// [`BlockEditor::set_slash_commands`](crate::widget::block_editor::BlockEditor::set_slash_commands).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SlashHostCommand {
     /// Choose a picture and put it after the block.
     Image,
     /// Make a page inside this one: titled with the block's text, which
     /// becomes a link to it, or untitled and opened for naming.
     Page,
+    /// A command the view that placed the editor answers, by the label it
+    /// names it with: choosing it runs what the view gave for it
+    /// ([`BlockEditor::on_command`](crate::widget::block_editor::BlockEditor::on_command)).
+    Named(String),
 }
 
 pub type SlashMenu = FilterMenu<SlashCommand>;
@@ -58,7 +66,7 @@ fn row(
     value: SlashCommand,
 ) -> MenuEntry<SlashCommand> {
     MenuEntry {
-        label: crate::i18n!(key),
+        label: widget_text(key),
         keywords,
         value,
         icon: Some(icon),
@@ -166,6 +174,13 @@ fn entries(link_pages: bool, host: &[SlashHostCommand]) -> Vec<MenuEntry<SlashCo
             Some("[["),
             SlashCommand::LinkPage,
         ));
+        rows.push(row(
+            "slash-embed-page",
+            &["embed", "transclusion", "preview", "note", "page"],
+            Icon::FileText,
+            Some("![["),
+            SlashCommand::EmbedPage,
+        ));
     }
     if host.contains(&SlashHostCommand::Image) {
         rows.push(row(
@@ -175,6 +190,19 @@ fn entries(link_pages: bool, host: &[SlashHostCommand]) -> Vec<MenuEntry<SlashCo
             None,
             SlashCommand::Host(SlashHostCommand::Image),
         ));
+    }
+    for named in host {
+        let SlashHostCommand::Named(label) = named else {
+            continue;
+        };
+        rows.push(MenuEntry {
+            // The view's own label is the row's, not a message of the platform's catalogue.
+            label: label.clone(),
+            keywords: &[],
+            value: SlashCommand::Host(SlashHostCommand::Named(label.clone())),
+            icon: Some(Icon::Command),
+            hint: None,
+        });
     }
     rows.extend([
         block(

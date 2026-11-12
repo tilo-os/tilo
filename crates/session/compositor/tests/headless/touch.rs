@@ -7,11 +7,11 @@ use super::*;
 fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Box::new(Square::new(
+    compositor.add_host(Rc::new(RefCell::new(Square::new(
         (10, 10, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
-    )));
+    ))));
     // Centred: the window spans (220, 190) to (420, 290).
     let mut client = mapped_client(&mut compositor, "touched", (200, 100), [255, 0, 0, 255]);
     pump(&mut compositor, &mut [&mut client], |_, clients| {

@@ -75,6 +75,13 @@ pub trait NameHost {
 pub trait ShownHost {
     /// `value` of the shown kind `kind` (`date` or `time`), as the person reads it.
     fn shown(&self, kind: &str, value: &str) -> String;
+
+    /// The time of day `hour`:`minute` as the person reads a clock (`14:05`, `2:05 PM`), in the
+    /// style they chose in Settings: what `t.clock()` says of a moment. A 24-hour clock until the
+    /// host says.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        format!("{hour:02}:{minute:02}")
+    }
 }
 
 /// The host's answer for the person's zone name, asked each time a rule is read.
@@ -92,6 +99,9 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
+    /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
+    /// and the chooser the person picks with. Until the host sets one, it holds no files.
+    pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -134,8 +144,11 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// Whether [`Self::invoker`] takes this runtime's own actions too, as a host that holds no
+    /// records needs, or only other apps'.
+    pub delegates_own: std::cell::Cell<bool>,
     /// The verbs the host's resources publish that no loaded package declares, by resource and
-    /// verb ([`crate::published`]): what a view names on the resource it shows (`post` on a
+    /// verb ([`crate::published`]): what a view names on the resource it shows (`send` on a
     /// channel) and the runtime sends to the app that publishes it, as it sends any other app's
     /// action to that app's door. Empty until the host hands it in.
     pub published: RefCell<crate::published::Published>,
@@ -266,6 +279,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
+            blobs: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
@@ -283,6 +297,7 @@ impl Core {
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoker: RefCell::new(None),
+            delegates_own: std::cell::Cell::new(false),
             published: RefCell::new(crate::published::Published::default()),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
@@ -362,48 +377,59 @@ impl Core {
             .as_ref()
             .map_or_else(|| EPOCH.to_owned(), |clock| clock())
     }
+
+    /// The time of day `hour`:`minute` as the person reads a clock: the host's style, or a
+    /// 24-hour clock where it names none (`ShownHost::clock`).
+    pub(crate) fn clock_text(&self, hour: u32, minute: u32) -> String {
+        self.shown.borrow().as_ref().map_or_else(
+            || format!("{hour:02}:{minute:02}"),
+            |host| host.clock(hour, minute),
+        )
+    }
 }
 
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActMadeFrom, ActMany, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions,
-            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty,
-            CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives,
-            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
-            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
-            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
-            EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters, Find, FirstUnseen,
-            FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
-            FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart,
-            IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
-            Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
-            ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
-            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
-            ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
-            Notify, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
-            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF,
-            SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
-            StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-            Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
+            ActUndo, Actions, AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount,
+            CollCounted, CollEmpty, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+            CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart,
+            DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText,
+            EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF,
+            EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileFiles,
+            FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit, Filters,
+            Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
+            FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
+            Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
+            InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
+            Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
+            ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
+            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
+            MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
+            Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
+            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
+            PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+            RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
+            RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RowOpen, RunChanges,
+            SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+            Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
+            StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+            StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
+            TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF,
+            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions,
+            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
+            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
+            WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
+            WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
-            | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper | StrStartsWith
-            | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches | DurationText => {
-                self.text_import(imp, mem, a)
-            }
+            StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
+            | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper
+            | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches
+            | DurationText => self.text_import(imp, mem, a),
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
@@ -424,33 +450,39 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeOfDay | TimeSpan | DayShift | DayPart | DayWeekday
-            | DayStartOfWeek | DayParse | TimeParse | WallClock => self.time_import(imp, a),
+            Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
+            | DayWeekday | DayStartOfWeek | DayParse | TimeParse | WallClock => {
+                self.time_import(imp, a)
+            }
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
-            RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
+            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown | RichMarkdown
+            | RichEmbed => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapGetValue | MapKeys | MapKeysValue | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId | ResourceRef => self.resource_import(imp, a),
+            | MapGetValue | MapKeys | MapKeysValue | MapNew | MapPutValue | MapRemoveValue
+            | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
+            | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Notify | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
+            FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
+            FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
             JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
-            | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
-            | UiAction => self.ui_import(imp, a),
+            | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
+            | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | FieldChanged
-            | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
+            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

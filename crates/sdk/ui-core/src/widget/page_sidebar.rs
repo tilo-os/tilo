@@ -208,6 +208,7 @@ fn shifted(rect: Rect, dy: f64) -> Rect {
 pub struct PageSidebar {
     /// Thumbnail height as a multiple of its width (`page_h / page_w`).
     aspect: f64,
+    /// The rail's title; empty paints the toolkit catalogue's.
     header: String,
     add_label: String,
     show_add: bool,
@@ -228,6 +229,12 @@ pub struct PageSidebar {
     list_top: f64,
     max_scroll: f64,
     add_rect: Rect,
+    /// Where the add button's label painted this frame; empty when the
+    /// button was too narrow for the words and shows its glyph alone.
+    add_label_rect: Rect,
+    /// Whether the last frame's add button showed its glyph alone because its
+    /// label did not fit inside it.
+    add_icon_only: bool,
 
     scroll: f64,
     drag: DragController<usize>,
@@ -261,7 +268,7 @@ impl PageSidebar {
         Self {
             dirty: true,
             aspect: aspect.max(0.05),
-            header: "Pages".to_string(),
+            header: String::new(),
             add_label: String::new(),
             show_add: false,
             draw_panel: true,
@@ -275,6 +282,8 @@ impl PageSidebar {
             list_top: 0.0,
             max_scroll: 0.0,
             add_rect: Rect::ZERO,
+            add_label_rect: Rect::ZERO,
+            add_icon_only: false,
             scroll: 0.0,
             drag: DragController::vertical(),
             press_idx: None,
@@ -329,6 +338,7 @@ impl PageSidebar {
         self.marked = pages;
     }
 
+    /// A rail titled `header` rather than the catalogue's "Pages".
     #[must_use]
     pub fn with_header(mut self, header: impl Into<String>) -> Self {
         self.header = header.into();
@@ -336,11 +346,35 @@ impl PageSidebar {
     }
 
     /// Show a bottom "add" button carrying `label` (e.g. "Import…", "New slide").
+    ///
+    /// A rail too narrow for the words shows the button's glyph alone and keeps
+    /// `label` as its name, for the tooltip and the accessibility tree (HIG: an
+    /// icon-only button is a square). A control never paints its label past its
+    /// own edge.
     #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
         self.show_add = !self.read_only;
         self
+    }
+
+    /// The add button's rectangle as last laid out; empty when the rail shows
+    /// no add button or has not laid one out yet.
+    #[must_use]
+    pub fn add_button_rect(&self) -> Rect {
+        if self.show_add {
+            self.add_rect
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// Where the add button's label painted in the last frame; empty when the
+    /// button showed its glyph alone because the words did not fit inside it.
+    /// A non-empty box always lies within [`Self::add_button_rect`].
+    #[must_use]
+    pub fn add_label_rect(&self) -> Rect {
+        self.add_label_rect
     }
 
     /// Set false when the host already draws the panel chrome around the list.
@@ -726,17 +760,24 @@ impl PageSidebar {
 
         if self.draw_panel {
             // The header is a section label, sentence case, centred on its
-            // own measured line in the header band.
+            // own measured line in the header band. A rail that names its own
+            // title keeps it; the rest say what they are in the window's
+            // language.
+            let header = if self.header.is_empty() {
+                crate::i18n::widget_format("page-sidebar-title", &[])
+            } else {
+                self.header.clone()
+            };
             let style = label_style(theme);
             let (_, lh) = tr.measure_style(
-                &self.header,
+                &header,
                 None,
                 &style.clone().with_weight(TextWeight::Semibold),
             );
             let hy = self.rect.y0 + (self.m.header_h - f64::from(lh)) / 2.0;
             tr.draw_style(
                 scene,
-                &self.header,
+                &header,
                 c.text_dim,
                 base.pre_translate((self.rect.x0 + self.m.pad, hy).into()),
                 None,
@@ -963,7 +1004,7 @@ impl PageSidebar {
     }
 
     fn draw_add_button(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -984,24 +1025,41 @@ impl PageSidebar {
         let (tw, th) = tr.measure_style(&self.add_label, None, &style);
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         let gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let inset = f64::from(theme.tokens.spacing.s2);
         let cluster = icon + gap + f64::from(tw);
-        let x0 =
-            (r.x0 + (r.width() - cluster) / 2.0).max(r.x0 + f64::from(theme.tokens.spacing.s2));
-        crate::icons::Icon::Plus.draw(
-            scene,
-            base,
-            Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
-            c.text_primary,
-        );
-        let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
-        tr.draw_style(
-            scene,
-            &self.add_label,
-            c.text_primary,
-            base.pre_translate((x0 + icon + gap, ty).into()),
-            None,
-            &style,
-        );
+        // A control never paints its label outside itself. A rail narrower than
+        // its words shows the glyph alone (HIG: an icon-only button is a
+        // square) and keeps the label as its name, for its tooltip and the
+        // accessibility tree, instead of running the text past its edge.
+        let labelled = cluster <= r.width() - 2.0 * inset;
+        self.add_icon_only = !labelled;
+        if labelled {
+            let x0 = r.x0 + (r.width() - cluster) / 2.0;
+            let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
+            crate::icons::Icon::Plus.draw(
+                scene,
+                base,
+                Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
+                c.text_primary,
+            );
+            tr.draw_style(
+                scene,
+                &self.add_label,
+                c.text_primary,
+                base.pre_translate((x0 + icon + gap, ty).into()),
+                None,
+                &style,
+            );
+            self.add_label_rect = Rect::new(x0 + icon + gap, ty, x0 + cluster, ty + f64::from(th));
+        } else {
+            crate::icons::Icon::Plus.draw(
+                scene,
+                base,
+                Rect::from_center_size(r.center(), (icon, icon)),
+                c.text_primary,
+            );
+            self.add_label_rect = Rect::ZERO;
+        }
     }
 
     fn draw_menu(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1092,6 +1150,16 @@ impl Widget for PageSidebar {
     fn name(&self) -> &'static str {
         "PageSidebar"
     }
+    /// An add button that could not fit its label shows the glyph alone, so
+    /// the words the person cannot read there are its tooltip: over the button
+    /// only, beside the rail's column rather than under it.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        (self.show_add && self.add_icon_only && self.add_rect.contains(point))
+            .then(|| (self.add_rect, self.add_label.clone()))
+    }
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        crate::widget::tooltip::TooltipSide::Beside
+    }
     fn test_id(&self) -> Option<&str> {
         Some("page_sidebar")
     }
@@ -1108,6 +1176,30 @@ mod tests {
         let mut s = PageSidebar::new(792.0 / 612.0).with_add("Import…");
         s.begin_frame(Rect::new(0.0, 0.0, 200.0, 800.0), count, 0);
         s
+    }
+
+    /// The rail's title is the window's own words: an app that names none
+    /// paints the catalogue's, and one that names its own keeps it.
+    #[test]
+    fn the_rail_title_is_the_windows_language_unless_the_app_names_it() {
+        let rail = PageSidebar::new(792.0 / 612.0);
+        assert!(
+            rail.header.is_empty(),
+            "an unnamed rail paints \"page-sidebar-title\""
+        );
+        let named = PageSidebar::new(792.0 / 612.0).with_header("Slides");
+        assert_eq!(named.header, "Slides");
+        crate::i18n::I18nManager::register_widget_messages();
+        crate::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            crate::i18n::widget_format("page-sidebar-title", &[]),
+            "Seiten"
+        );
+        crate::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            crate::i18n::widget_format("page-sidebar-title", &[]),
+            "Pages"
+        );
     }
 
     #[test]

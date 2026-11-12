@@ -43,13 +43,8 @@ struct Servers {
 }
 
 fn servers() -> Servers {
-    let rt = ui::rt::app();
-    let imap = rt
-        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
-        .expect("the IMAP server starts");
-    let smtp = rt
-        .block_on(FakeSmtp::start(server_tls_config()))
-        .expect("the SMTP server starts");
+    let servers = empty_servers();
+    let imap = &servers.imap;
     imap.append(
         "INBOX",
         &mail(
@@ -83,6 +78,19 @@ fn servers() -> Servers {
         ),
         &["\\Seen"],
     );
+    servers
+}
+
+/// The two servers with nothing in the inbox yet: what a test puts there once a workspace
+/// stands, as mail arrives at an open window.
+fn empty_servers() -> Servers {
+    let rt = ui::rt::app();
+    let imap = rt
+        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
+        .expect("the IMAP server starts");
+    let smtp = rt
+        .block_on(FakeSmtp::start(server_tls_config()))
+        .expect("the SMTP server starts");
     Servers { imap, smtp }
 }
 
@@ -130,16 +138,16 @@ fn workspace_over(
 ) -> Workspace {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
+    // One wake for every answer, as the app's engine has: an answer to a request and news of
+    // mail that arrived both wake the window.
+    let wake: mail::engine::Wake = Arc::new(move || flag.store(true, Ordering::Release));
     let engine = mail::engine::live::LiveEngine::trusting(
         tilo_content::ContentStore::memory(),
-        Arc::new(|| {}),
+        Arc::clone(&wake),
         accepting_client_config(),
     )
     .expect("the engine starts");
-    let (requests, events) = mail::engine::spawn_waking(
-        Box::new(engine),
-        Arc::new(move || flag.store(true, Ordering::Release)),
-    );
+    let (requests, events) = mail::engine::spawn_waking(Box::new(engine), wake);
     let connector = EngineConnector::new(accounts, requests, events);
     let origin = std::rc::Rc::new(std::cell::RefCell::new(
         ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
@@ -288,9 +296,18 @@ impl Workspace {
     }
 }
 
+/// Frames until the account's server's mail is in the workspace as a person sees it: its
+/// conversations, filed in the inbox, with the messages the sync read. A sync makes a
+/// conversation before it fetches its messages and files it, so the conversations standing in
+/// the account are not the sync's end.
 fn synced(workspace: &mut Workspace) {
     workspace.until("the inbox to sync", |workspace| {
-        workspace.threads().len() == 2
+        let threads = workspace.threads();
+        threads.len() == 2
+            && threads.iter().all(|thread| {
+                matches!(workspace.read(thread, "boxes"), RtValue::List(boxes)
+                    if boxes.contains(&RtValue::text("inbox")))
+            })
     });
 }
 
@@ -302,6 +319,10 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
     let account = workspace.accounts().remove(0);
     assert_eq!(workspace.text(&account, "address"), ME);
     assert_eq!(workspace.text(&account, "name"), "Sam Rivera");
+    assert!(
+        !workspace.text(&account, "fetched").is_empty(),
+        "the account says when its mail was read from the server"
+    );
     let boxes: Vec<String> = workspace
         .refs(&account, "mailboxes")
         .iter()
@@ -456,6 +477,260 @@ fn an_unreachable_server_is_said_on_the_account() {
     let account = workspace.accounts().remove(0);
     assert!(!workspace.flag(&account, "online"));
     assert!(workspace.threads().is_empty());
+}
+
+/// Every text the account's own window says, the words its mark carries on hover among them.
+fn account_window(workspace: &Workspace, account: &ResourceRef) -> Vec<String> {
+    let view = workspace
+        .host()
+        .open_resource(account, None)
+        .expect("the account's window opens");
+    let mut texts = Vec::new();
+    texts_in(view.tree(), &mut texts);
+    texts
+}
+
+// USER REQUIREMENT: a person whose server cannot be reached sees why in their mail window, and
+// the window says nothing more once the server answers.
+#[test]
+fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers() {
+    let servers = servers();
+    let reachable = account(&servers);
+    // Nothing listens at the account's server yet.
+    let config = Arc::new(std::sync::Mutex::new(AccountConfig {
+        imap_port: 1,
+        ..reachable.clone()
+    }));
+    let accounts = Arc::clone(&config);
+    let mut workspace = workspace_over(
+        Box::new(move || vec![accounts.lock().unwrap().clone()]),
+        Arc::default(),
+    );
+    workspace.until("the account to be made", |workspace| {
+        !workspace.accounts().is_empty()
+    });
+    let account = workspace.accounts().remove(0);
+    // The window says so where the person reads their mail: over the list, and on the mark
+    // beside the account's name, which says why.
+    let said = workspace.wait_for(
+        "the window to say the server cannot be reached",
+        |workspace| {
+            let said = account_window(workspace, &account);
+            said.iter()
+                .any(|text| text.contains("Can't reach"))
+                .then_some(said)
+        },
+    );
+    let trouble = workspace.text(&account, "trouble");
+    assert!(
+        said.iter()
+            .any(|text| text == "Can't reach sam@rivera.example"),
+        "the banner names the account the person cannot reach, and says nothing the line under \
+         it says again: {said:#?}"
+    );
+    assert!(
+        said.iter()
+            .any(|text| text.to_lowercase().contains(&trouble.to_lowercase())),
+        "the mark and the banner say why, in the server's own words: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|text| text == "Check now"),
+        "the window offers to ask the server again: {said:#?}"
+    );
+    // Nothing asks the server again on its own: the window keeps saying it.
+    for _ in 0..20 {
+        workspace.settle();
+    }
+    assert!(
+        account_window(&workspace, &account)
+            .iter()
+            .any(|text| text.contains("Can't reach")),
+        "the window still says it"
+    );
+
+    // The server answers, and the person asks for their mail again: it comes in, and the
+    // window says nothing more of it.
+    *config.lock().unwrap() = reachable;
+    workspace.press("check_now", vec![RtValue::resource(&account)]);
+    synced(&mut workspace);
+    workspace.until("the account to say nothing more", |workspace| {
+        workspace.text(&account, "trouble").is_empty() && workspace.flag(&account, "online")
+    });
+    let said = workspace.wait_for("the window to say nothing more", |workspace| {
+        let said = account_window(workspace, &account);
+        (!said.iter().any(|text| text.contains("Can't reach"))).then_some(said)
+    });
+    assert!(
+        !said.iter().any(|text| text.contains(&trouble)),
+        "the words the mark carried are gone with it: {said:#?}"
+    );
+}
+
+// USER REQUIREMENT: mail a workspace cannot keep is not half kept: no conversation stands
+// filed nowhere and no message is taken as known, the account says the mail could not be
+// saved, and the next sync takes the whole step in — once.
+#[test]
+fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again() {
+    let servers = empty_servers();
+    let mut workspace = workspace_with(account(&servers));
+    let store = workspace.host().store().clone();
+    // The change a conversation is made by is refused, as a record that cannot take it is.
+    let package = crate::app::builtin::package_named("mail").expect("the mail package");
+    let thread = package
+        .types
+        .iter()
+        .find(|t| t.name == "Thread")
+        .expect("Mail keeps conversations")
+        .id
+        .clone();
+    store.fail_commits_adding(&thread);
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "plan@hopper.example",
+            "Grace Hopper <grace@hopper.example>",
+            "Launch plan",
+            "Here is the draft plan.",
+            None,
+        ),
+        &[],
+    );
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "dinner@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Dinner on Friday?",
+            "Shall we try the new place?",
+            None,
+        ),
+        &[],
+    );
+    workspace.until("the account to say the mail is not saved", |workspace| {
+        workspace
+            .accounts()
+            .first()
+            .is_some_and(|a| workspace.text(a, "trouble").contains("could not be saved"))
+    });
+    let account = workspace.accounts().remove(0);
+    assert!(
+        workspace.threads().is_empty(),
+        "nothing of the step is kept: {:?}",
+        workspace.threads()
+    );
+    assert!(
+        workspace.flag(&account, "online"),
+        "the server answered: it is the workspace that could not take what it said"
+    );
+    // The window says it over the mail the server did answer with, and how old that mail is:
+    // the notice adds what the account cannot say of itself.
+    let said = account_window(&workspace, &account);
+    assert!(
+        said.iter().any(|text| text.contains("Can't save what")),
+        "the notice says what the window cannot do: {said:#?}"
+    );
+    let when = said.iter().find_map(|text| {
+        text.split_once("Last fetched ")
+            .map(|(_, at)| at.to_owned())
+    });
+    let when = when.unwrap_or_else(|| panic!("the notice says when the mail was read: {said:#?}"));
+    // The time reads in the clock the person chose in Settings, as every time the window shows
+    // does: `14:05` or `2:05 PM`.
+    let clock = ui::clock::configured();
+    assert!(
+        (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
+        "the clock time a person reads: {when}, read in {clock:?}"
+    );
+
+    // The workspace takes changes again: the next sync takes in what the server said before,
+    // and the mail is there once.
+    store.take_commits();
+    synced(&mut workspace);
+    assert_eq!(
+        workspace
+            .refs(&workspace.thread("Launch plan"), "messages")
+            .len(),
+        1,
+        "the step that waited was taken in once"
+    );
+    let account = workspace.accounts().remove(0);
+    assert_eq!(
+        workspace.text(&account, "trouble"),
+        "",
+        "and the account says nothing more"
+    );
+}
+
+// USER REQUIREMENT: a read the workspace cannot answer — its index has not caught up with what
+// it holds — is read again on the next sync, never taken as "the account is gone". An account
+// stays one account, and its mail fills its inbox once the workspace answers again.
+#[test]
+fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
+    let servers = empty_servers();
+    let mut workspace = workspace_with(account(&servers));
+    workspace.until("the account to be made", |workspace| {
+        !workspace.accounts().is_empty()
+    });
+    let account = workspace.accounts().remove(0);
+    let root = workspace.host().root_of(APP).expect("the root");
+    let store = workspace.host().store().clone();
+    // Mail arrives, and the workspace cannot take the step that keeps it: the step waits for
+    // the next sync, though the account says nothing.
+    let package = crate::app::builtin::package_named("mail").expect("the mail package");
+    let thread = package
+        .types
+        .iter()
+        .find(|t| t.name == "Thread")
+        .expect("Mail keeps conversations")
+        .id
+        .clone();
+    store.fail_commits_adding(&thread);
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "plan@hopper.example",
+            "Grace Hopper <grace@hopper.example>",
+            "Launch plan",
+            "Here is the draft plan.",
+            None,
+        ),
+        &[],
+    );
+    workspace.press("check_now", vec![RtValue::resource(&account)]);
+    workspace.until("the account to say the mail is not saved", |workspace| {
+        workspace
+            .accounts()
+            .first()
+            .is_some_and(|a| workspace.text(a, "trouble").contains("could not be saved"))
+    });
+    // The step waits for the next sync — and the store answers none of the account's records
+    // while it takes it in again, as an index that has not caught up with the workspace does.
+    store.fail_reads_of(&root.id_string());
+    for _ in 0..3 {
+        workspace.settle();
+    }
+    // The workspace answers again: the account it holds is still the one account, and the mail
+    // the step waited on comes in.
+    store.take_reads();
+    store.take_commits();
+    let accounts = workspace.accounts();
+    assert_eq!(
+        accounts.len(),
+        1,
+        "a read that failed is no account gone, and no account was made again: {accounts:?}"
+    );
+    let account = accounts.into_iter().next().expect("the account");
+    assert_eq!(workspace.text(&account, "address"), ME);
+    workspace.until("the inbox to fill", |workspace| {
+        let threads = workspace.threads();
+        threads.len() == 1 && !workspace.refs(&threads[0], "messages").is_empty()
+    });
+    assert_eq!(
+        workspace.text(&account, "trouble"),
+        "",
+        "and the account says nothing is wrong"
+    );
+    assert!(workspace.flag(&account, "online"), "its server answers");
 }
 
 /// What the draft's window shows, as text.
@@ -928,10 +1203,18 @@ fn host_texts_in(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
     }
 }
 
-/// Every text `node` shows, its whole tree walked: what its `value`, `title`, `secondary` and
-/// `label` props say.
+/// Every text `node` says, its whole tree walked: what its `value`, `title`, `secondary` and
+/// `label` props show, what its `description` says — the words a mark carries on hover — and
+/// what a notice says under its title.
 fn texts_in(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
-    for prop in ["value", "title", "secondary", "label"] {
+    for prop in [
+        "value",
+        "title",
+        "secondary",
+        "label",
+        "description",
+        "message",
+    ] {
         if let Some(tilolang_tilo::runtime::Value::Text(text)) = node.props.get(prop) {
             out.push(text.clone());
         }
@@ -1047,14 +1330,26 @@ fn conversation_titles(workspace: &Workspace, of: &ResourceRef) -> Vec<String> {
     texts
 }
 
-/// How many conversations the account's window says its inbox holds now: what its own filter
-/// counts, as its header shows it.
-fn inbox_count(workspace: &Workspace, account: &ResourceRef) -> Option<i64> {
-    let view = workspace
+/// How many conversations the account's window lists in the sidebar's place `place`: the place
+/// is chosen first, as a person clicks it, because a window opens on the place it was left at.
+fn place_count(workspace: &Workspace, account: &ResourceRef, place: &str) -> Option<i64> {
+    let mut view = workspace
         .host()
         .open_resource(account, None)
         .expect("the account's window opens");
+    let item = find_kind(view.tree(), "ui.NavItem", "label", place)
+        .expect("the sidebar offers the place")
+        .key
+        .clone();
+    view.fire(&item, "select").expect("the place opens");
+    view.poll_patches().expect("the window shows the place");
     count_in(view.tree(), "ui.NavShell")
+}
+
+/// How many conversations the account's window says its inbox holds now: what its own filter
+/// counts, as its header shows it.
+fn inbox_count(workspace: &Workspace, account: &ResourceRef) -> Option<i64> {
+    place_count(workspace, account, "Inbox")
 }
 
 /// The `overview_count` prop of the first node of `kind`.
@@ -1183,18 +1478,8 @@ fn a_label_is_given_taken_away_and_lists_its_own_conversations() {
 
     // Its place narrows the window to the conversation that carries it.
     let account = workspace.accounts().remove(0);
-    let mut view = workspace
-        .host()
-        .open_resource(&account, None)
-        .expect("the account's window opens");
-    let item = find_kind(view.tree(), "ui.NavItem", "label", "Work")
-        .expect("the sidebar offers the label")
-        .key
-        .clone();
-    view.fire(&item, "select").expect("the label's place opens");
-    view.poll_patches().expect("the window shows the label");
     assert_eq!(
-        count_in(view.tree(), "ui.NavShell"),
+        place_count(&workspace, &account, "Work"),
         Some(1),
         "only the conversation with the label is listed"
     );
@@ -1262,28 +1547,11 @@ fn muting_keeps_a_conversation_out_of_the_inbox_until_it_is_brought_back() {
         "the muted conversation stays out of the inbox while it is answered"
     );
     // Its place of its own lists it, so it is not lost.
-    let mut view = workspace
-        .host()
-        .open_resource(&account, None)
-        .expect("the account's window opens");
-    let muted = find_kind(view.tree(), "ui.NavItem", "label", "Muted")
-        .expect("the sidebar offers Muted")
-        .key
-        .clone();
-    view.fire(&muted, "select").expect("Muted opens");
-    view.poll_patches().expect("the window shows Muted");
     assert_eq!(
-        count_in(view.tree(), "ui.NavShell"),
+        place_count(&workspace, &account, "Muted"),
         Some(1),
         "Muted lists the muted conversation"
     );
-    // The place the window went to is the window's, so it goes back to the inbox before the
-    // list is read again.
-    let inbox = find_kind(view.tree(), "ui.NavItem", "label", "Inbox")
-        .expect("the sidebar offers the inbox")
-        .key
-        .clone();
-    view.fire(&inbox, "select").expect("the inbox opens");
     // Bringing it back unmutes it: it is in the inbox again.
     workspace.press("to_inbox", vec![RtValue::resource(&plan)]);
     assert!(!workspace.flag(&plan, "muted"));

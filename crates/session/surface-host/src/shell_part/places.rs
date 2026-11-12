@@ -200,7 +200,7 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
         let arguments: Map<String, Json> = ask
             .arguments
             .iter()
-            .map(|(name, value)| (name.clone(), Json::String(value.clone())))
+            .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         service
             .invoke(&ask.resource, &ask.action, &arguments)
@@ -209,10 +209,8 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
     });
 }
 
-/// The `spaces` desk style over the arrangement the part holds now. A desk style is a view of
-/// the arrangement any installed package offers (`so.tilo.shell:spaces`, shell.md §6), and the
-/// desk draws the person's choice through `show(a, view: <style>)`; this is the style the places
-/// below are read through, opened over the arrangement the part holds.
+/// The shell's spaces canvas over the arrangement the part holds now: the view the person's
+/// Spaces style draws, its places standing as their own views rather than in frames.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
     let app = host
@@ -229,16 +227,7 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
             },
         )
         .unwrap();
-    let view = host
-        .package(&app)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "spaces")
-        .unwrap()
-        .id
-        .clone();
+    let view = host.package(&app).unwrap().view_id("spaces").unwrap();
     host.open_resource(&root, Some(&view)).unwrap()
 }
 
@@ -646,8 +635,13 @@ fn session_turn(link: &SessionLink, arrangement: &ArrangementReading, room: &mut
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
     room.needed = needed;
-    for ty in super::readings::placed_records(arrangement, &room.service.resources()).values() {
-        if let Some(app) = super::readings::app_of(ty) {
+    for ty in tilolang_tilo::records_service::placed_records(
+        arrangement.places.iter().map(|place| place.record.as_str()),
+        &room.service.resources(),
+    )
+    .values()
+    {
+        if let Some(app) = tilolang_tilo::records_service::app_of(ty) {
             apps.insert(app.to_owned());
         }
     }

@@ -454,8 +454,8 @@ impl Prompter for Yes {
     fn granted(&self, _handoff: &Handoff, _grant: Grant) -> bool {
         false
     }
-    fn ask(&self, handoff: &Handoff, _grant: Grant) -> bool {
-        handoff.app_id == "com.example.tool"
+    fn ask(&self, handoff: &Handoff, _grant: Grant) -> std::sync::mpsc::Receiver<bool> {
+        crate::server::answered(handoff.app_id == "com.example.tool")
     }
 }
 

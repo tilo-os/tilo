@@ -48,12 +48,9 @@ pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
 }
 
 fn executable_available(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            let candidate = dir.join(name);
-            std::fs::metadata(candidate).is_ok_and(|m| m.is_file())
-        })
-    })
+    tilo_process::tools::ToolDirs::current()
+        .find(name)
+        .is_some()
 }
 
 pub(crate) fn tts_capability() -> Option<&'static str> {
@@ -777,14 +774,25 @@ mod tests {
         app.harness().resize((1400, 4000)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
         settle(&mut app);
-        assert!(app.harness().a11y_node_named("5×").is_some());
-        assert!(app.harness().a11y_node_named("Largest").is_some());
+        let magnifier = crate::testing::caption("a11y-magnifier");
+        let cursor = crate::testing::caption("a11y-cursor-size");
+        assert!(
+            crate::testing::shown_values(&mut app, &magnifier).contains(&"5×".to_owned()),
+            "the zoom the magnifier set is shown"
+        );
+        assert!(
+            crate::testing::shown_values(&mut app, &cursor).contains(&"Largest".to_owned()),
+            "the cursor size the section holds is shown"
+        );
 
         app.settings::<AccessibilitySettings>()
             .update(|access| access.magnifier_zoom = 3)
             .unwrap();
         settle(&mut app);
-        assert!(app.harness().a11y_node_named("3×").is_some());
+        assert!(
+            crate::testing::shown_values(&mut app, &magnifier).contains(&"3×".to_owned()),
+            "a zoom changed elsewhere is followed"
+        );
     }
 
     fn access_nodes(app: &mut TestApp<SettingsShell>) -> Vec<ui::a11y::AccessNode> {
@@ -807,6 +815,69 @@ mod tests {
             app.settle();
             let _ = app.harness().poll_frame();
         }
+    }
+
+    /// The node a reader lands on by `name` for `role`, as the accessibility
+    /// bridge exports it to a screen reader this frame.
+    fn exported(
+        app: &mut TestApp<SettingsShell>,
+        name: &str,
+        role: ui::accesskit::Role,
+    ) -> ui::accesskit::Node {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == role && node.label() == Some(name)).then_some(node)
+            })
+            .unwrap_or_else(|| panic!("no {role:?} named {name}"))
+    }
+
+    /// A reader hears what a control sets, what it is set to and why: never a
+    /// switch called by its kind, and a row's explanation never read as its
+    /// value.
+    #[test]
+    fn a_switch_and_a_chooser_say_what_they_set_and_how_they_are_set() {
+        use ui::accesskit::{Role, Toggled};
+
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1400, 4000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
+        settle(&mut app);
+
+        let (switch_name, chooser_name) = (t("a11y-mouse-keys"), t("a11y-magnifier"));
+        let explains = t("a11y-mouse-keys-desc");
+
+        let switch = exported(&mut app, &switch_name, Role::Switch);
+        assert_eq!(switch.toggled(), Some(Toggled::False), "off as it stands");
+        assert_eq!(switch.description(), Some(explains.as_str()));
+        // The row explains itself as a description; its value says nothing.
+        let row = exported(&mut app, &switch_name, Role::ListItem);
+        assert_eq!(row.description(), Some(explains.as_str()));
+        assert_eq!(row.value(), None);
+
+        let chooser = exported(&mut app, &chooser_name, Role::ComboBox);
+        assert_eq!(chooser.value(), Some("Off"), "the zoom it shows");
+        assert_eq!(chooser.description(), None, "the row explains nothing");
+
+        app.settings::<AccessibilitySettings>()
+            .update(|access| {
+                access.mouse_keys = true;
+                access.magnifier_zoom = 3;
+            })
+            .unwrap();
+        settle(&mut app);
+        assert_eq!(
+            exported(&mut app, &switch_name, Role::Switch).toggled(),
+            Some(Toggled::True),
+            "the switch says the state the record holds"
+        );
+        assert_eq!(
+            exported(&mut app, &chooser_name, Role::ComboBox).value(),
+            Some("3×"),
+            "the chooser says the zoom the record holds"
+        );
     }
 
     #[test]

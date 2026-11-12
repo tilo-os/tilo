@@ -186,11 +186,11 @@ fn preview_card(loc: Locale) -> SettingsSection {
             preview_line(&t("settings-region-preview-amount"), &amount),
             preview_line(
                 &t("settings-region-preview-date"),
-                &loc.date_format.example(),
+                &loc.date_format.example(ui::format::words()),
             ),
             preview_line(
                 &t("settings-region-preview-time"),
-                &loc.time_format.example(),
+                &loc.time_format.example(ui::format::words()),
             ),
             preview_line(&t("settings-region-preview-temp"), &temp),
             preview_line(&t("settings-region-preview-week"), &week_starts),
@@ -308,10 +308,10 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
         app.settle();
+        let language = crate::testing::caption("settings-region-language");
+        let device = crate::testing::caption("settings-region-language-device");
         assert!(
-            app.harness()
-                .a11y_node_named(&t("settings-region-language-device"))
-                .is_some(),
+            crate::testing::shown_values(&mut app, &language).contains(&device),
             "unset, the device's language is shown as the choice"
         );
         assert!(crate::i18n::languages().contains(&"en-US"));
@@ -361,13 +361,18 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
         app.settle();
-        for shown in [
-            date_label(DateStyle::Language),
-            time_label(TimeStyle::Language),
+        let follows = crate::testing::caption("settings-region-date-language");
+        assert_eq!(date_label(DateStyle::Language), follows);
+        let clock_follows = crate::testing::caption("settings-region-time-language");
+        assert_eq!(time_label(TimeStyle::Language), clock_follows);
+        for (caption_key, shown) in [
+            ("settings-region-date-format", follows),
+            ("settings-region-time-format", clock_follows),
         ] {
+            let caption = crate::testing::caption(caption_key);
             assert!(
-                app.harness().a11y_node_named(&shown).is_some(),
-                "the default is shown as following the language: {shown}"
+                crate::testing::shown_values(&mut app, &caption).contains(&shown),
+                "the default is shown as following the language: {caption} {shown}"
             );
         }
         assert_eq!(TimeStyle::ALL[0], TimeStyle::Language);
@@ -386,15 +391,24 @@ mod tests {
             .unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
         app.settle();
-        assert!(app.harness().a11y_node_named("EUR").is_some());
+        let currency = crate::testing::caption("settings-region-currency");
+        assert!(
+            crate::testing::shown_values(&mut app, &currency).contains(&"EUR".to_owned()),
+            "the currency the section holds is shown"
+        );
         app.settings::<Locale>()
             .update(|locale| locale.measurement = Measurement::Imperial)
             .unwrap();
         app.settle();
+        let measurement = crate::testing::caption("settings-region-measurement");
+        let imperial = measure_label(Measurement::Imperial);
+        assert_eq!(
+            imperial,
+            crate::testing::caption("settings-region-measure-imperial")
+        );
         assert!(
-            app.harness()
-                .a11y_node_named(&measure_label(Measurement::Imperial))
-                .is_some()
+            crate::testing::shown_values(&mut app, &measurement).contains(&imperial),
+            "a change made elsewhere is followed"
         );
     }
 }

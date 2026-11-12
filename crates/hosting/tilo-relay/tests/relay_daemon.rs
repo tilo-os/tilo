@@ -19,7 +19,7 @@
 
 use std::time::Duration;
 
-use tilo_relay::{CoeditPayload, Envelope, Relay, RelayClient, RelayCoeditSession, RelayConfig};
+use tilo_relay::{CoeditPayload, Envelope, RelayClient, RelayCoeditSession, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
@@ -43,7 +43,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("new-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -72,7 +72,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
         assert!(matches!(
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
-            Some(tilo_relay::Inbound::Ready { pending: 0 })
+            Some(tilo_relay::Inbound::Ready { pending: 0, .. })
         ));
         let metrics = relay.handle().metrics;
         a_session
@@ -118,7 +118,8 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             tilo_test_env::within("a message on b_client", b_client.recv()).await,
             Some(Envelope::Ready {
                 workspace_id: 19,
-                pending_deltas: 1
+                pending_deltas: 1,
+                records_when_opened: false,
             })
         ));
     }
@@ -130,7 +131,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let b = user.enrol("phone", DeviceCapabilities::member());
         let a_key = a.device_pubkey();
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -270,6 +271,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 Envelope::Ready {
                     workspace_id: 42,
                     pending_deltas: 0,
+                    records_when_opened: false,
                 } => {}
                 other => panic!("expected Ready(42, 0), got {other:?}"),
             }
@@ -352,6 +354,7 @@ async fn wait_for_ready_with_pending(
             Ok(Some(Envelope::Ready {
                 workspace_id: 9,
                 pending_deltas,
+                records_when_opened: false,
             })) => {
                 assert!(pending_deltas >= 1);
                 break;

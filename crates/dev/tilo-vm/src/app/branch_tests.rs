@@ -101,6 +101,18 @@ impl Hv {
     }
 }
 
+/// The commands a run issued that name `path`: a VM's disk, or the domain
+/// definition beside it. A frozen base is named after the VM it came from
+/// with a random suffix (`bases/dev-1f3c9a….qcow2`), so its ending can spell
+/// another disk's name: only the whole path tells the VM a run made from the
+/// bases it read.
+fn naming<'a>(ran: &'a [String], path: &str) -> Vec<&'a str> {
+    ran.iter()
+        .filter(|line| line.contains(path))
+        .map(String::as_str)
+        .collect()
+}
+
 fn branch_args(words: &str) -> BranchArgs {
     let line = format!("tilo-vm vm branch {words}");
     let Some(Command::Vm(VmCommand::Branch(args))) =
@@ -557,10 +569,8 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
         "{}",
         error.hint()
     );
-    assert!(
-        hv.ran.iter().all(|c| !c.contains("c.qcow2")),
-        "c is not attempted"
-    );
+    let untouched = naming(&hv.ran, &fx.path("vms/c.qcow2"));
+    assert!(untouched.is_empty(), "c is not attempted: {untouched:?}");
     assert!(
         hv.ran.iter().all(|c| !c.contains("undefine")),
         "b was never defined"
@@ -582,11 +592,8 @@ fn a_failure_midway_keeps_what_was_made_and_a_rerun_makes_the_rest() {
         "{}",
         outcome.text
     );
-    assert!(
-        rerun.ran.iter().all(|c| !c.contains("a.qcow2")),
-        "{:?}",
-        rerun.ran
-    );
+    let remade = naming(&rerun.ran, &fx.path("vms/a.qcow2"));
+    assert!(remade.is_empty(), "a is already made: {remade:?}");
     let registry = fx.registry();
     assert!(
         ["a", "b", "c"]

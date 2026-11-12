@@ -79,3 +79,82 @@ backups-retention-policy-monthly = { $new ->
     [one] Keeping one monthly snapshot
    *[other] Keeping { $new } monthly snapshots
 }
+
+## Window and accessibility copy
+backups-file-list-pending = The file list for this snapshot isn’t available yet.
+backups-restore-note = The whole snapshot is restored into a new or empty folder you choose, and every file is checked. Nothing that already exists is replaced.
+backups-heading-snapshots = Snapshots
+backups-a11y-order = Order of snapshots
+backups-a11y-window = Backups
+
+## Facts, property labels and section titles
+backups-section-contents = Contents
+backups-stored-on = Stored on
+backups-size = Size
+backups-taken = Taken
+backups-encryption = Encryption
+backups-folder = Folder
+backups-source = Source
+backups-failure = Failure
+backups-changed = Changed
+backups-retention = Retention
+backups-type = Type
+backups-status = Status
+backups-last-backup = Last backup
+backups-capacity = Capacity
+backups-free = Free
+backups-used = Used
+backups-kind = Kind
+backups-schedule = Schedule
+
+## Retention policy fields
+backups-retention-heading = Snapshots to keep
+backups-keep-hourly = Hourly snapshots to keep
+backups-keep-daily = Daily snapshots to keep
+backups-keep-weekly = Weekly snapshots to keep
+backups-keep-monthly = Monthly snapshots to keep
+
+## What the window shows
+backups-verifying-on = Verifying on { $destination }
+backups-copy-failed = Couldn’t copy to { $destination }: { $reason }
+backups-copy-failed-unrecorded = Couldn’t copy to { $destination }; no reason was recorded
+backups-restore = Restore…
+backups-verify = Verify files
+backups-restore-labelled = Restore “{ $snapshot }”
+backups-restore-from = Restore { $snapshot } from { $when }
+
+## What a job is doing and when the next one runs
+backups-job-backing-up = Backing up
+backups-job-verifying = Verifying
+backups-job-restoring = Restoring
+backups-snapshot = Snapshot
+backups-schedule-on-demand = When you back up
+backups-schedule-hourly = Every hour, on the hour
+backups-schedule-hourly-at = Every hour at { $minute } past
+backups-schedule-daily = Every day at { $time }
+backups-schedule-weekly = Every { $weekday } at { $time }
+backups-empty-snapshots-hint = Back up now to create the first one.
+backups-setup-start-hint = Choose a folder to keep a copy of every file in it, checked so you know it is intact.
+backups-setup-destination-hint = Pick a drive or a folder outside the one you are backing up.
+
+## The window bar's Back up now
+backups-bar-back-up-now = Back up now
+backups-bar-backing-up = Backing up…
+
+## What the window's pages are called
+backups-page-all = All backups
+backups-page-destination = Destination
+
+## Actions
+
+backups-operation-backup-now = Run backup now
+backups-operation-setup = Set up backups
+backups-operation-verify = Verify snapshot
+backups-operation-restore-snapshot = Restore snapshot into a new or empty folder…
+backups-operation-show-source = Show source
+backups-operation-show-destination = Show destination
+backups-operation-show-snapshot = Show snapshot
+backups-operation-order-snapshots = Order snapshots
+backups-operation-read-snapshot = Read snapshot
+backups-operation-show-schedule = Show global retention policy
+backups-workspace = Backups

@@ -78,7 +78,20 @@ fn the_workspaces_record_waits_for_its_first_sync() {
         workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))),
         "the first sync changes what the window shows"
     );
-    app.harness().relayout();
+    // The view takes the arrival's place once what the workspace holds is
+    // here, and a skeleton that already stood is held a moment before it
+    // gives way: run frames until the window has the answer and nothing left
+    // to show for it, by that state rather than a wait of a guessed length.
+    assert!(
+        app.harness()
+            .wait_until(tilo_app::time::Duration::from_secs(30), |harness| {
+                let frame = harness.frame_output();
+                workspace_sync::holdings().with(|held| held.ready().is_some())
+                    && !frame.needs_animation_frame
+                    && frame.next_wake_deadline.is_none()
+            }),
+        "the first sync settles what the window shows"
+    );
     assert!(
         VIEWS.with(Cell::get) > 0,
         "after the first sync the workspace's record is here"

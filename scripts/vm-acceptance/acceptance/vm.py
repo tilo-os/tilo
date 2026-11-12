@@ -173,8 +173,11 @@ class TiloVm:
     def targets(self) -> list[dict]:
         return self.raw({"op": "list_targets"})["targets"]
 
-    def foreign_frames(self) -> list[dict]:
-        return self.raw({"op": "foreign_frames"})["foreign_frames"]["frames"]
+    def windows(self) -> list[dict]:
+        """The desk's open windows: each with `window` (the mapped window's id), `app_id`, `rect`
+        (`[x, y, width, height]`, null while no window of the tab is mapped) and `frames`, how many
+        frames that window's client committed."""
+        return self.raw({"op": "windows"})["answer"]["windows"]
 
     # -- control socket, input half (synthetic) -----------------------------
 

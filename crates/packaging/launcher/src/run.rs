@@ -2291,14 +2291,39 @@ fn splice_gpu(
         let entry = pop_entry(argv)?;
         // The device nodes were just bound: narrow them to the node.
         crate::sandbox::push_gpu_selection(argv, sel, true);
+        // No driver claims the node: no GPU drives it, and the app renders as the
+        // compositor does, with lavapipe.
+        #[cfg(target_os = "linux")]
+        if let Some(pin) = crate::gpu::unclaimed_node_pin(
+            sel,
+            crate::gpu::inherited_software_pin(),
+            &crate::gpu::IcdSearch::default(),
+        ) {
+            tracing::info!(
+                target: "tilo_launcher::gpu",
+                package = %manifest.package_id,
+                vulkan = %pin.vulkan_icd_json.display(),
+                "no driver claims the compositor's render node: the app renders with lavapipe",
+            );
+            crate::sandbox::push_software_pin(argv, &pin);
+        }
         argv.push(entry);
     } else if opts.render_node.is_none()
         && let Some(pin) = crate::gpu::inherited_software_pin()
     {
         // A compositor with no GPU renders with lavapipe and pinned its own
-        // loaders to it; its apps follow, as they follow a GPU's pin.
+        // loaders to it; its apps follow, as they follow a GPU's pin. The
+        // render nodes there are of no GPU (a virtual one without 3D), and
+        // EGL opening one in the app crashed it: the app sees none.
         let entry = pop_entry(argv)?;
         crate::sandbox::push_software_pin(argv, &pin);
+        crate::profile::hide_gpu_devices(argv);
+        tracing::info!(
+            target: "tilo_launcher::gpu",
+            package = %manifest.package_id,
+            vulkan = %pin.vulkan_icd_json.display(),
+            "no GPU: the app renders with the software renderer and sees no render node",
+        );
         argv.push(entry);
     }
     let seed = gpu
@@ -2908,11 +2933,6 @@ fn spawn_and_wait(
     {
         service_fds.extend(retained.descriptor_pairs()?);
     }
-    if let Some(parent) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::selected_parent)
-    {
-        service_fds.push(parent.descriptor_pair()?);
-    }
     if let Some(target) = target_projection {
         service_fds.extend(target.pairs()?);
         target.replace_baseline(&mut service_fds)?;
@@ -3413,14 +3433,7 @@ pub(crate) fn run_with_context(
     }
     let retained_view =
         native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view);
-    let selected_parent =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::selected_parent);
-    if selected_parent.is_some() && retained_view.is_some() {
-        return Err(RunError::InvalidServiceLaunch(
-            "Mixed ordinary view grants".into(),
-        ));
-    }
-    if (retained_view.is_some() || selected_parent.is_some())
+    if retained_view.is_some()
         && (enrolled.is_some()
             || retained_io.is_some()
             || target_projection.is_some()
@@ -3844,10 +3857,7 @@ pub(crate) fn run_with_context(
     if let Some(retained) =
         native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view)
     {
-        retained.splice(&mut argv, capabilities.participation)?;
-    }
-    if let Some(parent) = selected_parent {
-        parent.splice(&mut argv, capabilities.participation)?;
+        retained.splice(&mut argv)?;
     }
     let result = spawn_and_wait(
         argv,
@@ -5918,6 +5928,15 @@ mod mesa_seed_software_tests {
             !argv.iter().any(|arg| arg.starts_with("/dev/dri/renderD")),
             "no render node, no node pin: {argv:?}"
         );
+        let bound = argv
+            .windows(3)
+            .rposition(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"])
+            .expect("the GPU devices were bound first");
+        let hidden = argv
+            .windows(2)
+            .rposition(|args| args == ["--tmpfs", "/dev/dri"])
+            .expect("and then hidden: the app sees no render node of a machine without a GPU");
+        assert!(hidden > bound, "{argv:?}");
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
 
         // A GPU's driver in the environment is not the software pin.

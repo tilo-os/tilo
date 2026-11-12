@@ -21,6 +21,10 @@ pub(crate) struct StateSession {
     pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
     pub(super) replay: Option<Arc<ReplayCatchup>>,
     pub(super) lag: Option<Arc<Lag>>,
+    /// The device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): no device's request to be admitted to
+    /// one reaches it.
+    pub(super) channel_reader: bool,
 }
 impl StateSession {
     /// A live session of `peer` whose deliveries go nowhere.
@@ -32,6 +36,7 @@ impl StateSession {
             live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             replay: None,
             lag: None,
+            channel_reader: false,
         }
     }
     /// A live delivery to workspace `workspace_id` did not fit this session's
@@ -102,6 +107,7 @@ pub struct StateSource {
     pub(super) policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     pub(super) own_user: [u8; 32],
     pub(super) agents: AgentRegistry,
+    pub(super) environments: crate::environment::EnvironmentRegistry,
     pub(super) lease: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(super) session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -128,6 +134,7 @@ impl StateSource {
             )),
             own_user,
             agents: AgentRegistry::default(),
+            environments: crate::environment::EnvironmentRegistry::default(),
             lease: Some(lease),
             session_live: None,
         }
@@ -151,6 +158,7 @@ impl StateSource {
             policy: session.trust_policy.clone(),
             own_user: *session.own_user_public_key,
             agents: session.agents.clone(),
+            environments: session.environments.clone(),
             lease: None,
             session_live: session.connection_live.cloned(),
         }
@@ -161,6 +169,7 @@ impl StateSource {
             policy: &self.policy,
             own_user: &self.own_user,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
     /// Whether `peer` may hold state in `runtime`'s workspace under this source's
@@ -178,13 +187,23 @@ impl StateSource {
         self.authorized_for(runtime, WorkspaceOperation::State)
     }
     /// Whether this source may take a frame of its own into the workspace now,
-    /// on the plane `op`.
+    /// on the plane `op`, changing the record on `channel` (`None` for a frame
+    /// that belongs to no record): a browser environment's device writes its
+    /// own record and nothing else.
     fn publishes(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
         op: WorkspaceOperation,
+        channel: Option<[u8; 32]>,
     ) -> bool {
-        self.authorized_for(runtime, op)
+        self.write_reaches(channel) && self.authorized_for(runtime, op)
+    }
+
+    /// Whether `channel` is inside what this source may write: everything for
+    /// a member, its own record for a browser environment's device.
+    fn write_reaches(&self, channel: Option<[u8; 32]>) -> bool {
+        crate::environment::environment_of(&self.environments, &self.peer.device_public_key)
+            .is_none_or(|environment| environment.reaches(channel))
     }
     fn authorized_for(
         &self,
@@ -415,7 +434,8 @@ pub(super) async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    if let Some(limited) = over_change_limit(peer, session) {
+    let standing = super::change_standing(peer, &*ws.lock().await);
+    if let Some(limited) = over_change_limit(peer, session, standing) {
         // Neither kept nor forwarded, and the session stays, as for a
         // refused change below.
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
@@ -429,7 +449,8 @@ pub(super) async fn handle_delta(
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);
-    let Some(source) = authorized_state_source(&ws, peer, session, op).await? else {
+    let channel = crate::peer::admission::record_of(&env);
+    let Some(source) = authorized_state_source(&ws, peer, session, op, channel).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
@@ -445,7 +466,7 @@ pub(super) async fn handle_delta(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
         }));
     };
     trace_native_publication("server_authorized", &env, None);
@@ -478,7 +499,7 @@ pub(super) async fn handle_delta(
     let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
-        tell_governor(&tap, peer.device_public_key, body).await;
+        tell_governor(&ws, &tap, peer.device_public_key, body).await;
     }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
@@ -490,9 +511,10 @@ pub(super) async fn handle_delta(
 
 /// Why the relay refuses `env`, `peer`'s change in `ws`, once authorization
 /// let it through: a change that names nothing it writes, one its author's
-/// role grants nothing of (a Viewer writes none), or one taking down what
-/// someone else made without the workspace's leave. None keeps and forwards
-/// the change.
+/// role grants nothing of (a Viewer writes none), one taking down what
+/// someone else made without the workspace's leave, or one the workspace's
+/// own copy of the record does not take in. None keeps and forwards the
+/// change.
 async fn change_refusal(
     ws: &SharedWorkspace,
     peer: &AuthenticatedPeer,
@@ -520,7 +542,37 @@ async fn change_refusal(
         return Some(reason);
     }
     let author = deciding_author(peer, attached, own_device, &claimed);
-    desktop_refusal(ws, author, env).await
+    if let Some(reason) = desktop_refusal(ws, author, env).await {
+        return Some(reason);
+    }
+    governor_refusal(ws, author, env).await
+}
+
+/// Why the workspace refuses `env`, `author`'s change, as its own copy of the
+/// record decides it ([`crate::workspaces::Workspaces::refuses_write`]);
+/// `None` in a workspace this relay does not govern, for a change that is no
+/// record write, and for one the workspace takes in.
+///
+/// This is the governor's verdict, so it is the same one its copy gives the
+/// change when it follows it: a change it refuses is neither kept nor
+/// forwarded, and the record's stored history never holds it for a later
+/// reader to meet, or for its writer to number its next change after.
+pub(super) async fn governor_refusal(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    env: &Envelope,
+) -> Option<String> {
+    let body = governor_notice(env)?;
+    let authority = ws.lock().await.workspace_authority.clone()?;
+    let workspaces = authority.workspaces()?;
+    let reason = workspaces
+        .refuses_write(authority.workspace(), author, &body)
+        .await?;
+    // Neither kept nor forwarded: the write's verdict is filed in this
+    // device's own workspace slice, the one place its author reads it.
+    file_refusal_of(ws, env, &reason).await;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a change the workspace does not take in");
+    Some(reason)
 }
 
 /// File `ws`'s verdict on `env`, a change this host refused for `reason`, in
@@ -552,10 +604,15 @@ pub(super) async fn file_refusal_of(ws: &SharedWorkspace, env: &Envelope, reason
 /// behind holds the author back until it takes the change in. Nothing is
 /// sent once the governor stopped following (the workspace closed).
 pub(crate) async fn tell_governor(
+    ws: &SharedWorkspace,
     tap: &tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>,
     author: [u8; 32],
     body: Vec<u8>,
 ) {
+    // The workspace's link carries the write as it is admitted, not on the
+    // governor's own schedule: a linked device reads it live, and one that
+    // joins reads the history as it stands then.
+    crate::workspaces::carry_admitted(ws, author, &body).await;
     if tap.send((author, body)).await.is_err() {
         tracing::debug!("the room's governor no longer follows it");
     }
@@ -648,6 +705,7 @@ pub(super) async fn handle_delta_prefix(
     }
     // A prefix of changes rides on the plane its first change does.
     let op = crate::peer::admission::plane_of(first);
+    let channel = crate::peer::admission::record_of(first);
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
@@ -661,7 +719,8 @@ pub(super) async fn handle_delta_prefix(
             "author does not match authenticated device".into(),
         ));
     }
-    let Some(source) = authorized_state_source(&workspace, peer, session, op).await? else {
+    let Some(source) = authorized_state_source(&workspace, peer, session, op, channel).await?
+    else {
         trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
@@ -675,31 +734,12 @@ pub(super) async fn handle_delta_prefix(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
         }));
     };
     trace_all(&envelopes, "server_authorized");
-    for envelope in &envelopes {
-        let Envelope::Delta {
-            author_device_public_key,
-            ..
-        } = envelope
-        else {
-            continue;
-        };
-        let author = deciding_author(
-            peer,
-            workspace.lock().await.attached(&peer.device_public_key),
-            session.own_device_public_key,
-            author_device_public_key,
-        );
-        if desktop_refusal(&workspace, author, envelope)
-            .await
-            .is_some()
-        {
-            // The prefix is kept whole or not at all.
-            return Ok(None);
-        }
+    if refused_prefix(&workspace, peer, session, &envelopes).await {
+        return Ok(None);
     }
     let governor_tap = workspace.lock().await.governor_tap.clone();
     // Every change of the prefix reaches the workspace's governor once it is
@@ -723,10 +763,47 @@ pub(super) async fn handle_delta_prefix(
     }
     if let Some(tap) = governor_tap {
         for body in notices {
-            tell_governor(&tap, peer.device_public_key, body).await;
+            tell_governor(&workspace, &tap, peer.device_public_key, body).await;
         }
     }
     Ok(None)
+}
+
+/// Whether the relay keeps none of `envelopes`, a checkpoint prefix: a change
+/// of it the workspace refuses decides the whole prefix, which is kept whole
+/// or not at all.
+async fn refused_prefix(
+    workspace: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    envelopes: &[Envelope],
+) -> bool {
+    let attached = workspace.lock().await.attached(&peer.device_public_key);
+    for envelope in envelopes {
+        let Envelope::Delta {
+            author_device_public_key,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        let author = deciding_author(
+            peer,
+            attached,
+            session.own_device_public_key,
+            author_device_public_key,
+        );
+        if desktop_refusal(workspace, author, envelope).await.is_some() {
+            return true;
+        }
+        if governor_refusal(workspace, author, envelope)
+            .await
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub(super) async fn authorized_state_source(
@@ -734,10 +811,11 @@ pub(super) async fn authorized_state_source(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     op: WorkspaceOperation,
+    channel: Option<[u8; 32]>,
 ) -> Result<Option<StateSource>, PeerError> {
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    Ok(source.publishes(&runtime, op).then_some(source))
+    Ok(source.publishes(&runtime, op, channel).then_some(source))
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace: the
@@ -748,11 +826,15 @@ pub(super) fn refused_reason(
     trust: &workspace_access::RelayTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
+    channel: Option<[u8; 32]>,
 ) -> &'static str {
+    let outside = crate::environment::environment_of(trust.environments, &peer.device_public_key)
+        .filter(|environment| !environment.reaches(channel))
+        .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.reason());
     match workspace_access::decide(runtime, trust, peer, op) {
         workspace_access::Decision::Deny(reason) => reason.reason(),
         workspace_access::Decision::Admit | workspace_access::Decision::AdmitAndEnrol => {
-            unpublished()
+            outside.unwrap_or_else(unpublished)
         }
     }
 }

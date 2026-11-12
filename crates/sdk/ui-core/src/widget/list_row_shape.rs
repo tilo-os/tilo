@@ -27,7 +27,7 @@ pub enum RowLeadingShape {
     /// Nothing: the title starts at the row's edge.
     #[default]
     None,
-    /// A mark of icon size: an icon, a checkbox, a swatch, a badge.
+    /// A mark of icon size: an icon, a face, a checkbox, a swatch, a badge.
     Mark,
     /// A person's disc.
     Avatar,
@@ -147,6 +147,7 @@ impl ListRowFace<'_> {
                 None => RowLeadingShape::None,
                 Some(
                     RowLeading::Icon(_)
+                    | RowLeading::Face(_)
                     | RowLeading::Badge(_)
                     | RowLeading::Checkbox { .. }
                     | RowLeading::Swatch(_)

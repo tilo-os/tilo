@@ -23,15 +23,32 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
-mod participant;
-#[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
-pub(crate) mod support;
-
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
-mod common;
+#[cfg(test)]
+#[path = "workspace_actions/chat_post.rs"]
+mod chat_post;
+#[cfg(test)]
+#[path = "workspace_actions/chat_restart.rs"]
+mod chat_restart;
+#[cfg(test)]
+#[path = "workspace_actions/delete_workspace.rs"]
+mod delete_workspace;
+#[cfg(test)]
+#[path = "workspace_actions/door_desk.rs"]
+mod door_desk;
+#[cfg(test)]
+#[path = "workspace_actions/door_invites.rs"]
+mod door_invites;
+#[cfg(test)]
+#[path = "workspace_actions/door_links.rs"]
+mod door_links;
+#[path = "workspace_actions/door_on_relay.rs"]
+pub mod door_on_relay;
+#[cfg(test)]
+#[path = "workspace_actions/door_questions.rs"]
+mod door_questions;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
@@ -39,35 +56,61 @@ mod encrypted_resource;
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
+#[path = "workspace_actions/front_door.rs"]
+mod front_door;
+#[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
 #[cfg(test)]
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
-mod harness;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_browser.rs"]
+mod hosted_browser;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_documents.rs"]
+pub mod hosted_documents;
+#[cfg(test)]
+#[path = "workspace_actions/joining.rs"]
+mod joining;
 #[cfg(test)]
 #[path = "workspace_actions/member_own.rs"]
 mod member_own;
+#[cfg(test)]
+#[path = "workspace_actions/member_roles.rs"]
+mod member_roles;
+#[cfg(test)]
+#[path = "workspace_actions/own_agent.rs"]
+mod own_agent;
+#[cfg(test)]
+#[path = "workspace_actions/public_records.rs"]
+mod public_records;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
+#[cfg(test)]
+#[path = "workspace_actions/route_parity.rs"]
+mod route_parity;
 #[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 
 #[cfg(not(test))]
+#[path = "mounted_resource/mod.rs"]
 pub mod mounted_resource;
 
-tilo_automerge_isolate::test_worker!();
 // Workspace actions hold each record in a confined app worker: this binary,
 // started again.
-tilo_agent_participant::app_worker!();
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
+#[cfg(test)]
+use tilo_session_client::Cmd;
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
@@ -79,15 +122,15 @@ use tilo_actions::{
     remote::{ActionHostError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
 use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
-use tilo_browser_peer::Host;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use harness::hosted::{Hosted, Options};
-use harness::page::Page;
+use crate::harness::hosted::{Hosted, Options};
+use crate::harness::page::Page;
 #[cfg(test)]
-use support::WORKSPACE;
-use support::{Device, enrol, ready, start_peer};
+use crate::support::WORKSPACE;
+use crate::support::{Device, enrol, ready, start_peer};
 
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
@@ -106,7 +149,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "temporary-browser",
         DeviceCapabilities::member(),
     );
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
     let workspace = hosted
         .relay
@@ -117,7 +160,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .unwrap();
     let mut browser =
         Browser::open_workspace(&hosted, &browser_device, &host, &workspace.workspace).await;
-    let mut source = common::open_in(
+    let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
         "ada",
@@ -126,8 +169,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let mut doc = source.read(Clone::clone).unwrap();
-    common::add_channel(&mut doc, "ada", "general", None);
-    let channel = common::channel(&doc, chat::model::ChannelKind::Text);
+    crate::common::add_channel(&mut doc, "ada", "general", None);
+    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -173,13 +216,13 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     browser
         .peer
-        .publish(record, &source.take_mutation().unwrap())
+        .write(record, &source.take_mutation().unwrap().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
     let route = resource_support::part_route(&workspace.workspace, &part);
-    for (changed, mutation) in source.take_record_mutations() {
+    for (changed, mutation) in source.take_record_mutations().unwrap() {
         assert_eq!(changed, part);
-        browser.peer.publish(route.clone(), &mutation).unwrap();
+        browser.peer.write(route.clone(), &mutation).unwrap();
     }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
@@ -189,7 +232,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     let source_views = source
         .read_record(&part, |doc| {
-            common::catalogue().resource_views(
+            crate::common::catalogue().resource_views(
                 "so.tilo.chat",
                 doc,
                 &ViewResourceQuery {
@@ -268,9 +311,14 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         elsewhere.rows.is_empty(),
         "another app's rows cannot be this record's views"
     );
-    assert!(
-        elsewhere.locator.is_none(),
-        "an answer that found nothing names no page to browse"
+    // Where the record opens is the caller's to know once they may read it, views or not.
+    assert_eq!(
+        elsewhere
+            .locator
+            .as_ref()
+            .map(|locator| locator.provider.as_str()),
+        Some(provider.as_str()),
+        "an answer with no views still names where the record opens"
     );
     let unscoped = browser.catalogue(query.clone()).await.unwrap();
     assert_eq!(
@@ -306,7 +354,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
-        assert!(empty.locator.is_none());
+        assert_eq!(
+            empty.locator.map(|locator| locator.provider),
+            Some(provider.clone()),
+            "the record opens whether or not it holds the views asked for"
+        );
     }
     assert!(
         browser
@@ -372,7 +424,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             revoked: std::sync::atomic::AtomicBool::new(false),
             locator_reads: std::sync::atomic::AtomicUsize::new(0),
         });
-        let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
+        let actions =
+            tilo_agent_participant::WorkspaceActions::new(Arc::new(crate::common::catalogue));
         actions.attach(link.clone()).unwrap();
         let answer = actions
             .serve(
@@ -523,17 +576,17 @@ async fn start_lending(
 ) -> Hosted {
     let options = Options {
         feedback_reviewer,
-        ..Options::offering(common::catalogue, ModelChoice::Scripted)
+        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
     };
     let options = match page {
         Some(origin) => options.serving(origin),
         None => options,
     };
-    harness::hosted::start(root, host, state, options).await
+    crate::harness::hosted::start(root, host, state, options).await
 }
 
 /// A page speaking the remote-action vocabulary to the host.
-pub use harness::page::Page as Browser;
+pub use crate::harness::page::Page as Browser;
 
 /// What a page does with the records it holds: it creates them whole, and
 /// mounts them from the changes it received.
@@ -550,15 +603,16 @@ impl Page {
         before_publish: impl FnOnce(&DocumentRoute),
     ) -> DocumentRoute {
         let mut page =
-            common::open_in(&self.cluster_id, app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+            crate::common::open_in(&self.cluster_id, app, "ada", ReplicaActor::Owner, Seed::New)
+                .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
             record: page.wire_record().to_owned(),
         };
-        let mutation = page.take_mutation().unwrap();
+        let mutation = page.take_mutation().unwrap().unwrap();
         before_publish(&route);
-        self.peer.publish(route.clone(), &mutation).unwrap();
+        self.peer.write(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         let bytes = match mutation {
             collab_types::DocumentMutation::Snapshot(bytes)
@@ -575,7 +629,7 @@ impl Page {
     fn mount(&mut self, route: &DocumentRoute) -> Replica {
         self.pump();
         let changes = self.documents.get(route).cloned().unwrap_or_default();
-        common::open_in(
+        crate::common::open_in(
             &self.cluster_id,
             &route.app_id,
             "ada",
@@ -679,9 +733,9 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     // Every record of the workspace is sealed under one key scope, and the
     // page asks the laptop for it: the laptop holds that admission back, so
     // the page holds no keys at all.
@@ -689,23 +743,87 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     held.requested().await;
 
-    // The host holds the workspace's keys, so nothing about the page waits on
-    // the ones it lacks: the host opens a record for the page, lists its
-    // actions, and the page's catalogue answers.
+    // The host opens a record for the page while no keys have arrived. The
+    // record's first change waits for them before the host can keep it, so
+    // the open is answered pending, not done; and the page's other requests
+    // are answered meanwhile.
     let started = Instant::now();
-    let opened = browser
-        .invoke(request(
-            &format!("workspace:{WORKSPACE}"),
-            ActionAddress::new(format!("app.{SHEETS}"), "open"),
-            InvokeArgument::None,
-        ))
-        .await;
+    let open = request(
+        &format!("workspace:{WORKSPACE}"),
+        ActionAddress::new(format!("app.{SHEETS}"), "open"),
+        InvokeArgument::None,
+    );
+    let opening = open.invocation;
+    // Asked as `tilo mcp` asks, through the session's remote actions, whose
+    // caller stops waiting once it is answered pending and only asks how it
+    // went later, as `tilo_status` does.
+    let actions = tilo_session_core::remote::SessionActions::new(
+        &browser.peer,
+        browser.workspace,
+        host.cert.device_public_key,
+    );
+    let caller = tilo_actions::remote::Caller::local_person("ada");
+    let opened = {
+        use tilo_actions::remote::ActionHost as _;
+        let (actions, caller) = (actions.clone(), caller.clone());
+        tokio::task::spawn_blocking(move || {
+            actions
+                .invoke(&caller, open)
+                .wait_timeout(Duration::from_secs(60))
+                .ok()
+                .flatten()
+                .expect("the host answers the open")
+                .expect("the host takes the open")
+        })
+        .await
+        .unwrap()
+    };
     eprintln!(
         "workspace actions latency: an open answered while the page held no keys: {:?}",
         started.elapsed()
     );
-    let ReceiptStatus::Completed { output } = &opened.status else {
-        panic!("the host opens a record while the page holds no keys: {opened:?}");
+    assert!(
+        matches!(opened.status, ReceiptStatus::Accepted),
+        "a record whose first change waits for its keys is answered pending: {opened:?}"
+    );
+    let listing = browser
+        .catalogue(CatalogueQuery {
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await;
+    assert!(
+        listing.is_ok(),
+        "the page's catalogue answers while a write waits for its keys: {listing:?}"
+    );
+
+    // The keys arrive: the held write is saved, and the open is answered
+    // done, naming the record it made.
+    drop(held);
+    let settled = {
+        use tilo_actions::remote::ActionHost as _;
+        tokio::task::spawn_blocking(move || {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                let state = actions
+                    .observe(&caller, &opening)
+                    .expect("the host remembers the open it answered pending");
+                if state.update.is_terminal() {
+                    return state.update;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the open never read as settled: {:?}",
+                    state.update
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .await
+        .unwrap()
+    };
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &settled else {
+        panic!("the open is done once its record is saved: {settled:?}");
     };
     let record = output.value.as_ref().unwrap()["record"]
         .as_str()
@@ -716,9 +834,9 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
         cluster_id: WORKSPACE.into(),
         record,
     };
-    // The page opens the record the host made for it, as a person opening the
-    // record does: without keys it holds that open record sealed.
-    browser.peer.open_route(created.clone()).unwrap();
+    // The page opens the record it could not before, and acts on it through
+    // the host: saved at once now, answered done.
+    browser.peer.send(Cmd::OpenRoute(created.clone())).unwrap();
     let provider = record_provider(&created);
     let new_sheet = browser
         .catalogue(CatalogueQuery {
@@ -732,33 +850,9 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
         .iter()
         .filter_map(|row| row.action.as_ref())
         .find(|action| action.address.action == "new-sheet")
-        .expect("the host lists the record's actions while the page holds no keys")
+        .expect("the host lists the record's actions")
         .address
         .clone();
-
-    // The host writes to the record, and the page reads none of it: it holds
-    // no keys, so the record it opened stands sealed to it.
-    let acted = browser
-        .invoke(request(
-            &provider,
-            new_sheet.clone(),
-            sheet_named("Before the keys"),
-        ))
-        .await;
-    assert!(
-        matches!(acted.status, ReceiptStatus::Completed { .. }),
-        "{acted:?}"
-    );
-    browser.pump();
-    assert!(
-        browser.documents.get(&created).is_none_or(Vec::is_empty),
-        "a page without its keys read the host's record: {:?}",
-        browser.documents.get(&created)
-    );
-
-    // The keys arrive: the page opens the record it could not before, and acts
-    // on it through the host.
-    drop(held);
     let acted = browser
         .invoke(request(&provider, new_sheet, sheet_named("After the keys")))
         .await;
@@ -790,9 +884,9 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
     let themes = browser.create("so.tilo.themes");
@@ -806,10 +900,11 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         })
         .await
         .unwrap();
-    // The catalogue offers only what the record's door runs: the record's
-    // document operations — the host runs no app's code, so effects and
-    // views stay with the app where it is open. A listed operation may fail,
-    // need confirmation or other arguments, but is never unknown.
+    // The catalogue offers only what the host runs: the record's document
+    // operations, and the effects that answer (an export kept as content),
+    // which it runs in the record's own view as a window would. Views move
+    // a window and stay with the app where it is open. A listed operation
+    // may fail, need confirmation or other arguments, but is never unknown.
     let listed: Vec<_> = page
         .rows
         .iter()
@@ -817,10 +912,12 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .collect();
     assert!(!listed.is_empty(), "a themes record offers its operations");
     assert!(
-        listed
-            .iter()
-            .all(|action| action.kind == tilo_actions::OperationKind::Document),
-        "the record catalogue must offer only document operations: {:?}",
+        listed.iter().all(|action| {
+            action.kind == tilo_actions::OperationKind::Document
+                || (action.kind == tilo_actions::OperationKind::Effect
+                    && tilo_agent_participant::apps::offered_to_agents(action))
+        }),
+        "the record catalogue must offer only what the host runs: {:?}",
         listed
             .iter()
             .map(|action| &action.address)
@@ -862,10 +959,10 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let retained = hosted
         .relay
         .workspace_records()
-        .retained(support::workspace())
+        .retained(crate::support::workspace())
         .await
         .unwrap();
-    let (readable, _) = common::member_documents(
+    let (readable, _) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -882,9 +979,9 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -1017,7 +1114,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     assert_eq!(
         refused.status,
         ReceiptStatus::Rejected {
-            error: ActionHostError::ConfirmationRequired
+            error: ActionHostError::confirmation_required()
         }
     );
     let confirmed = InvokeRequest {
@@ -1030,7 +1127,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         !matches!(
             ran.status,
             ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired
+                error: ActionHostError::ConfirmationRequired { .. }
             }
         ),
         "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
@@ -1079,10 +1176,10 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let retained = hosted
         .relay
         .workspace_records()
-        .retained(support::workspace())
+        .retained(crate::support::workspace())
         .await
         .unwrap();
-    let (readable, _) = common::member_documents(
+    let (readable, _) = crate::common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -1099,9 +1196,9 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = support::scratch_dir();
+    let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     let sheets = browser.create(SHEETS);

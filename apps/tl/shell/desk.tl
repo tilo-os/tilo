@@ -262,10 +262,11 @@ view top_bar(d: Desk, traditional: Bool) {
 /// The desk at rest under its bar: the banner a notice rose as. A person with windows sees
 /// them through the compositor behind this, and who is here is in the bar's own menu, so the
 /// desk at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
-/// A banner stands the desk's gutter in from the window's edge, as a surface does.
+/// A banner stands the desk's gutter in from the window's edge, as a surface does: its card is
+/// rounded, and a rounded card on the edge has its corners cut by it.
 view at_rest(d: Desk) {
     if d.banner != "" {
-        stack(padding: if space.compact { .section } else { .none }) {
+        stack(padding: .group) {
             banner(d)
         }
     }

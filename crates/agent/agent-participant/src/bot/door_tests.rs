@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{CatalogueRow, RemoteActionTarget};
 
 use super::*;
 
@@ -27,6 +27,8 @@ struct FakeParticipant {
     history: Arc<Mutex<Vec<(DocumentRoute, ActionContext)>>>,
     /// The entries the step in history queued, as its change shows.
     queued_in_history: Arc<Mutex<Vec<String>>>,
+    /// The records' documents, by id; `secret` may not be read.
+    records: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 fn route(app: &str, record: &str) -> DocumentRoute {
@@ -42,12 +44,19 @@ impl DoorParticipant for FakeParticipant {
         WORKSPACE
     }
 
-    fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)> {
+    fn offered(&self) -> Vec<(DocumentRoute, Vec<CatalogueRow>)> {
         Vec::new()
     }
 
     fn holds(&self, route: &DocumentRoute) -> bool {
         route.record.starts_with("rec-")
+    }
+
+    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+        if route.record == "secret" {
+            return Err("not the bot's to read".into());
+        }
+        Ok(self.records.get(&route.record).cloned())
     }
 
     fn invoke(
@@ -353,4 +362,51 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
         .map(|(_, _, address)| address.action.clone())
         .collect();
     assert_eq!(actions, ["send", "field-edit"]);
+}
+
+#[test]
+fn a_bot_reads_the_records_it_holds_through_the_record_door() {
+    use automerge::transaction::Transactable as _;
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(automerge::ROOT, "title", "Plan").unwrap();
+    let fake = FakeParticipant {
+        records: std::collections::BTreeMap::from([("rec-1".to_owned(), doc.save())]),
+        ..FakeParticipant::default()
+    };
+    let door = door(fake, vec![]);
+    let reads = door.record_reads().unwrap();
+    let ask = |record: &str| tilo_actions::remote::RecordAsk {
+        address: RecordAddress {
+            app: "so.tilo.notes".into(),
+            record: record.into(),
+        },
+        joined: false,
+    };
+    let now = tilo_clock::now();
+    let read = tilo_actions::remote::read_records(
+        reads.as_ref(),
+        &bot(),
+        &[ask("rec-1"), ask("rec-9")],
+        None,
+        now,
+    )
+    .unwrap()
+    .readable()
+    .unwrap();
+    assert_eq!(
+        read["records"],
+        json!([
+            {"record": "rec-1", "value": {"title": "Plan"}},
+            {"record": "rec-9", "absent": true}
+        ])
+    );
+    let person = Caller::local_person("ada").in_workspace(WORKSPACE);
+    assert!(matches!(
+        tilo_actions::remote::read_records(reads.as_ref(), &person, &[ask("rec-1")], None, now),
+        Err(ActionHostError::NotPermitted)
+    ));
+    assert!(matches!(
+        tilo_actions::remote::read_records(reads.as_ref(), &bot(), &[ask("secret")], None, now),
+        Err(ActionHostError::Refused { .. })
+    ));
 }

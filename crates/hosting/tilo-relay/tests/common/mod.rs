@@ -189,13 +189,47 @@ async fn spawn_relay_with(
         revocations: RevocationList::new(),
     };
     cfg.services.app_serving = plane.is_some();
-    let relay = Relay::start_with_app_serving(cfg, identity, plane)
-        .await
-        .unwrap();
+    let relay = start_relay_serving(cfg, identity, plane).await.unwrap();
     for id in workspaces {
         admit_members(&relay, *id, members, state_root).await;
     }
     relay
+}
+
+/// A host under test on this machine's loopback packet relay: the one way these tests start a
+/// host, so none of them relays through number 0's relays or publishes to its directory.
+///
+/// Boxed: a test's setup future carries its host's config and identity, and a whole scenario's
+/// would grow past what the lint allows without this on the heap.
+///
+/// # Errors
+///
+/// As [`Relay::start`].
+pub fn start_relay(
+    cfg: RelayConfig,
+    identity: RelayIdentity,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Relay, tilo_relay::RelayError>> + Send>,
+> {
+    start_relay_serving(cfg, identity, None)
+}
+
+/// [`start_relay`], with the app-serving plane `plane` when a test hosts apps.
+///
+/// # Errors
+///
+/// As [`Relay::start`].
+pub fn start_relay_serving(
+    cfg: RelayConfig,
+    identity: RelayIdentity,
+    plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Relay, tilo_relay::RelayError>> + Send>,
+> {
+    Box::pin(async move {
+        Relay::start_with_app_serving_and_relay_mode(cfg, identity, plane, test_relay::relay_mode())
+            .await
+    })
 }
 
 /// Make `members` the room's member devices, as the room's governor does:
@@ -220,18 +254,19 @@ pub async fn admit_members(
         .unwrap();
 }
 
-/// Bind a plain iroh endpoint the tests can use to dial a relay.
+/// Bind a plain iroh endpoint the tests can use to dial a relay. It carries no relay and no
+/// directory of its own: every address it dials is one a test holds ([`test_relay::loopback`] is
+/// what a device's own relays are in these tests).
 pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
-/// An endpoint whose key is the device's own, as a device dials with.
+/// An endpoint whose key is the device's own, as a device dials with: relays on, as a page and a
+/// desk dial a host they were handed a link to (`tilo-relay-client`'s `Host::bind` reaches the
+/// host through the relay it names). Its relay is this machine's loopback one
+/// ([`test_relay::loopback`]), so a link's relay URL is one this machine answers on.
 pub async fn device_endpoint(device: &TestDevice) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
+    test_relay::endpoint(iroh::SecretKey::from_bytes(&device.sk.to_bytes())).await
 }
 
 /// A host in `mode` on `device`'s own endpoint, routed as its embedder

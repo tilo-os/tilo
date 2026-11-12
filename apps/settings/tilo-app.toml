@@ -28,8 +28,8 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-platforms = ["tilo-os"]
-platform-reason = "The Tilo OS control panel."
+platforms = ["tilo-os", "web"]
+platform-reason = "The Tilo OS control panel; on the web, the person's identity, devices, agents, keys and billing."
 
 [package.names]
 de = "Einstellungen"
@@ -48,7 +48,7 @@ optional = ["files.open", "files.save", "files.paths", "app-files", "open-uri", 
 query = true
 invoke = true
 [resources]
-kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.device-vpn", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.display-change", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock", "settings.shortcuts", "settings.accessibility-device", "settings.appearance-device", "settings.audio-device", "settings.desktop-controls-device", "settings.hosted-agent-providers", "settings.input-device", "settings.night-light", "settings.network-usage", "settings.identity", "settings.search_history", "shell-views"]
+kinds = ["settings.accessibility", "settings.agent-door", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.device-vpn", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.display-change", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock", "settings.shortcuts", "settings.accessibility-device", "settings.appearance-device", "settings.audio-device", "settings.desktop-controls-device", "settings.hosted-agent-providers", "settings.input-device", "settings.night-light", "settings.network-usage", "settings.identity", "settings.search_history", "shell-views"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -83,17 +83,17 @@ mode = "off"
 # image's system authority grant. A build is offered to, installed on and run
 # by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
 system = "required@1"
-collab = "optional@19"
-tilo-fs = "optional@19"
+collab = "optional@21"
+tilo-fs = "optional@21"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui = "optional@27"
-tools = "optional@19"
+tools = "optional@21"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
 # requiring either socket here instead prevents every other settings pane from
 # opening at all.
-models = "optional@19"
-model-gateway = "optional@19"
+models = "optional@21"
+model-gateway = "optional@21"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
 app-host = "optional@5"

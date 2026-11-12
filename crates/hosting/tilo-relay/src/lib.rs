@@ -65,15 +65,25 @@
 
 #[cfg(feature = "agents")]
 pub mod agents;
+#[cfg(feature = "agents")]
+pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 mod channels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod content;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
+#[cfg(feature = "web")]
+pub mod door;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod files_content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_jobs;
+#[cfg(feature = "agents")]
+pub mod hosted_browser;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +92,8 @@ pub mod offload;
 mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_media;
+#[cfg(feature = "agents")]
+pub mod placed_browsers;
 #[cfg(feature = "agents")]
 pub mod placed_shells;
 #[cfg(not(target_arch = "wasm32"))]
@@ -107,8 +119,8 @@ tilo_agent_participant::app_worker!();
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_room_host::{
-    app_serving, compaction, host, member_limits, metrics, payloads, peer, presence_mailbox, store,
-    surfaces, workspace, workspace_records, workspaces,
+    app_serving, compaction, environment, host, member_limits, metrics, payloads, peer,
+    presence_mailbox, store, surfaces, workspace, workspace_records, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_room_host::{authority_epoch, handshake, workspace_access};

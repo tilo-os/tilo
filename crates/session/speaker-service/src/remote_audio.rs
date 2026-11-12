@@ -1234,12 +1234,12 @@ pub fn request(
         channels: REMOTE_AUDIO_CHANNELS,
         frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
     };
-    if let Err(error) = network.send_personal_fabric_action(target, action) {
+    if let Err(error) = network.try_send_personal_fabric_action(target, action) {
         if let Ok(mut state) = state().lock() {
             state.outbound.remove(&session_id);
             state.source_tokens.insert(source_token, selection);
         }
-        return Err(error);
+        return Err(error.to_string());
     }
     Ok(session_id)
 }
@@ -1303,7 +1303,7 @@ pub fn authorize(
             },
         );
     }
-    let result = network.send_personal_fabric_action(
+    let result = network.try_send_personal_fabric_action(
         &pending.source,
         PersonalFabricAction::RemoteAudioDecision {
             session_id,
@@ -1316,7 +1316,7 @@ pub fn authorize(
     {
         state.inbound.remove(&session_id);
     }
-    result.map(|_| ())
+    result.map(|_| ()).map_err(|error| error.to_string())
 }
 
 /// Choose which part of the stereo stream this device plays for an inbound
@@ -1672,7 +1672,8 @@ pub fn stop(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String
         return Err(crate::i18n::t("remote-audio-error-route-inactive"));
     };
     network
-        .send_personal_fabric_action(&peer, action)
+        .try_send_personal_fabric_action(&peer, action)
+        .map_err(|error| error.to_string())
         .map(|_| ())
 }
 
@@ -1759,7 +1760,7 @@ pub fn handle_action(network: &dyn FabricLink, envelope: &PersonalFabricActionEn
                 drop(unused);
             }
             if remove && let Some(authorization) = authorization {
-                let _ = network.send_personal_fabric_action(
+                let _ = network.try_send_personal_fabric_action(
                     &envelope.source,
                     PersonalFabricAction::RemoteAudioStop {
                         session_id: *session_id,
@@ -1825,7 +1826,7 @@ pub fn handle_action(network: &dyn FabricLink, envelope: &PersonalFabricActionEn
                 }
             }
             if failed {
-                let _ = network.send_personal_fabric_action(
+                let _ = network.try_send_personal_fabric_action(
                     &envelope.source,
                     PersonalFabricAction::RemoteAudioStop {
                         session_id: *session_id,
@@ -1944,7 +1945,7 @@ fn pump_state(
     if !enabled {
         drop(guard);
         for message in egress {
-            let _ = network.send_personal_fabric_action(&message.target, message.action);
+            let _ = network.try_send_personal_fabric_action(&message.target, message.action);
         }
         return;
     }
@@ -2162,14 +2163,6 @@ mod tests {
         }
         fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
             None
-        }
-        fn send_personal_fabric_action(
-            &self,
-            _: &DeviceId,
-            _: tilo_device_fabric::PersonalFabricAction,
-        ) -> Result<[u8; 16], String> {
-            self.sent.set(self.sent.get() + 1);
-            Err("offline".into())
         }
         fn try_send_personal_fabric_action(
             &self,

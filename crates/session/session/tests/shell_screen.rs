@@ -16,17 +16,15 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilolang_tilo::records_service::RecordService;
 
-use common::window::KEY_A;
-use common::{
-    CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press,
-    show_preset, until,
+use crate::common::window::KEY_A;
+use crate::common::{
+    CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display,
+    on_screen, press, press_where, show_preset, until,
 };
 
 /// What the strips show of a desk holding no window: their own empty state, which no other surface
@@ -371,7 +369,8 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
         on_screen(session, &shown).is_some()
     });
     // The window is the desk's height under the bar and the dock, not a line.
-    let window = within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
+    let window =
+        window_within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
     assert!(
         window.3 > f64::from(HEIGHT) / 2.0,
         "the placed window is the desk's height, not a line: {window:?}"
@@ -395,8 +394,9 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
         );
     }
     // Under the window's bar: the bar is its tabs and the controls, and the app's body stands below
-    // it rather than on its line.
-    let controls = on_screen(&session, "This window").expect("the window's controls stand");
+    // it rather than on its line. The window's menu is the first of its controls, named for the
+    // window it is the menu of.
+    let controls = window_menu(&session, &shown).expect("the window's controls stand");
     assert!(
         title.1 >= controls.1 + controls.3,
         "the note's title stands under the window's bar: {title:?} under {controls:?}"
@@ -477,14 +477,71 @@ fn shown_as(session: &Session, title: &str) -> String {
 /// Where the shell's control named `name` stands, when the whole of it is on a display `width` by
 /// `height` (not only part of it, as [`on_screen`] asks).
 fn within(session: &Session, name: &str, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
-    session.shell_control(name).filter(|&(x, y, w, h)| {
-        w > 0.0
-            && h > 0.0
-            && x >= 0.0
-            && y >= 0.0
-            && x + w <= f64::from(width)
-            && y + h <= f64::from(height)
-    })
+    session
+        .shell_control(name)
+        .filter(|&rect| whole_on(rect, width, height))
+}
+
+/// Whether the whole of the rectangle `(x, y, w, h)` stands on a display `width` by `height`.
+fn whole_on((x, y, w, h): (f64, f64, f64, f64), width: i32, height: i32) -> bool {
+    w > 0.0
+        && h > 0.0
+        && x >= 0.0
+        && y >= 0.0
+        && x + w <= f64::from(width)
+        && y + h <= f64::from(height)
+}
+
+/// Where the window the shell shows as `name` stands: its frame. The desk says a window's name
+/// more than once — its frame is named for it, and so is the window's own menu in its bar, which
+/// lists the commands of the place the window shows — so the first control of that name is not
+/// the window. The frame is the one the others stand in: the largest of them.
+fn window_frame(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    session
+        .shell_controls(name)
+        .into_iter()
+        .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+}
+
+/// Where the window the shell shows as `name` stands, when the whole of it is on a display `width`
+/// by `height`: [`within`] for the window's frame.
+fn window_within(
+    session: &Session,
+    name: &str,
+    width: i32,
+    height: i32,
+) -> Option<(f64, f64, f64, f64)> {
+    window_frame(session, name).filter(|&rect| whole_on(rect, width, height))
+}
+
+/// Where the menu of the window the shell shows as `name` stands on the standard display: the
+/// first of the window's own controls in its one bar, named for the window it is the menu of. Of
+/// the controls by that name it is the one standing in the window's frame at an icon's size: the
+/// smallest of them, where a tab of that name is as wide as its title.
+fn window_menu(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    let frame = window_frame(session, name)?;
+    session
+        .shell_controls(name)
+        .into_iter()
+        .filter(|&(x, y, w, h)| {
+            let (across, down) = (x + w / 2.0, y + h / 2.0);
+            w * h < frame.2 * frame.3
+                && across >= frame.0
+                && across <= frame.0 + frame.2
+                && down >= frame.1
+                && down <= frame.1 + frame.3
+        })
+        .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+        .filter(|&rect| on_display(rect, WIDTH, HEIGHT))
+}
+
+/// Press the menu of the window the shell shows as `name` with the pointer, as the person does.
+fn press_window_menu(session: &mut Session, name: &str) {
+    press_where(
+        session,
+        &format!("the menu of the window {name}"),
+        |session| window_menu(session, name),
+    );
 }
 
 /// Whether two rectangles `(x, y, w, h)` share any area.
@@ -510,7 +567,7 @@ fn salted_session() -> (Session, Vec<String>) {
 /// Place `resource` on the surface in front, as activating a reference in a view does: the desk's
 /// own workspace, row, strip and place ids, minted on this device. The place's id.
 fn place_here(session: &mut Session, resource: &str) -> u64 {
-    let before: Vec<String> = common::places(session)
+    let before: Vec<String> = crate::common::places(session)
         .iter()
         .map(|place| place.key.clone())
         .collect();
@@ -528,10 +585,10 @@ fn place_here(session: &mut Session, resource: &str) -> u64 {
         .invoke("shell:arrangement", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     until(session, "the place is in the record", |session| {
-        common::places(session).len() > before.len()
+        crate::common::places(session).len() > before.len()
     });
-    common::number(
-        &common::places(session)
+    crate::common::number(
+        &crate::common::places(session)
             .iter()
             .map(|place| place.key.clone())
             .find(|key| !before.contains(key))
@@ -557,17 +614,17 @@ fn add_strip(session: &Session, name: &str) -> u64 {
 
 /// The strip the place `place` stands in, by the record's ids.
 fn place_strip(session: &Session, place: u64) -> Option<u64> {
-    common::strip_of(session, place).map(|strip| common::number(&strip.key))
+    crate::common::strip_of(session, place).map(|strip| crate::common::number(&strip.key))
 }
 
 /// The row the place `place` stands in, by the record's ids.
 fn place_row(session: &Session, place: u64) -> Option<u64> {
-    common::strip_of(session, place).map(|strip| common::number(&strip.row))
+    crate::common::strip_of(session, place).map(|strip| crate::common::number(&strip.row))
 }
 
 /// The width of the strip `strip` , in per-mille of its row.
 fn strip_width(session: &Session, strip: u64) -> Option<u32> {
-    common::strip(session, strip)
+    crate::common::strip(session, strip)
         .map(|strip| u32::try_from(strip.width).expect("a width of per-mille fits its count"))
 }
 
@@ -610,15 +667,17 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         placed > u64::try_from(i64::MAX).unwrap(),
         "the desk's ids do not fit an integer: {placed}"
     );
-    // The window's own controls stand in its one bar: its menu, its maximize and its close.
+    // The window's own controls stand in its one bar: its menu, named for the window it is the
+    // menu of, its maximize and its close.
+    let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the window's controls", |session| {
-        on_screen(session, "This window").is_some() && on_screen(session, "Close").is_some()
+        window_menu(session, &shown).is_some() && on_screen(session, "Close").is_some()
     });
     let strip = place_strip(&session, placed).expect("the place stands in a strip");
     assert_ne!(strip_width(&session, strip), Some(1000), "it starts narrow");
 
     // The window's width menu resizes the window the menu is on.
-    press(&mut session, "This window");
+    press_window_menu(&mut session, &shown);
     until(&mut session, "the width menu", |session| {
         on_screen(session, "Wide").is_some()
     });
@@ -629,23 +688,23 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     });
 
     // The window's pin presses the place the window is on.
-    press(&mut session, "This window");
+    press_window_menu(&mut session, &shown);
     until(&mut session, "the window's menu", |session| {
         on_screen(session, "Pin window").is_some()
     });
     press(&mut session, "Pin window");
     until(&mut session, "the place pinned", |session| {
-        common::place(session, placed).is_some_and(|place| place.pinned)
+        crate::common::place(session, placed).is_some_and(|place| place.pinned)
     });
 
     // A second row on the desk: the window's move names it, by the row's own name.
     let second = add_strip(&session, "Elsewhere");
     until(&mut session, "the second row", |session| {
-        common::rows(session)
+        crate::common::rows(session)
             .iter()
-            .any(|row| common::number(&row.key) == second)
+            .any(|row| crate::common::number(&row.key) == second)
     });
-    press(&mut session, "This window");
+    press_window_menu(&mut session, &shown);
     until(&mut session, "the rows to move to", |session| {
         on_screen(session, "Move to Elsewhere").is_some()
     });
@@ -696,10 +755,10 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     let one_name = shown_as(&session, TITLES[0]);
     let two_name = shown_as(&session, TITLES[1]);
     until(&mut session, "the window's controls", |session| {
-        on_screen(session, "This window").is_some()
+        window_menu(session, &one_name).is_some()
     });
     let menu = format!("Move into {two_name} as a tab");
-    press(&mut session, "This window");
+    press_window_menu(&mut session, &one_name);
     until(&mut session, "the strips to move into", |session| {
         on_screen(session, &menu).is_some()
     });
@@ -709,11 +768,11 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
         place_strip(session, one) == Some(strip_of_two)
             && place_strip(session, two) == Some(strip_of_two)
     });
-    let strip = common::strip(&session, strip_of_two).expect("the strip reads");
-    let placed: Vec<u64> = common::places(&session)
+    let strip = crate::common::strip(&session, strip_of_two).expect("the strip reads");
+    let placed: Vec<u64> = crate::common::places(&session)
         .iter()
         .filter(|place| place.strip == strip.key)
-        .map(|place| common::number(&place.key))
+        .map(|place| crate::common::number(&place.key))
         .collect();
     assert_eq!(placed.len(), 2, "the strip holds both places: {placed:?}");
 
@@ -732,13 +791,15 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     // Choosing a tab shows its place: the second tab, and the strip's reading follows.
     press(&mut session, &two_name);
     until(&mut session, "the second tab in front", |session| {
-        common::strip(session, strip_of_two).is_some_and(|strip| strip.active == two.to_string())
+        crate::common::strip(session, strip_of_two)
+            .is_some_and(|strip| strip.active == two.to_string())
     });
 
     // And the first one again.
     press(&mut session, &one_name);
     until(&mut session, "the first tab in front", |session| {
-        common::strip(session, strip_of_two).is_some_and(|strip| strip.active == one.to_string())
+        crate::common::strip(session, strip_of_two)
+            .is_some_and(|strip| strip.active == one.to_string())
     });
 
     // Closing a tab takes that place off the strip, and the other stays.
@@ -769,7 +830,7 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
     let note = notes.first().expect("a note").clone();
     let placed = place(&mut session, &note);
     let strip = place_strip(&session, placed).expect("the place stands in a strip");
-    let before = common::places(&session).len();
+    let before = crate::common::places(&session).len();
 
     // The launcher's "Open as a tab" runs the arranging action with the strip in front named.
     session
@@ -787,18 +848,18 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
         )
         .unwrap_or_else(|error| panic!("the found note opens as a tab: {error:?}"));
     until(&mut session, "the found note in the strip", |session| {
-        common::places(session).len() > before
-            && common::places(session)
+        crate::common::places(session).len() > before
+            && crate::common::places(session)
                 .iter()
                 .any(|place| place.strip == strip.to_string() && place.key != placed.to_string())
     });
-    let found = common::places(&session)
+    let found = crate::common::places(&session)
         .into_iter()
         .find(|place| place.strip == strip.to_string() && place.key != placed.to_string())
         .expect("the found note joined the strip");
     assert_eq!(
         found.key,
-        common::strip(&session, strip)
+        crate::common::strip(&session, strip)
             .expect("the strip reads")
             .active,
         "the found note stands in front, as a tab arrives"
@@ -827,10 +888,10 @@ fn a_place_arrives_over_the_frames_between() {
     let note = notes.first().expect("a note").clone();
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
-    let arriving = common::wait_for(&mut session, "the note on the desk", |session| {
+    let arriving = crate::common::wait_for(&mut session, "the note on the desk", |session| {
         on_screen(session, &shown)
             .is_some()
-            .then(|| common::shot(session, "motion-arriving"))
+            .then(|| crate::common::shot(session, "motion-arriving"))
     });
     // The frames right after it appears change: the window is on its way in.
     let mut changes = 0;
@@ -839,8 +900,8 @@ fn a_place_arrives_over_the_frames_between() {
         session
             .step(std::time::Duration::from_millis(16))
             .expect("a frame");
-        let after = common::shot(&mut session, "motion-arriving-next");
-        changes += common::changed(&before, &after);
+        let after = crate::common::shot(&mut session, "motion-arriving-next");
+        changes += crate::common::changed(&before, &after);
         before = after;
     }
     assert!(
@@ -868,9 +929,9 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
 
     // Nothing stands on the canvas yet: a fresh desk holds no window.
     assert!(
-        common::places(&session).is_empty(),
+        crate::common::places(&session).is_empty(),
         "a fresh desk has nothing placed: {:?}",
-        common::places(&session)
+        crate::common::places(&session)
     );
 
     // The person opens an app, as the dock or the launcher does.
@@ -886,7 +947,7 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
 
     // Every window the desk holds stands on the canvas, and the app's window is on screen.
     until(&mut session, "the opened window on the canvas", |session| {
-        !common::places(session).is_empty()
+        !crate::common::places(session).is_empty()
     });
     let drawn = session.handle().read(|tree| {
         tree.active_workspace().is_some_and(|workspace| {
@@ -900,11 +961,11 @@ fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
     assert!(
         drawn,
         "every window the desk holds stands on the canvas: {:?}",
-        common::places(&session)
+        crate::common::places(&session)
     );
     // And the shell lays the window's frame on the display, not off it: the place's name is what a
     // window's frame is called, and the canvas draws it where its point is.
-    let name = common::places(&session)
+    let name = crate::common::places(&session)
         .first()
         .map(|place| place.name.clone())
         .expect("the opened window's place");
@@ -978,7 +1039,8 @@ fn the_desk_draws_the_workspace_in_front_and_no_other() {
     until(&mut session, "the note's window again", |session| {
         on_screen(session, &shown).is_some()
     });
-    let window = within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
+    let window =
+        window_within(&session, &shown, WIDTH, HEIGHT).expect("the window is on the display");
     assert!(
         window.3 > f64::from(HEIGHT) / 2.0,
         "the window in front has the desk's room, not half of it: {window:?}"
@@ -1078,14 +1140,14 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
 
     // A window of an app this session does not run as a view opens on the desk: a client of its
     // own, as a Rust app's window is.
-    let mut client = common::window::Client::connect(session.compositor());
+    let mut client = crate::common::window::Client::connect(session.compositor());
     client.pump(&mut session, |_, seen| {
         seen.wm_base.is_some() && seen.shm.is_some() && seen.seat.is_some()
     });
     client.pump(&mut session, |_, seen| seen.keyboard.is_some());
     client.map_plain(&mut session, "so.tilo.chat", (560, 520));
     let (id, (x, y, w, h)) =
-        common::window::window_of(session.compositor(), "so.tilo.chat").expect("mapped");
+        crate::common::window::window_of(session.compositor(), "so.tilo.chat").expect("mapped");
     assert!(x >= 0 && y >= 0, "the window stands on the screen: {x},{y}");
 
     // A press lands inside it, as a person's does: the pointer there, then the button down and up.
@@ -1093,13 +1155,16 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
         f64::from(x) + f64::from(w) / 2.0,
         f64::from(y) + f64::from(h) / 3.0,
     );
-    common::window::click(&mut session, px, py);
+    crate::common::window::click(&mut session, px, py);
     for _ in 0..4 {
         client.exchange();
         session.step(std::time::Duration::from_millis(1)).unwrap();
     }
     assert!(
-        client.seen.buttons.contains(&common::window::BTN_LEFT),
+        client
+            .seen
+            .buttons
+            .contains(&crate::common::window::BTN_LEFT),
         "the press reaches the window: {:?} (the pointer came onto it {} times)",
         client.seen.buttons,
         client.seen.pointer_on_window

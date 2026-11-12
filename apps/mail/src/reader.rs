@@ -16,6 +16,7 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -23,6 +24,7 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 #[cfg(test)]
 use ui::webview::{SharedEngine, WebViewCommand};
+use ui::widget::DrawChild;
 use ui::widget::{
     AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, Button, ButtonFace, ChipFace,
     ChipLead, ControlSize, EmptyState, EmptyStateContent, FindMatch, FindOptions, Findable,
@@ -30,6 +32,7 @@ use ui::widget::{
 };
 use ui::{TextKind, TextRole};
 
+use crate::i18n::CATALOG;
 use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, ReaderChoice, Shared};
 use crate::util::{format_absolute, local_minutes};
@@ -408,9 +411,13 @@ impl Flow<'_, '_> {
                     self.ctx.transform,
                     self.ctx.text,
                     theme,
-                    &ButtonFace::icon_only(save, Icon::Download, "Save")
-                        .control_size(ControlSize::Small)
-                        .hovered(save.contains(self.pointer)),
+                    &ButtonFace::icon_only(
+                        save,
+                        Icon::Download,
+                        &CATALOG.t("mail-save-attachment"),
+                    )
+                    .control_size(ControlSize::Small)
+                    .hovered(save.contains(self.pointer)),
                 );
                 self.saves.push((save, message.id, index));
                 x += h + gap;
@@ -634,7 +641,7 @@ impl MessageReader {
         // What it is: the subject, then who it goes to and from which
         // account.
         let subject = if queued.subject.trim().is_empty() {
-            "No subject".to_owned()
+            CATALOG.t("mail-no-subject")
         } else {
             queued.subject.clone()
         };
@@ -647,7 +654,10 @@ impl MessageReader {
             Some(wide),
         );
         y += ctx.line_box(TextRole::Heading) + f64::from(spacing.rhythm.related);
-        let to = format!("To {}", queued.to);
+        let to = CATALOG.t_args(
+            "mail-to",
+            &[("recipient", ui::i18n::ArgValue::Text(queued.to.clone()))],
+        );
         ctx.text_role(
             &to,
             TextRole::Body,
@@ -656,7 +666,10 @@ impl MessageReader {
             Some(wide),
         );
         y += ctx.line_box(TextRole::Body);
-        let from = format!("From {}", queued.account);
+        let from = CATALOG.t_args(
+            "mail-from",
+            &[("sender", ArgValue::Text(queued.account.clone()))],
+        );
         ctx.text_role(
             &from,
             TextRole::Body,
@@ -824,7 +837,7 @@ impl MessageReader {
         let inset = body.input.text_inset_x(theme);
         let rect = Rect::new(flow.x - inset, flow.y, flow.x + flow.width + inset, flow.y);
         let height = body.input.place_wrapped(rect, flow.ctx.text, theme);
-        body.input.draw(
+        body.input.draw_child(
             flow.ctx.scene,
             flow.ctx.transform,
             flow.ctx.text,
@@ -997,7 +1010,7 @@ impl MessageReader {
         let title = flow.style(TextRole::Title);
         let subject = head.thread_subject();
         let subject = if subject.trim().is_empty() {
-            "No subject".to_owned()
+            CATALOG.t("mail-no-subject")
         } else {
             subject
         };
@@ -1017,14 +1030,20 @@ impl MessageReader {
                 ),
                 theme.text_dim,
             );
-            let text = if head.read {
-                "Preview"
+            let preview = CATALOG.t(if head.read {
+                "mail-preview"
             } else {
-                "Preview, still unread"
-            };
+                "mail-preview-unread"
+            });
             let x = flow.x + icon + f64::from(theme.tokens.metrics.icon_label_gap);
             let width = flow.width - (x - flow.x);
-            flow.line_at(text, &caption, theme.text_dim, Point::new(x, top), width);
+            flow.line_at(
+                &preview,
+                &caption,
+                theme.text_dim,
+                Point::new(x, top),
+                width,
+            );
             flow.y += line;
         }
         flow.y += f64::from(spacing.s6);
@@ -1667,26 +1686,26 @@ impl Widget for MessageReader {
 
     /// Over a link of an HTML message, the address it really opens; over an
     /// attachment, what a press does.
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer;
         if self.html.rect().is_some_and(|rect| rect.contains(point))
             && let Some(link) = self.html.hovered()
         {
-            return Some(link);
+            return Some(link.into());
         }
         if self
             .attachments
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Open");
+            return Some("Open".into());
         }
         if self
             .attachment_saves
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Save");
+            return Some("Save".into());
         }
         None
     }
@@ -1809,7 +1828,7 @@ mod tests {
 
     fn draw(reader: &mut MessageReader) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1820,7 +1839,7 @@ mod tests {
 
     fn draw_themed(reader: &mut MessageReader, theme: &Theme) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2092,7 +2111,7 @@ mod tests {
         reader.set_html_engine(engine.clone());
         let dense = |reader: &mut MessageReader| {
             let mut scene = Scene::new();
-            reader.draw(
+            reader.draw_child(
                 &mut scene,
                 Affine::scale(2.0),
                 &mut TextRenderer::new(),
@@ -2263,7 +2282,7 @@ mod tests {
         ));
         draw(&mut reader);
         assert_eq!(
-            reader.tooltip(),
+            reader.tooltip().as_deref(),
             Some("https://fieldnotes.example/read"),
             "the pointer over a link shows where it really goes"
         );

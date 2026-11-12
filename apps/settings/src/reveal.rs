@@ -17,6 +17,7 @@
 use std::cell::Cell;
 
 use settings_store::index::Setting;
+use ui::widget::DrawChild;
 use ui::widget::{Element, Scrollable, Widget};
 
 /// How long a shown setting's row stays marked, in seconds.
@@ -164,7 +165,7 @@ impl ui::widget::Decorator for Reveal {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         // The row of a setting just shown is marked as a found match is,
         // for a moment.
         match self.highlighted_row() {

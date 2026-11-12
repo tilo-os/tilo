@@ -32,7 +32,7 @@ use crate::chrome::{
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
 use ui::TextRole;
-use ui::presence::{PresenceCtx, user_color};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -54,7 +54,7 @@ mod workspace;
 use clock::{time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates};
 pub use reveal::{Finger, Reveals};
-use sharing::{FaceLook, roster_colors};
+use sharing::FaceLook;
 pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
 
@@ -167,6 +167,11 @@ struct CacheFingerprint {
     collaborator_names: Vec<String>,
     collaborator_agents: Vec<bool>,
     collaborator_overflow: usize,
+    /// How many of the people present the bar stood faces for: a narrower bar folds more of them
+    /// into the count badge, which repaints the bar.
+    faces_shown: usize,
+    /// Which of them a phone-wide bar stands its one face for: the one who did something last.
+    latest: Option<usize>,
     /// Each face's live look: dimmed, its call ring's level and its bounce, quantised, so presence
     /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
@@ -175,6 +180,8 @@ struct CacheFingerprint {
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,
+    /// Whether the middle lane is the following banner's rather than the clock's.
+    following: bool,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
     /// frame to frame at full precision.
@@ -356,8 +363,8 @@ pub struct TopBarChrome {
     cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
     collaborator_names: Vec<String>,
-    /// Same index as `collaborator_initials` . Resolved from `cursor_color` when present, else
-    /// [`ui::presence::user_color`].
+    /// Same index as `collaborator_initials` . The workspace's colour for each, else
+    /// [`ui::presence::participant_color`].
     collaborator_colors: Vec<Color>,
     /// Same index as `collaborator_initials` : drawn with the agent mark.
     collaborator_agents: Vec<bool>,
@@ -368,11 +375,35 @@ pub struct TopBarChrome {
     /// they are in a call, as the roster they were read from says. `None` for a face the roster
     /// says nothing of, which the presence beside the bar answers instead.
     collaborator_presence: Vec<Option<(ui::Availability, bool)>>,
+    /// How many of the people present the last draw stood a face for: the rest the "+N" badge
+    /// counts. The bar stands as many as it has room for, the one this person follows first.
+    faces_shown: usize,
+    /// Whether this person's view follows someone here: the bar's middle lane then belongs to the
+    /// banner that says whose view it is and offers Stop, so the clock stands aside rather than
+    /// under it.
+    following: bool,
     /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
     /// draw.
     face_looks: Vec<FaceLook>,
-    /// Where each face was painted, same index.
+    /// Where each face was painted, same index as [`Self::shown_faces`].
     face_rects: Vec<Rect>,
+    /// The roster index (into `collaborator_initials`) of each face the last draw stood, in the
+    /// order drawn: a wide bar's are the first few in roster order, a phone's is the one who did
+    /// something last.
+    shown_faces: Vec<usize>,
+    /// What each person here was last seen doing, and since which sync: the roster id, a digest of
+    /// what their presence says (where they are, what they say they are doing, their call), and
+    /// the [`Self::syncs`] count of the sync that saw it change or saw them arrive.
+    seen_doing: HashMap<String, (u64, u64)>,
+    /// How many times this bar has read the workspace's presence. Two changes that arrive in one
+    /// instant still order: the sync that sees a change stamps it with the count it holds, so a
+    /// later sync's change is later, and never ties with an earlier one.
+    syncs: u64,
+    /// The roster index of the person here, other than the one this view follows, whose presence
+    /// changed last: who a phone-wide bar, with room for one face, stands that face for.
+    latest_active: Option<usize>,
+    /// Where a phone-wide bar's people button wore its "+N"; zero when it wore none.
+    people_count_rect: Rect,
     /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<Instant>,
     /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
@@ -386,6 +417,10 @@ pub struct TopBarChrome {
     synced_revision: u64,
     /// `Some(menu open)` when the bar leads with the Tilo mark ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
+    /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
+    /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way
+    /// there, and the workspace name gets its lane.
+    device_clock: bool,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
@@ -407,6 +442,10 @@ pub struct TopBarChrome {
     tray_hit_rect: Rect,
     /// Where the bell's unread count was painted, `Rect::ZERO` without one.
     bell_badge_rect: Rect,
+    /// The bell's own click target inside the status cluster: a press there opens the
+    /// notification centre, and the rest of the cluster opens quick settings. The whole cluster
+    /// when the host has no quick settings.
+    bell_hit_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -508,13 +547,21 @@ impl TopBarChrome {
             collaborator_presence: Vec::new(),
             face_looks: Vec::new(),
             face_rects: Vec::new(),
+            shown_faces: Vec::new(),
+            seen_doing: HashMap::new(),
+            syncs: 0,
+            latest_active: None,
+            people_count_rect: Rect::ZERO,
             call_since: None,
             collaborator_overflow: 0,
+            faces_shown: 0,
+            following: false,
             status: crate::chrome::SystemStatus::default(),
             chrome: None,
             clock: ClockSnapshot::default(),
             synced_revision: 0,
             tilo_mark: None,
+            device_clock: false,
             own_avatar_rect: Rect::ZERO,
             tilo_mark_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
@@ -525,6 +572,7 @@ impl TopBarChrome {
             app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
             bell_badge_rect: Rect::ZERO,
+            bell_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -581,6 +629,8 @@ impl TopBarChrome {
             collaborator_names: self.collaborator_names.clone(),
             collaborator_agents: self.collaborator_agents.clone(),
             collaborator_overflow: self.collaborator_overflow,
+            faces_shown: self.faces_shown,
+            latest: self.latest_active,
             faces: self
                 .face_looks
                 .iter()
@@ -599,6 +649,7 @@ impl TopBarChrome {
             activity_headline: self.activity_headline.clone(),
             activity_unread: self.activity_unread,
             activity_visible,
+            following: self.following,
             time_bucket,
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
@@ -648,34 +699,24 @@ impl TopBarChrome {
 
     /// The full bar's session side: the tray, application tray, media and sharing indicators,
     /// collaborators and the continuity offer. A compact bar on another display carries none of
-    /// these.
+    /// these. Returns where the person's own avatar leaves room beside it, for the ask.
     fn draw_session_clusters(
         &mut self,
         scene: &mut Scene,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         center_y: f64,
-    ) {
+    ) -> f64 {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3/s4 match the pad_x/gap used when this pill was sized and placed in
-        // `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar radius).
+        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`.
+        // Every control on the right stands the bar's one control gap (s2) from the next, so the
+        // group reads as one row with even spacing at every width.
         let stack_right_x = self.rect.x1
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
-            - f64::from(theme.tokens.spacing.s4);
-        // The ask hangs left of the avatar, so it is laid out before it: the dot the avatar draws
-        // knows whether the ask's words stand beside it this frame.
-        let avatar_left_x = stack_right_x - BAR_CONTROL_PX - f64::from(theme.tokens.spacing.s3);
-        self.draw_avatar_ask(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            avatar_left_x,
-        );
+            - f64::from(theme.tokens.spacing.s2);
         let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
@@ -684,6 +725,7 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
+        let beside_avatar_x = stack_right_x;
         let stack_right_x = self.draw_app_tray(
             scene,
             transform,
@@ -751,16 +793,83 @@ impl TopBarChrome {
                 self.notices_painted(people_left_x)
             },
         );
+        beside_avatar_x
+    }
+
+    /// The ask about the person, beside the bar's right side as [`Self::draw_session_clusters`]
+    /// left it, and the dot the avatar wears for it. It stands left of everything else there: the
+    /// faces, the people button and the notices keep their places, and the ask takes the room left
+    /// of them — the band's own, or, where that room cannot hold its words, the band itself — and
+    /// waits as the avatar's dot where even the band cannot. Drawn after the clock, whose lane it
+    /// may take.
+    fn draw_ask_beside(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        beside_avatar_x: f64,
+    ) {
+        let transform = Affine::IDENTITY;
+        let taken_x = self.right_side_x();
+        let ask_right_x = if taken_x < beside_avatar_x {
+            taken_x - f64::from(theme.tokens.spacing.s3)
+        } else {
+            beside_avatar_x
+        };
+        self.draw_avatar_ask(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            ask_right_x,
+        );
+        // The dot the avatar wears knows whether the ask's words stand on the bar this frame.
+        self.draw_avatar_ask_dot(scene, transform, theme);
+    }
+
+    /// Where what the bar's right side drew begins: the faces, the people and invite buttons, the
+    /// notices beside them and the continuity offer.
+    fn right_side_x(&self) -> f64 {
+        if self.continuity_rect.is_zero_area() {
+            self.people_left_x
+        } else {
+            self.people_left_x.min(self.continuity_rect.x0)
+        }
+    }
+
+    /// How far left the clock moves to stand clear of what the bar's right side drew (zero where it
+    /// already does), or `None` when there is no room for it between that and the workspace and
+    /// strip names: it is then not drawn, and nothing points at it.
+    fn center_yield(&mut self, theme: &Theme) -> Option<f64> {
+        if self.center_rect.is_zero_area() || self.is_compact() {
+            return Some(0.0);
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let taken = self.right_side_x();
+        let dx = (taken - gap - self.center_rect.x1).min(0.0);
+        if dx == 0.0 {
+            return Some(0.0);
+        }
+        let left = self.ws_pill_rect.x1.max(self.ws_strip_rect.x1) + gap;
+        if self.center_rect.x0 + dx < left {
+            // Its lane closes up where the names end: what yields to the clock (the ask) still
+            // stops there.
+            self.center_lane = Rect::new(left, self.center_lane.y0, left, self.center_lane.y1);
+            self.center_rect = Rect::ZERO;
+            return None;
+        }
+        let moved = Affine::translate((dx, 0.0));
+        self.center_rect = moved.transform_rect_bbox(self.center_rect);
+        self.center_lane = moved.transform_rect_bbox(self.center_lane);
+        Some(dx)
     }
 
     /// Where the notices left of the faces that start at `faces_x` are painted: the arrival and
     /// wave notices and the continuity offer, the bar's height across.
     fn notices_painted(&self, faces_x: f64) -> Vec<Rect> {
-        let left = if self.continuity_rect.is_zero_area() {
-            self.people_left_x
-        } else {
-            self.people_left_x.min(self.continuity_rect.x0)
-        };
+        let left = self.right_side_x();
         (left < faces_x)
             .then(|| {
                 Rect::new(
@@ -834,6 +943,34 @@ impl TopBarChrome {
         self.rect
     }
 
+    /// The room in the bar beside its clock where a control hint for a gesture no control on
+    /// screen does stands ([`ui::control_hints`]): from just past the clock to just before the
+    /// bar's own controls on its right, the bar's height across, as the bar last laid them out.
+    /// `None` while the bar is hidden, shows no clock, or keeps no room beside it — the hint does
+    /// not show rather than stand over the clock or a control beside it.
+    #[must_use]
+    pub fn hint_room(&self) -> Option<Rect> {
+        if self.presence() == TopBarPresence::Hidden
+            || self.is_compact()
+            || self.rect.height() <= 0.0
+            || self.rect.width() <= 0.0
+            || self.center_rect.is_zero_area()
+        {
+            return None;
+        }
+        // The bar's one control gap, each side of the hint.
+        let gap = f64::from(ui::tokens::Spacing::BASE.s2);
+        let left = self.center_rect.x1 + gap;
+        let mut right = self.right_side_x();
+        if !self.ask.pill.is_zero_area() {
+            // The ask about the person stands where the hint would, from the clock's side: the
+            // hint keeps off it rather than cover a question they are answering.
+            right = right.min(self.ask.pill.x0);
+        }
+        let right = right - gap;
+        (right > left).then(|| Rect::new(left, self.rect.y0, right, self.rect.y1))
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;
@@ -859,6 +996,16 @@ impl TopBarChrome {
         self.chrome.as_ref()
     }
 
+    /// Who this person is, as their own avatar names them (the root key it wears): a host whose
+    /// roster lists them too never shows them a second time among the others.
+    fn own_identity(&self) -> Option<String> {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| chrome.snapshot().own)
+            .map(|own| own.identity)
+            .filter(|identity| !identity.is_empty())
+    }
+
     pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
         self.workspace_total = tree.workspaces.len().max(1);
         let active_ws = tree.workspaces.iter().find(|w| w.slot == tree.active);
@@ -880,8 +1027,13 @@ impl TopBarChrome {
         // An invited-but-not-arrived peer doesn't count as present. This person is their own avatar
         // beside the stack, never a face in it, and so are their other devices.
         let local = self.explicit_local_user.as_deref();
+        let own_identity = self.own_identity();
         let present = |c: &&tilo_desktop_model::Collaborator| {
-            c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
+            c.id != "me"
+                && Some(c.id.as_str()) != local
+                && Some(c.id.as_str()) != own_identity.as_deref()
+                && !c.invited
+                && !c.own_device
         };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
@@ -890,28 +1042,42 @@ impl TopBarChrome {
         self.collaborator_ids.clear();
         self.collaborator_presence.clear();
         let now = tilo_clock::unix_now();
-        // Counted with the same `present` filter as the avatars, so the overflow chip agrees with
-        // the row.
-        let peer_count = roster.iter().filter(present).count();
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
-        let colors = roster_colors(roster, local.unwrap_or(""));
-        let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
-        for c in roster.iter().filter(present).take(shown) {
+        let colors =
+            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""), |c| {
+                crate::collaborators::collaborator_is_agent(active_ws, c, now)
+            });
+        // Everyone present, the one this person follows first: the bar stands as many faces as it
+        // has room for and folds the rest into the count badge, so a narrow bar keeps the face
+        // being watched and never drops anyone uncounted.
+        let mut here: Vec<&tilo_desktop_model::Collaborator> =
+            roster.iter().filter(present).collect();
+        here.sort_by_key(|c| !c.following);
+        self.following = here.iter().any(|c| c.following);
+        let peer_count = here.len();
+        // How many of them could stand at all, before the bar knows its width: a draw folds this
+        // further into what the bar has room for.
+        let (stand, counted) = ui::presence::FaceStack::BAR.split(peer_count);
+        self.faces_shown = stand;
+        self.collaborator_overflow = counted;
+        self.order_activity(&here);
+        for c in here {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
             self.collaborator_names.push(c.name.clone());
+            let agent = crate::collaborators::collaborator_is_agent(active_ws, c, now);
+            // A face wears the workspace's colour for them, as the People list and every window
+            // do: [`ui::presence::participant_color`] where the workspace has settled none, so
+            // Claude Code reads as Claude Code on the bar too.
             let (r, g, b) = colors
                 .get(&c.id)
                 .copied()
-                .unwrap_or_else(|| user_color(&c.id));
+                .unwrap_or_else(|| ui::presence::participant_color(&c.id, agent));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
-            self.collaborator_agents
-                .push(crate::collaborators::collaborator_is_agent(
-                    active_ws, c, now,
-                ));
+            self.collaborator_agents.push(agent);
             self.collaborator_ids.push(c.id.clone());
             self.collaborator_presence.push(
                 c.availability
@@ -927,8 +1093,42 @@ impl TopBarChrome {
                     }),
             );
         }
-        self.collaborator_overflow = peer_count.saturating_sub(self.collaborator_initials.len());
         self.sync_strips(tree);
+    }
+
+    /// Who among `here` did something last: someone arriving, or anything their presence says
+    /// changing (where they are, what they say they are doing, their call), makes them the latest,
+    /// and a phone-wide bar has room for one face, which is theirs.
+    ///
+    /// Changes are ordered by the sync that saw them, never by a clock reading: two of them landing
+    /// in the same millisecond are still two events, and the next sync's change is still the later
+    /// one. People whose presence changed while the bar read one workspace state have no order
+    /// between them, and the roster's is the one the bar keeps.
+    fn order_activity(&mut self, here: &[&tilo_desktop_model::Collaborator]) {
+        self.syncs = self.syncs.saturating_add(1);
+        let sync = self.syncs;
+        self.seen_doing
+            .retain(|id, _| here.iter().any(|c| &c.id == id));
+        self.latest_active = None;
+        let mut latest_at = None;
+        for (index, c) in here.iter().enumerate() {
+            let doing = presence_digest(c);
+            let since = match self.seen_doing.get(&c.id) {
+                Some((digest, since)) if *digest == doing => *since,
+                _ => {
+                    self.seen_doing.insert(c.id.clone(), (doing, sync));
+                    sync
+                }
+            };
+            // The face of the one this view follows already stands in the banner.
+            if c.following {
+                continue;
+            }
+            if latest_at.is_none_or(|at| since > at) {
+                latest_at = Some(since);
+                self.latest_active = Some(index);
+            }
+        }
     }
 
     /// Synthetic control ids are deliberately stable: unlike a child index,
@@ -941,6 +1141,8 @@ impl TopBarChrome {
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     /// The current strip's name in the workspace pill: opens the strips.
     const CONTROL_STRIP_NAME: &'static str = "topbar:strip-name";
+    /// The bell inside the status cluster: its own target, which opens the notification centre.
+    const CONTROL_NOTIFICATIONS: &'static str = "topbar:notifications";
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
@@ -964,6 +1166,12 @@ impl TopBarChrome {
     /// Docked, hidden or shown over the windows, as the host says.
     pub fn presence(&self) -> TopBarPresence {
         self.presence
+    }
+
+    /// Where the bar stands on its display: the chrome's band at the top of the screen.
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
     }
 
     /// The bar shown over the windows stands on a surface of its own, the width of the display with
@@ -1280,6 +1488,10 @@ impl Widget for TopBarChrome {
                 self.control_rect(Self::CONTROL_QUICK_SETTINGS),
             ),
             (
+                "topbar_bell".to_string(),
+                self.control_rect(Self::CONTROL_NOTIFICATIONS),
+            ),
+            (
                 "topbar_media_indicator".to_string(),
                 self.control_rect(Self::CONTROL_MEDIA),
             ),
@@ -1327,7 +1539,7 @@ impl Widget for TopBarChrome {
                         ..Default::default()
                     });
                 // The bell painted in the status cluster says what it shows.
-                if target == Self::CONTROL_QUICK_SETTINGS
+                if target == Self::CONTROL_NOTIFICATIONS
                     && let Some(bell) = self.bell_name()
                 {
                     node = node
@@ -1380,14 +1592,18 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed.
-        children.push(
-            AccessNode::new(Role::StaticText)
-                .with_hashed_key("topbar-clock-reading")
-                .with_name(self.clock_widget_text())
-                .with_description(self.date_description())
-                .with_bounds(self.center_rect),
-        );
+        // The time: read, not pressed. While following, the middle lane is the banner's, and where
+        // the device shows the time itself the lane stands empty: no time stands in it then, so a
+        // reader is not told one the person cannot see.
+        if !self.following && !self.clock_gives_way() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_hashed_key("topbar-clock-reading")
+                    .with_name(self.clock_widget_text())
+                    .with_description(self.date_description())
+                    .with_bounds(self.center_rect),
+            );
+        }
         children.extend(self.workspace_rename_accessibility());
         children.extend(self.arrival_accessibility());
         Some(
@@ -1448,6 +1664,13 @@ impl Widget for TopBarChrome {
                     .chrome
                     .as_ref()
                     .is_some_and(|chrome| chrome.intent(ChromeIntent::ToggleProfile));
+        }
+        // A face opens the person it draws, as a press on it does.
+        if let Some(id) = target.strip_prefix(Self::FACE_TARGET) {
+            return self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.intent(ChromeIntent::ShowPerson(id.to_owned())));
         }
         self.activate_control(target)
     }
@@ -1675,9 +1898,18 @@ impl TopBarChrome {
                 },
             );
 
-            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-            if !self.is_compact() {
-                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            // The clock is laid out first, where the bar's centre is, and painted once the bar's
+            // right side is: on a narrow bar it moves left of the faces and buttons there, and
+            // with no room left of them it stands aside rather than under them.
+            let mut centre = Scene::new();
+            self.draw_center_widget(&mut centre, transform, theme, text_renderer, center_y);
+            let beside_avatar_x = (!self.is_compact())
+                .then(|| self.draw_session_clusters(scene, theme, text_renderer, center_y));
+            if let Some(dx) = self.center_yield(theme) {
+                scene.append(&centre, Some(Affine::translate((dx, 0.0))));
+            }
+            if let Some(beside_avatar_x) = beside_avatar_x {
+                self.draw_ask_beside(scene, theme, text_renderer, center_y, beside_avatar_x);
             }
             self.draw_focus_indicator(scene, transform, theme);
         });
@@ -1702,3 +1934,22 @@ mod fixture;
 
 #[cfg(test)]
 mod narrow_tests;
+
+#[cfg(test)]
+mod shot_tests;
+
+/// A digest of what someone's presence says they are doing: where they are, what they say, their
+/// availability and call. Its change is what makes them the one who did something last.
+fn presence_digest(c: &tilo_desktop_model::Collaborator) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (
+        c.active_tab,
+        &c.in_app,
+        c.status.as_ref().map(|status| &status.text),
+        &c.availability,
+        &c.call,
+    )
+        .hash(&mut hasher);
+    hasher.finish()
+}

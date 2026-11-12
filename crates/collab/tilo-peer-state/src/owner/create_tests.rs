@@ -11,15 +11,17 @@ use crate::owner::{WorkspaceId, open_file};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 
-#[test]
-fn a_founded_workspace_is_held_here_and_restores_from_its_record() {
+#[tokio::test]
+async fn a_founded_workspace_is_held_here_and_restores_from_its_record() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("workspaces.json");
     let key = SigningKey::from_bytes(&[12; 32]);
     let device = testing::certificate(&SigningKey::from_bytes(&[11; 32]), &key, "A's desktop");
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let workspace = testing::founded(&owner, "Founders", &device, &key, now).unwrap();
+    let workspace = testing::founded(&owner, "Founders", &device, &key, now)
+        .await
+        .unwrap();
     let (hosted, workspace_id, name) = owner
         .with_current(workspace, |view| {
             Ok((
@@ -63,15 +65,17 @@ fn a_founded_workspace_is_held_here_and_restores_from_its_record() {
     assert_eq!(hint, testing::own_host_hint_here(workspace, &device, &key));
 }
 
-#[test]
-fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
+#[tokio::test]
+async fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("workspaces.json");
     let key = SigningKey::from_bytes(&[21; 32]);
     let device = testing::certificate(&SigningKey::from_bytes(&[22; 32]), &key, "A's desktop");
     let now = SystemTime::now();
     let owner = open_file(&path).unwrap();
-    let workspace = testing::founded(&owner, "Founders", &device, &key, now).unwrap();
+    let workspace = testing::founded(&owner, "Founders", &device, &key, now)
+        .await
+        .unwrap();
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert!(
         !owner.name_host(workspace, hint).unwrap(),
@@ -107,8 +111,8 @@ fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
     );
 }
 
-#[test]
-fn a_workspace_founded_without_an_address_is_held_and_named_later() {
+#[tokio::test]
+async fn a_workspace_founded_without_an_address_is_held_and_named_later() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("workspaces.json");
     let key = SigningKey::from_bytes(&[41; 32]);
@@ -120,11 +124,8 @@ fn a_workspace_founded_without_an_address_is_held_and_named_later() {
     let workspace = WorkspaceId::new();
     owner
         .create_workspace(workspace, "Founders", &device, &key, None, now)
+        .await
         .unwrap();
-    assert!(
-        owner.hosts_unnamed().contains(&workspace),
-        "a record founded without an address names no host"
-    );
     assert!(
         owner
             .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
@@ -145,8 +146,8 @@ fn a_workspace_founded_without_an_address_is_held_and_named_later() {
     );
 }
 
-#[test]
-fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
+#[tokio::test]
+async fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("workspaces.json");
     let key = SigningKey::from_bytes(&[31; 32]);
@@ -161,9 +162,10 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
             "Founders",
             &device,
             &key,
-            Some(testing::own_host_hint_here(workspace, &device, &key)),
+            Some(&testing::own_host_hint_here(workspace, &device, &key)),
             now,
         )
+        .await
         .unwrap();
     let mut view = owner
         .with_current(workspace, |view| Ok(view.clone()))
@@ -172,14 +174,15 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
     view.record.host_hint = None;
     owner.publish_workspace(workspace, view, None).unwrap();
     assert!(
-        owner.hosts_unnamed().contains(&workspace),
+        owner
+            .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+            .unwrap(),
         "a record that does not say where its own host is reached names none"
     );
 
     // The next session says where the workspace's own host is reached.
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert!(owner.name_host(workspace, hint.clone()).unwrap());
-    assert!(!owner.hosts_unnamed().contains(&workspace));
     drop(owner);
     assert_eq!(
         open_file(&path)
@@ -190,8 +193,57 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
     );
 }
 
-#[test]
-fn a_workspace_is_founded_by_its_own_device_with_a_name() {
+#[tokio::test]
+async fn a_workspace_names_its_own_host_again_once_the_relay_it_is_reached_through_changes() {
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = directory.path().join("workspaces.json");
+    let key = SigningKey::from_bytes(&[51; 32]);
+    let device = testing::certificate(&SigningKey::from_bytes(&[52; 32]), &key, "A's desktop");
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    let workspace = testing::founded(&owner, "Founders", &device, &key, now)
+        .await
+        .unwrap();
+    let id = iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap();
+    let relay: iroh_base::RelayUrl = "https://relay.example.com/".parse().unwrap();
+    // Founded with the address it had before its endpoint reached a relay: what its members read
+    // names only the network the device stands in.
+    let reached_through = testing::own_host_hint(
+        workspace,
+        iroh_base::EndpointAddr::new(id).with_relay_url(relay.clone()),
+        &device,
+        &key,
+    );
+    assert!(
+        owner.name_host(workspace, reached_through.clone()).unwrap(),
+        "the record names the relay the device is reached through now"
+    );
+    // A net report moves the address beside the relay: who reaches the host did not change, so
+    // the record is not published for it.
+    let moved = testing::own_host_hint(
+        workspace,
+        iroh_base::EndpointAddr::new(id)
+            .with_relay_url(relay)
+            .with_ip_addr((std::net::Ipv4Addr::LOCALHOST, 5000).into()),
+        &device,
+        &key,
+    );
+    assert!(
+        !owner.name_host(workspace, moved).unwrap(),
+        "an address that moved beside the same relay writes nothing"
+    );
+    drop(owner);
+    assert_eq!(
+        open_file(&path)
+            .unwrap()
+            .with_current(workspace, |view| view.transport_hint().cloned())
+            .unwrap(),
+        reached_through
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let owner = open_file(&directory.path().join("workspaces.json")).unwrap();
     let key = SigningKey::from_bytes(&[13; 32]);
@@ -202,7 +254,8 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(unnamed, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(unnamed, "  ", &device, &key, Some(hint), now)
+            .create_workspace(unnamed, "  ", &device, &key, Some(&hint), now)
+            .await
             .unwrap_err(),
         "workspace name must contain 1–80 characters"
     );
@@ -210,7 +263,8 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(workspace, "Founders", &device, &other, Some(hint), now)
+            .create_workspace(workspace, "Founders", &device, &other, Some(&hint), now)
+            .await
             .unwrap_err(),
         "a workspace is founded with its own device's key"
     );

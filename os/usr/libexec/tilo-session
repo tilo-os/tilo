@@ -260,7 +260,6 @@ flight_log="$flight_dir/latest.log"
 flight_events="$flight_dir/events.log"
 TILO_FRAME_TRACE="$flight_dir/frame-trace.csv"
 export TILO_FRAME_TRACE
-export TILO_PAINT_STATS=1
 export TILO_LOOP_TIMING=1
 flight_pipe="$logout_request_dir/flight-record.pipe"
 

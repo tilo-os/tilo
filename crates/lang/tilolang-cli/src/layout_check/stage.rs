@@ -62,16 +62,10 @@ impl Platform for Packages {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        // A number stays a number, so a plural rule selects by it.
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| {
-                // A number stays a number, so a plural rule selects by it.
-                let value: ui::i18n::ArgValue = match value.parse::<f64>() {
-                    Ok(number) => number.into(),
-                    Err(_) => value.as_str().into(),
-                };
-                (name.as_str(), value)
-            })
+            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
             .collect();
         tilo_ui_host::i18n::t_args(id, &args)
     }
@@ -112,6 +106,11 @@ impl Platform for Packages {
         tilo_ui_host::date::shown_text(kind, value)
     }
 
+    /// The time of day as the person reads a clock, in the style they chose.
+    fn clock(&self, hour: u32, minute: u32) -> String {
+        ui::clock::hour_minute(hour, minute)
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
     }
@@ -119,10 +118,25 @@ impl Platform for Packages {
 
 /// One window of the app, laid out by one frame pipeline that every configuration reuses.
 pub struct Staged {
+    /// The app the window shows, as the session names it.
+    #[cfg(test)]
+    app: String,
     instance: Instance,
     harness: FrameHarness,
     /// What the window has cost so far, as [`Self::take_work`] reports it since the last call.
     work: Work,
+}
+
+/// One place of a staged desk, as the shell's arrangement holds it.
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaceShown {
+    /// Its key where it stands: what a well names it by.
+    pub key: String,
+    /// The app it shows, by its canonical id.
+    pub shows: String,
+    /// The record it shows; empty for a place another shell made showing a surface of its own.
+    pub record: String,
 }
 
 /// What laying a window out cost, in the toolkit's own units rather than in time: frames laid
@@ -136,6 +150,10 @@ pub struct Work {
     pub nodes: u64,
     /// Text shaped that the renderer's cache did not hold.
     pub shaped: u64,
+    /// What the layout solver did for those frames: the trees it solved, the passes it took,
+    /// the manual regions it ran and the manual regions it kept, what it probed and what it
+    /// measured.
+    pub layout: ui::profiling::layout_counts::LayoutCounts,
 }
 
 impl Work {
@@ -144,6 +162,7 @@ impl Work {
         self.frames = self.frames.saturating_add(other.frames);
         self.nodes = self.nodes.saturating_add(other.nodes);
         self.shaped = self.shaped.saturating_add(other.shaped);
+        self.layout.add(other.layout);
     }
 }
 
@@ -162,7 +181,8 @@ impl Staged {
 }
 
 /// How often the window and its instance may answer each other before a frame is taken as it
-/// is: the rows a list shows, then the rows those rows show.
+/// is: the rows a list shows, then the rows those rows show. A round runs only when one of them
+/// has something to say, so a window settles in one when neither has.
 const EXCHANGES: usize = 8;
 
 /// What a window is staged over and for, beyond its app, its packages and its size: the
@@ -260,9 +280,7 @@ impl Staged {
         // The window is laid out for a still picture: no frame comes to take in the indexes
         // its load builds off the frame, so they are waited for, as a host without frames
         // waits for them. Until then the window would show the platform's loading state.
-        if let Some(host) = instance.host() {
-            host.wait_index();
-        }
+        instance.settle_pending();
         // Counted from the first frame: a workspace's opening is what it costs to open.
         if staging.costs
             && let Some(host) = instance.host()
@@ -320,6 +338,8 @@ impl Staged {
         let harness =
             FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
         let mut staged = Self {
+            #[cfg(test)]
+            app: app.to_owned(),
             instance,
             harness,
             work: Work::default(),
@@ -341,14 +361,24 @@ impl Staged {
 
     /// Let the window and its instance answer each other until neither has more to say, laying
     /// the window out after each answer.
+    ///
+    /// Settled is: nothing the window shows is still being read off the frame — an index the
+    /// store derives, records it publishes — the window owes the app no message (the space a
+    /// frame gave a view, rows a list asked for), and the app has nothing that moves what it
+    /// shows. A frame taken before then is a frame of a workspace read so far, or of a list whose
+    /// rows the app has not sent yet: it would be a different frame on another run. What is
+    /// awaited is awaited on its own signal, never by letting more rounds pass.
     fn exchange(&mut self) {
         for _ in 0..EXCHANGES {
+            self.instance.settle_pending();
             if let Some(window) = self.window() {
                 window.flush();
             }
             let moved = self.instance.update();
             let received = self.window().is_some_and(AppWindow::receive);
-            if !moved && !received {
+            let owing =
+                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
+            if !moved && !received && !owing {
                 break;
             }
             self.harness.relayout();
@@ -366,9 +396,8 @@ impl Staged {
     ) -> Result<(), String> {
         theme.reduce_motion = true;
         self.harness.set_input_scale(display_scale)?;
-        self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_window_themed(viewport, theme)
+            .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         // A motion that lands even when reduced (a cross-fade) runs out on the toolkit's clock.
@@ -399,8 +428,71 @@ impl Staged {
         &self.harness
     }
 
+    /// The places the staged desk holds, as the shell's own arrangement has them: each the app
+    /// it shows and the record it shows. Empty for a package that is no shell.
+    #[cfg(test)]
+    pub fn places(&self) -> Vec<PlaceShown> {
+        let Some(host) = self.instance.host() else {
+            return Vec::new();
+        };
+        let Some(meta) = host.package(&self.app).map(|package| package.meta) else {
+            return Vec::new();
+        };
+        // The fields the arrangement and its places keep, by the names the shell declared them
+        // under: a record is stored by the field's id.
+        let field = |ty: &str, name: &str| -> Option<String> {
+            meta.types
+                .iter()
+                .find(|held| held.name == ty)?
+                .fields
+                .iter()
+                .find(|held| held.name == name)
+                .map(|held| held.id.clone())
+        };
+        let (Some(places), Some(key), Some(shows), Some(record)) = (
+            field("Arrangement", "places"),
+            field("ArrangementPlace", "key"),
+            field("ArrangementPlace", "shows"),
+            field("ArrangementPlace", "record"),
+        ) else {
+            return Vec::new();
+        };
+        let layer = tilolang_tilo::host::RootView {
+            root: Some("Arrangement".to_owned()),
+            view: None,
+        };
+        let Ok(root) = host.root_of_layer(&self.app, &layer) else {
+            return Vec::new();
+        };
+        let Ok(held) = host.store().record(&root.doc) else {
+            return Vec::new();
+        };
+        let Some(tilolang_tilo::DynValue::Collection(items)) = held.get(&places) else {
+            return Vec::new();
+        };
+        // A place's fields are registers, read as the text they hold.
+        let text = |item: &tilolang_tilo::DynRecord, id: &str| -> String {
+            match item.get(id) {
+                Some(tilolang_tilo::DynValue::Text(said)) => said.clone(),
+                Some(tilolang_tilo::DynValue::Register(serde_json::Value::String(said))) => {
+                    said.clone()
+                }
+                _ => String::new(),
+            }
+        };
+        items
+            .iter()
+            .map(|(_, item)| PlaceShown {
+                key: text(item, &key),
+                shows: text(item, &shows),
+                record: text(item, &record),
+            })
+            .collect()
+    }
+
     /// What laying the window out has cost since the last call: frames laid out, layout nodes
-    /// built, and text shaped that the renderer's cache did not hold.
+    /// built, text shaped that the renderer's cache did not hold, and what the layout solver did
+    /// for them.
     pub fn take_work(&mut self) -> Work {
         let frames = self.harness.relayout_frames();
         let nodes = self.harness.layout_nodes_built();
@@ -409,6 +501,7 @@ impl Staged {
             frames: frames.saturating_sub(self.work.frames),
             nodes: nodes.saturating_sub(self.work.nodes),
             shaped: misses,
+            layout: ui::profiling::layout_counts::take(),
         };
         self.work.frames = frames;
         self.work.nodes = nodes;
@@ -512,7 +605,8 @@ impl Staged {
 
     /// The resource the window shows where a person holding it is looking: nothing while the
     /// sidebar stands in front, and the page the window pushed in front of its list (or opened
-    /// over it) once that does.
+    /// over it) once that does. A window whose page is its own — a tree and the item it opens,
+    /// drawn by one view — shows the item its list stands on.
     pub fn front_target(&mut self) -> Option<ResourceRef> {
         let window = self.window()?;
         let sidebar = matches!(
@@ -522,10 +616,24 @@ impl Staged {
         if sidebar {
             return None;
         }
-        window
-            .detail_target()
-            .or_else(|| window.root_target())
-            .cloned()
+        if let Some(detail) = window.detail_target() {
+            return Some(detail.clone());
+        }
+        let chosen = window.composed().and_then(Self::chosen_in);
+        chosen.or_else(|| window.root_target().cloned())
+    }
+
+    /// The resource the lists of `tree` stand on: the item a list of a window whose page is its
+    /// own shows, by the list's own selection.
+    fn chosen_in(tree: &tilo_ui_host::UiNode) -> Option<ResourceRef> {
+        let chosen = match tree.props.get("selection") {
+            Some(Value::List(items)) => items.iter().find_map(|item| match item {
+                Value::Ref(reference) => Some(reference.clone()),
+                _ => None,
+            }),
+            _ => None,
+        };
+        chosen.or_else(|| tree.children.iter().find_map(Self::chosen_in))
     }
 
     /// The tree the window composed from what the app sent, as sent: every view that ran is in
@@ -535,19 +643,33 @@ impl Staged {
         self.window()?.composed().cloned()
     }
 
-    /// The trees of the rows the window's lists show, by row key: a list draws each row as one
-    /// widget keyed by the row, from the row view's nodes.
-    pub fn rows(&mut self) -> std::collections::HashMap<String, tilo_ui_host::UiNode> {
-        let mut out = std::collections::HashMap::new();
+    /// The trees of the rows the window's lists show, each with its key, in the order the window
+    /// lists them: the lists of the window's own lane first and the lists of every other lane
+    /// after them, each lane's by key, and each list's rows as its own model orders them. A row
+    /// taken off this is the row a person meets first, and the same row in every process and at
+    /// every size.
+    pub fn rows(&mut self) -> Vec<(String, tilo_ui_host::UiNode)> {
         let Some(window) = self.window() else {
-            return out;
+            return Vec::new();
         };
-        for list in window.lists() {
+        let mut lists: Vec<(bool, String)> = window
+            .lists()
+            .into_iter()
+            .map(|list| {
+                let elsewhere = window
+                    .rows_of(&list)
+                    .is_some_and(|rows| rows.borrow().lane() != tilo_ui_host::Lane::Root);
+                (elsewhere, list)
+            })
+            .collect();
+        lists.sort();
+        let mut out = Vec::new();
+        for (_, list) in lists {
             if let Some(rows) = window.rows_of(&list) {
                 let rows = rows.borrow();
-                for key in rows.rendered() {
+                for key in rows.in_order() {
                     if let Some(row) = rows.row(&key) {
-                        out.insert(key, row.clone());
+                        out.push((key, row.clone()));
                     }
                 }
             }
@@ -573,9 +695,8 @@ impl Staged {
         input: InteractionEnvironment,
     ) -> Result<(), String> {
         theme.reduce_motion = false;
-        self.harness.set_interaction_environment(input);
         self.harness
-            .relayout_window_themed(viewport, theme)
+            .relayout_window_themed_for(viewport, theme, input)
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         self.settle()
@@ -596,14 +717,13 @@ impl Staged {
         self.settle()
     }
 
-    /// Press one of the window's bar slots by its id, as the desktop hands the press over: the
-    /// shell's own Back, an action the app's page declared. The bar is the window's, so the press
-    /// reaches the app through it, never through a widget of the frame.
-    pub fn press_bar_slot(&mut self, id: &str) -> Result<(), String> {
-        self.harness
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
-        self.exchange();
-        self.settle()
+    /// Press the shell's own control `id` in the window's header row — its Back, its sidebar
+    /// toggle — as the person holding the window presses it: a finger's tap where the window is
+    /// held in the hand, a click otherwise.
+    pub fn press_shell(&mut self, id: &str) -> Result<(), String> {
+        let touch = self.harness.interaction_environment().modality
+            == ui::interaction::InputModality::Touch;
+        self.press(id, touch)
     }
 
     /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
@@ -636,6 +756,17 @@ impl Staged {
         self.harness
             .perform_named(id, &ui::a11y::Action::Activate)
             .map_err(|error| format!("pressing {id:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
+    /// Press the control `target` a widget of `id` publishes as a semantic child, as assistive
+    /// technology activates it: the box beside a row's title, which a person presses by its own
+    /// words rather than by the row's.
+    pub fn press_child(&mut self, id: &str, target: &str) -> Result<(), String> {
+        self.harness
+            .perform_semantic_named(id, Some(target), &ui::a11y::Action::Activate)
+            .map_err(|error| format!("pressing {target:?}: {error}"))?;
         self.exchange();
         self.settle()
     }
@@ -895,39 +1026,6 @@ mod tests {
         }
     }
 
-    /// The check box the frame binds to a published action: the one control of `descriptor`'s
-    /// exactly, holding a check box where a person would press.
-    fn bound_check(
-        staged: &Staged,
-        descriptors: &[tilo_actions::ActionDescriptor],
-    ) -> Option<(
-        tilo_actions::ActionDescriptor,
-        String,
-        ui::kurbo::Rect,
-        ui::kurbo::Rect,
-    )> {
-        let controls = staged.harness().controls();
-        for descriptor in descriptors {
-            let routes = staged.harness().action_ui_routes(&descriptor.address);
-            let [route] = routes.as_slice() else {
-                continue;
-            };
-            let Some(control) = route.bounds else {
-                continue;
-            };
-            let Some(check) = controls
-                .iter()
-                .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
-                .filter_map(|shown| shown.bounds)
-                .find(|bounds| control.contains(bounds.center()))
-            else {
-                continue;
-            };
-            return Some((descriptor.clone(), route.control_id.clone(), control, check));
-        }
-        None
-    }
-
     /// The agent's interaction with `descriptor`, as an agent states it: one action, applying.
     fn interaction(
         descriptor: &tilo_actions::ActionDescriptor,
@@ -996,14 +1094,15 @@ mod tests {
         staged
             .harness()
             .render_png(&captures.join(format!("{name}-agent-marker.png")));
+        let faults = ui::presence::tag_faults(&staged.harness().inspection().root);
+        assert!(faults.is_empty(), "the agent's tag: {faults:?}");
         (before, staged.harness().render_rgba())
     }
 
-    /// The bar the desktop draws over the app's frame keeps one "…" and shows each control
-    /// once: an app's own door to what does not fit is the bar's door, not a second one beside
-    /// it.
+    /// The window's header row keeps one "…" and shows each control once, and the bar over it
+    /// offers none of them again: what does not fit the row goes behind the row's one door.
     #[test]
-    fn the_window_bar_shows_each_control_once() {
+    fn the_window_shows_each_control_once() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1027,204 +1126,179 @@ mod tests {
             )
             .expect("the window lies out");
         let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-        let named = |bar: &ui::window_toolbar::BarLayout| -> String {
-            bar.controls
-                .iter()
-                .map(|control| format!("{}:{}", control.slot, control.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let doors = bar
-            .controls
+        let row = crate::layout_check::header_row_controls(&staged, (width, height));
+        let named = row
             .iter()
-            .filter(|control| {
-                control.icon.as_deref() == Some(ui::icons::Icon::MoreHorizontal.name())
-            })
-            .count();
-        assert_eq!(doors, 1, "one bar keeps one \"…\": {}", named(&bar));
-        let problems = crate::layout_check::audit::bar(&bar);
+            .map(|control| control.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let doors = row.iter().filter(|control| control.menu).count();
+        assert_eq!(doors, 1, "the window's row keeps one \"…\": {named}");
+        let mut distinct: Vec<&str> = row.iter().map(|control| control.name.as_str()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            row.len(),
+            "the row shows each control once: {named}"
+        );
+        let buttons: Vec<String> = row.iter().map(|control| control.name.clone()).collect();
+        let problems: Vec<_> = crate::layout_check::audit::bar(&bar)
+            .into_iter()
+            .chain(crate::layout_check::audit::offered_twice(&bar, &buttons))
+            .collect();
         assert!(
             problems.is_empty(),
-            "the bar shows each control once: {:?} ({})",
+            "the bar offers nothing the row does: {:?} ({named})",
             problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
-            named(&bar),
         );
     }
 
-    /// The titles of the notes the list shows, in the order it shows them.
-    fn listed_titles(staged: &Staged) -> Vec<String> {
-        fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
-            let is_row = node
-                .semantics
-                .as_ref()
-                .is_some_and(|semantics| semantics.role == ui::a11y::Role::ListItem);
-            if is_row && let Some(name) = node.semantics.as_ref().and_then(|s| s.name.clone()) {
-                out.push(name);
-                return;
-            }
-            for child in &node.children {
-                walk(child, out);
-            }
-        }
-        let root = staged.harness().inspection().root;
-        let mut out = Vec::new();
-        walk(&root, &mut out);
-        out
-    }
-
-    /// A menu the bar lists runs the row the person chooses there: the notes window's sort
-    /// menu stands in the bar with its orders, and choosing "Title" in it lists the notes by
-    /// title.
+    /// A window with nothing to act on offers no action: Mail with no account yet says where an
+    /// account comes from and stands no New message in its header row, at every width the row
+    /// has room for the words or not, while a window with an account offers it as the primary
+    /// button.
     #[test]
-    fn a_menu_row_the_bar_lists_runs_where_it_stands() {
+    fn a_mail_window_with_no_account_offers_no_new_message() {
         tilo_ui_host::i18n::ensure();
-        let packages = app_packages("notes");
+        let packages = app_packages("mail");
         let app = packages.0.last().expect("the app").meta.app.clone();
-        let (width, height) = (960, 1080);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a week of notes",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        staged
-            .lay_out(
+        let shown = |scenario: &str, (width, height): (u32, u32), text: f32| {
+            let theme = ui::Theme::light().with_text_scale(text);
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
                 (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::POINTER,
-                1.0,
+                theme.clone(),
+                None,
+                &[],
             )
-            .expect("the window lies out");
-        let before = listed_titles(&staged);
-        assert_eq!(
-            before.first().map(String::as_str),
-            Some("Q3 plan"),
-            "the notes list in the order they were made: {before:?}"
-        );
-        let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-        assert!(
-            bar.controls.iter().any(|control| control.name == "Sort"),
-            "the bar lists the sort menu: {:?}",
-            bar.controls
-                .iter()
-                .map(|c| c.name.as_str())
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::TOUCH,
+                    1.0,
+                )
+                .expect("the window lies out");
+            crate::layout_check::header_row_controls(&staged, (width, height))
+                .into_iter()
+                .filter(|control| control.name == "New message")
+                .map(|control| control.primary)
                 .collect::<Vec<_>>()
-        );
-        let toolbar = ui::window_toolbar::declared().unwrap_or_default();
-        let row = toolbar
-            .leading
-            .iter()
-            .chain(&toolbar.actions)
-            .flat_map(|action| &action.items)
-            .find(|row| row.name == "Title")
-            .expect("the bar lists the sort menu's rows");
-        staged
-            .press_bar_slot(&row.id)
-            .expect("the row's press runs");
-        let after = listed_titles(&staged);
-        let mut by_title = before;
-        by_title.sort();
-        assert_eq!(
-            after, by_title,
-            "choosing Title in the bar lists them by title"
-        );
-    }
-
-    /// The agent's mark on the control the tilolang Tasks app binds: an action the app
-    /// published lands on the control that runs it and nowhere else, and the frame draws the
-    /// agent there — the same pixels rule the app's own tests hold a marker to.
-    #[test]
-    fn an_agents_marker_rests_on_the_control_the_tasks_app_binds() {
-        tilo_ui_host::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
-        let (width, height) = (1280, 800);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        staged.harness.relayout();
-        let descriptors = publish_actions(&mut staged);
-        assert!(
-            !descriptors.is_empty(),
-            "the app publishes the actions its views run"
-        );
-
-        let (descriptor, control_id, control, check) =
-            bound_check(&staged, &descriptors).expect("the app binds a check box to an action");
-        let event = interaction(&descriptor);
-        let locus = staged
-            .harness()
-            .semantic_locus(&event)
-            .expect("the control the app binds the action to");
-        assert!(
-            locus.contains(check.center()),
-            "the locus is the check box the row offers: {locus:?} vs {check:?}"
-        );
-        assert!(
-            control.contains(locus.center()),
-            "the locus is the control bound to the action: {locus:?} vs {control:?}"
-        );
-
-        let (before, after) = capture_agent(&mut staged, &event, "tasks-tilolang");
-
-        marked_only(&staged, &before, &after, width, control, check);
-
-        // The press and the agent's action take the one path: the app is handed the action,
-        // not a view event.
-        staged
-            .press_action(&control_id)
-            .expect("the control presses");
-        let chosen = staged.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&descriptor.address),
-            "pressing the control runs the action the app published"
-        );
-        assert!(
-            staged.instance.take_chosen().is_none(),
-            "one press runs the action once"
-        );
-    }
-
-    /// The agent's mark shows inside the check box the app binds, and on no other check box the
-    /// window shows: the agent is drawn where it acts, not where any control of the same kind
-    /// stands.
-    fn marked_only(
-        staged: &Staged,
-        before: &[u8],
-        after: &[u8],
-        width: u32,
-        control: ui::kurbo::Rect,
-        check: ui::kurbo::Rect,
-    ) {
-        changed_pixels(before, after, width, pixels(check))
-            .expect("the agent's marker rests on the check box the app binds");
-        let others: Vec<_> = staged
-            .harness()
-            .controls()
-            .iter()
-            .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
-            .filter_map(|shown| shown.bounds)
-            .filter(|bounds| !control.contains(bounds.center()))
-            .collect();
-        assert!(!others.is_empty(), "the scenario shows more than one row");
-        for other in others {
+        };
+        for (size, text) in [((320, 568), 1.0_f32), ((390, 844), 1.5), ((1280, 800), 1.0)] {
             assert!(
-                changed_pixels(before, after, width, pixels(other)).is_none(),
-                "no mark rests on {other:?}, which the action does not act on"
+                shown("no account yet", size, text).is_empty(),
+                "a window with no account offers nothing to press: {size:?} at text {text}"
             );
         }
+        assert_eq!(
+            shown("a busy inbox", (1280, 800), 1.0),
+            [true],
+            "an account's window offers New message as its primary button"
+        );
+    }
+
+    /// A window has a way back only when it went somewhere: the scenario that stages the feed of
+    /// the app's own root stands where the app opens, and its header row carries no Back, while
+    /// a page opened over the feed does.
+    #[test]
+    fn a_window_on_its_own_root_offers_no_way_back() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tube");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let back = |scenario: &str| -> bool {
+            let (width, height) = (1280, 800);
+            let theme = ui::Theme::light();
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
+                (width, height),
+                theme.clone(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the window lies out");
+            crate::layout_check::header_row_controls(&staged, (width, height))
+                .iter()
+                .any(|control| control.id == ui::widget::WINDOW_BACK)
+        };
+        assert!(
+            !back("YouTube cannot be reached"),
+            "a window standing where the app opens has nothing to go back to"
+        );
+        assert!(
+            back("a channel"),
+            "a channel's page went somewhere, and Back leaves it"
+        );
+    }
+
+    /// Every notice's message under `node`, its whole tree walked.
+    fn notice_said(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Banner"
+            && let Some(Value::Text(said)) = node.props.get("message")
+        {
+            out.push(said.clone());
+        }
+        for child in &node.children {
+            notice_said(child, out);
+        }
+    }
+
+    /// The clock a window says a moment in is the person's own: the notice over a mail list says
+    /// when the server last answered in the style they chose in Settings, as the list beside it
+    /// reads the times of its messages.
+    #[test]
+    fn a_notice_says_the_time_in_the_clock_the_person_reads() {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("mail");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let notice = |style: ui::clock::TimeStyle| -> String {
+            ui::format::region::install(ui::format::region::RegionFormats {
+                time: style,
+                ..ui::format::region::RegionFormats::default()
+            });
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "an account that cannot be reached",
+                (1280, 800),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            let composed = staged.composed().expect("the window composes");
+            let mut said = Vec::new();
+            notice_said(&composed, &mut said);
+            said.pop().unwrap_or_else(|| {
+                panic!("the window says why it cannot reach the server: {composed:?}")
+            })
+        };
+        // 12-hour where the person chose it: the notice reads the clock the list beside it reads.
+        assert_eq!(
+            notice(ui::clock::TimeStyle::H12),
+            "Connection refused. Last fetched 10:41 AM",
+            "the notice says the time as the person reads clocks"
+        );
+        // 24-hour where they chose that: one clock for everything the window says.
+        assert_eq!(
+            notice(ui::clock::TimeStyle::H24),
+            "Connection refused. Last fetched 10:41"
+        );
     }
 
     /// `rect` as the pixels a frame draws it in: the whole pixels its edges cut.
@@ -1243,15 +1317,27 @@ mod tests {
     }
 
     /// The bounds of the pixels that changed between `before` and `after`, within `region`.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "a pixel index and its neighbours inside a frame's own dimensions"
-    )]
     fn changed_pixels(
         before: &[u8],
         after: &[u8],
         width: u32,
         region: (u32, u32, u32, u32),
+    ) -> Option<(u32, u32, u32, u32)> {
+        changed_pixels_clear_of(before, after, width, region, ui::kurbo::Rect::ZERO)
+    }
+
+    /// The bounds of the pixels that changed between `before` and `after` within `region`, leaving
+    /// out those `chrome` covers: what a frame draws over the region rather than in it.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "a pixel index and its neighbours inside a frame's own dimensions"
+    )]
+    fn changed_pixels_clear_of(
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        region: (u32, u32, u32, u32),
+        chrome: ui::kurbo::Rect,
     ) -> Option<(u32, u32, u32, u32)> {
         let mut bbox: Option<(u32, u32, u32, u32)> = None;
         for (index, (a, b)) in before
@@ -1265,6 +1351,12 @@ mod tests {
             let index = u32::try_from(index).expect("a pixel index fits u32");
             let (x, y) = (index % width, index / width);
             if x < region.0 || y < region.1 || x >= region.2 || y >= region.3 {
+                continue;
+            }
+            // A pixel is the area the frame draws between its whole edges: one the chrome covers
+            // whole is the chrome's, and one it only partly covers is still the frame's.
+            let centre = ui::kurbo::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            if chrome.contains(centre) {
                 continue;
             }
             bbox = Some(match bbox {
@@ -1357,6 +1449,17 @@ mod tests {
             staged.instance.take_chosen().is_none(),
             "the press runs one action, not two"
         );
+    }
+
+    /// The nodes of the window `node`, each before what it holds.
+    fn preorder<'a>(
+        node: &'a ui::headless::InspectionNode,
+        out: &mut Vec<&'a ui::headless::InspectionNode>,
+    ) {
+        out.push(node);
+        for child in &node.children {
+            preorder(child, out);
+        }
     }
 
     /// The window says it stands on `label`, a form the press opened.
@@ -1886,7 +1989,7 @@ mod tests {
                 .expect("the task's row is a row of the list");
             {
                 let root = &staged.harness().inspection().root;
-                row_named(root, label).expect("the row shows before it opens");
+                named(root, ROWS, label).expect("the row shows before it opens");
                 assert!(
                     !shows_open(root, label),
                     "the row stands closed before anyone presses it"
@@ -1897,7 +2000,7 @@ mod tests {
                         "a narrow window opens no row into its item at {width}×{height}"
                     );
                     assert!(
-                        row_named(root, answered).is_some(),
+                        named(root, ROWS, answered).is_some(),
                         "the task the scenario answers with is a row of the place's list at \
                          {width}×{height}"
                     );
@@ -1926,11 +2029,11 @@ mod tests {
                     "pressing the row opens the task in front of the list at {width}×{height}"
                 );
                 assert!(
-                    crate::layout_check::back_chip(&mut staged, (width, height)),
+                    crate::layout_check::back_chip(&staged, (width, height)),
                     "the page carries the shell's way back at {width}×{height}"
                 );
                 staged
-                    .press_bar_slot(ui::widget::WINDOW_BACK)
+                    .press_shell(ui::widget::WINDOW_BACK)
                     .expect("the shell's back presses");
                 staged.freshen().expect("the list comes back to rest");
                 let root = &staged.harness().inspection().root;
@@ -1939,7 +2042,7 @@ mod tests {
                     "the shell's back puts the page away again at {width}×{height}"
                 );
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the list comes back with its rows at {width}×{height}"
                 );
                 continue;
@@ -1997,7 +2100,7 @@ mod tests {
                     "a narrow window opens no row into its item at {width}×{height}"
                 );
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the task the scenario answers with is a row of the place's list at \
                      {width}×{height}"
                 );
@@ -2009,6 +2112,44 @@ mod tests {
                 assert!(
                     shown_named(root, "Subtasks"),
                     "the row holds the task's document at {width}×{height}"
+                );
+                // The document lists the task's subtasks: a list inside the row standing open
+                // gets its rows, and the row grows to hold them.
+                let outline =
+                    named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
+                for subtask in [
+                    "Find the last service date",
+                    "Ask whether Tuesday morning works",
+                ] {
+                    let row = named(outline, ROWS, subtask).unwrap_or_else(|| {
+                        panic!("the outline shows {subtask:?} at {width}×{height}")
+                    });
+                    let ([_, top, _, tall], [_, start, _, extent]) = (row.rect, outline.rect);
+                    assert!(
+                        tall > 0.0 && top >= start - 0.5 && top + tall <= start + extent + 0.5,
+                        "the outline holds its row {subtask:?} at {width}×{height}: {:?} in {:?}",
+                        row.rect,
+                        outline.rect
+                    );
+                    // The row standing open folds its branch: a step its document lists does
+                    // not stand in the list again.
+                    assert_eq!(
+                        count_named(root, ROWS, subtask),
+                        1,
+                        "{subtask:?} stands once at {width}×{height}: in the document of the \
+                         row standing open, or in the list, never both"
+                    );
+                }
+                // The outline's row says how far its branch got, as the list's row of the same
+                // task does: "Find the last service date" holds a step of its own, undone.
+                let held = named(outline, ROWS, "Find the last service date")
+                    .expect("the outline shows the step");
+                assert_eq!(
+                    held.semantics
+                        .as_ref()
+                        .and_then(|access| access.value.as_deref()),
+                    Some("0/1"),
+                    "the outline counts what stands under the step at {width}×{height}"
                 );
             }
             // The window states the place the task belongs to, not the place it stood on: what
@@ -2030,6 +2171,141 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A task's steps stand on the column of the words over them when none of them holds a
+    /// step of its own: a tree keeps a column for a chevron only where a row of that level has
+    /// something to fold.
+    #[test]
+    fn a_tasks_steps_that_fold_nothing_stand_on_their_sections_column() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let task = "Call the landlord about the boiler";
+        let steps = ["Find the last service date", "Book the engineer's visit"];
+        for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "a task that is late",
+                (width, height),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged.harness.relayout();
+            if width <= 390 {
+                // A window too narrow for the list and the item at once: the task's row opens
+                // its page in front of the list, and the steps stand in the page.
+                let id = super::super::button_named(&staged.harness().inspection().root, task)
+                    .expect("the task's row is a row of the list");
+                staged.press(&id, false).expect("the row presses");
+            }
+            let root = &staged.harness().inspection().root;
+            let heading = named(root, &[ui::a11y::Role::Heading { level: 2 }], "Subtasks")
+                .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
+            let outline = named(root, &[ui::a11y::Role::Tree], "Subtasks")
+                .unwrap_or_else(|| panic!("the section lists its steps at {width}×{height}"));
+            for step in steps {
+                let row = named(outline, ROWS, step)
+                    .unwrap_or_else(|| panic!("the outline shows {step:?} at {width}×{height}"));
+                let Some(ui::widget::LayoutInfo::Row(row)) = &row.layout else {
+                    panic!("a row of an outline says the column it stands on");
+                };
+                let left = f64::from(row.content_left);
+                // A row keeps the bleed every row of a list keeps, and no step for a
+                // chevron: what it holds folds nothing.
+                let bleed = ui::chrome::row_bleed(&ui::Theme::light());
+                assert!(
+                    (left - heading.rect[0]).abs() <= bleed + 1.0,
+                    "the step {step:?} starts at x {left:.0} where the words naming its section \
+                     stand at x {:.0}: a level with nothing to fold keeps no chevron's column \
+                     at {width}×{height}",
+                    heading.rect[0]
+                );
+            }
+        }
+    }
+
+    /// A step the sort put under another day's heading stands on the level its list starts at,
+    /// and says which task it is a step of: indented, it would stand under a row that is not
+    /// there, and the person reading the day could not tell what it belongs to.
+    ///
+    /// A narrow window is the one that lists the task's steps: a wide one shows the task open in
+    /// its row, and the steps it holds in its page.
+    #[test]
+    fn a_step_due_another_day_stands_at_its_lists_first_level() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390_u32, 844_u32);
+        // A step due the day its task is due keeps its place under it; one due another day
+        // opens the group its own day heads.
+        let task = "Call the landlord about the boiler";
+        let same_day = "Find the last service date";
+        let other_day = "Book the engineer's visit";
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a task that is late",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let root = &staged.harness().inspection().root;
+        let row_of = |title: &str| {
+            let row = named(root, ROWS, title).unwrap_or_else(|| {
+                panic!("{title:?} is a row of the place's list at {width}×{height}")
+            });
+            let Some(ui::widget::LayoutInfo::Row(grid)) = &row.layout else {
+                panic!("a row of a list says the column it stands on");
+            };
+            (row, grid.depth)
+        };
+        let (_, top) = row_of(task);
+        let (_, nested) = row_of(same_day);
+        assert!(
+            nested > top,
+            "a step due the day its task is due stands under it at {width}×{height}: depth \
+             {nested} against {top}"
+        );
+        let (row, found) = row_of(other_day);
+        assert_eq!(
+            found, top,
+            "a step another day's heading opens stands at the first level of its list at \
+             {width}×{height}, not indented under a row of another day"
+        );
+        let said = spoken(row);
+        assert!(
+            said.contains("in ") && said.contains(task),
+            "the row says which task it is a step of: {said:?}"
+        );
+    }
+
+    /// What a reader hears of a row and the nodes it holds, as one line.
+    fn spoken(node: &ui::headless::InspectionNode) -> String {
+        fn heard(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(node.value.clone());
+            out.extend(node.name.clone());
+            for child in &node.children {
+                heard(child, out);
+            }
+        }
+        fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+            if let Some(access) = &node.semantics {
+                heard(access, out);
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut said = Vec::new();
+        walk(node, &mut said);
+        said.join(", ")
     }
 
     /// A row opens as a page of its own from its menu, and Back returns to the list with the
@@ -2102,7 +2378,7 @@ mod tests {
                 "the window shows the task as a page at {width}×{height}"
             );
             assert!(
-                crate::layout_check::back_chip(&mut staged, (width, height)),
+                crate::layout_check::back_chip(&staged, (width, height)),
                 "the page carries the shell's way back at {width}×{height}, not one of its own"
             );
             assert!(
@@ -2111,7 +2387,7 @@ mod tests {
             );
 
             staged
-                .press_bar_slot(ui::widget::WINDOW_BACK)
+                .press_shell(ui::widget::WINDOW_BACK)
                 .expect("the shell's back presses");
             staged.freshen().expect("the list comes back to rest");
             assert_ne!(
@@ -2123,7 +2399,7 @@ mod tests {
             // A phone keeps one thing on screen: the list comes back at rest, its rows closed.
             if width <= 390 {
                 assert!(
-                    row_named(root, label).is_some(),
+                    named(root, ROWS, label).is_some(),
                     "the place's list comes back with its rows at {width}×{height}"
                 );
                 assert!(
@@ -2170,23 +2446,39 @@ mod tests {
             || node.children.iter().any(|child| shown_named(child, label))
     }
 
-    /// The list row named `label`, as the window shows it.
-    fn row_named<'a>(
+    /// The rows of a list or a tree, as the window reads them.
+    const ROWS: &[ui::a11y::Role] = &[ui::a11y::Role::ListItem, ui::a11y::Role::TreeItem];
+
+    /// How many nodes the window shows named `label` in one of `roles`.
+    fn count_named(
+        node: &ui::headless::InspectionNode,
+        roles: &[ui::a11y::Role],
+        label: &str,
+    ) -> usize {
+        let here = usize::from(node.semantics.as_ref().is_some_and(|access| {
+            roles.contains(&access.role) && access.name.as_deref() == Some(label)
+        }));
+        node.children
+            .iter()
+            .map(|child| count_named(child, roles, label))
+            .fold(here, usize::saturating_add)
+    }
+
+    /// What the window shows named `label` in one of `roles`.
+    fn named<'a>(
         node: &'a ui::headless::InspectionNode,
+        roles: &[ui::a11y::Role],
         label: &str,
     ) -> Option<&'a ui::headless::InspectionNode> {
-        let is_row = node.semantics.as_ref().is_some_and(|access| {
-            matches!(
-                access.role,
-                ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
-            ) && access.name.as_deref() == Some(label)
+        let is_it = node.semantics.as_ref().is_some_and(|access| {
+            roles.contains(&access.role) && access.name.as_deref() == Some(label)
         });
-        if is_row {
+        if is_it {
             return Some(node);
         }
         node.children
             .iter()
-            .find_map(|child| row_named(child, label))
+            .find_map(|child| named(child, roles, label))
     }
 
     /// The rows of the menus a row carries: the one its view places on it, and the actions the
@@ -2225,5 +2517,261 @@ mod tests {
             })
         });
         published || node.children.iter().any(|child| shows_open(child, label))
+    }
+
+    /// A window is staged from a scenario whose changes the store derives off the frame: its
+    /// frame is read only once none of it is still being read, so the same record and scenario
+    /// show the same frame on every run, whatever thread finished when. Read while an index is
+    /// still being derived, the window shows the platform's loading state or a part of the
+    /// workspace, and a check of it finds what no person would see.
+    #[test]
+    fn a_staged_window_settles_on_the_workspace_before_its_frame_is_read() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        for scenario in ["a task that is late", "a busy week"] {
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                scenario,
+                (320, 568),
+                ui::Theme::light(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            assert!(
+                !staged.instance.pending(),
+                "the staged \"{scenario}\" window still reads the workspace off the frame"
+            );
+            staged
+                .lay_out(
+                    (320, 568),
+                    ui::Theme::light(),
+                    InteractionEnvironment::TOUCH,
+                    1.5,
+                )
+                .expect("lays out");
+            // Laid out, the frame is the person's: the store has read the record whole, nothing
+            // it publishes is being read, and the window owes the app no message that would
+            // change what it shows.
+            assert!(
+                !staged.instance.pending(),
+                "the \"{scenario}\" window is laid out before the store read it whole"
+            );
+            assert!(
+                !staged.window().expect("a window").owes(),
+                "the \"{scenario}\" window is laid out while it still owes the app rows"
+            );
+            // What the frame shows is the workspace's: a workspace read so far shows the
+            // platform's loading state instead of its rows.
+            assert!(
+                !staged.rows().is_empty(),
+                "the \"{scenario}\" window shows no row of a workspace it has read"
+            );
+        }
+        // A store that owes an index is waited for: an index of another schema is derived off
+        // the frame, as one is when a later build of the app declares another, and the frame
+        // read then is the frame of a window that has read nothing.
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a task that is late",
+            (320, 568),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        let host = staged.instance.host().expect("a host");
+        host.store().open_index(&app, "{}");
+        assert!(
+            staged.instance.pending(),
+            "an index of another schema is derived off the frame"
+        );
+        // The window and its instance answer each other at once, as a frame does: what the
+        // store is deriving is taken in before the answer is read, and the frame after it is the
+        // window's.
+        staged.exchange();
+        assert!(
+            !staged.instance.pending(),
+            "the window is answered while the store still owes the index it shows"
+        );
+        staged
+            .lay_out(
+                (320, 568),
+                ui::Theme::light(),
+                InteractionEnvironment::TOUCH,
+                1.5,
+            )
+            .expect("lays out");
+        assert!(
+            !staged.instance.pending(),
+            "the window is laid out while the store still owes the index it shows"
+        );
+    }
+
+    /// A task's check box is a finger's width wherever a person reaches it: on the page a row
+    /// opens as, and in the row that stands open where it is — at every window and text size a
+    /// finger holds one in. A frame read before the store had read the workspace, or before the
+    /// app had answered the rows a frame of it asked for, once showed it a pixel short: the
+    /// check reaches the same frame on every run, and the box on it is a target.
+    #[test]
+    fn a_tasks_check_box_is_a_target_at_every_layout_a_finger_reaches_it_in() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let mut short = Vec::new();
+        for (width, height) in [(320_u32, 568_u32), (768, 1024)] {
+            let layouts: Vec<crate::layout_check::Layout> = crate::layout_check::layouts()
+                .into_iter()
+                .filter(|layout| layout.size.width == width && layout.size.height == height)
+                .filter(|layout| {
+                    (layout.text_scale - 1.5).abs() < f32::EPSILON
+                        || (layout.display_scale - 1.5).abs() < f64::EPSILON
+                })
+                .collect();
+            let first = layouts[0];
+            let mut staged = Staged::over(
+                &app,
+                &packages,
+                "a task that is late",
+                (width, height),
+                first.theme(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    first.theme(),
+                    first.input(),
+                    first.display_scale,
+                )
+                .expect("lays out");
+            // The task the scenario answers with opens where it stands, or as a page of its own
+            // from the list a finger comes back to.
+            if crate::layout_check::back_chip(&staged, (width, height)) {
+                staged
+                    .press_shell(ui::widget::WINDOW_BACK)
+                    .expect("back to the list");
+            }
+            staged
+                .lay_out(
+                    (width, height),
+                    first.theme(),
+                    first.input(),
+                    first.display_scale,
+                )
+                .expect("lays out");
+            if let Some(at) = crate::layout_check::tappable_row(&staged, (width, height)) {
+                staged.tap_at(at).expect("the row opens");
+            }
+            for layout in layouts {
+                staged
+                    .lay_out(
+                        (layout.size.width, layout.size.height),
+                        layout.theme(),
+                        layout.input(),
+                        layout.display_scale,
+                    )
+                    .expect("lays out");
+                let root = &staged.harness().inspection().root;
+                for problem in crate::layout_check::audit::inspect(
+                    root,
+                    (layout.size.width, layout.size.height),
+                    Some(48.0),
+                    layout.display_scale,
+                )
+                .into_iter()
+                .filter(|problem| problem.kind == crate::layout_check::Kind::SmallHitTarget)
+                {
+                    short.push(format!("{layout}: {} {}", problem.widget, problem.detail));
+                }
+            }
+        }
+        assert!(
+            short.is_empty(),
+            "a check box a finger cannot reach:\n  {}",
+            short.join("\n  ")
+        );
+    }
+
+    /// A service that cannot be reached says so in the page's one content gutter: the notice
+    /// stands as far under its column's header row as the list under it stands below the notice, in
+    /// every app and at every width. A page whose gutter grew with the window (48 at a desktop
+    /// width, 24 on a phone) put 48 over the notice and 24 under it beside Mail's 24, so one app
+    /// said a thing and its neighbour said another.
+    #[test]
+    fn a_service_notice_keeps_one_gutter_over_and_under_it() {
+        tilo_ui_host::i18n::ensure();
+        let gaps = |app: &str, scenario: &str, (width, height): (u32, u32)| -> (f64, f64) {
+            let packages = app_packages(app);
+            let id = packages.0.last().expect("the app").meta.app.clone();
+            let theme = ui::Theme::light();
+            let mut staged = Staged::over(
+                &id,
+                &packages,
+                scenario,
+                (width, height),
+                theme.clone(),
+                None,
+                &[],
+            )
+            .expect("the scenario stages");
+            staged
+                .lay_out(
+                    (width, height),
+                    theme,
+                    ui::interaction::InteractionEnvironment::POINTER,
+                    1.0,
+                )
+                .expect("the window lies out");
+            let root = &staged.harness().inspection().root;
+            let mut order = Vec::new();
+            preorder(root, &mut order);
+            let at = order
+                .iter()
+                .position(|node| node.widget == "Banner")
+                .expect("the notice shows");
+            let notice = order[at];
+            // The notice stands under the header row of the column it is in.
+            let top = staged
+                .harness()
+                .column_frames()
+                .iter()
+                .find(|frame| {
+                    frame.column.x0 <= notice.rect[0] + 0.5 && notice.rect[0] < frame.column.x1
+                })
+                .map_or(0.0, |frame| frame.header.y1);
+            // What stands under the notice: the first box after it that starts below it.
+            let below = order[at..]
+                .iter()
+                .find(|node| {
+                    let [_, y, w, h] = node.rect;
+                    w > 0.0 && h > 0.0 && y >= notice.rect[1] + notice.rect[3] - 0.5
+                })
+                .map(|node| node.rect[1] - (notice.rect[1] + notice.rect[3]))
+                .expect("the list under the notice stands");
+            (notice.rect[1] - top, below)
+        };
+        let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
+        for size in [(390, 844), (1280, 800)] {
+            for (app, scenario) in [
+                ("mail", "an account that cannot be reached"),
+                ("tube", "YouTube cannot be reached"),
+            ] {
+                let (over, under) = gaps(app, scenario, size);
+                assert!(
+                    (over - gutter).abs() < 0.5,
+                    "{app} at {size:?}: {over} over the notice, where the page's gutter is {gutter}"
+                );
+                assert!(
+                    (under - gutter).abs() < 0.5,
+                    "{app} at {size:?}: {under} under the notice, where the page's gutter is {gutter}"
+                );
+            }
+        }
     }
 }

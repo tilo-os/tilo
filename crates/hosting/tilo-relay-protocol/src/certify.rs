@@ -17,6 +17,9 @@
 //! host → approver:   ApproverReply::Pending(Vec<PendingCertification>)
 //! approver → host:   ApproverRequest::Decide { request_digest, decision }
 //! host → approver:   ApproverReply::Decided | ApproverReply::Refused { reason }
+//!
+//! member → host:     CertifyOpen::Member(MemberApproval)
+//! host → member:     ApproverReply
 //! ```
 //!
 //! A request the host itself queued for a delegate device (an agent it
@@ -39,7 +42,9 @@
 //! through any host they share: the new device asks on the certification
 //! ALPN and shows its pairing code, and a page holding the member's root
 //! reads and answers that member's pending requests with
-//! [`MemberApproval`]s (`/certify/approve`), each signed by the root. The
+//! [`MemberApproval`]s, each signed by the root and each on a connection of
+//! its own ([`CertifyOpen::Member`]): a page reaches the host on the same
+//! carrier for this as for everything else. The
 //! host lists a member only their own requests and accepts a certificate
 //! only for the exact request it answers.
 //!
@@ -62,13 +67,21 @@ pub const MAX_CERTIFY_FRAME_BYTES: usize = 16 * 1024;
 /// Requests one host holds at once; further requests are refused.
 pub const MAX_PENDING_CERTIFICATIONS: usize = 32;
 
-/// First frame on a certification stream.
+/// First frame on a certification stream. Its variants' order is their tag
+/// on the wire: a new opener goes last, and the ones before keep theirs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a wire message, decoded once per connection and never kept in bulk"
+)]
 pub enum CertifyOpen {
     /// An uncertified device asks to be certified.
     Request(CertificationRequest),
     /// A certified device opens an approver session.
     Approver(Hello),
+    /// A member's root asks one approver command of the host, answered with
+    /// one [`ApproverReply`]. A host that predates it refuses the opener.
+    Member(MemberApproval),
 }
 
 /// What the host tells a waiting requester.
@@ -140,9 +153,11 @@ pub const MEMBER_APPROVAL_LABEL: &[u8] = b"tilo member approval v1\0";
 /// How far a [`MemberApproval`]'s time may be from the host's clock.
 pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
-/// An approver command from a member's root over HTTPS: only
-/// [`ApproverRequest::ListPending`] (that member's own requests) and
-/// [`ApproverRequest::Decide`] (one of them) are answered.
+/// An approver command from a member's root ([`CertifyOpen::Member`]): only
+/// [`ApproverRequest::ListPending`] (that member's own requests),
+/// [`ApproverRequest::Decide`] (one of them), [`ApproverRequest::Confirmations`]
+/// (what the host asks that member about actions run for them) and
+/// [`ApproverRequest::Answer`] (to one of those) are answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberApproval {
     /// The member's root, which signs.
@@ -228,28 +243,102 @@ pub enum ApproverRequest {
     },
 }
 
+/// A page departure the person is asked to allow: what a page they are not
+/// standing at is about to send, where it goes, and the filled page it leaves
+/// from. A submission in a hosted Browser is exactly this, and the person's
+/// allow is what lets that one request leave.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageDeparture {
+    /// The page it leaves from, by its origin (`https://visa.example`); empty
+    /// when the window cannot say.
+    #[serde(default)]
+    pub page: String,
+    /// What the page does, as `ui::webview::HeldKind` names it (`submit`,
+    /// `navigate`, `request`, `download`, `payment`).
+    #[serde(default)]
+    pub kind: String,
+    /// The method it leaves with (`POST`); empty when the engine named none.
+    #[serde(default)]
+    pub method: String,
+    /// Where it goes, by its origin (`https://visa.example`); empty when it
+    /// names none.
+    #[serde(default)]
+    pub destination: String,
+    /// The filled page as the person allows it: a content address of a PNG in
+    /// the workspace's store, which their device reads to see what leaves.
+    #[serde(default)]
+    pub picture: Option<String>,
+}
+
+impl PageDeparture {
+    /// What the page is about to do, in the person's words: `send the form to
+    /// https://visa.example (POST)`. A kind this build does not know, or a
+    /// departure that names no destination, reads as what it is.
+    #[must_use]
+    pub fn doing(&self) -> String {
+        let mut text = match self.kind.as_str() {
+            "submit" => "send the form".to_owned(),
+            "navigate" => "leave for".to_owned(),
+            "download" => "download from".to_owned(),
+            "payment" => "take a payment to".to_owned(),
+            // A request, and whatever a newer window names that this build
+            // does not know: it is a request either way.
+            _ => "send a request".to_owned(),
+        };
+        if !self.destination.is_empty() {
+            text.push_str(" to ");
+            text.push_str(&self.destination);
+        }
+        if !self.method.is_empty() {
+            text.push_str(" (");
+            text.push_str(&self.method);
+            text.push(')');
+        }
+        text
+    }
+}
+
 /// A question an agent on the host puts to its person: one invocation of
 /// an action the person's grants leave to them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingConfirmation {
     /// Names this question, to answer it.
     pub id: [u8; 32],
     /// [`crate::delegation::Delegate::agent_id`] of the asking agent.
     pub agent_id: String,
-    /// The agent's display name.
+    /// The agent's display name: the name its key goes by, as History names
+    /// its changes.
     pub agent_label: String,
+    /// The run it asks in, by the title the agent gave it; empty when it
+    /// named none.
+    pub run: String,
+    /// The action, by the title its app declares.
     pub action_label: String,
-    /// What it acts on, as the record that offers it says.
+    /// What it acts on: the record by its name.
     pub resource_label: String,
+    /// The arguments it would run with, each by its label and value as a
+    /// reviewer reads it, long values cut and secrets withheld.
+    pub arguments: Vec<(String, String)>,
     /// What the action risks, as `tilo_actions::RiskLevel` names it
     /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
     /// sheet to state. An approver reads an unknown name as the gravest.
     pub risk: String,
+    /// What the action is able to do, as `tilo_actions::ActionKind` names it
+    /// (`read`, `undoable`, `outside`); empty when the host cannot say.
+    pub kind: String,
+    /// Whether Undo takes the action back.
+    pub undoable: bool,
     /// The workspace the agent acts in.
     #[serde(rename = "room")]
     pub workspace: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
+    /// The page departure it asks about, when it asks about one: what leaves a
+    /// page nobody stands at, and the filled page it leaves from. Written even
+    /// when there is none: a question is encoded by position (postcard), so a
+    /// field left out is one its reader still expects.
+    #[serde(default)]
+    pub page: Option<PageDeparture>,
 }
 
 impl PendingConfirmation {
@@ -260,6 +349,20 @@ impl PendingConfirmation {
             "{} wants to {}: {}, for you",
             self.agent_label, self.action_label, self.resource_label
         )
+    }
+
+    /// The page the question is about, by its origin, when it asks about one:
+    /// where what leaves goes from, and where to when the window named no
+    /// page of its own.
+    #[must_use]
+    pub fn page_origin(&self) -> Option<String> {
+        let page = self.page.as_ref()?;
+        let origin = if page.page.is_empty() {
+            &page.destination
+        } else {
+            &page.page
+        };
+        (!origin.is_empty()).then(|| origin.clone())
     }
 }
 
@@ -329,5 +432,89 @@ mod tests {
         let mut stranger = signed;
         stranger.user_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         assert!(stranger.verify(now).is_err(), "and the root");
+    }
+
+    /// A departure reads as what the page is about to do, and a question that
+    /// names one says where it leaves from.
+    #[test]
+    fn a_departure_says_what_leaves_where_and_how() {
+        let departure = PageDeparture {
+            page: "https://consulate.example".into(),
+            kind: "submit".into(),
+            method: "POST".into(),
+            destination: "https://consulate.example".into(),
+            picture: Some("tilo.content:5f2b".into()),
+        };
+        assert_eq!(
+            departure.doing(),
+            "send the form to https://consulate.example (POST)",
+            "what leaves, where to, and how"
+        );
+        let question = PendingConfirmation {
+            action_label: departure.doing(),
+            page: Some(departure.clone()),
+            ..PendingConfirmation::default()
+        };
+        assert_eq!(
+            question.page_origin().as_deref(),
+            Some("https://consulate.example")
+        );
+        // A window that named no page of its own leaves from where it goes.
+        let elsewhere = PageDeparture {
+            page: String::new(),
+            ..departure
+        };
+        let question = PendingConfirmation {
+            page: Some(elsewhere),
+            ..question
+        };
+        assert_eq!(
+            question.page_origin().as_deref(),
+            Some("https://consulate.example")
+        );
+        assert_eq!(
+            PageDeparture::default().doing(),
+            "send a request",
+            "a departure this build knows nothing else of is still a request"
+        );
+    }
+
+    /// A question that names no page reads as one, and one that names a page
+    /// is read back as it was written.
+    #[test]
+    fn a_question_reads_the_page_it_names_and_one_that_names_none() {
+        let plain: PendingConfirmation = serde_json::from_value(serde_json::json!({
+            "id": serde_json::json!(vec![0u8; 32]),
+            "agent_id": "agent",
+            "agent_label": "Jane Doe's agent",
+            "run": "",
+            "action_label": "Send the form",
+            "resource_label": "browser.page",
+            "arguments": [],
+            "risk": "outside",
+            "kind": "",
+            "undoable": false,
+            "room": "ws",
+            "expires_at_ns": 7,
+        }))
+        .expect("a question without a page is one");
+        assert_eq!(plain.page, None);
+        assert_eq!(plain.page_origin(), None);
+
+        let departure = PageDeparture {
+            page: "https://visa.example".into(),
+            kind: "submit".into(),
+            method: "POST".into(),
+            destination: "https://visa.example".into(),
+            picture: None,
+        };
+        let written = serde_json::to_value(PendingConfirmation {
+            page: Some(departure.clone()),
+            ..plain
+        })
+        .expect("the question encodes");
+        assert_eq!(written["page"]["method"], "POST");
+        let read: PendingConfirmation = serde_json::from_value(written).expect("and reads back");
+        assert_eq!(read.page, Some(departure));
     }
 }

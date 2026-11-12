@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::widget_text;
 use crate::testing::Dispatch;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
 
@@ -239,7 +240,7 @@ fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
     let insets = 2.0 * f64::from(tokens.spacing.s2 + tokens.spacing.s3);
     let hint_width = f64::from(
         text.measure_style(
-            &crate::i18n!("dropdown-no-matches"),
+            &widget_text("dropdown-no-matches"),
             None,
             &frame.theme().text(TextRole::Body),
         )
@@ -1394,19 +1395,14 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
         let theme = Theme::dark();
         let mut dd = Dropdown::new(opts(), "tz");
         assert!(Widget::is_layout_dirty(&dd));
-        let mut taffy = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        let node = dd.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(300.0),
-                    height: taffy::AvailableSpace::Definite(200.0),
-                },
-            )
-            .unwrap();
-        dd.apply_layout(&taffy, node, Point::ZERO);
+        // What a host does for a frame: build, solve and place the control.
+        crate::widget::layout::lay_out_detached(
+            &mut dd,
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+            &theme,
+            &mut TextRenderer::new(),
+        )
+        .expect("the dropdown lays out");
         assert!(!Widget::is_layout_dirty(&dd));
         dd.set_options(zones());
         assert!(

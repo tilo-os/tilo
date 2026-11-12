@@ -50,6 +50,17 @@ pub struct Collaborator {
     /// `None` when they are in no call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call: Option<String>,
+    /// What they say they are doing, in their presence's own words
+    /// ("Writing in Launch notes"): read each frame off what their device
+    /// published, as [`Self::availability`] and [`Self::call`] are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
+    /// This person's view is the one the desk follows, placed by the host
+    /// each frame from its own presence: their face is the one the bar keeps
+    /// when it is too narrow to show everyone. Never synced — following is the
+    /// person at this desk's own.
+    #[serde(skip)]
+    pub following: bool,
 }
 
 impl Collaborator {
@@ -68,6 +79,8 @@ impl Collaborator {
             own_device: false,
             availability: None,
             call: None,
+            status: None,
+            following: false,
         }
     }
 
@@ -129,4 +142,15 @@ impl Collaborator {
         self.call = call;
         self
     }
+}
+
+/// What someone here says they are doing, and who said it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// The words as their presence carries them, in their own language.
+    pub text: String,
+    /// Whether software said this for them, from what they did, rather than
+    /// them typing it: software's work is said for it, never by it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
 }

@@ -20,12 +20,12 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Screen::Camera => "Camera",
-            Screen::Scanner => "Scan",
-            Screen::Document => "Documents",
-            Screen::Settings => "Settings",
+            Screen::Camera => crate::CATALOG.t("camera-screen-camera"),
+            Screen::Scanner => crate::CATALOG.t("camera-screen-scanner"),
+            Screen::Document => crate::CATALOG.t("camera-screen-document"),
+            Screen::Settings => crate::CATALOG.t("camera-screen-settings"),
         }
     }
 
@@ -53,6 +53,13 @@ impl CaptureMode {
             CaptureMode::Video => "video",
         }
     }
+    /// The mode as the window names it.
+    pub fn label(self) -> String {
+        match self {
+            CaptureMode::Photo => crate::CATALOG.t("camera-mode-photo"),
+            CaptureMode::Video => crate::CATALOG.t("camera-mode-video"),
+        }
+    }
     pub fn parse_str(s: &str) -> CaptureMode {
         match s {
             "video" => CaptureMode::Video,
@@ -72,13 +79,13 @@ pub enum Facing {
 
 impl Facing {
     pub const ALL: [Facing; 3] = [Facing::Back, Facing::Front, Facing::Wide];
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            // "Rear" rather than "Back" so the lens selector never reads as a
-            // navigational back button.
-            Facing::Back => "Rear",
-            Facing::Front => "Front",
-            Facing::Wide => "Ultra-wide",
+            // The rear lens rather than "back", so the lens selector never
+            // reads as a navigational back button.
+            Facing::Back => crate::CATALOG.t("camera-facing-rear"),
+            Facing::Front => crate::CATALOG.t("camera-facing-front"),
+            Facing::Wide => crate::CATALOG.t("camera-facing-wide"),
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -166,11 +173,11 @@ pub enum Timer {
 
 impl Timer {
     pub const ALL: [Timer; 3] = [Timer::Off, Timer::S3, Timer::S10];
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Timer::Off => "Off",
-            Timer::S3 => "3s",
-            Timer::S10 => "10s",
+            Timer::Off => crate::CATALOG.t("camera-timer-off"),
+            Timer::S3 => "3 s".to_owned(),
+            Timer::S10 => "10 s".to_owned(),
         }
     }
     pub fn seconds(self) -> i64 {

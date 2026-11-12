@@ -35,3 +35,14 @@ capture-failed-not-copied = Ein Bildschirmfoto wurde gespeichert, aber nicht kop
 capture-failed-not-read = Ein Bildschirmfoto wurde nicht kopiert: { $why }
 capture-failed-clip-not-saved = Ein Ausschnitt des gerade Geschehenen wurde nicht gespeichert: { $why }
 capture-failed-not-opened = { $path } konnte nicht geöffnet werden: { $why }
+
+## Actions
+
+desktop-capture-studio = Aufnahmestudio
+so-tilo-capture-studio-open = Das Aufnahmestudio öffnen
+so-tilo-capture-studio-pause-recording = Die Aufnahme pausieren
+so-tilo-capture-studio-record = Den Bildschirm aufnehmen
+so-tilo-capture-studio-resume-recording = Die Aufnahme fortsetzen
+so-tilo-capture-studio-save-replay = Die letzten 30 Sekunden sichern
+so-tilo-capture-studio-screenshot = Ein Bildschirmfoto aufnehmen
+so-tilo-capture-studio-stop-recording = Die Aufnahme beenden

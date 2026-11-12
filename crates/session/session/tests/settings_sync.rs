@@ -15,21 +15,19 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
-use tilo_device_fabric::speaker_group::SpeakerFabricState;
-use tilo_device_fabric::unlock::UnlockFabricState;
-use tilo_device_fabric::{
+use tilo_session::platform::fabric::SpeakerFabricState;
+use tilo_session::platform::fabric::UnlockFabricState;
+use tilo_session::platform::fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
     RoamingSetting,
 };
+use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::{Options, Session};
 
 /// This device's fabric id.
@@ -188,14 +186,6 @@ impl FabricLink for FakeLink {
             .expect("the identity")
             .clone()
             .map(|device| (device, "this computer".to_owned()))
-    }
-
-    fn send_personal_fabric_action(
-        &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        Err("no transport in a test".to_owned())
     }
 
     fn try_send_personal_fabric_action(

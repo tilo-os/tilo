@@ -96,6 +96,6 @@ Cargo remains available directly with `cargo test` and `cargo run`.
 
 `tilo-app add screen account-settings` creates `ui/account-settings.json` and a callable `screens::account_settings(&theme)` constructor.
 
-User-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog.
+User-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` registers the locale: it writes a complete editable copy of that message contract, or keeps the catalog already at `locales/de-DE.ftl` and registers it without touching its text. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog.
 
 App id: `so.tilo.poker`

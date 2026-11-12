@@ -5,7 +5,7 @@
 
 use ui::ArgValue;
 
-ui::embedded_catalog!(pub fn, ["en-US"]);
+ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
 /// Resolve a counted string: `count` picks the plural form and is offered
 /// to the message both as `$count` and, digit-grouped, as `$files` and
@@ -81,5 +81,30 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(1_000), "1,000");
         assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(
+            catalogue.t("backups-health-ok"),
+            "Keine fehlgeschlagenen Sicherungen"
+        );
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("backups-health-ok"), "No failed backups");
     }
 }

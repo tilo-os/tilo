@@ -1,17 +1,18 @@
 //! A Rust app's resources and views in a development session, so a shell draws them live.
 //!
-//! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas,
-//! `dist/dev/shell-run.sh --dev-rust-views`): the sample catalogue of Tube's channels and videos,
-//! each a resource of the app `tube`, and the demo workspace's `#design-crit` channel of Chat,
+//! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas): the sample
+//! catalogue of Tube's channels and videos, each a resource of the app `tube`, and the demo
+//! workspace's `#design-crit` channel of Chat,
 //! each a resource of its app, published as the session publishes any app's resources, and the
 //! views `#[view]` declared in the crates registered with the shell's runtime, so a place that
-//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel posts: its
-//! `post` action writes into the demo workspace the same service keeps, so the composer a
-//! person types in adds a message the page draws. A person's session, and every production
+//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel takes Chat's
+//! own `send`, written into the demo workspace the same service keeps, so the composer a person
+//! types in adds a message the page draws. A person's session, and every production
 //! image, carries none of it.
 
 use serde_json::Value as Json;
 use tilo_actions::{DoorError, ResourceSpec};
+use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 
 /// The chat channel the demo workspace opens: what a place showing it draws Chat's page over.
@@ -26,25 +27,23 @@ pub const CHAT_SHORT_CHANNEL: &str = "c_general";
 pub struct RustApps {
     model: tube::model::TubeModel,
     /// Chat's demo workspace, read and written as its window does: the channel's messages and
-    /// what its composer posts.
+    /// what its composer sends.
     chat: chat::demo::Workspace,
-    /// What the composer holds that the person did not type: the resource a drop on it
-    /// attached, by channel. The session's own `Conversations` keeps the same state for a
-    /// person's session; a development session keeps it here.
-    drafts: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
 }
 
 impl RustApps {
     /// The apps' sample catalogue, and the views this crate links registered with the shell.
-    #[must_use]
-    pub fn new() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// The demo chat could not be written.
+    pub fn new() -> Result<Self, tilo_actions::DoorError> {
         let mut apps = Self {
             model: tube::sample::model(),
-            chat: chat::demo::Workspace::demo().expect("the demo chat"),
-            drafts: std::cell::RefCell::default(),
+            chat: chat::demo::Workspace::demo()?,
         };
         apps.share_a_record();
-        apps
+        Ok(apps)
     }
 
     /// The demo conversation's page, as its place draws it.
@@ -75,12 +74,14 @@ impl RustApps {
     /// which the session publishes (Tube's own). A development fixture, so a shot of an
     /// attachment's press has one to press, in a transcript short enough to reach it.
     fn share_a_record(&mut self) {
-        let video = self
+        let Some(video) = self
             .model
             .videos
             .iter()
             .find(|video| video.id == "vid_rust_async")
-            .expect("the sample video");
+        else {
+            return;
+        };
         let at = tilo_reference::ResourceAt {
             app: "so.tilo.tube".to_owned(),
             record: None,
@@ -98,20 +99,6 @@ impl RustApps {
                 mentions: None,
             });
         let _ = self.chat.apply_part_as(chat::model::ME, invoke);
-    }
-    /// What this fixture publishes of `resource`, as the arrangement's catalogue keeps it: the
-    /// app that keeps it, its kind and what it is called. `None` for an address it does not
-    /// publish, which an attachment then names by its address alone.
-    fn published(&self, resource: &str) -> Option<crate::arrangement::Target> {
-        let mut catalog = crate::arrangement::Catalog::default();
-        catalog.take(&Service::resources(self));
-        catalog.get(resource).cloned()
-    }
-}
-
-impl Default for RustApps {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -161,7 +148,7 @@ impl Service for RustApps {
                 )
                 .with_view(tilo_actions::ResourceViewSpec::new(
                     "page",
-                    conversation.name.clone(),
+                    conversation.name,
                     "open",
                 ))
                 .with_type(tilo_actions::ResourceType {
@@ -169,13 +156,10 @@ impl Service for RustApps {
                     app: tilo_actions::Noun::new("Chat", "Chat"),
                     root: false,
                 });
-                // What the page's composer runs: the chat's own post, the one verb the session's
-                // `ChatViewService` publishes on a channel, so the fixture and a person's
-                // session offer the same composer.
-                chat = chat
-                    .with_action(crate::conversations::post_action())
-                    .with_action(crate::conversations::attach_action())
-                    .with_action(crate::conversations::detach_action());
+                // What the page's composer runs: Chat's own `send`, as Chat declares it.
+                if let Some(send) = chat::effects::ChatEffect::spec(SEND) {
+                    chat = chat.with_action(send);
+                }
                 chat.app_id = Some("chat".to_owned());
                 chat
             })
@@ -201,17 +185,9 @@ impl Service for RustApps {
             .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
         {
             let id = rest.to_owned();
-            let mut conversation = [self.chat_channel(), self.chat_short_channel()]
+            let conversation = [self.chat_channel(), self.chat_short_channel()]
                 .into_iter()
                 .find(|channel| channel.id == id)?;
-            // The drop a person made on the composer shows as its chip: the same attachment a
-            // person's session names from its own draft, by the resource's published title.
-            if let Some(held) = self.drafts.borrow().get(&id) {
-                let published = self.published(held);
-                conversation.draft = Some(chat::views::Attachment::of(
-                    &crate::conversations::attached_resource(held, published.as_ref()),
-                ));
-            }
             return serde_json::to_value(&conversation).ok();
         }
         None
@@ -223,114 +199,33 @@ impl Service for RustApps {
         action: &str,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        // The composer's send, as the chat's own verb writes it: a message from the person
-        // typing, in the channel it names.
-        if action == "post"
+        // The composer's send, read as Chat reads its own `send`: a message from the person
+        // typing, in each conversation it goes to.
+        if action == SEND
             && (resource.starts_with("chat.workspace/channels/")
                 || resource.starts_with("chat.workspace.channels:"))
         {
-            let channel = arguments
-                .get("channel")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            let text = arguments
-                .get("text")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
+            let chat::effects::ChatEffect::Send { to, text, .. } =
+                chat::effects::ChatEffect::decode(SEND, arguments)
+                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?
+            else {
+                return Err(DoorError::Failed(format!("`{SEND}` is not a send")));
+            };
             if !text.trim().is_empty() {
-                // A message, with the draft's attachment when a drop put one there: the same
-                // `NewMessage` a person's session posts, so what the fixture draws and what
-                // the session's turn reads are the one shape.
-                let held = self.drafts.borrow_mut().remove(channel);
-                let attachments: Vec<tilo_reference::Attached> = held
-                    .as_deref()
-                    .map(|resource| {
-                        vec![crate::conversations::attached_resource(
-                            resource,
-                            self.published(resource).as_ref(),
-                        )]
-                    })
-                    .unwrap_or_default();
-                let channel_id = tilo_resource::Id::from_raw(channel);
-                // The message the reply answers, and the run of it it quotes: what a place's
-                // composer sends, read from the answered message here as the session's own
-                // `post_span` reads it, so the fixture and a person's session quote alike.
-                let parent = arguments
-                    .get("parent")
-                    .and_then(Json::as_str)
-                    .filter(|parent| !parent.is_empty())
-                    .map(tilo_resource::Id::from_raw);
-                let quoted = arguments
-                    .get("span")
-                    .and_then(Json::as_str)
-                    .and_then(quoted_span)
-                    .zip(parent.clone())
-                    .and_then(|((start, end), parent)| {
-                        let answered = self.chat.messages().get(&parent)?.text.clone();
-                        let words = answered.get(start..end)?;
-                        Some(chat::record::Quote {
-                            text: words.to_owned(),
-                            start: u64::try_from(start).ok()?,
-                            end: u64::try_from(end).ok()?,
-                        })
-                    });
-                self.chat
-                    .apply_part_as(
-                        chat::model::ME,
-                        chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
-                            message: chat::messages::NewMessage {
-                                channel: channel_id,
-                                text: text.to_owned(),
-                                parent,
-                                quoted,
-                                body: None,
-                                attachments,
-                                mentions: None,
-                                written: None,
-                            },
-                        }),
-                    )
-                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+                for conversation in &to {
+                    self.chat
+                        .say(chat::model::ME, &conversation.id, &text)
+                        .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+                }
             }
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        // A drop on the composer attaches the resource it carried to the draft; the chip's
-        // remove takes it away again.
-        if action == "attach" {
-            let channel = arguments
-                .get("channel")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            let held = arguments
-                .get("resource")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            if !held.trim().is_empty() {
-                self.drafts
-                    .borrow_mut()
-                    .insert(channel.to_owned(), held.to_owned());
-            }
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if action == "detach" {
-            let channel = arguments
-                .get("channel")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            self.drafts.borrow_mut().remove(channel);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
 
-/// The run `<start>:<end>` names, in UTF-8 bytes: how a message's selection reports the words a
-/// reply answers. `None` when it is not two ordered numbers.
-fn quoted_span(text: &str) -> Option<(usize, usize)> {
-    let (start, end) = text.split_once(':')?;
-    let (start, end) = (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?);
-    (start < end).then_some((start, end))
-}
+/// Chat's own `send`: what its window, its agents and the desk's send-to box run.
+const SEND: &str = "send";
 
 #[cfg(test)]
 mod tests {
@@ -338,7 +233,7 @@ mod tests {
 
     #[test]
     fn the_chat_channel_service_publishes_its_messages_and_their_people() {
-        let apps = RustApps::new();
+        let apps = RustApps::new().unwrap();
         let published: Vec<String> = apps
             .resources()
             .into_iter()

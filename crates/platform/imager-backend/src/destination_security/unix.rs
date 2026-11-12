@@ -106,15 +106,16 @@ pub fn check_private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Test fixtures live in fresh directories below the platform temporary
-/// directory. That directory and its ancestors belong to the machine running
-/// the tests, not to any fixture: a rootless development container shows the
-/// host's `/tmp` under the overflow uid and mounts its own root with FUSE,
-/// both of which the checks rightly refuse, so tests there would only ever
-/// observe that refusal. Those machine directories are recognised by identity
-/// and skipped; every directory a fixture creates is still checked in full,
-/// also in the helper processes some tests spawn. The ownership decision
-/// itself is covered with injected uids by the unit tests below.
+/// Test fixtures live in fresh directories below the machine's temporary
+/// directory or below the setup tests' own root in the checkout. Those two and
+/// their ancestors belong to the machine running the tests, not to any fixture:
+/// a rootless development container shows the host's `/tmp` under the overflow
+/// uid and mounts the checkout on FUSE (virtiofs, a fuse-overlayfs root), both
+/// of which the checks rightly refuse, so tests there would only ever observe
+/// that refusal. Those machine directories are recognised by identity and
+/// skipped; every directory a fixture creates is still checked in full, also in
+/// the helper processes some tests spawn. The ownership decision itself is
+/// covered with injected uids by the unit tests below.
 #[cfg(any(test, feature = "test-support"))]
 mod test_environment {
     use std::collections::HashSet;
@@ -129,14 +130,23 @@ mod test_environment {
             return Ok(above);
         }
         let above = {
-            let temp = std::env::temp_dir();
-            let temp = temp.canonicalize().unwrap_or(temp);
-            temp.ancestors()
-                .map(|ancestor| {
-                    let metadata = std::fs::metadata(ancestor)?;
-                    Ok((metadata.dev(), metadata.ino()))
-                })
-                .collect::<io::Result<HashSet<_>>>()?
+            let mut roots = vec![std::env::temp_dir()];
+            #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+            roots.push(crate::test_support::fixture_root());
+            let mut above = HashSet::new();
+            for root in roots {
+                // Canonical, so the mount the checkout really lives on is
+                // recognised however the worktree path spells it.
+                let root = root.canonicalize().unwrap_or(root);
+                for ancestor in root.ancestors() {
+                    // A root a fixture is about to make does not exist yet.
+                    let Ok(metadata) = std::fs::metadata(ancestor) else {
+                        continue;
+                    };
+                    above.insert((metadata.dev(), metadata.ino()));
+                }
+            }
+            above
         };
         Ok(ABOVE.get_or_init(|| above))
     }

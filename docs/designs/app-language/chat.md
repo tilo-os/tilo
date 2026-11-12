@@ -202,8 +202,10 @@ once, and everything below happens in the window as each key is typed.
 - **Rows** are the type's row view at list size: people with avatar, name (matched letters bold),
   handle, and a right-side label ("in this channel", role); channels with icon, name, topic,
   unread count; tasks with state, identifier, title, assignee.
-- **Order with no letters yet:** "In this conversation" (recent speakers, newest first, up to
-  5), then "Members" (by how often you interact), then group mentions if you may use them.
+- **Order with no letters yet:** "In this conversation" (the people who spoke in it, newest
+  first, up to 5, read from the conversation's own last items and nothing of what it is about),
+  then "Members" (who can read what the mention lands in), then group mentions if you may use
+  them.
 - **Order while typing:** one list, no headers: names or handles starting with the query, then a
   word in the name starting with it, then substrings, then close fuzzy matches; within each tier,
   this conversation, then the channel, then the workspace, then people outside it (labelled).
@@ -271,7 +273,7 @@ once, and everything below happens in the window as each key is typed.
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??` | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` built, with its drawers (next row) |
 | `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
-| `rich_input` with its completion drawers (`@` this conversation's recent speakers then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
+| `rich_input` with its completion drawers (`@` this conversation's speakers (`speakers(items)`) then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
 | Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' view state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |

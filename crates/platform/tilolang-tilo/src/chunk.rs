@@ -171,6 +171,21 @@ impl Placement {
         self.of.get(id).copied().unwrap_or(FIRST)
     }
 
+    /// Where the manifest places each resource that is not in chunk [`FIRST`], by its id.
+    #[must_use]
+    pub fn placed(&self) -> &std::collections::BTreeMap<String, ChunkNo> {
+        &self.of
+    }
+
+    /// The runs the manifest names, per holder and collection field.
+    #[must_use]
+    pub fn all_runs(
+        &self,
+    ) -> &std::collections::BTreeMap<(String, String), std::collections::BTreeMap<ChunkNo, Run>>
+    {
+        &self.runs
+    }
+
     /// Whether the manifest names any chunk at all: a record written before chunks names none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -396,15 +411,6 @@ impl Chunks {
         self.docs()
             .map(|(chunk, doc)| (chunk, doc.committed_document().get_heads()))
             .collect()
-    }
-
-    /// Whether the store holds every change of `heads`, in one chunk or another.
-    #[must_use]
-    pub fn holds_heads(&self, heads: &[ChangeHash]) -> bool {
-        heads.iter().all(|head| {
-            self.docs()
-                .any(|(_, doc)| doc.committed_document().get_change_by_hash(head).is_some())
-        })
     }
 
     /// Whether the store holds every change the stamps name, in the chunk each is stamped for:

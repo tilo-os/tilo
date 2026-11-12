@@ -61,16 +61,34 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 
+/// The widget a [`Decorator`] stands for, as an inventory that walks widgets
+/// by their children reaches it: a decorator's inner widget is no child of
+/// its own, so [`controls::control_action_bindings`] asks for it here. A
+/// decorator that keeps its inner widget out of the tree — a sheet that is not
+/// shown — answers nothing.
+///
+/// [`controls::control_action_bindings`]: crate::widget::controls::control_action_bindings
+pub trait Decorated: Widget {
+    /// The widget this one stands for.
+    fn decorated(&self) -> &dyn Widget;
+}
+
 /// A widget as `&dyn Widget`, also one that already is a trait object: a
 /// decorator's inner widget may be either, and its layout walk hands the
 /// inner widget on ([`Widget::for_each_layout_child`]).
 pub trait AsDynWidget {
     /// This widget as a trait object.
     fn as_dyn_widget(&self) -> &dyn Widget;
+    /// This widget as a mutable trait object.
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget;
 }
 
 impl<T: Widget> AsDynWidget for T {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }
@@ -79,10 +97,18 @@ impl AsDynWidget for dyn Widget {
     fn as_dyn_widget(&self) -> &dyn Widget {
         self
     }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
+        self
+    }
 }
 
 impl AsDynWidget for dyn super::AppWidget {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }
@@ -160,6 +186,14 @@ macro_rules! decorator_trait {
             )*
         }
 
+        /// The widget a decorator stands for: what an inventory walking
+        /// widgets by their children asks it for its own bindings.
+        impl<T: Decorator> Decorated for T {
+            fn decorated(&self) -> &dyn Widget {
+                self.inner().as_dyn_widget()
+            }
+        }
+
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
             $($impl_items)*
@@ -217,6 +251,12 @@ macro_rules! decorator_trait {
                 const _: () = {
                     use crate::widget::decorator::concrete::Decorator;
 
+                    impl crate::widget::decorator::Decorated for $d ty {
+                        fn decorated(&self) -> &dyn Widget {
+                            Decorator::inner(self).as_dyn_widget()
+                        }
+                    }
+
                     impl Widget for $d ty {
                         $($impl_items)*
                         $(
@@ -266,7 +306,18 @@ decorator_trait! {
             true
         }
 
-        fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>)
+        where
+            Self: Decorated,
+        {
+            // What an inventory walking widgets by their children asks for the
+            // widget this one stands for: its inner is no child of it. A
+            // decorator that keeps its inner out of the tree overrides this to
+            // answer nothing.
+            if request.wants::<dyn Decorated>() {
+                request.provide::<dyn Decorated>(self);
+                return;
+            }
             self.inner().provide(request);
         }
 
@@ -442,20 +493,23 @@ decorator_trait! {
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
+        /// A decorator stands where its inner widget does, so the column its content is read in
+        /// is the inner widget's: a bar docked under a pane around a page still finds the page.
+        fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
-        fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
-        fn window_slot_barrier() -> bool;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
         fn own_page_title() -> Option<String>;
+        fn html(cx: &mut crate::composition::HtmlCx<'_>);
+        fn is_item_opened_in_place() -> bool;
         fn page_title_is_heading() -> bool;
         fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
-        fn tooltip() -> Option<&str>;
+        fn tooltip() -> Option<std::borrow::Cow<'_, str>>;
         fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
@@ -472,6 +526,7 @@ decorator_trait! {
         fn accessibility_represents_child(child_index: usize) -> bool;
         fn lays_out_child(child_index: usize) -> bool;
         fn accessibility_child_description(child_index: usize) -> Option<String>;
+        fn accessibility_child_name(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
         fn ime_refuses_ordinary_commits() -> bool;
@@ -521,7 +576,6 @@ decorator_trait! {
     }
 
     mut {
-        fn window_choose(id: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
@@ -555,6 +609,12 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
+        // Not `expect`: whether clippy sees a call inside this macro's
+        // expansion depends on the features the crate is built with.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
         fn draw(
             scene: &mut Scene,
             transform: Affine,
@@ -601,6 +661,7 @@ decorator_trait! {
         fn dismiss_presented_modal() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
+        fn layout_measured();
         fn release_scene_cache();
         fn draw_overlay(
             scene: &mut Scene,

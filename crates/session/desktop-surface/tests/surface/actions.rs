@@ -76,8 +76,14 @@ impl TileSource for OpeningApps {
         })
     }
 
-    fn launch(&mut self, workspace: &Workspace, id: u64, app: &str) -> Option<Tab> {
-        Notices(Rc::new(Cell::new(0))).launch(workspace, id, app)
+    fn launch(
+        &mut self,
+        workspace: &Workspace,
+        id: u64,
+        app: &str,
+        beside: Option<u64>,
+    ) -> Option<Tab> {
+        Notices(Rc::new(Cell::new(0))).launch(workspace, id, app, beside)
     }
 }
 
@@ -209,7 +215,7 @@ impl TileSource for FillingTiles {
         TileHost::new(ui::widget::TileContent::App(Box::new(FillingPage(page))))
     }
 
-    fn launch(&mut self, _: &Workspace, _: u64, _: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, _: u64, _: &str, _: Option<u64>) -> Option<Tab> {
         None
     }
 }
@@ -309,8 +315,8 @@ impl TileSource for RecordWindows {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
-        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
+        let (app, record) = tilo_desktop_search::launched_record(app)?;
         self.opened.borrow_mut().push((id, record.to_owned()));
         Some(Tab {
             id,
@@ -327,7 +333,7 @@ impl TileSource for RecordWindows {
     }
 
     fn showing(&self, app: &str) -> Option<u64> {
-        let (_, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let (_, record) = tilo_desktop_search::launched_record(app)?;
         self.opened
             .borrow()
             .iter()
@@ -466,7 +472,7 @@ impl TileSource for ContentWindows {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         let (app, hash) = tilo_desktop_surface::session::launched_content(app)?;
         self.opened
             .borrow_mut()

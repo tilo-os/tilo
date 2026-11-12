@@ -2,8 +2,8 @@
 
 use super::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    RecordChanges, RecordReads,
+    ContentGets, ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest,
+    Pending, RecordChanges, RecordReads,
 };
 
 /// A shared host is the host: what lets one be handed to [`super::serve`], which
@@ -53,6 +53,10 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         (**self).content_puts()
     }
 
+    fn content_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
+        (**self).content_gets()
+    }
+
     fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
         (**self).record_reads()
     }
@@ -63,5 +67,9 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
 
     fn resource_search(&self) -> Option<std::sync::Arc<dyn super::ResourceSearch>> {
         (**self).resource_search()
+    }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<super::Here>> {
+        (**self).here(caller)
     }
 }

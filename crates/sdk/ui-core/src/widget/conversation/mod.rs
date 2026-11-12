@@ -15,13 +15,12 @@
 //! | Piece | What it settles |
 //! |---|---|
 //! | [`day`] | Day boundaries, the divider that marks one, the local clock a line carries |
-//! | [`band`] | The band both of a conversation's dividers stand in: a centred caption, ruled out to both sides |
+//! | [`band`] | The conversation's one divider: a centred caption, ruled out to both sides, quiet for a day and in the accent where reading starts again |
 //! | [`delivery`] | One delivery-state vocabulary — the same words, glyphs and tones in both apps |
 //! | [`attachment`] | The ladder an attachment opens through: preview → full size → save → open the saved copy |
 //! | [`draft`] | A draft kept per conversation, and the line that shows it wherever the conversation is listed |
 //! | [`composer`] | Enter sends, Shift+Enter breaks the line, Escape lets go — the same rule in both |
 //! | [`list`] | [`ConversationList`]: the message list itself, for a widget-tree app |
-//! | [`unread`] | Where the reader's unread lines start: the "New messages" divider |
 //! | [`jump`] | The pill that takes the reader back to what is unread or to what is now |
 //!
 //! A host that adopts a piece keeps its own identity: a channel still shows authors and avatars, a
@@ -40,17 +39,17 @@ mod list_component;
 pub use list_component::{
     ConversationEntryProps, ConversationListProps, DescribedConversationList,
 };
-pub mod unread;
 
 pub use attachment::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, SavedCopy, UploadProgress,
     full_size_rect,
 };
-pub use composer::{ComposerIntent, ComposerRule};
-pub use day::{
-    ConversationClock, ConversationDay, DayBreaks, DayDivider, DayDividerFace, DayDividerProps,
-    day_break_indices,
+pub use band::{
+    DividerInk, DividerParts, DividerTone, SectionDivider, SectionDividerFace, SectionDividerProps,
+    unread_label,
 };
+pub use composer::{ComposerIntent, ComposerRule};
+pub use day::{ConversationClock, ConversationDay, DayBreaks, day_break_indices};
 pub use delivery::{DeliveryFace, DeliveryState, DeliveryStep};
 pub use draft::{DRAFT_PREVIEW_CHARS, DraftBook, line as draft_line, preview as draft_preview};
 pub use earlier::EarlierUnavailableFace;
@@ -59,7 +58,6 @@ pub use list::{
     ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
     bubble_colors, run_breaks,
 };
-pub use unread::{UnreadDivider, UnreadDividerFace, UnreadDividerProps};
 
 /// Resolve one of the conversation's labels in the desktop's language.
 ///

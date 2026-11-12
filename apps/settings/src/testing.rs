@@ -56,6 +56,26 @@ pub fn labels_of(w: &dyn ui::Widget, name: &str, labels: &mut Vec<String>) {
     }
 }
 
+/// The row caption `key` names, as the pane shows it and a screen reader
+/// reads it. A key no catalogue has answers with itself, and an id is never
+/// a word to read aloud.
+pub fn caption(key: &str) -> String {
+    let caption = crate::i18n::t(key);
+    assert_ne!(caption, key, "the catalogue has no word for {key}");
+    caption
+}
+
+/// What the accessible nodes named `caption` — a row's caption, which a
+/// screen reader reads before the value — show now, in tree order.
+pub fn shown_values(app: &mut TestApp<crate::SettingsShell>, caption: &str) -> Vec<String> {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.label() == Some(caption))
+        .filter_map(|(_, node)| node.value().map(str::to_owned))
+        .collect()
+}
+
 /// Set the field `field` of the section `kind` to `value` through the
 /// door, as an agent does.
 pub fn edit_field(
@@ -101,4 +121,16 @@ pub fn edit_path(
     )
     .map(drop)
     .map_err(|error| format!("{error:?}"))
+}
+
+/// The switch a reader lands on, named `name`, as the window exports it.
+pub fn switch_named(app: &mut TestApp<crate::SettingsShell>, name: &str) -> ui::accesskit::Node {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.role() == ui::accesskit::Role::Switch && node.label() == Some(name))
+                .then_some(node)
+        })
+        .unwrap_or_else(|| panic!("no switch named {name}"))
 }

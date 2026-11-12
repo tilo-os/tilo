@@ -19,17 +19,14 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordChange,
-    RecordChanges, RecordCopy, RecordReads,
+    ActionHostError, Caller, CallerPrincipal, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS,
+    RecordAddress, RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
 
 use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, RecordRead};
 use super::{AppBrokerState, CrdtRoute};
-
-/// What a caller is told about a record it may not read.
-pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
 
 impl AppBrokerState {
     /// The record read door, when this host keeps a workspace's documents and knows its person's
@@ -115,24 +112,29 @@ impl RecordChanges for BrokerRecordChanges {
             .ok_or(ActionHostError::NotPermitted)?;
         match answer {
             Answer::Allow => {}
-            Answer::Ask => return Err(ActionHostError::ConfirmationRequired),
+            Answer::Ask => return Err(ActionHostError::confirmation_required()),
             Answer::Deny => {
                 return Err(ActionHostError::Refused {
                     reason: RECORD_CHANGE_REFUSED.into(),
                 });
             }
         }
-        apply_record_change(state, workspace, change, (agent, person))
+        apply_record_change(
+            state,
+            workspace,
+            change,
+            (agent, person, caller.agent_name()),
+        )
     }
 }
 
 /// Apply `change` in `workspace` at its record's origin as `agent` acting for
-/// `person`, admitted already.
+/// `person`, by the name its admission gave it, admitted already.
 fn apply_record_change(
     state: Arc<AppBrokerState>,
     workspace: &str,
     change: &RecordChange,
-    (agent, person): (&str, &str),
+    (agent, person, name): (&str, &str, Option<&str>),
 ) -> Result<serde_json::Value, ActionHostError> {
     let unavailable = |reason: String| ActionHostError::Unavailable { reason };
     let origin = state
@@ -143,7 +145,8 @@ fn apply_record_change(
     drop(state);
     let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
         .with_kind(tilo_actions::ActorKind::Agent)
-        .acting_for(person);
+        .acting_for(person)
+        .named(name.map(str::to_owned));
     origin
         .apply(workspace, change, &invoker)
         .map_err(unavailable)
@@ -172,12 +175,21 @@ impl RecordChanges for RunRecords {
             host.state(),
             host.workspace(),
             change,
-            (host.agent(), host.person()),
+            (host.agent(), host.person(), caller.agent_name()),
         )
     }
 }
 
 impl RecordReads for RunRecords {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(
         &self,
         caller: &Caller,
@@ -221,11 +233,33 @@ fn task_person(caller: &Caller) -> Option<(&str, &str)> {
     Some((caller.acting_for_person()?, caller.workspace()?))
 }
 
+/// Whose device certificate reads for `caller`, and in which workspace: an agent task's person,
+/// the person themself reading their own workspace's records (a view of them, a test), or an
+/// app on their device reading another app's records for them, as the workspace grants it.
+fn reader(caller: &Caller) -> Option<(&str, &str)> {
+    match caller.principal() {
+        CallerPrincipal::Person(person) if !caller.is_session_delegated() => {
+            Some((person.as_str(), caller.workspace()?))
+        }
+        CallerPrincipal::App(_) => Some((caller.acting_for_person()?, caller.workspace()?)),
+        _ => task_person(caller),
+    }
+}
+
 struct BrokerRecordReads {
     state: Weak<AppBrokerState>,
 }
 
 impl RecordReads for BrokerRecordReads {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(
         &self,
         caller: &Caller,
@@ -236,7 +270,7 @@ impl RecordReads for BrokerRecordReads {
             .state
             .upgrade()
             .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let Some((person, workspace)) = task_person(caller) else {
+        let Some((person, workspace)) = reader(caller) else {
             return Err(ActionHostError::Refused {
                 reason: RECORD_READS_FOR_TASKS.into(),
             });
@@ -252,6 +286,31 @@ impl RecordReads for BrokerRecordReads {
                 .map_err(|_| "record read no longer allowed".to_owned())
         });
         read_record(state, (person, workspace), address, revalidate)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+        wake: &RecordWake,
+    ) -> Result<(), ActionHostError> {
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "the broker stopped".into(),
+            })?;
+        let Some((_, workspace)) = reader(caller) else {
+            return Err(ActionHostError::Refused {
+                reason: RECORD_READS_FOR_TASKS.into(),
+            });
+        };
+        state.may_read_record(caller, workspace, address)?;
+        state.follow_record_writes(
+            &CrdtRoute::record(address.app.clone(), workspace, address.record.clone()),
+            wake,
+        );
+        Ok(())
     }
 }
 
@@ -284,10 +343,11 @@ fn read_record(
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
         if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {
-            // A record a sealed workspace holds nothing of may still arrive in its host's replay;
-            // once that landed, one this device holds nothing of is one the workspace has none of.
-            // This read runs on a thread of its own, which the wait holds.
-            if let Some(history) = owner.await_sealed_history(&context) {
+            // A record this device holds nothing of may still arrive: with its host's replay, or
+            // from a host that sends records when they are opened. Once all of it came, one this
+            // device holds nothing of is one the workspace has none of. This read runs on a thread
+            // of its own, which the wait holds.
+            if let Some(history) = owner.await_arriving_record(&context) {
                 futures::executor::block_on(history);
             }
             if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {

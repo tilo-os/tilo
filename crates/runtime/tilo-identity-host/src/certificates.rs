@@ -1,61 +1,82 @@
-//! Whether a certified device may act for the identity a workspace selected.
-
-use std::sync::Arc;
+//! Whether a certified device may act for the identity a workspace selected: the person's fleet
+//! as the host reads it, and the rules every host admits a device by.
 
 use tilo_user_identity::DeviceCert;
 
-use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
-use crate::registry::IdentityProfile;
+use crate::device_fleet::DeviceFleet;
 
-/// `cert` belongs to the identity selected for `workspace` and its device is
-/// not revoked.
-///
-/// # Errors
-///
-/// Returns a message when no identity is selected, the stores cannot be read,
-/// or the certificate's identity or device does not qualify.
-pub fn authorize(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
-    let (profile, fleet) = selected_fleet(workspace)?;
-    check_identity_and_revocation(&profile, &fleet, cert)
+/// Whether `cert` is a device of `person`'s fleet that is not revoked: the check every admitted
+/// action passes.
+#[must_use]
+pub fn admitted(person: &[u8; 32], fleet: &DeviceFleet, cert: &DeviceCert) -> bool {
+    cert.user_public_key == *person && !fleet.refuses(cert)
 }
 
-/// [`authorize`], and the device is enrolled in the identity's fleet.
-pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
-    let (profile, fleet) = selected_fleet(workspace)?;
-    check_identity_and_revocation(&profile, &fleet, cert)?;
-    if !fleet
-        .certificates
-        .iter()
-        .any(|known| known.device_public_key == cert.device_public_key)
-    {
-        return Err("certified collaboration device is not enrolled".into());
+/// [`admitted`], and the device is enrolled in the fleet.
+#[must_use]
+pub fn enrolled(person: &[u8; 32], fleet: &DeviceFleet, cert: &DeviceCert) -> bool {
+    admitted(person, fleet, cert)
+        && fleet
+            .certificates
+            .iter()
+            .any(|known| known.device_public_key == cert.device_public_key)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod host {
+    //! A Linux desktop answers from the identity directory it reads.
+
+    use std::sync::Arc;
+
+    use tilo_user_identity::DeviceCert;
+
+    use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
+    use crate::registry::IdentityProfile;
+
+    /// `cert` belongs to the identity selected for `workspace` and its device is
+    /// not revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when no identity is selected, the stores cannot be read,
+    /// or the certificate's identity or device does not qualify.
+    pub fn authorize(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
+        let (profile, fleet) = selected_fleet(workspace)?;
+        if super::admitted(&profile.user_public_key, &fleet, cert) {
+            return Ok(());
+        }
+        Err("device revoked or identity mismatched".into())
     }
-    Ok(())
-}
 
-/// The identity selected for `workspace` and one verified snapshot of its fleet.
-fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
-    let profile = crate::registry::identity_for_workspace(workspace)
-        .map_err(|e| e.to_string())?
-        .ok_or("workspace identity unavailable")?;
-    let fleet = DeviceFleetStore::from_env()
-        .and_then(|store| store.load_cached(&profile.id))
-        .map_err(|e| e.to_string())?;
-    Ok((profile, fleet))
-}
-
-fn check_identity_and_revocation(
-    profile: &IdentityProfile,
-    fleet: &DeviceFleet,
-    cert: &DeviceCert,
-) -> Result<(), String> {
-    if cert.user_public_key != profile.user_public_key || fleet.refuses(cert) {
-        return Err("device revoked or identity mismatched".into());
+    /// [`authorize`], and the device is enrolled in the identity's fleet.
+    pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
+        let (profile, fleet) = selected_fleet(workspace)?;
+        if !super::admitted(&profile.user_public_key, &fleet, cert) {
+            return Err("device revoked or identity mismatched".into());
+        }
+        if super::enrolled(&profile.user_public_key, &fleet, cert) {
+            return Ok(());
+        }
+        Err("certified collaboration device is not enrolled".into())
     }
-    Ok(())
+
+    /// The identity selected for `workspace` and one verified snapshot of its fleet.
+    fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
+        let profile = crate::registry::identity_for_workspace(workspace)
+            .map_err(|e| e.to_string())?
+            .ok_or("workspace identity unavailable")?;
+        let fleet = DeviceFleetStore::from_env()
+            .and_then(|store| store.load_cached(&profile.id))
+            .map_err(|e| e.to_string())?;
+        Ok((profile, fleet))
+    }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use host::{authorize, authorize_join};
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
@@ -63,7 +84,7 @@ mod tests {
     use tilo_user_identity::{IdentityPaths, RevocationReason};
 
     use super::*;
-    use crate::device_fleet::loads_on_this_thread;
+    use crate::device_fleet::{DeviceFleetStore, loads_on_this_thread};
 
     const WORKSPACE: &str = "workspace";
 

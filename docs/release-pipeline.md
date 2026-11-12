@@ -1,34 +1,35 @@
 # Release pipeline
 
-Tilo releases four independent component families. A release tag for one family
+Tilo releases five independent component families. A release tag for one family
 does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
+| Relay, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>-<arch>` RPM snapshots |
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
-| OS | `tools/ci/publish/os-release.sh` run on `stable` or a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
-| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for stable releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
+| OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
+| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
 tapps, reuses unchanged members from the prior immutable collection, and advances
 the verified x86-64 channel only after publication succeeds. The packaging
 coordinator that would have dispatched qualification runs was never enabled and
 is gone; release-apps.yml keeps its guarded, disabled qualification path.
-OS releases happen only when someone runs one on stable or a release tag;
-never per push.
+OS releases happen only when someone runs one on a release tag; never per push.
 
-Kernel, base-image, RPM and kernel buildroot snapshots remain input-promotion
-workflows. They run only when their pinned input set changes; an OS release
-consumes their immutable digests.
+Kernel and kernel buildroot snapshots remain input-promotion work: they run only
+when their pinned input set changes, and an OS release consumes their immutable
+digests. The RPM snapshot is not: a release tag builds, signs and publishes the
+package set its own tree resolves (t's `publish-rpms`), and the images of that tag
+install from the published set, so nothing signs an image built from a set that is
+not published. Main builds and tests the set and publishes nothing.
 
-Automatic RPM snapshots cancel an obsolete run when a newer snapshot input
-lands. Explicit snapshot publication is non-cancellable, verifies that its
-input paths stayed unchanged, and rebases its resulting pin across unrelated
-`main` commits before promotion.
-Use an explicit **Build / RPM snapshot** dispatch when a sequence of
-package-input commits repeatedly supersedes the automatic run; it retains the
-same signed native build and freshness checks.
+Each architecture's set is published on its own, so a release tag with only one
+architecture's node connected publishes that architecture: its images install from the
+set it published, and the other architecture's set is published by a dispatch on a node
+of it. An image never installs from another architecture's set, and never signs one that
+is not published.
 
 ## Fast validation versus release gates
 
@@ -78,11 +79,11 @@ support-matrix decision remain
 separate from enabling the lane.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
-the same install-tested `shell`, `tilo-launcher`, and `tilo-unlock-helper`
-binaries. A successful `main` build publishes it immutably and advances
-`TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
-downloads the matching architecture and omits those three Cargo packages from
-its build. OS-only changes therefore test the desktop/OS integration without
+the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime-mcp`
+and `tilo-unlock-helper` binaries. A successful `main` build publishes it
+immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
+Trusted OS composition downloads the matching architecture and omits those four
+Cargo packages from its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
 integration boundary; ordinary PRs do not run the OS image workflow. The OS
 build reuses the payload only while it is current: the payload's
@@ -177,7 +178,7 @@ cache kept in the directory it is given. It is the only definition of these step
 
 ## OS releases
 
-An OS release is run on `stable` or a `vMAJOR.MINOR.PATCH` tag, one step of
+An OS release is run on a `vMAJOR.MINOR.PATCH` tag, one step of
 tools/ci/publish/os-release.sh at a time:
 
 - The release image (os/image/build-layer.sh with `TILO_OS_FLAVOUR=release`) is the
@@ -219,8 +220,8 @@ OS image of the same commit. The gate is what a dev device needs, checked on the
 takes: the dev disk published last boots, stages the image with bootc and applies it live,
 restarts into it to a greeter that takes input with its boot assessment passed, and takes the
 next update live. A device falls back by itself from an image that does not boot, so the heavier
-`tools/ci/publish/os-acceptance.sh` (devices, the desktop's journeys, the splash) gates stable
-releases without holding back the dev channel. It boots overlays of the disk
+`tools/ci/publish/os-acceptance.sh` (devices, the desktop's journeys, the splash) gates a
+release without holding back the dev channel. It boots overlays of the disk
 `tools/ci/publish/os-dev-disk.sh` installed (a 64 GiB sparse disk, `os/dev/build-image.sh`,
 never booted itself), which `os-dev-publish.sh disk` publishes once it passed. The OS image goes to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a development-only repository that
@@ -298,8 +299,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 
 ## Lenovo board successors
 
-A Lenovo board release (`os-release.sh sign-board` and `publish-board`, run on stable or a
-release tag; the board images `os-image.sh board` builds are development images) publishes a separate
+A Lenovo board release (`os-release.sh sign-board` and `publish-board`, run on a release tag; the board images `os-image.sh board` builds are development images) publishes a separate
 signed dense board series. Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains
 both `lenovo-83ed-<source>`, the update origin its image names, and `lenovo-83ed-gen<N>`.
 `lenovo-83ed-latest` is a registry discovery hint, never permission to install an image. A

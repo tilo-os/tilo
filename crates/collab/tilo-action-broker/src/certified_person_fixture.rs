@@ -135,12 +135,6 @@ pub fn certified_person_fixture_for_seeds(
         current,
         _evidence_env: evidence_env,
         _evidence_home: evidence_home,
-        host: tilo_identity_host::custody::HostIdentity {
-            device_cert: certificate,
-            device_signing_key: device,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        },
+        host: tilo_identity_host::custody::HostIdentity::kept(certificate, device),
     }
 }

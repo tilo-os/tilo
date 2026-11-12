@@ -50,6 +50,7 @@ use crate::model::{LocationId, SavedLocation, WeatherModel};
 use crate::net::{Request, RequestKind, Response};
 use crate::presentation::PlaceRowText;
 use ui::framework::Submit;
+use ui::widget::DrawChild;
 mod detail;
 use crate::resource::Weather;
 use crate::units::Units;
@@ -253,7 +254,7 @@ impl Core {
             side_by_side: false,
             search: Autocomplete::new()
                 .with_id("weather.city_search")
-                .with_placeholder("City name"),
+                .with_placeholder(&crate::i18n::t("weather-city-name")),
             search_field_rect: Rect::ZERO,
             add_panel: Rect::ZERO,
             search_query: String::new(),
@@ -1028,7 +1029,7 @@ impl Core {
             .enumerate()
             .map(|(index, location)| {
                 let reading = self.model.snapshot_for(location.id).map_or_else(
-                    || "Current conditions are loading".to_string(),
+                    || crate::i18n::t("weather-loading"),
                     |snapshot| {
                         let temp = snapshot
                             .temp_in(snapshot.current.temperature, self.units)
@@ -1050,11 +1051,9 @@ impl Core {
             })
             .collect();
         let places = AccessNode::new(Role::List)
-            .with_name("Saved places")
+            .with_name(crate::i18n::t("weather-saved-places"))
             .with_hashed_key("weather.places")
-            .with_description(
-                "Use Up and Down Arrow to change place, and Enter to open its forecast.",
-            )
+            .with_description(crate::i18n::t("weather-places-hint"))
             .with_bounds(rect)
             .with_children(items);
         let mut children = Vec::new();
@@ -1065,7 +1064,7 @@ impl Core {
         }
         children.push(places);
         AccessNode::new(Role::Group)
-            .with_name("Places")
+            .with_name(crate::i18n::t("weather-places"))
             .with_bounds(rect)
             .with_children(children)
             .with_keyed_action_routes("weather-overview")
@@ -1299,7 +1298,7 @@ impl Core {
         let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
         tr.draw_style(
             scene,
-            "Add a place",
+            &crate::i18n::t("weather-add-place"),
             on_panel.text_primary,
             t * Affine::translate((panel.x0 + pad, panel.y0 + pad)),
             None,
@@ -1309,7 +1308,7 @@ impl Core {
         let field = Rect::new(panel.x0 + pad, top, panel.x1 - pad, top + field_h);
         self.search_field_rect = field;
         self.search.apply_layout_external(field);
-        self.search.draw(scene, t, tr, &on_panel, presence);
+        self.search.draw_child(scene, t, tr, &on_panel, presence);
         self.search.draw_overlay(scene, t, tr, theme, presence);
     }
 

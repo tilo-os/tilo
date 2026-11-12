@@ -73,6 +73,10 @@ pub enum ChipStyle {
     /// as a primary action's, so the number is the selection's colour and
     /// reads white in every theme.
     Accent,
+    /// Someone's own colour, for a chip naming them: their presence colour
+    /// washed into the body and drawn as the edge, and their name inked in
+    /// it, as legible on the wash as any label.
+    Identity(Color),
 }
 
 /// The resolved colours of one pill.
@@ -132,6 +136,21 @@ impl ChipStyle {
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }
+            Self::Identity(identity) => {
+                let tint = colors.presence.of(identity);
+                let fill = mix8(ground, tint, TINT_FILL);
+                let fill = if hovered {
+                    colors.lift_on(fill, 0.5)
+                } else {
+                    fill
+                };
+                ChipColors {
+                    fill,
+                    edge: Some(mix8(ground, tint, TINT_EDGE)),
+                    ink: colors.ink_on(fill, tint, SMALL_TEXT_MIN_CONTRAST),
+                    lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
+                }
+            }
             Self::Accent => ChipColors {
                 fill: colors.intent.accent,
                 edge: None,
@@ -166,6 +185,9 @@ pub enum ChipLead {
     /// A person's face: the initials of the chip's label (their name) on
     /// their presence colour, as their avatar shows them everywhere.
     Face(Color),
+    /// An agent's face: the identity mark every surface names an agent by,
+    /// on its presence colour, where a person's chip shows their initials.
+    Agent(Color),
 }
 
 /// A pill's geometry in one theme: everything the text scale moves.
@@ -208,7 +230,7 @@ impl PillMetrics {
             ChipLead::None => 0.0,
             ChipLead::Dot(_) => self.dot,
             ChipLead::Glyph(_) => self.glyph,
-            ChipLead::Face(_) => self.face(),
+            ChipLead::Face(_) | ChipLead::Agent(_) => self.face(),
         }
     }
 
@@ -580,6 +602,19 @@ pub(crate) fn paint_pill(
                 crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             x += metrics.glyph + metrics.gap;
+        }
+        ChipLead::Agent(colour) => {
+            let side = metrics.face();
+            let mark = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
+            crate::agent_identity::draw_agent_identity_mark(
+                scene,
+                transform,
+                mark,
+                fade(theme.tokens.colors.presence.of(colour)),
+                theme,
+                crate::agent_identity::AgentIdentityStyle::Solid,
+            );
+            x += side + metrics.gap;
         }
     }
     if label_w > 0.0 {
@@ -1345,8 +1380,8 @@ impl Widget for Chip {
         "Chip"
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1541,14 +1576,21 @@ const CHIP_OPERATIONS: [&[&str]; 8] = {
 
 impl crate::resources::PublishesResources for Chip {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self.activation.native_resources();
-        resources.extend(
-            [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
-                .into_iter()
-                .flatten()
-                .map(super::control_verb::ControlVerb::resource),
-        );
-        resources
+        // The chip is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and the verb it holds would answer nothing.
+        let mut resource = self.activation.native_resources().into_iter().next();
+        for verb in [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let mut verb = verb.resource();
+            match resource.as_mut() {
+                Some(resource) => resource.actions.append(&mut verb.actions),
+                None => resource = Some(verb),
+            }
+        }
+        resource.into_iter().collect()
     }
 }
 #[cfg(test)]
@@ -2010,6 +2052,46 @@ mod activation_tests {
                 );
             }
         }
+    }
+
+    /// A chip that both runs a press and offers its own removal publishes one
+    /// resource for its control: the host keeps one spec per id, so the
+    /// remove would be shadowed by the press's spec and answer nothing.
+    #[test]
+    fn a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach() {
+        let removed = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&removed);
+        let chip = Chip::new("Book: The Tideglass")
+            .with_id("view-chip:book")
+            .on_view(|| {})
+            .on_remove_view(move || counted.set(counted.get() + 1));
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(chip))),
+            (400, 100),
+        );
+        let resources = harness.resources();
+        let published: Vec<&tilo_actions::ResourceSpec> = resources
+            .iter()
+            .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
+            .collect();
+        assert_eq!(published.len(), 1, "one resource for the control");
+        let actions: Vec<&str> = published
+            .first()
+            .expect("the chip publishes its control")
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(actions, ["invoke", "remove"]);
+        harness
+            .invoke_published(
+                "tilo.control:view-chip:book",
+                "remove",
+                &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+            )
+            .expect("the remove answers");
+        assert_eq!(removed.get(), 1, "the chip's own handler ran");
     }
 
     #[test]

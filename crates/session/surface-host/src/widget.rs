@@ -3,7 +3,9 @@
 //! window bars). The toolkit's portable host runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
-use tilo_compositor::{HostIme, HostLayer, HostTextInput, SurfaceHost, WindowPicture};
+use tilo_session_core::surface::WindowPicture;
+use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, LayerPose, SurfaceHost};
+
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
@@ -14,12 +16,12 @@ use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_compositor::HostKey;
+use tilo_session_core::surface::HostKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
 use crate::frames::Frames;
-use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
+use crate::{Placement, ime_event, key_event, mouse_input};
 use tilo_desktop_surface::DesktopSurface;
 use ui::widget::Widget;
 
@@ -90,6 +92,85 @@ enum Owed {
     Material,
 }
 
+/// A part of the tree the compositor poses ([`ui::lift`]): drawn at rest into frames of its own,
+/// so while it only fades, grows or moves it is not drawn again. A part that went is kept, not
+/// shown: when it comes back (the overview opened again) it shows what it drew, drawing only what
+/// changed meanwhile.
+struct LiftedLayer {
+    key: ui::scene_parts::PartKey,
+    /// The last frame lifted the part.
+    shown: bool,
+    /// Where it stands at rest, in the tree's logical pixels: `(x, y)` and its size.
+    rect: ((i32, i32), (u32, u32)),
+    pose: LayerPose,
+    frames: Frames,
+    retained: RetainedFrames,
+    /// Its scene in the frames' pixels.
+    scene: vello::Scene,
+}
+
+impl LiftedLayer {
+    /// Bring the layer up to `lifted`, drawn at `scale`: its pose taken, and what of it changed
+    /// drawn again. Whether it shows anything other than it did.
+    fn update(&mut self, lifted: &ui::lift::Lifted, scale: f64, generation: u64) -> bool {
+        let ((x, y), (width, height)) = self.rect;
+        let (x, y) = (f64::from(x), f64::from(y));
+        let (width, height) = (f64::from(width), f64::from(height));
+        let pose = LayerPose {
+            scale: lifted.pose.scale,
+            opacity: lifted.pose.opacity,
+            anchor: (
+                (lifted.pose.pivot.x - x) / width,
+                (lifted.pose.pivot.y - y) / height,
+            ),
+            offset: (lifted.pose.offset.x, lifted.pose.offset.y),
+        };
+        let posed = pose != self.pose;
+        self.pose = pose;
+        let to_device = Affine::scale(scale).pre_translate((-x, -y).into());
+        self.scene.reset();
+        self.scene.append(&lifted.scene, Some(to_device));
+        let size = self.frames.size();
+        let key = TargetKey {
+            width: size.0,
+            height: size.1,
+            to_device,
+            base_color: TRANSPARENT,
+            generation,
+        };
+        let parts = lifted.parts.as_ref();
+        let damage = match self.retained.repaint(&self.scene, parts, key) {
+            Repaint::Regions(changed) if changed.is_empty() => return posed,
+            Repaint::Regions(changed) => Some(changed),
+            Repaint::Full(_) => None,
+        };
+        self.retained.presented(&self.scene, parts, key);
+        self.frames.present(&self.scene, damage.as_deref());
+        true
+    }
+}
+
+/// Where `bounds` (logical) stands in whole pixels inside a tree of `size`: `None` when nothing of
+/// it does.
+fn whole_pixels(bounds: vello::kurbo::Rect, size: (u32, u32)) -> Option<((i32, i32), (u32, u32))> {
+    let inside = bounds.expand().intersect(vello::kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(size.0),
+        f64::from(size.1),
+    ));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "whole pixels inside a surface on a screen"
+    )]
+    let rect = (
+        (inside.x0 as i32, inside.y0 as i32),
+        (inside.width() as u32, inside.height() as u32),
+    );
+    (rect.1.0 > 0 && rect.1.1 > 0).then_some(rect)
+}
+
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
     host: FrameHarness,
@@ -97,6 +178,8 @@ pub struct WidgetHost {
     frames: Frames,
     /// The frame the layer shows, to know what of the next one changed.
     retained: RetainedFrames,
+    /// The parts the compositor poses, below the rest of the tree.
+    lifted: Vec<LiftedLayer>,
     /// Moves whenever the layer may show pixels of another frame entirely.
     generation: u64,
     scene: vello::Scene,
@@ -119,9 +202,9 @@ pub struct WidgetHost {
     provided: Vec<Option<ui::peniko::ImageData>>,
     /// What the next frame is for, if the tree owes one.
     owed: Owed,
-    /// Moves with every frame the tree drew: what it publishes changes only
-    /// with what it shows, so a reader of its resources reads them again
-    /// only when this moved.
+    /// Moves with every frame the tree drew and every action run on it: what
+    /// it publishes changes only with those, so a reader of its resources
+    /// reads them again only when this moved.
     revision: u64,
     /// The wells the tree's places report to as it lays them out: shared
     /// with the window policy placing the windows they stand for
@@ -140,9 +223,10 @@ pub struct WidgetHost {
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
-    /// Fingers are carrying the desk's strips: the surface draws them
-    /// following the hand until it lets go.
-    hand_on_deck: bool,
+    /// What the role that placed the tree closes when the pointer is pressed
+    /// elsewhere: the shared handle runs it before the tree is borrowed, so
+    /// the role may ask the layer it holds to draw again.
+    dismissed: Option<Rc<dyn Fn()>>,
 }
 
 impl WidgetHost {
@@ -173,6 +257,8 @@ impl WidgetHost {
         // Each frame is compared with the one the layer shows, so only what
         // changed is drawn again.
         host.track_scene_parts(true);
+        // What only fades, grows or moves is posed by the compositor rather than drawn again.
+        host.lift_parts(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         Self {
@@ -180,6 +266,7 @@ impl WidgetHost {
             placement,
             frames: Frames::new(size),
             retained: RetainedFrames::default(),
+            lifted: Vec::new(),
             generation: 0,
             scene: vello::Scene::new(),
             below,
@@ -196,7 +283,7 @@ impl WidgetHost {
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
             cadence: Cadence::new(),
-            hand_on_deck: false,
+            dismissed: None,
         }
     }
 
@@ -225,13 +312,27 @@ impl WidgetHost {
     /// Lay the tree out with the wells and the previews in effect, as `work`
     /// runs it: a placement made then reports to them, so a policy reading
     /// them in the same frame sees the windows where the tree just laid them
-    /// out.
+    /// out. What `work` draws, it draws over this tree's own backdrops.
     fn with_reports<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
         let _wells = self.wells.clone().map(ui::widget::window_well::install);
         let _previews = self
             .previews
             .clone()
             .map(ui::widget::window_preview::install);
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`). The images are
+        // this tree's, and the toolkit holds one tree's at a time: every
+        // pass that may draw provides them first, a layout asked for
+        // between frames as much as a frame. A pass that drew without them
+        // drew its material over the stand-in, and kept it: the compositor
+        // hands a backdrop over again only when what lies below changes.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
         work(&mut self.host)
     }
 
@@ -268,6 +369,13 @@ impl WidgetHost {
         self
     }
 
+    /// Close what the role has open when the pointer is pressed elsewhere.
+    #[must_use]
+    pub fn with_dismissal(mut self, dismissed: Rc<dyn Fn()>) -> Self {
+        self.dismissed = Some(dismissed);
+        self
+    }
+
     /// The toolkit's host of the widget tree, to drive it directly.
     pub fn host_mut(&mut self) -> &mut FrameHarness {
         &mut self.host
@@ -278,44 +386,6 @@ impl WidgetHost {
     #[must_use]
     pub const fn host(&self) -> &FrameHarness {
         &self.host
-    }
-
-    /// Whether the desk's fingers are already carrying its strips: the travel
-    /// that opened a gesture then moves the deck it landed on instead of
-    /// opening another.
-    #[must_use]
-    pub const fn wants_hand_on_deck(&self) -> bool {
-        self.hand_on_deck
-    }
-
-    /// Fingers landed on the deck, `travel` pixels into the gesture.
-    pub fn begin_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = true;
-        self.deck_drag(travel, true);
-    }
-
-    /// The fingers have carried the deck `travel` pixels since they landed.
-    pub fn drag_strip_deck(&mut self, travel: f64) {
-        self.deck_drag(travel, false);
-    }
-
-    /// The fingers lifted after carrying the deck `travel` pixels.
-    pub fn end_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = false;
-        self.deck_drag(travel, false);
-    }
-
-    /// Draw the desk's strips following the fingers.
-    fn deck_drag(&mut self, travel: f64, began: bool) {
-        self.with_surface(|surface| {
-            let shown = surface.shown_strip_id();
-            let slides = surface.slides_mut();
-            if began {
-                slides.begin_lift(shown);
-            }
-            slides.lift_to(travel);
-        });
-        self.owe();
     }
 
     /// Three fingers landed on the strip shown, `travel` pixels into the
@@ -462,6 +532,20 @@ impl WidgetHost {
     /// whatever scale it is drawn at, so only where the surface stands is
     /// added. Dividing by the display's scale as well would halve every
     /// control on a 2 display, and a press at its centre would land past it.
+    /// Whether `rect`, in the tree's own coordinates, stands on the screen the tree covers.
+    fn on_screen(&self, rect: vello::kurbo::Rect) -> bool {
+        let (width, height) = self.placement.size;
+        rect.area() > 0.0
+            && !rect
+                .intersect(vello::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(width),
+                    f64::from(height),
+                ))
+                .is_zero_area()
+    }
+
     fn logical(&self, rect: vello::kurbo::Rect) -> (f64, f64, f64, f64) {
         let (ox, oy) = self.placement.origin;
         (
@@ -500,6 +584,57 @@ impl WidgetHost {
         self.host.send(event);
         self.owe();
     }
+
+    /// Bring the lifted layers up to the parts the last frame lifted: a layer for each, posed as
+    /// the part says, drawn again only where what it shows changed. Whether any of them shows
+    /// anything other than it did.
+    fn update_lifted(&mut self) -> bool {
+        let scale = self.placement.scale;
+        let size = self.placement.size;
+        let mut kept = Vec::with_capacity(self.host.lifted().len());
+        let mut changed = false;
+        for lifted in self.host.lifted() {
+            let Some(rect) = whole_pixels(lifted.bounds, size) else {
+                continue;
+            };
+            let physical = Placement {
+                origin: rect.0,
+                size: rect.1,
+                scale,
+            }
+            .physical_size();
+            let found = self.lifted.iter().position(|layer| layer.key == lifted.key);
+            let mut layer = if let Some(found) = found {
+                self.lifted.swap_remove(found)
+            } else {
+                changed = true;
+                LiftedLayer {
+                    key: lifted.key,
+                    shown: true,
+                    rect,
+                    pose: LayerPose::SETTLED,
+                    frames: Frames::new(physical),
+                    retained: RetainedFrames::default(),
+                    scene: vello::Scene::new(),
+                }
+            };
+            if layer.frames.size() != physical {
+                layer.frames.resize(physical);
+                layer.retained.forget();
+            }
+            changed |= layer.rect != rect || !layer.shown;
+            layer.rect = rect;
+            layer.shown = true;
+            changed |= layer.update(lifted, scale, self.generation);
+            kept.push(layer);
+        }
+        for gone in &mut self.lifted {
+            changed |= std::mem::take(&mut gone.shown);
+        }
+        kept.append(&mut self.lifted);
+        self.lifted = kept;
+        changed
+    }
 }
 
 impl crate::Published for WidgetHost {
@@ -520,6 +655,7 @@ impl crate::Published for WidgetHost {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         started
     }
@@ -534,6 +670,7 @@ impl crate::Published for WidgetHost {
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
+        self.revision = self.revision.wrapping_add(1);
         self.owe();
         acted
     }
@@ -564,21 +701,13 @@ impl crate::Published for WidgetHost {
     /// switch, a tab's pill, an onboarding step) and the elements it names
     /// in its accessibility tree, each where it stands on the desktop.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
-        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
-            std::collections::BTreeMap::new();
-        for (name, rect) in self.host.targets() {
-            shown.insert(name, self.logical(rect));
-        }
+        let mut found: Vec<(String, vello::kurbo::Rect)> =
+            self.host.targets().into_iter().collect();
         // The controls of an app the tree shows as its own (setup's steps),
         // by the ids the app names them with: the tree's targets stop at it.
-        let mut embedded = Vec::new();
         each_embedded_app(self.host.root_widget_mut(), &mut |app| {
-            embedded.extend(app.named_controls());
+            found.extend(app.named_controls());
         });
-        for (name, rect) in embedded {
-            let logical = self.logical(rect);
-            shown.entry(name).or_insert(logical);
-        }
         for (_, node) in self.host.a11y_nodes() {
             // A hidden node stands nowhere the person can reach.
             if node.is_hidden() {
@@ -587,13 +716,24 @@ impl crate::Published for WidgetHost {
             let (Some(name), Some(bounds)) = (node.label(), node.bounds()) else {
                 continue;
             };
-            shown.entry(name.to_owned()).or_insert_with(|| {
-                self.logical(vello::kurbo::Rect::new(
-                    bounds.x0, bounds.y0, bounds.x1, bounds.y1,
-                ))
-            });
+            found.push((
+                name.to_owned(),
+                vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            ));
         }
-        shown.into_iter().collect()
+        // Two controls of one name — the sidebar toggle of each window, each window's "More
+        // actions" — are each listed where they stand, as the door lists them; a control named
+        // both by a target and by its node is listed once.
+        let mut shown: Vec<(String, vello::kurbo::Rect)> = Vec::with_capacity(found.len());
+        for (name, rect) in found {
+            if !shown.iter().any(|(seen, at)| *seen == name && *at == rect) {
+                shown.push((name, rect));
+            }
+        }
+        shown
+            .into_iter()
+            .map(|(name, rect)| (name, self.logical(rect)))
+            .collect()
     }
 
     /// The name `controls` showed, pressed: a widget addressed by its own
@@ -608,12 +748,22 @@ impl crate::Published for WidgetHost {
                 pressed = pressed || app.press_named(name);
             });
             if !pressed {
-                let node = self
+                // The one the person sees, as `controls` lists it.
+                let named_so: Vec<_> = self
                     .host
                     .a11y_nodes()
                     .into_iter()
-                    .find(|(_, node)| node.label() == Some(name))
-                    .map(|(node, _)| node)
+                    .filter(|(_, node)| node.label() == Some(name))
+                    .collect();
+                let node = named_so
+                    .iter()
+                    .find(|(_, node)| {
+                        node.bounds().is_some_and(|b| {
+                            self.on_screen(vello::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1))
+                        })
+                    })
+                    .or_else(|| named_so.first())
+                    .map(|(node, _)| *node)
                     .ok_or(named)?;
                 self.host
                     .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
@@ -625,15 +775,29 @@ impl crate::Published for WidgetHost {
 }
 
 impl SurfaceHost for WidgetHost {
+    /// The lifted parts, posed, then the rest of the tree over them.
     fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
-            location: self.placement.origin,
-            size: (
-                i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),
-                i32::try_from(self.placement.size.1).unwrap_or(i32::MAX),
-            ),
-            frame: self.frames.frame(),
-        }]
+        let (ox, oy) = self.placement.origin;
+        let side = |side: u32| i32::try_from(side).unwrap_or(i32::MAX);
+        self.lifted
+            .iter()
+            .filter(|layer| layer.shown)
+            .map(|layer| {
+                let ((x, y), (width, height)) = layer.rect;
+                HostLayer {
+                    location: (ox.saturating_add(x), oy.saturating_add(y)),
+                    size: (side(width), side(height)),
+                    frame: layer.frames.frame(),
+                    pose: layer.pose,
+                }
+            })
+            .chain(std::iter::once(HostLayer {
+                location: self.placement.origin,
+                size: (side(self.placement.size.0), side(self.placement.size.1)),
+                frame: self.frames.frame(),
+                pose: LayerPose::SETTLED,
+            }))
+            .collect()
     }
 
     fn withholds_captures(&self) -> bool {
@@ -650,13 +814,13 @@ impl SurfaceHost for WidgetHost {
             .map_or_else(Vec::new, |pictures| pictures())
     }
 
-    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+    fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         let (ox, oy) = self.placement.origin;
         let scale = self.placement.scale;
         self.backdrops
             .iter()
             .map(
-                |(bounds, blur_px, texels)| tilo_compositor::BackdropRequest {
+                |(bounds, blur_px, texels)| tilo_session_core::surface::BackdropRequest {
                     rect: (
                         f64::from(ox) + bounds.x0 / scale,
                         f64::from(oy) + bounds.y0 / scale,
@@ -670,7 +834,7 @@ impl SurfaceHost for WidgetHost {
             .collect()
     }
 
-    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         self.provided.resize(images.len(), None);
         self.provided.truncate(images.len());
         for (slot, image) in images.into_iter().enumerate() {
@@ -703,7 +867,23 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        let scale = self.placement.scale;
+        self.frames.covers(px, py)
+            || self.lifted.iter().filter(|layer| layer.shown).any(|layer| {
+                let ((x, y), _) = layer.rect;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a point inside a surface on a screen"
+                )]
+                let at = |point: f64, from: i32| {
+                    let local = point - f64::from(from) * scale;
+                    (local >= 0.0).then_some(local as u32)
+                };
+                at(lx, x)
+                    .zip(at(ly, y))
+                    .is_some_and(|(px, py)| layer.frames.covers(px, py))
+            })
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -724,6 +904,10 @@ impl SurfaceHost for WidgetHost {
         self.input(&mouse_input(button, pressed));
     }
 
+    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
+        self.dismissed.clone()
+    }
+
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
         let scale = self.placement.scale;
         self.input(&WindowEvent::MouseWheel {
@@ -736,7 +920,7 @@ impl SurfaceHost for WidgetHost {
         });
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
         if !self.covers {
             return;
         }
@@ -759,7 +943,7 @@ impl SurfaceHost for WidgetHost {
         // The scale of the output the surface stands on, so what it paints
         // has the pixels that output shows rather than being stretched over
         // them: a bar on a 2 display is drawn at 2.
-        let scale = tilo_compositor::HostedOutput::scale_at(
+        let scale = tilo_session_core::surface::HostedOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -783,7 +967,7 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn key(&mut self, key: &HostKey) {
-        let modifiers = modifiers_state(key.modifiers);
+        let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
             self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
@@ -836,6 +1020,12 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // The tree draws carets only while this surface holds the keyboard: the same answer that
+        // decides whether keys reach it ([`SurfaceHost::wants_keyboard`]). A surface that just lost
+        // or took the keyboard draws again, so the caret goes with it.
+        if self.host.set_keyboard_held(self.wants_keyboard()) {
+            self.owe();
+        }
         if self.asked.replace(false) {
             // What asked for this pass is outside the tree and needs the tree
             // to have taken it: a widget that reads something the host holds
@@ -855,17 +1045,6 @@ impl SurfaceHost for WidgetHost {
         {
             return false;
         }
-        // Translucent material records what lies below it; the compositor
-        // blurs that and hands it back (`set_backdrops`). The images are
-        // this tree's: every host on the thread provides its own before it
-        // draws.
-        ui::backdrop::provide_backdrops(
-            self.provided
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
-                .collect(),
-        );
         // The tree lays out with the wells in effect, so a placement made
         // now reports to them, and a policy reading them in the same frame
         // sees the windows where the tree just laid them out.
@@ -910,10 +1089,16 @@ impl SurfaceHost for WidgetHost {
             base_color: TRANSPARENT,
             generation: self.generation,
         };
+        let lifted = self.update_lifted();
         let parts = self.host.scene_parts();
         let damage = match self.retained.repaint(&self.scene, parts, key) {
             // Nothing of what it shows changed: there is nothing to draw.
-            Repaint::Regions(changed) if changed.is_empty() => return false,
+            Repaint::Regions(changed) if changed.is_empty() => {
+                if lifted {
+                    self.cadence.drawn(now);
+                }
+                return lifted;
+            }
             Repaint::Regions(changed) => Some(changed),
             Repaint::Full(_) => None,
         };

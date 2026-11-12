@@ -54,6 +54,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Remote, Screen,
     Workspace,
 };
+use crate::resource::CATALOG;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::SshSession;
 use crate::view::{
@@ -62,6 +63,7 @@ use crate::view::{
 };
 use crate::vnc::{VncInput, VncSession};
 use ui::lock::MutexRecover as _;
+use ui::widget::DrawChild;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
 /// feeding the terminal grid; VNC is an RFB client
@@ -107,7 +109,7 @@ impl LiveSession {
             LiveSession::Tilo(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
             LiveSession::Unavailable { readiness, kind } => {
-                SessionStatus::Unavailable(readiness.detail(*kind).into())
+                SessionStatus::Unavailable(CATALOG.t(readiness.detail_message(*kind)))
             }
             LiveSession::Preview(s) => s.clone(),
             #[cfg(feature = "samples")]
@@ -903,7 +905,7 @@ impl RemoteApp {
             Content::Missing => Box::new(
                 ui::widget::EmptyState::new("This connection was deleted")
                     .with_icon(Icon::Monitor)
-                    .with_message("Someone you share your connections with removed it."),
+                    .with_message(crate::resource::CATALOG.t("remote-connection-deleted-message")),
             ),
         };
         drop(store);
@@ -1325,7 +1327,7 @@ impl Store {
             connection.host.0,
             connection.port,
             connection.user.0,
-            connection.auth.label()
+            connection.auth.label_message()
         )
     }
 
@@ -1498,7 +1500,7 @@ impl Store {
             .map(|c| {
                 let meta = match connection_readiness(c) {
                     readiness @ (TransportReadiness::BackendUnavailable
-                    | TransportReadiness::InvalidProfile) => readiness.label().to_owned(),
+                    | TransportReadiness::InvalidProfile) => CATALOG.t(readiness.label_message()),
                     TransportReadiness::Ready | TransportReadiness::NeedsLiveSessionCapability => {
                         // Another device's clock may run ahead of this one.
                         c.last_used_ms.map_or_else(
@@ -1515,7 +1517,7 @@ impl Store {
                     name: c.name.clone(),
                     kind: c.kind,
                     address: if c.kind == ConnectionKind::Tilo {
-                        c.kind.label().to_owned()
+                        CATALOG.t(c.kind.label_message())
                     } else {
                         c.address()
                     },
@@ -1916,7 +1918,7 @@ impl Widget for RemoteApp {
         self.state().pump_session();
         self.check_views();
         self.body_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

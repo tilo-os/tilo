@@ -200,7 +200,8 @@ fn install(locale: &str) -> Result<(), String> {
         match with_host(|host| host.install_language_pack(locale))? {
             Response::Installed => return Ok(()),
             Response::Installing { .. } => {
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                tilo_rt::sleep_thread(std::time::Duration::from_millis(250))
+                    .map_err(|error| error.to_string())?;
             }
             Response::Failed { message } | Response::Refused { message } => return Err(message),
             other @ Response::LanguagePacks { .. } => {

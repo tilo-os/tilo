@@ -368,7 +368,8 @@ where
         _input_method: &ZwpInputMethodV2,
         data: &InputMethodUserData<D>,
     ) {
+        // The focused field stays entered: it follows the keyboard, not the
+        // input method.
         data.handle.inner.lock().unwrap().instance = None;
-        data.text_input_handle.leave();
     }
 }

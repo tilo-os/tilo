@@ -837,6 +837,8 @@ pub(crate) struct RoutedOwners {
     pub(crate) app: App,
     pub(crate) records: crate::RecordStore,
     pub(crate) bindings: Vec<crate::bound_dispatch::CallbackBinding>,
+    /// Holds the broker's next route join until the returned sender sends.
+    pub(crate) hold_join: Box<dyn Fn() -> tokio::sync::oneshot::Sender<()>>,
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }
@@ -887,7 +889,8 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
+        app.collaboration.manager = manager;
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
@@ -902,7 +905,7 @@ impl RoutedOwners {
         while !app.document_routes.owners.iter().all(|entry| {
             app.collaboration
                 .manager
-                .document_route_publishable_for_test(&entry.route)
+                .document_route_publishable(&entry.route)
         }) {
             assert!(
                 crate::time::now() < deadline,
@@ -914,6 +917,7 @@ impl RoutedOwners {
             app,
             records,
             bindings,
+            hold_join,
             _owners: owners,
             _temp: temp,
         }
@@ -2772,7 +2776,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
             epoch: uuid::Uuid::new_v4(),
         });
     let primary = |fixture: &mut RoutedOwners| fixture.app.pending_primary_document().unwrap();
-    let (_, published) = primary(&mut fixture).expect("the record whole at first");
+    let (_, published, _) = primary(&mut fixture).expect("the record whole at first");
     fixture.app.advance_primary_document(published);
     assert!(primary(&mut fixture).is_none());
     // Binding the primary document has the route republish its record
@@ -2820,7 +2824,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
         other => panic!("expected exactly the local incremental, got {other:?}"),
     }
     fixture.app.document_routes.sent.clear();
-    let (mutation, published) = primary(&mut fixture).expect("the local change travels");
+    let (mutation, published, _) = primary(&mut fixture).expect("the local change travels");
     assert_eq!(
         mutation.data(),
         expected,
@@ -2857,7 +2861,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
     }
     assert_eq!(
         primary(&mut fixture)
-            .map(|(mutation, _)| mutation.data().to_vec())
+            .map(|(mutation, _, _)| mutation.data().to_vec())
             .expect("the primary document keeps them too"),
         expected,
         "and the primary document keeps them too"
@@ -4116,7 +4120,6 @@ fn component_control_root(
             host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
-            hosted: false,
             permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
             ),
@@ -6262,7 +6265,7 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
     );
 
     let mut bound = RoutedPrimary::new(PrimaryMetadataShape::None);
-    let (delta, heads) = bound
+    let (delta, heads, _) = bound
         .app
         .pending_primary_document()
         .unwrap()

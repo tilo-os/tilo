@@ -1,23 +1,15 @@
 //! The note's header as slots in the window's bar ([`ui::window_toolbar`]).
 //!
 //! While the desktop's bar hosts them, the content header leaves the window
-//! and the bar shows the page tree's toggle, the note as the window's location, then New note and
-//! the note's actions; search is the bar's own. The page tree's header
-//! keeps only its title then, so New note stands once, in the bar. Outside
-//! a Tilo session both headers stay in the window, New note in the tree's.
+//! and the bar shows the page tree's toggle, the note as the window's location, and the note's
+//! actions; search is the bar's own. New note stays in the page tree's header and the empty
+//! notebook's own call: the bar's one "+" is the strip's, which opens a new tab. Outside a Tilo
+//! session both headers stay in the window.
 
-use std::rc::Rc;
-
-use ui::framework::BarCommands;
+use crate::metadata::CATALOG;
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::NotesApp;
-
-/// What an entry of the bar asks the header for.
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum BarCommand {
-    NewNote,
-}
 
 impl NotesApp {
     /// Whether this person may make a note in the notebook, as the workspace
@@ -34,40 +26,23 @@ impl NotesApp {
 
     /// The slots for the note shown (`title`, and the anchor `open` shows it
     /// at; `None`: no note is open).
-    fn window_toolbar(
-        bar: &BarCommands<BarCommand>,
-        note: Option<(&str, String)>,
-        sidebar_open: bool,
-        adds_notes: bool,
-    ) -> WindowToolbar {
-        let title = note.as_ref().map(|(title, _)| *title);
-        // New note is offered only to someone who may make one.
-        let new_note = adds_notes.then(|| {
-            bar.entry(
-                "plus",
-                ui::i18n!("notes-affordance-new-note"),
-                BarCommand::NewNote,
-            )
-        });
+    fn window_toolbar(note: Option<(&str, String)>, sidebar_open: bool) -> WindowToolbar {
         // The note's actions are declared for a note only: a menu that acts
         // on nothing has no place in the bar's own. They are rows of the
         // window's one "More" menu, so a note shows one "…" and not two.
-        let note_actions = title.map(|_| crate::sidebar::note_menu_commands());
+        let note_actions = note.as_ref().map(|_| crate::sidebar::note_menu_commands());
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
             location: note.map(|(title, anchor)| ToolbarLocation {
                 label: title.to_owned(),
-                placeholder: ui::i18n!("notes-title-placeholder"),
+                placeholder: CATALOG.t("notes-title-placeholder"),
                 anchor: Some(anchor),
                 // Unsaved work is marked by the window's framework, from the
                 // record's save.
                 ..ToolbarLocation::default()
             }),
-            actions: new_note
-                .into_iter()
-                .chain(note_actions.into_iter().flatten())
-                .collect(),
+            actions: note_actions.into_iter().flatten().collect(),
             ..WindowToolbar::default()
         }
     }
@@ -79,26 +54,28 @@ impl NotesApp {
     pub(super) fn sync_window_toolbar(&mut self) -> bool {
         let hosted = ui::window_toolbar::is_hosted();
         let adds = self.may_add_notes();
+        // New note heads the page tree it adds to, pressing the notebook's own
+        // action: the notebook's actions arrive after the shell is built.
+        let tree_new_note = adds && self.notebook_actions.is_some();
         let mut changed = false;
-        if hosted != self.header_in_bar || adds != self.offers_new_note {
+        if hosted != self.header_in_bar || tree_new_note != self.tree_offers_new_note {
             self.header_in_bar = hosted;
-            self.offers_new_note = adds;
+            self.tree_offers_new_note = tree_new_note;
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
-            let (tree_actions, actions) = if hosted {
-                (Vec::new(), Vec::new())
+            // New note is the page tree's, hosted or not.
+            let tree_actions = if adds {
+                Self::page_tree_header_actions(self.notebook_actions.as_ref())
             } else {
-                (
-                    if adds {
-                        Self::page_tree_header_actions(&self.header)
-                    } else {
-                        Vec::new()
-                    },
-                    Self::content_header_actions(&self.header),
-                )
+                Vec::new()
             };
-            // window-bar: fallback, the bar holds New note while it hosts the window
+            let actions = if hosted {
+                Vec::new()
+            } else {
+                Self::content_header_actions(&self.header)
+            };
+            // window-bar: list-new, New note heads the page tree it adds to
             self.shell
-                .set_sidebar_header(ui::i18n!("notes-title"), tree_actions);
+                .set_sidebar_header(CATALOG.t("notes-title"), tree_actions);
             // window-bar: fallback, the bar holds the note's actions while it hosts the window
             self.shell.set_content_header("", actions);
             if !hosted {
@@ -113,24 +90,26 @@ impl NotesApp {
         let title = self.main.title().map(str::to_owned);
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        let key = (title.zip(anchor), open, adds);
+        let key = (
+            ui::window_toolbar::current_window(),
+            title.zip(anchor),
+            open,
+        );
         if self.declared_bar.as_ref() != Some(&key) {
             let note = key
-                .0
+                .1
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(&self.bar, note, open, adds)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open)));
             self.declared_bar = Some(key);
         }
-        let header = Rc::clone(&self.header);
         for event in ui::window_toolbar::take_events() {
-            match (&event, self.bar.pressed(&event)) {
-                (ToolbarEvent::ToggleSidebar, _) => self.shell.toggle_sidebar(),
-                (_, Some(BarCommand::NewNote)) if adds => header.new_note.set(true),
-                // The bar holds the note's commands too, as rows of the
+            match &event {
+                ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
+                // The bar holds the note's commands, as rows of the
                 // window's "More" menu: a row chosen there runs the command
                 // the page menu's row runs, on the note that is open.
-                (ToolbarEvent::Action { id, .. }, _) => {
+                ToolbarEvent::Action { id, .. } => {
                     let Some(row) = crate::sidebar::note_command_row(id) else {
                         continue;
                     };
@@ -147,6 +126,7 @@ impl NotesApp {
 #[cfg(test)]
 mod tests {
     use super::NotesApp;
+    use crate::metadata::CATALOG;
     use ui::framework::testing::TestApp;
 
     /// Notes in its window bar at `size`, on `scenario`'s note.
@@ -158,14 +138,14 @@ mod tests {
         app
     }
 
-    /// The page tree's header, the note's header and where the note's view
-    /// starts, as laid out.
-    fn tops(app: &mut TestApp<crate::NotesShell>) -> (f64, f64, f64) {
+    /// The page tree's header, where the note's own header starts and stops, and where the
+    /// note's view starts, as laid out.
+    fn tops(app: &mut TestApp<crate::NotesShell>) -> (f64, (f64, f64), f64) {
         app.with_surface::<NotesApp, _>(|notes| {
             let g = notes.shell.geometry();
             (
                 g.sidebar_header().height(),
-                g.content_header().height(),
+                (g.content_header().y0, g.content_header().y1),
                 g.content_body().y0,
             )
         })
@@ -178,20 +158,32 @@ mod tests {
             .expect("the notes surface")
     }
 
-    /// The window bar holds the note's controls, so the note has no header
-    /// row of its own at any width: it starts right under the bar, or under
-    /// its notice's strip. Only a docked page tree keeps its header, which
-    /// holds its title (New note is the bar's).
+    /// A window shows one bar. The row the window's controls stand in is the note's own shell's,
+    /// drawn at the window's top, never a second row under a bar above it, and it stands at rest
+    /// too: the note starts right under it. Only a docked page tree keeps its header, which
+    /// holds its title and New note.
     #[test]
     fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
         for scenario in ["table", "import_success", "first_note"] {
             for (width, docked) in [(420, false), (1280, true)] {
                 let mut notes = notes_at(scenario, (width, 800));
-                let (tree, note, body) = tops(&mut notes);
+                let (tree, header, body) = tops(&mut notes);
                 assert!(
-                    note.abs() < 1e-9 && body.abs() < 1e-9,
-                    "{scenario} at {width} px: the content starts at the top, its header {note} high, its view at {body}"
+                    (body - header.1).abs() < 1e-9,
+                    "{scenario} at {width} px: the note's view starts right under the row, at \
+                     {body} under {header:?}"
+                );
+                assert!(
+                    notes.harness().frame_extent((width, 800)).0.abs() < 1e-9,
+                    "{scenario} at {width} px: the window's bar is the row the note's shell \
+                     draws, so no band of a bar stands above the note"
+                );
+                assert_eq!(
+                    header.0.abs() < 1e-9 && header.1 > 0.0,
+                    notes.harness().row_holds_bar(),
+                    "{scenario} at {width} px: the row that stands at the window's top is the \
+                     window's bar, never a row under one: {header:?}"
                 );
                 assert_eq!(
                     tree > 0.0,
@@ -201,8 +193,8 @@ mod tests {
                 if scenario != "first_note" {
                     let title = title_top(&mut notes);
                     assert!(
-                        (title - gutter).abs() < 0.5,
-                        "{scenario} at {width} px: the title stands one gutter under the bar, at {title}"
+                        (title - body - gutter).abs() < 0.5,
+                        "{scenario} at {width} px: the title stands one gutter under the row, at {title}"
                     );
                 }
             }
@@ -227,41 +219,40 @@ mod tests {
 
     /// The note's commands are rows of the window's one "More" menu, and are
     /// declared only while a note is open: a note never gets a second "…" of
-    /// its own beside the window's.
+    /// its own beside the window's. New note is never the bar's: its "+" is the
+    /// strip's, which opens a new tab.
     #[test]
     fn the_bar_offers_the_notes_actions_only_for_a_note() {
         ui::i18n::I18nManager::init("en-US");
         let mut empty = notes_at("first_note", (1280, 800));
-        assert_eq!(
-            bar_actions(&mut empty),
-            vec![(ui::i18n!("notes-affordance-new-note"), false)],
-            "an empty notebook offers New note and no note actions"
+        empty.settle();
+        let declared = ui::window_toolbar::declared().map(|bar| bar.actions);
+        assert!(
+            declared.as_ref().is_none_or(Vec::is_empty),
+            "an empty notebook declares no actions in the bar: {declared:?}"
         );
+        drop(empty);
         let mut open = notes_at("table", (1280, 800));
-        let actions = bar_actions(&mut open);
         assert_eq!(
-            actions.first().cloned(),
-            Some((ui::i18n!("notes-affordance-new-note"), false)),
-            "New note stands in the row, before the menu's rows"
-        );
-        let rows: Vec<(String, bool)> = actions[1..].to_vec();
-        assert_eq!(
-            rows,
+            bar_actions(&mut open),
             vec![
-                (ui::i18n!("notes-menu-new-child"), true),
-                (ui::i18n!("notes-menu-rename"), true),
-                (ui::i18n!("notes-menu-duplicate"), true),
-                (ui::i18n!("notes-menu-copy-link"), true),
-                (ui::i18n!("notes-menu-export"), true),
-                (ui::i18n!("notes-menu-insert-image"), true),
-                (ui::i18n!("notes-menu-delete"), true),
+                (CATALOG.t("notes-menu-new-child"), true),
+                (CATALOG.t("notes-menu-rename"), true),
+                (CATALOG.t("notes-menu-duplicate"), true),
+                (CATALOG.t("notes-menu-copy-link"), true),
+                (CATALOG.t("notes-menu-export"), true),
+                (CATALOG.t("notes-menu-insert-image"), true),
+                (CATALOG.t("notes-menu-delete"), true),
             ],
-            "an open note's commands are the rows of the window's More menu"
+            "an open note's commands are the rows of the window's More menu, and nothing \
+             stands in the row beside the strip's own \"+\""
         );
     }
 
+    /// New note stands in the page tree's header whether or not the desktop's bar hosts the
+    /// window, and never in the bar.
     #[test]
-    fn hosted_by_the_window_bar_new_note_stands_once_in_the_bar() {
+    fn new_note_stands_in_the_page_tree_never_in_the_bar() {
         ui::i18n::I18nManager::init("en-US");
         let mut test = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         ui::window_toolbar::set_hosted(false);
@@ -277,18 +268,17 @@ mod tests {
         test.surface_mut::<NotesApp>().sync_window_toolbar();
         test.settle();
         assert!(
-            !new_note_in_window(test.surface_mut::<NotesApp>()),
-            "the page tree draws no New note of its own while the bar hosts the window"
+            new_note_in_window(test.surface_mut::<NotesApp>()),
+            "hosted by the bar, the page tree's header still holds New note"
         );
         let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
-        assert_eq!(
+        assert!(
             declared
                 .actions
                 .iter()
-                .filter(|action| action.name == "New note")
-                .count(),
-            1,
-            "the bar holds New note once"
+                .all(|action| action.name != CATALOG.t("notes-affordance-new-note")),
+            "the bar holds no New note: {:?}",
+            declared.actions
         );
     }
 }

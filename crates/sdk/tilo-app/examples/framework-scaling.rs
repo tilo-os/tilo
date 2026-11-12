@@ -91,6 +91,7 @@ use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
+use ui_core::widget::DrawChild;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -157,7 +158,7 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "example.framework-scaling", label = "Checklist")]
+#[resource(kind = "example.framework-scaling")]
 impl Checklist {
     /// Add `count` tasks at once.
     #[action]
@@ -756,7 +757,6 @@ fn host_section(
     use tilo_app::kurbo::{Affine, RoundedRect};
     use tilo_app::peniko::{BlendMode, Fill};
     use tilo_app::scene_parts::{PartKey, part};
-    use tilo_app::widget::Widget as _;
     let theme = tile.app().theme.clone();
     let size = Surface.inner_size();
     let region = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
@@ -783,7 +783,7 @@ fn host_section(
         PartKey::new("scaling.tile-content", ()),
         vec![region],
         |scene| {
-            tile.draw(
+            tile.draw_child(
                 scene,
                 Affine::IDENTITY,
                 text,

@@ -1,6 +1,7 @@
 //! The notes app on the framework: the [`Notebook`] record, its window and
 //! what launching it on a Markdown file does.
 
+use crate::metadata::CATALOG;
 use ui::application::OpenFile;
 use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 #[cfg(feature = "samples")]
@@ -79,7 +80,7 @@ impl ResourceApp for NotesShell {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .filter(|stem| !stem.trim().is_empty())
-            .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
+            .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned);
         // Images next to a file named on the command line come with it.
         let (markdown, assets) = input.argument().map_or_else(
             || (markdown.to_owned(), Vec::new()),
@@ -91,7 +92,10 @@ impl ResourceApp for NotesShell {
             Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
                 title,
                 markdown,
-                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+                images: assets
+                    .into_iter()
+                    .map(|(_, bytes)| ui::tilo_resource::Bytes::to_keep(bytes))
+                    .collect(),
                 note: Some(crate::notebook::page_id(page)),
             }),
         ]

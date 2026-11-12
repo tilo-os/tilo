@@ -3,17 +3,13 @@
 //! document whose shape code asks as it goes.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
     use serde_json::json;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{

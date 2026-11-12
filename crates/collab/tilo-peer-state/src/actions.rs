@@ -35,7 +35,7 @@
 //! reports the original invocation.
 
 use crate::direct::Replica;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -130,6 +130,20 @@ pub trait Workspaces: Send + Sync {
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
     ) -> ReadFuture<'a>;
+
+    /// [`Self::read`] for a request the device `asker` signed, which the
+    /// plane is deciding: a view that comes to hold a workspace on a
+    /// device's request may do so here, and only here, for the devices it
+    /// trusts to ask. Every other read only reads.
+    fn read_for<'a>(
+        &'a self,
+        asker: [u8; 32],
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
+    ) -> ReadFuture<'a> {
+        let _ = asker;
+        self.read(workspace, read)
+    }
 }
 
 /// What a [`Workspaces`] view answers a read with: a future of its own,
@@ -244,7 +258,7 @@ pub struct ActionPlane(Arc<Inner>);
 
 struct Inner {
     /// The device whose signature every request it makes carries.
-    device: SigningKey,
+    device: Arc<dyn DeviceSigner>,
     /// The workspaces this device holds, by workspace id.
     replicas: Mutex<BTreeMap<String, Replica>>,
     /// Where this device keeps its workspaces, when they are not [`Replica`]s
@@ -263,10 +277,7 @@ struct Inner {
 impl std::fmt::Debug for ActionPlane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionPlane")
-            .field(
-                "device",
-                &hex::encode(self.0.device.verifying_key().as_bytes()),
-            )
+            .field("device", &hex::encode(self.0.device.device_public_key()))
             .field("workspaces", &self.0.replicas.lock_recover().len())
             .finish_non_exhaustive()
     }
@@ -284,19 +295,22 @@ impl ActionPlane {
     ///
     /// Outside a runtime context, where there is nothing to answer on.
     #[must_use]
-    pub fn new(device: SigningKey, dispatcher: Arc<dyn ActionHost + Send + Sync>) -> Self {
+    pub fn new(
+        device: impl DeviceSigner + 'static,
+        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+    ) -> Self {
         Self::with_bounds(device, dispatcher, Bounds::default())
     }
 
     /// [`Self::new`] with per-person bounds of the caller's choosing.
     #[must_use]
     pub fn with_bounds(
-        device: SigningKey,
+        device: impl DeviceSigner + 'static,
         dispatcher: Arc<dyn ActionHost + Send + Sync>,
         bounds: Bounds,
     ) -> Self {
         Self(Arc::new(Inner {
-            device,
+            device: Arc::new(device),
             replicas: Mutex::default(),
             workspaces: None,
             dispatcher,
@@ -316,12 +330,12 @@ impl ActionPlane {
     /// Outside a runtime context, where there is nothing to answer on.
     #[must_use]
     pub fn over(
-        device: SigningKey,
+        device: impl DeviceSigner + 'static,
         dispatcher: Arc<dyn ActionHost + Send + Sync>,
         workspaces: Arc<dyn Workspaces>,
     ) -> Self {
         Self(Arc::new(Inner {
-            device,
+            device: Arc::new(device),
             replicas: Mutex::default(),
             workspaces: Some(workspaces),
             dispatcher,
@@ -336,7 +350,7 @@ impl ActionPlane {
     /// This device's public key, as the other devices see it.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
-        self.0.device.verifying_key().to_bytes()
+        self.0.device.device_public_key()
     }
 
     /// Answer requests for `replica`'s workspace.
@@ -364,6 +378,17 @@ impl ActionPlane {
     async fn read_workspace<R: Send>(
         &self,
         workspace: &str,
+        read: impl FnMut(&crate::StatePeer) -> R + Send,
+    ) -> Option<R> {
+        self.read_workspace_for(None, workspace, read).await
+    }
+
+    /// [`Self::read_workspace`] while deciding a request `asker` signed
+    /// ([`Workspaces::read_for`]).
+    async fn read_workspace_for<R: Send>(
+        &self,
+        asker: Option<[u8; 32]>,
+        workspace: &str,
         mut read: impl FnMut(&crate::StatePeer) -> R + Send,
     ) -> Option<R> {
         let held = self.0.replicas.lock_recover().get(workspace).cloned();
@@ -372,9 +397,11 @@ impl ActionPlane {
         }
         let workspaces = self.0.workspaces.as_ref()?;
         let mut answer = None;
-        let held = workspaces
-            .read(workspace, &mut |peer| answer = Some(read(peer)))
-            .await;
+        let mut reading = |peer: &crate::StatePeer| answer = Some(read(peer));
+        let held = match asker {
+            Some(asker) => workspaces.read_for(asker, workspace, &mut reading).await,
+            None => workspaces.read(workspace, &mut reading).await,
+        };
         held.then_some(()).and(answer)
     }
 
@@ -399,7 +426,7 @@ impl ActionPlane {
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             target: *addr.id.as_bytes(),
-            key: self.0.device.clone(),
+            key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
             next_correlation: AtomicU64::new(1),
@@ -414,7 +441,7 @@ impl ActionPlane {
         let device = self.device();
         let mut participants = self
             .read_workspace(workspace, |peer| {
-                let now = SystemTime::now();
+                let now = tilo_clock::wall();
                 peer.certificates()
                     .into_iter()
                     .map(|certificate| certificate.device_public_key)
@@ -472,12 +499,12 @@ impl ActionPlane {
                 )
             })
             .collect::<Vec<_>>();
-        let started = Instant::now();
+        let started = tilo_clock::now();
         let until = started.checked_add(within).unwrap_or(started);
         self.0.runtime.spawn(async move {
             let mut answers = Vec::with_capacity(asks.len());
             for (target, mut ask) in asks {
-                let remaining = until.saturating_duration_since(Instant::now());
+                let remaining = until.saturating_duration_since(tilo_clock::now());
                 let answer = tokio::time::timeout(remaining, &mut ask).await;
                 let heard = if let Ok(Ok(heard)) = answer {
                     (target, heard)
@@ -498,7 +525,7 @@ impl ActionPlane {
     /// nothing is to be said — this device does not hold the workspace, it is
     /// not a member of it, or the device that asked is not.
     async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let device = self.device();
         let (admits_asker, is_member) = self
             .read_workspace(&query.workspace, |peer| {
@@ -547,7 +574,7 @@ impl ActionPlane {
         let request = &action.message;
         match self.authorize(remote, &signed).await {
             Ok((caller, _workspace)) => self.dispatch(&caller, request).await,
-            Err(error) => refusal(request, error),
+            Err(error) => tilo_actions::remote::refuse(request, error),
         }
     }
 
@@ -580,9 +607,9 @@ impl ActionPlane {
             .map_err(|error| ActionHostError::Refused {
                 reason: error.to_string(),
             })?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let (authority, certificate) = self
-            .read_workspace(&action.workspace, |peer| {
+            .read_workspace_for(Some(source), &action.workspace, |peer| {
                 let authority = peer.permissions(source, now);
                 let certificate = peer
                     .certificates()
@@ -666,7 +693,7 @@ impl ActionPlane {
             }
             // A request this device does not answer is said so, never left
             // for the caller to wait on.
-            other if other.is_request() => refusal(
+            other if other.is_request() => tilo_actions::remote::refuse(
                 other,
                 ActionHostError::Unavailable {
                     reason: "this device does not answer that request".into(),
@@ -692,7 +719,7 @@ impl ActionPlane {
         };
         let wait =
             Duration::from_millis(u64::from(wait_ms)).min(tilo_actions::remote::MAX_REMOTE_WAIT);
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(wait)
             .unwrap_or_else(Instant::now);
         loop {
@@ -702,7 +729,7 @@ impl ActionPlane {
             {
                 return state;
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(tilo_clock::now()) else {
                 return dispatcher.observe(caller, invocation);
             };
             match dispatcher.next_change(caller, invocation) {
@@ -727,7 +754,7 @@ impl ActionPlane {
         let CallerPrincipalKey::Person(person) = CallerPrincipalKey::of(caller) else {
             return Ok(());
         };
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let rate = self.rate();
         let mut callers = self.0.callers.lock_recover();
         if callers.len() >= KEPT_CALLERS && !callers.contains_key(&person) {
@@ -897,53 +924,6 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHos
     }
 }
 
-/// The answer to a request the device did not do, in the request's own shape
-/// so the caller learns why instead of waiting.
-fn refusal(
-    request: &RemoteActionMessage,
-    error: tilo_actions::remote::ActionHostError,
-) -> Option<RemoteActionMessage> {
-    Some(match request {
-        RemoteActionMessage::CatalogueRequest { correlation, .. } => {
-            RemoteActionMessage::CatalogueResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::Invoke(invoke) => RemoteActionMessage::Receipt(InvocationReceipt {
-            invocation: invoke.invocation,
-            status: ReceiptStatus::Rejected { error },
-        }),
-        RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
-            invocation: *invocation,
-            state: None,
-        },
-        RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
-            invocation: *invocation,
-            result: Err(error),
-        },
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            RemoteActionMessage::RecordResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
-            RemoteActionMessage::FeedbackResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
-            RemoteActionMessage::ConfirmationResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        _ => return None,
-    })
-}
-
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
@@ -976,7 +956,7 @@ struct Device {
     addr: EndpointAddr,
     workspace: String,
     target: [u8; 32],
-    key: SigningKey,
+    key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
     /// The connection to this device, kept while it lasts: one per pair.
     connection: Mutex<Option<Connection>>,
@@ -1028,7 +1008,7 @@ impl RemoteDevice {
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
     > {
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let budget = FollowBudget {
             until: now.checked_add(follow_for).unwrap_or(now),
             rounds: MAX_FOLLOW_ROUNDS,
@@ -1088,12 +1068,12 @@ impl Device {
             &DeviceAction {
                 workspace: self.workspace.clone(),
                 request_id: uuid::Uuid::new_v4(),
-                source: self.key.verifying_key().to_bytes(),
+                source: self.key.device_public_key(),
                 target: self.target,
                 message,
             },
             now_ns(),
-            &self.key,
+            self.key.as_ref(),
         )
         .map_err(|error| unavailable(&error.to_string()))?;
         let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed)))
@@ -1119,7 +1099,7 @@ impl Device {
             route: route.clone(),
             work: work.clone(),
         };
-        let started = Instant::now();
+        let started = tilo_clock::now();
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
@@ -1214,7 +1194,7 @@ fn follow(
         Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
     >,
 ) {
-    if budget.rounds == 0 || Instant::now() >= budget.until {
+    if budget.rounds == 0 || tilo_clock::now() >= budget.until {
         done.complete(Err(unavailable(
             "the device did not finish the action in time",
         )));
@@ -1384,7 +1364,7 @@ impl ActionHost for RemoteDevice {
             return None;
         }
         let seen = self.0.follow.mark(id);
-        let sent = Instant::now();
+        let sent = tilo_clock::now();
         let device = Arc::clone(&self.0);
         let invocation = *id;
         let (changed, change) = tilo_actions::remote::pending();
@@ -1429,7 +1409,7 @@ impl ActionHost for RemoteDevice {
 }
 
 pub(crate) fn now_ns() -> u64 {
-    SystemTime::now()
+    tilo_clock::wall()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|since| u64::try_from(since.as_nanos()).ok())
@@ -1440,32 +1420,11 @@ async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> Result<(), String> 
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
     }
-    let len = u32::try_from(bytes.len()).map_err(|_| "frame too large".to_string())?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(|error| error.to_string())?;
-    send.write_all(bytes)
-        .await
-        .map_err(|error| error.to_string())
+    crate::frames::write_frame(send, bytes).await
 }
 
 async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
-    let mut len = [0_u8; 4];
-    match recv.read_exact(&mut len).await {
-        Ok(()) => {}
-        Err(iroh::endpoint::ReadExactError::FinishedEarly(0)) => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    }
-    let len =
-        usize::try_from(u32::from_le_bytes(len)).map_err(|_| "frame too large".to_string())?;
-    if len > MAX_FRAME_BYTES {
-        return Err("frame too large".into());
-    }
-    let mut bytes = vec![0_u8; len];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(Some(bytes))
+    crate::frames::read_frame(recv, MAX_FRAME_BYTES).await
 }
 
 #[cfg(test)]

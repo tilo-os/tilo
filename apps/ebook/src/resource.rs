@@ -18,7 +18,7 @@ use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::Effect;
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Collection, Derived, Id, Invoke, JsonSchema, Map, Model, Refusal,
+    self, ActionCx, Atom, Bytes, Collection, Derived, Id, Invoke, JsonSchema, Map, Model, Refusal,
     resource,
 };
 use ui::widget::Element;
@@ -31,7 +31,7 @@ use crate::model::{
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// How many books the published library carries as places; the rest are
 /// resolved one by one when addressed.
@@ -106,15 +106,6 @@ pub struct Passage {
     pub excerpt: String,
 }
 
-/// Bytes a content store keeps for a book.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StoredContent {
-    /// Their content hash
-    pub hash: String,
-    /// How many bytes
-    pub size: u64,
-}
-
 /// One paragraph's share of a highlight: the characters of `block` from
 /// `start` to `end`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -129,12 +120,28 @@ pub struct HiPiece {
     pub excerpt: String,
 }
 
+impl Ebook {
+    /// What the record holds: the shelf, where the reader is in each book, the reading
+    /// settings, the fonts and colour schemes, and every mark made in them.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 #[resource(
     kind = "ebook.library",
-    label = "Books",
     params = books,
     children = Ebook::places,
     search = Ebook::search,
+    read_content = Ebook::read_document
 )]
 impl Ebook {
     /// Put a book on the shelf, or refresh the row it has.
@@ -147,17 +154,8 @@ impl Ebook {
         #[param("Author")] author: String,
         #[param("Subject")] subject: String,
         #[param("Whether a copy is in the shared workspace")] shared: bool,
-        #[param("The book's bytes, when a content store keeps them")] content: Option<
-            StoredContent,
-        >,
+        #[param("The book's bytes, when a content store keeps them")] content: Option<Bytes>,
     ) -> Result<(), Refusal> {
-        let content = match content {
-            Some(stored) => Some(
-                LibraryEntry::stored(&stored.hash, stored.size)
-                    .ok_or("the content hash is not a content hash")?,
-            ),
-            None => None,
-        };
         self.put_on_shelf(cx, book, [title, author, subject], shared, content);
         Ok(())
     }
@@ -193,10 +191,8 @@ impl Ebook {
     pub fn index_book(
         &mut self,
         #[param("The book's id")] book: String,
-        #[param("The index of its text, as a content store keeps it")] index: StoredContent,
+        #[param("The index of its text, as a content store keeps it")] index: Bytes,
     ) -> Result<(), Refusal> {
-        let index = LibraryEntry::stored(&index.hash, index.size)
-            .ok_or("the index hash is not a content hash")?;
         let entry = self
             .entries
             .get_mut(&Id::from_raw(book))
@@ -473,7 +469,7 @@ impl Ebook {
         book: String,
         [title, author, subject]: [String; 3],
         shared: bool,
-        content: Option<tilo_resource::Bytes>,
+        content: Option<Bytes>,
     ) {
         let key = Id::from_raw(book.clone());
         if let Some(entry) = self.entries.get_mut(&key) {
@@ -749,7 +745,7 @@ impl Ebook {
             .with_effect(&BooksEffect::Settings);
         for font in self.fonts.values() {
             place = place.with_child(
-                Derived::new(font.name.clone())
+                Derived::new(font.title())
                     .of_kind("font")
                     .identified(format!("font:{}", font.id))
                     .with_effect(&BooksEffect::ReadFont {
@@ -759,7 +755,7 @@ impl Ebook {
             );
         }
         for scheme in self.schemes.values() {
-            let mut child = Derived::new(scheme.name.clone())
+            let mut child = Derived::new(scheme.title())
                 .of_kind("color-scheme")
                 .identified(format!("scheme:{}", scheme.id))
                 .with_effect(&BooksEffect::ReadScheme {
@@ -920,6 +916,12 @@ pub(crate) fn note_text(id: Uuid) -> tilo_resource::Path<Ebook, tilo_document::R
     Ebook::paths().annotations.item(&annotation_key(id)).text
 }
 
+/// The resource the text of the note or comment `id` is published as, beside
+/// the library.
+pub(crate) fn note_text_resource_id(id: Uuid) -> String {
+    tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}"))
+}
+
 /// The dispatcher the editor of the note or comment `id` writes through:
 /// each of its edits is the library's field edit of the note's text.
 pub(crate) fn note_text_dispatcher(
@@ -927,15 +929,24 @@ pub(crate) fn note_text_dispatcher(
     id: Uuid,
 ) -> ui::framework::Dispatcher<tilo_document::RichText> {
     let text = note_text(id);
-    library.child::<tilo_document::RichText>(
-        &tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}")),
-        move |op| tilo_resource::Stamped {
+    library.child::<tilo_document::RichText>(&note_text_resource_id(id), move |op| {
+        tilo_resource::Stamped {
             operation: EbookAction::FieldEdit(text.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
             })),
             now_ms: 0,
-        },
-    )
+        }
+    })
+}
+
+/// How many books read: one is a book, never "1 books". The shelf's heading
+/// and the library's published name ([`Ebook::label`]) say it the same way.
+pub(crate) fn books_on_the_shelf(count: usize) -> String {
+    if count == 1 {
+        "1 book".to_owned()
+    } else {
+        format!("{count} books")
+    }
 }
 
 /// How an annotation is named: its note, else the passage it marks, on
@@ -1042,9 +1053,9 @@ impl ResourceApp for EbookShell {
 
     fn label(state: &Ebook) -> String {
         if state.entries.is_empty() {
-            "Books".into()
+            <Ebook as ui::tilo_resource::Resource>::LABEL.to_owned()
         } else {
-            format!("{} books", state.entries.len())
+            books_on_the_shelf(state.entries.len())
         }
     }
 
@@ -1107,15 +1118,12 @@ pub(crate) fn shelve(entry: &LibraryEntry) -> Invoke<Ebook> {
         author: entry.author.clone(),
         subject: entry.subject.clone(),
         shared: entry.shared,
-        content: entry.content_hash().map(|hash| StoredContent {
-            hash,
-            size: entry.content.len(),
-        }),
+        content: (!entry.content.is_empty()).then(|| entry.content.clone()),
     })
 }
 
 /// The index of `book`'s text, kept as `stored`, joining its row.
-pub(crate) fn index_book(book: &str, stored: StoredContent) -> Invoke<Ebook> {
+pub(crate) fn index_book(book: &str, stored: Bytes) -> Invoke<Ebook> {
     Ebook::INDEX_BOOK.with(books::IndexBook {
         book: book.to_owned(),
         index: stored,
@@ -1198,14 +1206,14 @@ pub enum BooksEffect {
     /// every font and colour scheme the pickers offer. It is the reading
     /// settings' read: what discloses them, so removing a font or a colour
     /// scheme is offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read reading settings", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadSettings,
     /// Read font
     ///
     /// Answers one reading font the pickers offer: its name and what it is.
     /// It is the font's read: what discloses it, so removing it is offered
     /// to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read font", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadFont {
         #[param("The font's id")]
         font: String,
@@ -1215,7 +1223,7 @@ pub enum BooksEffect {
     /// Answers one colour scheme the pickers offer: its name and colours.
     /// It is the scheme's read: what discloses it, so deleting it is
     /// offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read colour scheme", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadScheme {
         #[param("The colour scheme's id")]
         scheme: String,
@@ -1287,7 +1295,7 @@ pub enum BooksEffect {
     /// what Read chapter answers. It is the book's read: what discloses its
     /// place, so sharing it, taking it off the shelf and its annotations
     /// are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read book", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadBook {
         #[param("The book's id")]
         book: String,
@@ -1298,7 +1306,7 @@ pub enum BooksEffect {
     /// is, its colour and the comments on it. It is the highlight's read:
     /// what discloses it, so recolouring, deleting and commenting on it are
     /// offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read highlight", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadHighlight {
         #[param("The highlight: the id of one of its pieces or its group")]
         highlight: Uuid,
@@ -1308,7 +1316,7 @@ pub enum BooksEffect {
     /// Answers a bookmark, a note or a comment: what it says, the passage
     /// it is at and where. It is the annotation's read: what discloses it,
     /// so deleting it is offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, label = "Read annotation", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    #[effect(view, row, returns, idempotent, tag = tilo_actions::DOCUMENT_READ_TAG)]
     ReadAnnotation {
         #[param("The annotation's id")]
         annotation: Uuid,
@@ -1395,5 +1403,25 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("ebook-library"), "Bücher");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("ebook-library"), "Books");
     }
 }

@@ -146,9 +146,9 @@ impl VideoEditorApp {
         // What the gesture is, stated rather than left to be discovered. It
         // sits under the box so it never covers the curve.
         let hint = if dragging.is_some() {
-            "Drag out of the box to remove"
+            &crate::resource::CATALOG.t("video-editor-remove-by-dragging")
         } else {
-            "Click to add a point, drag to shape it"
+            &crate::resource::CATALOG.t("video-editor-drag-to-shape")
         };
         let style = theme.text(TextRole::Caption);
         text(
@@ -211,7 +211,15 @@ impl VideoEditorApp {
             );
         }
         if let Some((_, first)) = l.project_rates.first() {
-            caption_above(scene, tr, tf, theme, "Frame rate", x0, first.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-frame-rate"),
+                x0,
+                first.y0,
+            );
         }
         if !l.project_rates.is_empty() {
             let rects: Vec<Rect> = l.project_rates.iter().map(|(_, r)| *r).collect();
@@ -235,7 +243,12 @@ impl VideoEditorApp {
             // a guess about which of several sources it meant.
             let label = self.format_source().map_or_else(
                 || "Match media".to_string(),
-                |m| format!("Match {}", m.name),
+                |m| {
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-match",
+                        &[("effect", ui::i18n::ArgValue::Text(m.name.clone()))],
+                    )
+                },
             );
             draw_button(
                 scene,
@@ -297,8 +310,9 @@ impl VideoEditorApp {
             let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let renaming = editing && self.marker_field == MarkerField::Name;
             if !renaming {
+                let unnamed = crate::resource::CATALOG.t("video-editor-marker");
                 let name = if mk.name.trim().is_empty() {
-                    "Marker"
+                    unnamed.as_str()
                 } else {
                     mk.name.as_str()
                 };
@@ -377,9 +391,18 @@ impl VideoEditorApp {
         }
         if let Some(rect) = l.add_marker {
             if l.marker_rows.is_empty() {
-                caption_above(scene, tr, tf, theme, "Nothing marked yet.", x0, rect.y0);
+                caption_above(
+                    scene,
+                    tr,
+                    tf,
+                    theme,
+                    &crate::resource::CATALOG.t("video-editor-nothing-marked"),
+                    x0,
+                    rect.y0,
+                );
             }
-            let face = ButtonFace::new(rect, ADD_MARKER_LABEL)
+            let label = crate::resource::CATALOG.t(ADD_MARKER_LABEL);
+            let face = ButtonFace::new(rect, &label)
                 .icon(Icon::Plus)
                 .control_size(control_size_for(rect, theme))
                 .hovered(rect.contains(self.last_mouse));
@@ -755,7 +778,15 @@ impl VideoEditorApp {
         );
         // Transition segmented control, through the shared painter.
         if let Some((_, first)) = l.transitions.first() {
-            caption_above(scene, tr, tf, theme, "Transition", x0, first.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-transition"),
+                x0,
+                first.y0,
+            );
             let rects: Vec<Rect> = l.transitions.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.transitions.iter().map(|(t, _)| t.label()).collect();
             let sel = l
@@ -787,12 +818,23 @@ impl VideoEditorApp {
         }
         // Label colour swatches: the toolkit's swatch face, ringed when chosen.
         if let Some((_, first)) = l.colors.first() {
-            caption_above(scene, tr, tf, theme, "Label", x0, first.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-label"),
+                x0,
+                first.y0,
+            );
             for (pal, rect) in &l.colors {
-                let face =
-                    ui::widget::ColorSwatchFace::new(*rect, clip_color(theme, *pal), "Label")
-                        .selected(clip.palette == *pal)
-                        .hovered(rect.contains(self.last_mouse));
+                let face = ui::widget::ColorSwatchFace::new(
+                    *rect,
+                    clip_color(theme, *pal),
+                    crate::resource::CATALOG.t("video-editor-label"),
+                )
+                .selected(clip.palette == *pal)
+                .hovered(rect.contains(self.last_mouse));
                 face.paint(scene, tf, tr, theme);
             }
         }
@@ -800,14 +842,14 @@ impl VideoEditorApp {
         // the *change*: a control labelled only "Unlink" leaves a reader
         // guessing whether it describes what is true or what will happen.
         if let (Some(rect), Some(offer)) = (l.link, self.link_affordance()) {
-            caption_above(scene, tr, tf, theme, offer.state(), x0, rect.y0);
+            caption_above(scene, tr, tf, theme, &offer.state(), x0, rect.y0);
             draw_button(
                 scene,
                 tf,
                 tr,
                 theme,
                 rect,
-                offer.label(),
+                &offer.label(),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
@@ -847,7 +889,15 @@ impl VideoEditorApp {
         // the whole of what the button does.
         if !l.pip.is_empty() {
             let top = l.pip[0].2;
-            caption_above(scene, tr, tf, theme, "Picture in picture", x0, top.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-picture-in-picture"),
+                x0,
+                top.y0,
+            );
             let inset = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
             let is_pip = (clip.transform.scale_x - inset.scale_x).abs() < 1e-6;
             for (_, corner, rect) in &l.pip {
@@ -889,7 +939,15 @@ impl VideoEditorApp {
         // picture in its half, so the row reads as the arrangement rather
         // than as two unexplained words.
         if let Some((_, _, first)) = l.sides.first() {
-            caption_above(scene, tr, tf, theme, "Side by side", x0, first.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-side-by-side"),
+                x0,
+                first.y0,
+            );
             for (_, side, rect) in &l.sides {
                 let placement = side.placement();
                 let on = placement.is_some_and(|p| {
@@ -933,7 +991,7 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "Crop",
+                &crate::resource::CATALOG.t("video-editor-crop"),
                 &label,
                 c.text_dim,
                 x0,
@@ -945,7 +1003,7 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "Anchor",
+                &crate::resource::CATALOG.t("video-editor-anchor"),
                 &label,
                 c.text_dim,
                 x0,
@@ -997,7 +1055,7 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                "Fill frame",
+                &crate::resource::CATALOG.t("video-editor-fill-frame"),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 !plain,
@@ -1048,9 +1106,21 @@ impl VideoEditorApp {
             if l.mix_track_y > 0.0 {
                 let others = self.project.clips_on(t.id).len().saturating_sub(1);
                 let words = match others {
-                    0 => format!("Lane {}, this clip only", t.name),
-                    1 => format!("Lane {}, with 1 other clip", t.name),
-                    n => format!("Lane {}, with {n} other clips", t.name),
+                    0 => crate::resource::CATALOG.t_args(
+                        "video-editor-lane-clip-only",
+                        &[("lane", ui::i18n::ArgValue::Text(t.name.clone()))],
+                    ),
+                    1 => crate::resource::CATALOG.t_args(
+                        "video-editor-lane-one-other",
+                        &[("lane", ui::i18n::ArgValue::Text(t.name.clone()))],
+                    ),
+                    n => crate::resource::CATALOG.t_args(
+                        "video-editor-lane-other-clips",
+                        &[
+                            ("lane", ui::i18n::ArgValue::Text(t.name.clone())),
+                            ("count", ui::i18n::ArgValue::Number(n as f64)),
+                        ],
+                    ),
                 };
                 let words = elide_at(&words, (x1 - x0) as f32, &label, tr);
                 text(scene, tr, tf, &words, &label, c.text_dim, x0, l.mix_track_y);
@@ -1074,7 +1144,10 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 rect,
-                "Reset to 0.0 dB, centre",
+                &crate::resource::CATALOG.t_args(
+                    "video-editor-reset-track",
+                    &[("track", ui::i18n::ArgValue::Text(clip.track.to_string()))],
+                ),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
@@ -1104,7 +1177,10 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                &format!("Reset {}", ch.label()),
+                &crate::resource::CATALOG.t_args(
+                    "video-editor-reset-curve",
+                    &[("channel", ui::i18n::ArgValue::Text(ch.label().to_owned()))],
+                ),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 shaped,
@@ -1126,7 +1202,7 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "Key colour",
+                &crate::resource::CATALOG.t("video-editor-key-colour"),
                 &label,
                 c.text_dim,
                 x0,
@@ -1143,9 +1219,13 @@ impl VideoEditorApp {
             // The key colour is the footage's own colour, so it is shown as it
             // is, on the toolkit's swatch.
             let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
-            let face = ui::widget::ColorSwatchFace::new(*rect, swatch, "Key colour")
-                .selected(on)
-                .hovered(rect.contains(self.last_mouse));
+            let face = ui::widget::ColorSwatchFace::new(
+                *rect,
+                swatch,
+                crate::resource::CATALOG.t("video-editor-key-colour"),
+            )
+            .selected(on)
+            .hovered(rect.contains(self.last_mouse));
             face.paint(scene, tf, tr, theme);
         }
         if let Some(rect) = l.key_pick {
@@ -1156,11 +1236,11 @@ impl VideoEditorApp {
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                if have {
-                    "Sample centre"
+                &crate::resource::CATALOG.t(if have {
+                    "video-editor-sample-centre"
                 } else {
-                    "No frame to sample"
-                },
+                    "video-editor-no-frame-to-sample"
+                }),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
                 have,
@@ -1189,7 +1269,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 rect,
-                "Fit to picture",
+                &crate::resource::CATALOG.t("video-editor-fit-to-picture"),
                 ButtonRole::Secondary,
                 rect.contains(self.last_mouse),
             );
@@ -1210,7 +1290,15 @@ impl VideoEditorApp {
                 .as_ref()
                 .and_then(|m| m.text.clone())
                 .unwrap_or_default();
-            caption_above(scene, tr, tf, theme, "Words", rect.x0, rect.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-words"),
+                rect.x0,
+                rect.y0,
+            );
             let editing = self
                 .title_edit
                 .as_ref()
@@ -1235,7 +1323,7 @@ impl VideoEditorApp {
                     scene,
                     tr,
                     tf,
-                    "Ctrl+Enter to accept, Esc to cancel",
+                    &crate::resource::CATALOG.t("video-editor-accept-cancel-keys"),
                     &hint,
                     c.text_dim,
                     rect.x0,
@@ -1246,7 +1334,7 @@ impl VideoEditorApp {
                     scene,
                     tr,
                     tf,
-                    "Click to type a title",
+                    &crate::resource::CATALOG.t("video-editor-type-title"),
                     &body,
                     c.text_tertiary,
                     rect.x0 + S2,
@@ -1303,7 +1391,15 @@ impl VideoEditorApp {
                 .and_then(|m| m.text.as_ref())
                 .map(|t| t.font.clone())
                 .unwrap_or_default();
-            caption_above(scene, tr, tf, theme, "Font", rect.x0, rect.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-font"),
+                rect.x0,
+                rect.y0,
+            );
             // The open list is drawn later, over the panel, because it floats
             // above everything under it. Here is the resting control: the
             // shared dropdown face naming the family in force.
@@ -1324,16 +1420,27 @@ impl VideoEditorApp {
                 .as_ref()
                 .and_then(|m| m.text.as_ref())
                 .map_or([1.0; 4], |t| t.color);
-            caption_above(scene, tr, tf, theme, "Colour", x0, first.y0);
+            caption_above(
+                scene,
+                tr,
+                tf,
+                theme,
+                &crate::resource::CATALOG.t("video-editor-colour"),
+                x0,
+                first.y0,
+            );
             for (col, rect) in &l.title_colors {
                 let chosen = col
                     .iter()
                     .zip(cur.iter())
                     .all(|(a, b)| (a - b).abs() < 1e-6);
-                let face =
-                    ui::widget::ColorSwatchFace::new(*rect, title_color(*col), "Title colour")
-                        .selected(chosen)
-                        .hovered(rect.contains(self.last_mouse));
+                let face = ui::widget::ColorSwatchFace::new(
+                    *rect,
+                    title_color(*col),
+                    crate::resource::CATALOG.t("video-editor-title-colour"),
+                )
+                .selected(chosen)
+                .hovered(rect.contains(self.last_mouse));
                 face.paint(scene, tf, tr, theme);
             }
         }
@@ -1414,7 +1521,8 @@ impl VideoEditorApp {
                 );
             }
             let add = l.add_effect;
-            let face = ButtonFace::new(add, "Add effect")
+            let add_effect = crate::resource::CATALOG.t("video-editor-add-effect-button");
+            let face = ButtonFace::new(add, &add_effect)
                 .icon(Icon::Plus)
                 .control_size(control_size_for(add, theme))
                 .hovered(add.contains(self.last_mouse));
@@ -1441,7 +1549,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 l.split,
-                "Split",
+                &crate::resource::CATALOG.t("video-editor-split"),
                 ButtonRole::Secondary,
                 l.split.contains(self.last_mouse),
             );
@@ -1451,7 +1559,7 @@ impl VideoEditorApp {
                 tr,
                 theme,
                 l.delete,
-                "Delete",
+                &crate::resource::CATALOG.t("video-editor-delete-button"),
                 ButtonRole::Destructive,
                 l.delete.contains(self.last_mouse),
             );

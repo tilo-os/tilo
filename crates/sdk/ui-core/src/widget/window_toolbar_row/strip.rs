@@ -110,7 +110,7 @@ impl NoticeStrip {
         let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let widths: Vec<f64> = actions
                 .iter()
-                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))
                 .collect();
             let style = theme.text(TextRole::Body);
             let line_height = f64::from(style.line_height_px());
@@ -316,7 +316,7 @@ impl NoticeStrip {
                 y += measured.line_height;
             }
             for (i, (action, rect)) in notice.actions.iter().zip(&measured.buttons).enumerate() {
-                let face = labelled_face(*rect + origin, &action.name)
+                let face = labelled_face(*rect + origin, &action.name, action.primary)
                     .hovered(hovered == Some(i) && action.enabled)
                     .pressed(pressed == Some(i) && action.enabled)
                     .disabled(!action.enabled);

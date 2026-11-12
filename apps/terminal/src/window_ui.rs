@@ -457,7 +457,9 @@ impl TerminalWidget {
                 let session = reconnect.session.clone();
                 self.record_relay_session(session);
             }
-            crate::sessions::OpenState::AwaitingAllow | crate::sessions::OpenState::Fixed => {
+            crate::sessions::OpenState::AwaitingAllow
+            | crate::sessions::OpenState::Fixed
+            | crate::sessions::OpenState::Joined => {
                 self.life.reconnect = None;
             }
         }
@@ -492,8 +494,9 @@ impl TerminalWidget {
     }
 
     /// Whether the shell can start again in place: it ended (or its
-    /// terminal failed) and this terminal knows what to start — the target
-    /// the session ran on, or the command it was made to run. Not for a
+    /// terminal failed, or another process runs the session this tab
+    /// joined) and this terminal knows what to start — the target the
+    /// session ran on, or the command it was made to run. Not for a
     /// window closing for its exited shell, a tab reconnecting to its
     /// remote shell, or a terminal with no process of its own.
     pub(crate) fn can_restart(&self) -> bool {
@@ -505,7 +508,9 @@ impl TerminalWidget {
                 Some(SessionEnd::Lost(_) | SessionEnd::Superseded)
             )
             && match self.sessions.state {
-                crate::sessions::OpenState::Open => self.sessions.target.is_some(),
+                crate::sessions::OpenState::Open | crate::sessions::OpenState::Joined => {
+                    self.sessions.target.is_some()
+                }
                 crate::sessions::OpenState::Fixed => self.respawn.is_some(),
                 _ => false,
             }

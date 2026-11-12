@@ -347,6 +347,43 @@ impl AttachedView {
             .collect()
     }
 
+    /// The resource `id` the view publishes for this participant, resolved
+    /// without building every other one: what an invocation on an address
+    /// already known asks for.
+    #[must_use]
+    pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        let permissions = self.permissions.borrow();
+        permissions.permitted_resource(self.definition.app_id(), self.frame.resource(id)?)
+    }
+
+    /// The contract of the action `address` names, as the view publishes it
+    /// now: `None` when the view publishes no such action.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        if let Some(resource) = self.resource(&address.resource)
+            && resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action)
+        {
+            // The one resource's own actions, never its children's: an
+            // action elsewhere in the tree is not this address's.
+            let mut alone = resource;
+            alone.children.clear();
+            if let Some(descriptor) = tilo_actions::door::survey(&[alone])
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+            {
+                return Some(descriptor);
+            }
+        }
+        // A resource only the whole tree names (an accessibility or search
+        // surface) is answered as it always was.
+        tilo_actions::door::survey(&self.resources())
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+    }
+
     /// Every document operation the participant may perform through the
     /// view now, with its typed parameters.
     #[must_use]
@@ -499,10 +536,7 @@ impl AttachedView {
         ),
         DoorError,
     > {
-        if !tilo_actions::door::survey(&self.resources())
-            .iter()
-            .any(|entry| &entry.address == address)
-        {
+        if self.descriptor(address).is_none() {
             return Err(DoorError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();
@@ -650,11 +684,27 @@ impl AttachedView {
         self.records.read(&self.checkout.id, read)
     }
 
-    /// The participant's changes since the last call, or `None`. The first
-    /// call on a record the participant created returns it whole.
-    pub fn take_changes(&mut self) -> Option<DocumentMutation> {
-        let next = publish(&mut self.sync, &self.records, &self.checkout.id)?;
-        Some(next)
+    /// The participant's changes since the last call, or `None` when it
+    /// changed nothing. The first call on a record the participant created
+    /// returns it whole.
+    ///
+    /// # Errors
+    /// The record's changes could not be collected (it is not open here or
+    /// its store is busy). Distinct from `Ok(None)`: what the participant
+    /// changed is still in the record, unsent, and goes with the next call.
+    pub fn take_changes(&mut self) -> Result<Option<DocumentMutation>, String> {
+        publish(&mut self.sync, &self.records, &self.checkout.id)
+    }
+
+    /// Run `during` while the view's records are held for reading, as a
+    /// frame's read holds them: collecting this participant's changes, or
+    /// setting them aside, finds the store busy. `None` when the record is
+    /// not open. For tests of what a host answers then.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn while_records_busy<R>(&mut self, during: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        let records = self.records.clone();
+        let id = self.checkout.id.clone();
+        records.read(&id, |_| during(self))
     }
 
     /// Merge a peer's change into the view's record. Incremental changes
@@ -669,15 +719,53 @@ impl AttachedView {
         {
             return Ok(false);
         }
-        // What this participant did and has not taken stays its own.
+        // What this participant did and has not taken stays its own: when
+        // it cannot be set aside, the peer's change is not merged either.
         if self.sync.snapshotted() {
-            self.sync.set_aside(&self.records, &self.checkout.id).ok();
+            self.sync
+                .set_aside(&self.records, &self.checkout.id)
+                .map_err(|error| set_aside_failed(&self.checkout.id, &error))?;
         }
         let changed = self
             .sync
             .merge(&self.records, &self.checkout, mutation.clone())?;
         self.frame.relayout();
         Ok(changed)
+    }
+
+    /// Take the view's records to come from its workspace's hosts, which may
+    /// send a record only once it is asked for (a public workspace):
+    /// [`RecordStore::ask_workspace_for_missing`]. A chain the view holds no
+    /// part of asks for its head then, and writes to it wait for the answer.
+    pub fn ask_workspace_for_missing(&self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// The keys `mutation` writes in `record`, as the view holds that record
+    /// now: a fork of it, so the answer costs a head set rather than the
+    /// record. `None` for a record this view does not hold.
+    pub fn changed_keys(
+        &self,
+        record: &ui_core::record::RecordId,
+        mutation: &DocumentMutation,
+    ) -> Option<Result<Vec<Vec<String>>, String>> {
+        self.records
+            .with(record, |doc| changed_keys_of(doc, mutation))
+    }
+
+    /// What the view's records ask the workspace's hosts for
+    /// ([`RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<ui_core::record::RecordId> {
+        self.records.wanted_records()
+    }
+
+    /// The workspace's hosts sent all they hold of `record`, none of it
+    /// ([`RecordStore::note_workspace_answered`]); the view takes it up at its
+    /// next frame.
+    pub fn workspace_answered(&mut self, record: ui_core::record::RecordId) {
+        self.records.note_workspace_answered(record);
+        self.frame.relayout();
     }
 
     /// The chains of records the app keeps beside its own
@@ -742,12 +830,42 @@ impl AttachedView {
     /// The participant's changes to `record`, one the view holds beside
     /// its own ([`Self::records_beside`]), since the last call: the whole
     /// record the first time, for one the participant started.
+    ///
+    /// # Errors
+    /// As [`Self::take_changes`].
     pub fn take_record_changes(
         &mut self,
         record: &ui_core::record::RecordId,
-    ) -> Option<DocumentMutation> {
+    ) -> Result<Option<DocumentMutation>, String> {
         let sync = self.beside.entry(record.clone()).or_default();
         publish(sync, &self.records, record)
+    }
+
+    /// The participant's changes to every record the view holds beside its
+    /// own ([`Self::take_record_changes`]), by record; all or none of them.
+    ///
+    /// # Errors
+    /// As [`Self::take_changes`], for any one of them: those taken before it
+    /// are kept to go with the next call, so a write is never half reported.
+    pub fn take_records_beside_changes(
+        &mut self,
+    ) -> Result<Vec<(ui_core::record::RecordId, DocumentMutation)>, String> {
+        let mut taken = Vec::new();
+        for checkout in self.records_beside() {
+            match self.take_record_changes(&checkout.id) {
+                Ok(Some(mutation)) => taken.push((checkout.id, mutation)),
+                Ok(None) => {}
+                Err(error) => {
+                    for (record, mutation) in taken {
+                        if let Some(sync) = self.beside.get_mut(&record) {
+                            sync.put_back(mutation);
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(taken)
     }
 
     /// Merge a peer's change into `record`, a part of one of the app's
@@ -805,7 +923,8 @@ impl AttachedView {
             .entry(record.clone())
             .or_insert_with(move || RecordSync::delivered(heads));
         if sync.snapshotted() {
-            sync.set_aside(&self.records, record).ok();
+            sync.set_aside(&self.records, record)
+                .map_err(|error| set_aside_failed(record, &error))?;
         }
         let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
         self.frame.relayout();
@@ -814,24 +933,86 @@ impl AttachedView {
 }
 
 /// What to publish next of `record` as `sync` stands: the record whole the
-/// first time, then this participant's own changes set aside since.
+/// first time, then this participant's own changes set aside since; `None`
+/// when it changed nothing.
+///
+/// A failure to collect them is an error, never `None`: a host answers a
+/// write by what this returns, and "nothing changed" would answer one that
+/// was never saved as done.
 fn publish(
     sync: &mut RecordSync,
     records: &RecordStore,
     id: &ui_core::record::RecordId,
-) -> Option<DocumentMutation> {
+) -> Result<Option<DocumentMutation>, String> {
+    let failed = |error: String| {
+        format!(
+            "this participant's change to {} could not be collected: {error}",
+            id.as_str()
+        )
+    };
     if !sync.snapshotted() {
-        let whole = sync.take_outbound(records, id).ok()??;
+        let Some(whole) = sync.take_outbound(records, id).map_err(failed)? else {
+            return Ok(None);
+        };
         sync.advance(whole.heads);
-        return Some(whole.mutation);
+        return Ok(Some(whole.mutation));
     }
-    sync.set_aside(records, id).ok()?;
-    sync.take_set_aside()
+    sync.set_aside(records, id).map_err(failed)?;
+    Ok(sync.take_set_aside())
+}
+
+/// Why a peer's change to `record` was not merged: this participant's own
+/// changes to it could not be set aside first, so the record is left as it
+/// was, its own changes still to go out, rather than merged around them.
+fn set_aside_failed(record: &ui_core::record::RecordId, error: &str) -> String {
+    format!(
+        "a peer's change to {} was not merged: this participant's own changes to it \
+         could not be set aside first ({error})",
+        record.as_str()
+    )
 }
 
 /// The heads of the record `document` holds: what a participant joining it
 /// was given, past which anything its view writes while it opens is refused
 /// ([`refuse_written_on_open`]).
+/// The storage keys `mutation` writes, top down to what it put or deleted, in
+/// `doc`: forked, so the document itself is not touched.
+fn changed_keys_of(
+    doc: &mut ui_core::automerge::AutoCommit,
+    mutation: &DocumentMutation,
+) -> Result<Vec<Vec<String>>, String> {
+    use ui_core::automerge::PatchAction;
+    let key = |prop: &ui_core::automerge::Prop| match prop {
+        ui_core::automerge::Prop::Map(key) => key.clone(),
+        ui_core::automerge::Prop::Seq(index) => index.to_string(),
+    };
+    let mut probe = doc.fork();
+    let was = probe.get_heads();
+    let bytes = match mutation {
+        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+    };
+    tilo_automerge::ApplyIncoming::load_incoming(&mut probe, bytes)
+        .map_err(|error| error.to_string())?;
+    let now = probe.get_heads();
+    Ok(probe
+        .diff(&was, &now)
+        .into_iter()
+        .map(|patch| {
+            let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key(prop)).collect();
+            match &patch.action {
+                PatchAction::PutMap { key: put, .. } | PatchAction::DeleteMap { key: put } => {
+                    keys.push(put.clone());
+                }
+                PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => {
+                    keys.push(key(prop));
+                }
+                _ => {}
+            }
+            keys
+        })
+        .collect())
+}
+
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())

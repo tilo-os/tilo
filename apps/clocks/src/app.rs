@@ -7,6 +7,7 @@
 //! platform's notification scheduler, and keeps the shell's floating clock
 //! current. A capture or a past version does none of that.
 
+use crate::locales::CATALOG;
 use crate::model::{Clocks, WeekdayKey, bounded_label};
 use crate::native_timers::{
     ALARMS_URI, TIMERS_URI, alarm_id as native_alarm_id, timer_id as native_timer_id,
@@ -17,6 +18,7 @@ use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Live};
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::Id;
 use ui::widget::Filterable;
@@ -69,20 +71,29 @@ pub(crate) fn next_ring(
     now: chrono::DateTime<chrono::Local>,
 ) -> String {
     if !alarm.enabled {
-        return "Off".into();
+        return crate::locales::CATALOG.t("clocks-alert-off");
     }
     let Some(next) = crate::schedule::next_occurrence(alarm, None, now) else {
-        return "No next ring".into();
+        return crate::locales::CATALOG.t("clocks-no-next-ring");
     };
     let today = now.date_naive();
     let day = if next.date_naive() == today {
-        "today".to_owned()
+        crate::locales::CATALOG.t("clocks-today")
     } else if next.date_naive() == today.succ_opt().unwrap_or(today) {
-        "tomorrow".to_owned()
+        crate::locales::CATALOG.t("clocks-tomorrow")
     } else {
         ui::format::weekday_short(next.date_naive().weekday())
     };
-    format!("Next {day}, {}", ui::clock::time_of_day(&next.time()))
+    crate::locales::CATALOG.t_args(
+        "clocks-next-ring",
+        &[
+            ("day", ui::i18n::ArgValue::Text(day)),
+            (
+                "time",
+                ui::i18n::ArgValue::Text(ui::clock::time_of_day(&next.time())),
+            ),
+        ],
+    )
 }
 
 /// How the window's controls reach the resource and the device.
@@ -165,7 +176,7 @@ fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> O
 
 pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
     if days.is_empty() {
-        return "Once".into();
+        return crate::locales::CATALOG.t("clocks-once");
     }
     WeekdayKey::ALL
         .into_iter()
@@ -179,7 +190,10 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
 /// when that is not today here, and how far ahead or behind here it is.
 pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<Fact>) {
     let Ok(zone) = zone.parse::<chrono_tz::Tz>() else {
-        return ("Time unavailable".into(), Vec::new());
+        return (
+            crate::locales::CATALOG.t("clocks-time-unavailable"),
+            Vec::new(),
+        );
     };
     let there = now.with_timezone(&zone);
     let here = now.with_timezone(&chrono::Local);
@@ -201,20 +215,38 @@ pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<
 /// How far a place is ahead of or behind here, in words.
 fn offset_from_here(seconds: i32) -> String {
     if seconds == 0 {
-        return "Same time as here".into();
+        return crate::locales::CATALOG.t("clocks-same-time");
     }
     let minutes = seconds.unsigned_abs() / 60;
     let (hours, minutes) = (minutes / 60, minutes % 60);
     let amount = match (hours, minutes) {
-        (0, minutes) => format!("{minutes} min"),
-        (1, 0) => "1 hour".into(),
-        (hours, 0) => format!("{hours} hours"),
-        (hours, minutes) => format!("{hours} h {minutes} min"),
+        (0, minutes) => crate::locales::CATALOG.t_args(
+            "clocks-minutes",
+            &[("minutes", ui::i18n::ArgValue::Number(f64::from(minutes)))],
+        ),
+        (1, 0) => crate::locales::CATALOG.t("clocks-one-hour"),
+        (hours, 0) => crate::locales::CATALOG.t_args(
+            "clocks-hours",
+            &[("hours", ui::i18n::ArgValue::Number(f64::from(hours)))],
+        ),
+        (hours, minutes) => crate::locales::CATALOG.t_args(
+            "clocks-hours-minutes",
+            &[
+                ("hours", ui::i18n::ArgValue::Number(f64::from(hours))),
+                ("minutes", ui::i18n::ArgValue::Number(f64::from(minutes))),
+            ],
+        ),
     };
     if seconds > 0 {
-        format!("{amount} ahead")
+        crate::locales::CATALOG.t_args(
+            "clocks-ahead",
+            &[("amount", ui::i18n::ArgValue::Text(amount))],
+        )
     } else {
-        format!("{amount} behind")
+        crate::locales::CATALOG.t_args(
+            "clocks-behind",
+            &[("amount", ui::i18n::ArgValue::Text(amount))],
+        )
     }
 }
 
@@ -359,7 +391,7 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
                 .with_rhythm(ui::tokens::Rhythm::Related);
             if s.clocks.world_clocks.is_empty() {
                 col = col.push(Box::new(
-                    Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
+                    Text::new(&crate::locales::CATALOG.t("clocks-world-empty")).dimmed(),
                 ));
             }
             for (id, clock) in s.clocks.world_clocks.iter() {
@@ -379,8 +411,11 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         list_controls.button(
-                            Button::new(&format!("clocks.world.{id}.remove"), "Remove")
-                                .control_size(ui::widget::ControlSize::Large),
+                            Button::new(
+                                &format!("clocks.world.{id}.remove"),
+                                &crate::locales::CATALOG.t("clocks-remove"),
+                            )
+                            .control_size(ui::widget::ControlSize::Large),
                             Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
                         ),
                     ));
@@ -401,32 +436,34 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
             // Adding a city is the part that needs the width; the time here
             // stands beside it, and under it once the window is narrow.
             .push(Box::new(
-                Columns::new(Box::new(clock_card("Add a city", Box::new(choices)))).aside(
-                    Box::new(clock_card(
-                        "Here",
-                        Box::new(ModelView::from_state_by(
-                            state,
-                            |s| (s.clone(), minute(s)),
-                            |s| {
-                                let here = s.here();
-                                Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                                        .push(Box::new(
-                                            Text::new(&ui::clock::time_of_day(&here))
-                                                .with_role(ui::TextRole::Display),
-                                        ))
-                                        .push(Box::new(
-                                            Text::new(&ui::format::day_heading(here.date(), false))
-                                                .dimmed(),
-                                        )),
-                                ) as Element
-                            },
-                        )),
+                Columns::new(Box::new(clock_card(
+                    &crate::locales::CATALOG.t("clocks-add-city"),
+                    Box::new(choices),
+                )))
+                .aside(Box::new(clock_card(
+                    &crate::locales::CATALOG.t("clocks-here"),
+                    Box::new(ModelView::from_state_by(
+                        state,
+                        |s| (s.clone(), minute(s)),
+                        |s| {
+                            let here = s.here();
+                            Box::new(
+                                Column::new()
+                                    .with_no_padding()
+                                    .with_intrinsic_height()
+                                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                                    .push(Box::new(
+                                        Text::new(&ui::clock::time_of_day(&here))
+                                            .with_role(ui::TextRole::Display),
+                                    ))
+                                    .push(Box::new(
+                                        Text::new(&ui::format::day_heading(here.date(), false))
+                                            .dimmed(),
+                                    )),
+                            ) as Element
+                        },
                     )),
-                ),
+                ))),
             ))
             .push(Box::new(list)),
     )
@@ -450,7 +487,7 @@ fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static
         ui::widget::ToggleGroup::multiple_from_state(days, selection)
             .control_size(ui::widget::ControlSize::Large)
             .with_id(id)
-            .with_accessible_name("Repeat on"),
+            .with_accessible_name(crate::locales::CATALOG.t("clocks-repeat-on")),
     )
 }
 
@@ -482,7 +519,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             .with_rhythm(ui::tokens::Rhythm::Related);
         if s.clocks.alarms.is_empty() {
             col = col.push(Box::new(
-                Text::new("No alarms yet. Set one for a future time.").dimmed(),
+                Text::new(&crate::locales::CATALOG.t("clocks-alarms-empty")).dimmed(),
             ));
         }
         let mut alarms: Vec<_> = s.clocks.alarms.iter().collect();
@@ -502,9 +539,19 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 .with_role(ui::TextRole::LargeTitle),
                         ))
                         .push(Box::new(
-                            Text::new(&format!(
-                                "{repeat}, currently {}",
-                                if alarm.enabled { "On" } else { "Off" }
+                            Text::new(&crate::locales::CATALOG.t_args(
+                                "clocks-repeat-currently",
+                                &[
+                                    ("repeat", ui::i18n::ArgValue::Text(repeat.clone())),
+                                    (
+                                        "state",
+                                        ui::i18n::ArgValue::Text(if alarm.enabled {
+                                            crate::locales::CATALOG.t("clocks-on")
+                                        } else {
+                                            crate::locales::CATALOG.t("clocks-alert-off")
+                                        }),
+                                    ),
+                                ],
                             ))
                             .dimmed(),
                         ))
@@ -521,20 +568,27 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     let hour = alarm.hour;
                     let minute = alarm.minute;
                     let weekdays = alarm.weekdays();
-                    Button::new(&format!("clocks.alarm.{id}.edit"), "Edit")
-                        .control_size(ui::widget::ControlSize::Large)
-                        .on_view(move || {
-                            editing.set(Some(alarm_id.clone()));
-                            edit_label.set(label.clone());
-                            edit_time.set(TimeValue::new(hour, minute));
-                            edit_repeat.set(weekdays.clone());
-                        })
+                    Button::new(
+                        &format!("clocks.alarm.{id}.edit"),
+                        &crate::locales::CATALOG.t("clocks-edit"),
+                    )
+                    .control_size(ui::widget::ControlSize::Large)
+                    .on_view(move || {
+                        editing.set(Some(alarm_id.clone()));
+                        edit_label.set(label.clone());
+                        edit_time.set(TimeValue::new(hour, minute));
+                        edit_repeat.set(weekdays.clone());
+                    })
                 }))
                 .push(Box::new(
                     list_controls.button(
                         Button::new(
                             &format!("clocks.alarm.{id}.toggle"),
-                            if alarm.enabled { "Turn off" } else { "Turn on" },
+                            &CATALOG.t(if alarm.enabled {
+                                "clocks-alarm-turn-off"
+                            } else {
+                                "clocks-alarm-turn-on"
+                            }),
                         )
                         .control_size(ui::widget::ControlSize::Large),
                         Clocks::SET_ALARM_ENABLED.with((id.clone(), !alarm.enabled)),
@@ -542,8 +596,11 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                 ))
                 .push(Box::new(
                     list_controls.button(
-                        Button::new(&format!("clocks.alarm.{id}.remove"), "Remove")
-                            .control_size(ui::widget::ControlSize::Large),
+                        Button::new(
+                            &format!("clocks.alarm.{id}.remove"),
+                            &crate::locales::CATALOG.t("clocks-remove"),
+                        )
+                        .control_size(ui::widget::ControlSize::Large),
                         Clocks::REMOVE_ALARM.with(id.clone()),
                     ),
                 ));
@@ -576,7 +633,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             let save_editing = editing.clone();
             let cancel_editing = editing;
             Box::new(clock_card(
-                "Edit alarm",
+                &crate::locales::CATALOG.t("clocks-edit-alarm"),
                 Box::new(
                     Column::new()
                         .with_no_padding()
@@ -585,22 +642,32 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&edit_label)
                                 .with_id("clocks.alarm.edit.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder("What is this alarm for?"),
+                                .with_placeholder(
+                                    crate::locales::CATALOG.t("clocks-alarm-label-placeholder"),
+                                ),
                         ))
-                        .push(Box::new(Text::new("Time").with_heading_level(3)))
+                        .push(Box::new(
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-time"))
+                                .with_heading_level(3),
+                        ))
                         .push(Box::new(
                             TimePicker::from_state(&edit_time)
                                 .with_id("clocks.alarm.edit.time")
-                                .with_accessible_name("Alarm time"),
+                                .with_accessible_name(
+                                    crate::locales::CATALOG.t("clocks-alarm-time"),
+                                ),
                         ))
-                        .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
+                        .push(Box::new(
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-repeat-days"))
+                                .with_heading_level(3),
+                        ))
                         .push(repeat_control(&edit_repeat, "clocks.alarm.edit.repeat"))
                         .push(Box::new(
                             Row::new()
                                 .with_padding_rhythm(None, None)
                                 .push(primary_button(
                                     "clocks.alarm.edit.save",
-                                    "Save changes",
+                                    &crate::locales::CATALOG.t("clocks-save-changes"),
                                     move || {
                                         let time = save_time.get();
                                         save.submit(Clocks::EDIT_ALARM.with((
@@ -613,9 +680,13 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                         save_editing.set(None);
                                     },
                                 ))
-                                .push(button("clocks.alarm.edit.cancel", "Cancel", move || {
-                                    cancel_editing.set(None);
-                                })),
+                                .push(button(
+                                    "clocks.alarm.edit.cancel",
+                                    &crate::locales::CATALOG.t("clocks-cancel"),
+                                    move || {
+                                        cancel_editing.set(None);
+                                    },
+                                )),
                         )),
                 ),
             ))
@@ -627,7 +698,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
             .push(Box::new(list))
             .push(Box::new(editor))
             .push(Box::new(clock_card(
-                "New alarm",
+                &crate::locales::CATALOG.t("clocks-new-alarm"),
                 Box::new(
                     Column::new()
                         .with_no_padding()
@@ -636,30 +707,44 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&draft_label)
                                 .with_id("clocks.alarm.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder("What is this alarm for?"),
+                                .with_placeholder(
+                                    crate::locales::CATALOG.t("clocks-alarm-label-placeholder"),
+                                ),
                         ))
-                        .push(Box::new(Text::new("Time").with_heading_level(3)))
+                        .push(Box::new(
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-time"))
+                                .with_heading_level(3),
+                        ))
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
-                                .with_accessible_name("Alarm time"),
+                                .with_accessible_name(
+                                    crate::locales::CATALOG.t("clocks-alarm-time"),
+                                ),
                         ))
                         .push(Box::new(
-                            Text::new("Use the arrows, scroll, or type two digits.").dimmed(),
+                            Text::new(&crate::locales::CATALOG.t("clocks-time-hint")).dimmed(),
                         ))
-                        .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
+                        .push(Box::new(
+                            Text::new(&crate::locales::CATALOG.t("clocks-field-repeat-days"))
+                                .with_heading_level(3),
+                        ))
                         .push(repeat_control(&draft_repeat, "clocks.alarm.repeat"))
-                        .push(primary_button("clocks.alarm.add", "Add alarm", move || {
-                            let time = add_draft.get();
-                            add.submit(Clocks::ADD_ALARM.with((
-                                bounded_label(&add_label.get(), "Alarm"),
-                                time.hours,
-                                time.minutes,
-                                add_repeat.get().into_iter().collect(),
-                            )));
-                            add_label.set(String::new());
-                            add_repeat.set(BTreeSet::new());
-                        })),
+                        .push(primary_button(
+                            "clocks.alarm.add",
+                            &crate::locales::CATALOG.t("clocks-add-alarm-label"),
+                            move || {
+                                let time = add_draft.get();
+                                add.submit(Clocks::ADD_ALARM.with((
+                                    bounded_label(&add_label.get(), "Alarm"),
+                                    time.hours,
+                                    time.minutes,
+                                    add_repeat.get().into_iter().collect(),
+                                )));
+                                add_label.set(String::new());
+                                add_repeat.set(BTreeSet::new());
+                            },
+                        )),
                 ),
             ))),
     )
@@ -711,9 +796,9 @@ fn timer_card(
         Clocks::RESUME_TIMER.with(id.clone())
     };
     let float_label = if floating {
-        "Hide floating timer"
+        &crate::locales::CATALOG.t("clocks-hide-floating")
     } else {
-        "Float timer above other windows"
+        &crate::locales::CATALOG.t("clocks-float-timer")
     };
     Box::new(clock_card(
         &timer.label,
@@ -730,12 +815,12 @@ fn timer_card(
                         ))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(
-                            Text::new(if running {
-                                "Running"
+                            Text::new(&if running {
+                                crate::locales::CATALOG.t("clocks-running")
                             } else if finished {
-                                "Done"
+                                crate::locales::CATALOG.t("clocks-done")
                             } else {
-                                "Paused"
+                                crate::locales::CATALOG.t("clocks-paused")
                             })
                             .dimmed(),
                         )),
@@ -748,9 +833,9 @@ fn timer_card(
                         .push(Box::new(
                             controls.button(
                                 Button::new(&format!("clocks.timer.{id}.add-minute"), "+1 min")
-                                    .with_accessible_name(&format!(
-                                        "Add one minute to {}",
-                                        timer.label
+                                    .with_accessible_name(&crate::locales::CATALOG.t_args(
+                                        "clocks-add-minute-to",
+                                        &[("name", ui::i18n::ArgValue::Text(timer.label.clone()))],
                                     ))
                                     .control_size(ui::widget::ControlSize::Large),
                                 Clocks::ADD_MINUTE.with(id.clone()),
@@ -760,12 +845,12 @@ fn timer_card(
                             controls.button(
                                 Button::new(
                                     &format!("clocks.timer.{id}.toggle"),
-                                    if running {
-                                        "Pause"
+                                    &if running {
+                                        crate::locales::CATALOG.t("clocks-pause")
                                     } else if finished {
-                                        "Restart"
+                                        crate::locales::CATALOG.t("clocks-restart")
                                     } else {
-                                        "Resume"
+                                        crate::locales::CATALOG.t("clocks-resume")
                                     },
                                 )
                                 .with_icon(if running { Icon::Pause } else { Icon::Play })
@@ -778,7 +863,11 @@ fn timer_card(
                             controls.effect(
                                 Button::new(
                                     &format!("clocks.timer.{id}.pin"),
-                                    if floating { "Hide" } else { "Float" },
+                                    &CATALOG.t(if floating {
+                                        "clocks-timer-hide"
+                                    } else {
+                                        "clocks-timer-float"
+                                    }),
                                 )
                                 .with_icon(Icon::PictureInPicture2)
                                 .with_accessible_name(float_label)
@@ -794,8 +883,10 @@ fn timer_card(
                             controls.button(
                                 Button::new(&format!("clocks.timer.{id}.remove"), "")
                                     .with_icon(Icon::Trash2)
-                                    .with_accessible_name("Remove timer")
-                                    .tooltip("Remove timer")
+                                    .with_accessible_name(
+                                        &crate::locales::CATALOG.t("clocks-remove-timer-name"),
+                                    )
+                                    .tooltip(crate::locales::CATALOG.t("clocks-remove-timer-name"))
                                     .role(ui::widget::ButtonRole::Destructive)
                                     .control_size(ui::widget::ControlSize::Large),
                                 Clocks::REMOVE_TIMER.with(id.clone()),
@@ -879,7 +970,10 @@ fn timers_screen(
                 let floating = s.device.floating_timers.contains(id.as_str());
                 col = col.push(timer_card(&card_state, id, timer, floating, &list_controls));
             }
-            Box::new(clock_card("Active timers", Box::new(col)))
+            Box::new(clock_card(
+                &CATALOG.t("clocks-active-timers"),
+                Box::new(col),
+            ))
         },
     );
     let add = controls.dispatcher.clone();
@@ -893,7 +987,7 @@ fn timers_screen(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
             |message| {
                 Box::new(clock_card(
-                    "Timer needs a duration",
+                    &CATALOG.t("clocks-timer-needs-duration"),
                     Box::new(Text::new(message)),
                 ))
             },
@@ -906,18 +1000,19 @@ fn timers_screen(
         .with_padding_rhythm(None, None)
         .with_rhythm(ui::tokens::Rhythm::Related)
         .with_align_items(taffy::AlignItems::Start);
-    for (label, id, state, maximum) in [
-        ("Hours", "hours", &custom_hours, 99.0),
-        ("Minutes", "minutes", &custom_minutes, 59.0),
-        ("Seconds", "seconds", &custom_seconds, 59.0),
+    for (label_key, id, state, maximum) in [
+        ("clocks-field-hours", "hours", &custom_hours, 99.0),
+        ("clocks-field-minutes", "minutes", &custom_minutes, 59.0),
+        ("clocks-field-seconds", "seconds", &custom_seconds, 59.0),
     ] {
+        let label = CATALOG.t(label_key);
         duration_fields = duration_fields.push(Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_intrinsic_width()
                 .with_rhythm(ui::tokens::Rhythm::Tight)
-                .push(Box::new(Text::new(label).with_role(ui::TextRole::Caption)))
+                .push(Box::new(Text::new(&label).with_role(ui::TextRole::Caption)))
                 .push(Box::new(
                     ui::widget::NumberInput::from_state(state)
                         .with_id(&format!("clocks.timer.custom.{id}"))
@@ -925,14 +1020,17 @@ fn timers_screen(
                         .with_step(1.0)
                         .with_precision(0)
                         .control_size(ui::widget::ControlSize::Large)
-                        .with_accessible_name(format!("Timer duration {id}")),
+                        .with_accessible_name(CATALOG.t_args(
+                            "clocks-timer-duration",
+                            &[("name", ArgValue::Text(label.clone()))],
+                        )),
                 )),
         ));
     }
     // The custom timer is the form that needs the width; the quick starts
     // stand beside it, and under it once the window is narrow.
     let setup = Columns::new(Box::new(clock_card(
-        "Custom timer",
+        &CATALOG.t("clocks-custom-timer"),
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -941,23 +1039,22 @@ fn timers_screen(
                     TextInput::from_state(&custom_label)
                         .with_id("clocks.timer.custom.label")
                         .with_kind(TextInputKind::Name)
-                        .with_accessible_name("Timer label")
-                        .with_placeholder("What is this timer for?"),
+                        .with_accessible_name(crate::locales::CATALOG.t("clocks-timer-label-name"))
+                        .with_placeholder(
+                            crate::locales::CATALOG.t("clocks-timer-label-placeholder"),
+                        ),
                 ))
                 .push(Box::new(duration_fields))
                 .push(primary_button(
                     "clocks.timer.custom.add",
-                    "Start timer",
+                    &crate::locales::CATALOG.t("clocks-start-timer"),
                     move || {
                         let Some(secs) = custom_timer_duration_seconds(
                             &add_hours.get().to_string(),
                             &add_minutes.get().to_string(),
                             &add_seconds.get().to_string(),
                         ) else {
-                            add_error.set(Some(
-                                "Use whole numbers: hours 0–99 and minutes and seconds 0–59."
-                                    .into(),
-                            ));
+                            add_error.set(Some(crate::locales::CATALOG.t("clocks-duration-hint")));
                             return;
                         };
                         if secs > 0 {
@@ -968,10 +1065,8 @@ fn timers_screen(
                             add_label.set(String::new());
                             add_error.set(None);
                         } else {
-                            add_error.set(Some(
-                                "Choose a duration greater than zero before starting a timer."
-                                    .into(),
-                            ));
+                            add_error
+                                .set(Some(crate::locales::CATALOG.t("clocks-duration-positive")));
                         }
                     },
                 ))
@@ -979,14 +1074,14 @@ fn timers_screen(
         ),
     )))
     .aside(Box::new(clock_card(
-        "Quick starts",
+        &CATALOG.t("clocks-quick-starts"),
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_rhythm(ui::tokens::Rhythm::Related)
                 .push(Box::new(
-                    Text::new("A focused timer is one tap away.").dimmed(),
+                    Text::new(&crate::locales::CATALOG.t("clocks-timers-empty")).dimmed(),
                 ))
                 .push(Box::new(presets)),
         ),
@@ -1000,6 +1095,10 @@ fn timers_screen(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let controls = controls.clone();
     let ticking = state.clone();
@@ -1012,10 +1111,12 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Tight);
         for (i, ms) in stopwatch.laps_ms.iter().enumerate().rev() {
-            laps = laps.push(Box::new(Text::new(&format!(
-                "Lap {}   {}",
-                i.saturating_add(1),
-                duration(*ms)
+            laps = laps.push(Box::new(Text::new(&CATALOG.t_args(
+                "clocks-lap",
+                &[
+                    ("number", ArgValue::Text(i.saturating_add(1).to_string())),
+                    ("time", ArgValue::Text(duration(*ms))),
+                ],
             ))));
         }
         Box::new(Card::new(Box::new(
@@ -1033,7 +1134,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                             controls.button(
                                 Button::new(
                                     "clocks.stopwatch.toggle",
-                                    if running { "Pause" } else { "Start" },
+                                    &if running {
+                                        crate::locales::CATALOG.t("clocks-pause")
+                                    } else {
+                                        crate::locales::CATALOG.t("clocks-start")
+                                    },
                                 )
                                 .role(ui::widget::ButtonRole::Primary)
                                 .with_icon(if running { Icon::Pause } else { Icon::Play })
@@ -1048,8 +1153,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                         .push(Box::new(
                             controls
                                 .button(
-                                    Button::new("clocks.stopwatch.lap", "Lap")
-                                        .control_size(ui::widget::ControlSize::Large),
+                                    Button::new(
+                                        "clocks.stopwatch.lap",
+                                        &crate::locales::CATALOG.t("clocks-lap-button"),
+                                    )
+                                    .control_size(ui::widget::ControlSize::Large),
                                     Clocks::LAP.invoke(),
                                 )
                                 .with_enabled(running),
@@ -1057,8 +1165,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                         .push(Box::new(
                             controls
                                 .button(
-                                    Button::new("clocks.stopwatch.reset", "Reset")
-                                        .control_size(ui::widget::ControlSize::Large),
+                                    Button::new(
+                                        "clocks.stopwatch.reset",
+                                        &crate::locales::CATALOG.t("clocks-reset"),
+                                    )
+                                    .control_size(ui::widget::ControlSize::Large),
                                     Clocks::RESET_STOPWATCH.invoke(),
                                 )
                                 .with_enabled(
@@ -1072,11 +1183,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                     controls.effect(
                         Button::new(
                             "clocks.stopwatch.pin",
-                            if floating {
-                                "Stop floating"
+                            &CATALOG.t(if floating {
+                                "clocks-stop-floating"
                             } else {
-                                "Keep stopwatch visible"
-                            },
+                                "clocks-keep-visible"
+                            }),
                         )
                         .with_icon(Icon::PictureInPicture2)
                         .control_size(ui::widget::ControlSize::Large),
@@ -1104,22 +1215,26 @@ pub(crate) const STOPWATCH: usize = 3;
 /// The sidebar's sections, each with its own glyph so they tell apart at a
 /// glance: an hourglass counts down, a stopwatch counts up.
 pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
-    (WORLD, "World", Icon::Globe),
-    (ALARMS, "Alarms", Icon::AlarmClock),
-    (TIMERS, "Timers", Icon::Hourglass),
-    (STOPWATCH, "Stopwatch", Icon::Timer),
+    (WORLD, "clocks-section-world", Icon::Globe),
+    (ALARMS, "clocks-section-alarms", Icon::AlarmClock),
+    (TIMERS, "clocks-section-timers", Icon::Hourglass),
+    (STOPWATCH, "clocks-section-stopwatch", Icon::Timer),
 ];
 
 /// What the window's bar names for the open section.
-pub(crate) fn section_title(mode: usize) -> &'static str {
-    match mode {
-        WORLD => "World clocks",
-        ALARMS => "Alarms",
-        STOPWATCH => "Stopwatch",
-        _ => "Timers",
-    }
+pub(crate) fn section_title(mode: usize) -> String {
+    crate::locales::CATALOG.t(match mode {
+        WORLD => "clocks-section-world-clocks",
+        ALARMS => "clocks-section-alarms",
+        STOPWATCH => "clocks-section-stopwatch",
+        _ => "clocks-section-timers",
+    })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one window across helpers"
+)]
 fn surface(
     mode: &ui::LocalState<usize>,
     title: &ui::LocalState<String>,
@@ -1155,8 +1270,11 @@ fn surface(
                                     .push(Box::new(Spacer::new()))
                                     .push({
                                         let dismiss = notice_controls.effect(
-                                            Button::new("clocks.notice.dismiss", "Dismiss")
-                                                .control_size(ui::widget::ControlSize::Large),
+                                            Button::new(
+                                                "clocks.notice.dismiss",
+                                                &crate::locales::CATALOG.t("clocks-dismiss"),
+                                            )
+                                            .control_size(ui::widget::ControlSize::Large),
                                             &ClocksEffect::DismissNotice,
                                         );
                                         match alarm {
@@ -1168,7 +1286,8 @@ fn surface(
                                                         notice_controls.effect(
                                                             Button::new(
                                                                 "clocks.notice.snooze",
-                                                                "Snooze 5 minutes",
+                                                                &crate::locales::CATALOG
+                                                                    .t("clocks-snooze"),
                                                             )
                                                             .control_size(
                                                                 ui::widget::ControlSize::Large,
@@ -1203,10 +1322,13 @@ fn surface(
         "screens",
         SECTIONS
             .iter()
-            .map(|(id, label, icon)| ui::widget::NavItem::new(id.to_string(), *label).icon(*icon))
+            .map(|(id, label, icon)| {
+                ui::widget::NavItem::new(id.to_string(), crate::locales::CATALOG.t(label))
+                    .icon(*icon)
+            })
             .collect(),
     )])
-    .with_accessible_name("Clocks")
+    .with_accessible_name(crate::locales::CATALOG.t("clocks-title"))
     .bind_selection(selection)
     .on_view("clocks.screens", move |id| {
         if let Ok(mode) = id.parse::<usize>() {
@@ -1337,7 +1459,7 @@ impl ClocksApp {
         let validation_error = ui::LocalState::new(None);
         let mode = ui::LocalState::new(WORLD);
         let selection = ui::LocalState::new(Some(WORLD.to_string()));
-        let title = ui::LocalState::new(section_title(WORLD).to_owned());
+        let title = ui::LocalState::new(section_title(WORLD));
         let activations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if live {
             let sink = activations.clone();
@@ -1429,8 +1551,15 @@ impl ClocksApp {
             } => (native_alarm_id(id.as_str()), *native_scheduled),
         };
         let (title, body, activation, alarm) = match event {
-            DueEvent::Alarm { id, label, .. } => ("Alarm".to_owned(), label, ALARMS_URI, Some(id)),
-            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI, None),
+            DueEvent::Alarm { id, label, .. } => (
+                CATALOG.t("clocks-notify-alarm"),
+                label,
+                ALARMS_URI,
+                Some(id),
+            ),
+            DueEvent::Timer { label, .. } => {
+                (CATALOG.t("clocks-notify-timer"), label, TIMERS_URI, None)
+            }
         };
         let notification_id = uuid::Uuid::new_v4().simple().to_string();
         if self.live {
@@ -1746,8 +1875,8 @@ impl ui::widget::Decorator for ClocksApp {
         if self.store.selection.get() != selected {
             self.store.selection.set(selected);
         }
-        if self.title.with(|title| title != section_title(mode)) {
-            self.title.set(section_title(mode).to_owned());
+        if self.title.with(|title| title != &section_title(mode)) {
+            self.title.set(section_title(mode));
         }
         self.inner.sync(d, p);
     }

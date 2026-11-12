@@ -619,7 +619,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&set)));
     assert!(
-        said.join(" ").contains("bo set the due date to"),
+        said.join(" ").contains("Bo set the due date to"),
         "a day a task did not have is set: {said:?}"
     );
     assert!(said.contains(&"2026-11-02".to_owned()), "{said:?}");
@@ -637,7 +637,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.join(" ").contains("bo moved it to"),
+        said.join(" ").contains("Bo moved it to"),
         "a day a task had is moved to another: {said:?}"
     );
     assert!(said.contains(&"2026-10-31".to_owned()), "{said:?}");
@@ -645,7 +645,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.join(" ").contains("bo cleared the due date"),
+        said.join(" ").contains("Bo cleared the due date"),
         "a day taken away is said so: {said:?}"
     );
 }
@@ -664,7 +664,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     );
     ada.commit();
     let said = says(&history_of(&ada, &target(&urgent)));
-    assert!(said.join(" ").contains("bo set priority to"), "{said:?}");
+    assert!(said.join(" ").contains("Bo set priority to"), "{said:?}");
     assert!(said.contains(&"High".to_owned()), "{said:?}");
 
     let filed = a_task_of(&mut ada, &tasks, "Book the van");
@@ -678,7 +678,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&filed)));
     assert!(
-        said.join(" ").contains("bo moved it to"),
+        said.join(" ").contains("Bo moved it to"),
         "a task put in a project is moved to it: {said:?}"
     );
     assert!(said.contains(&"New project".to_owned()), "{said:?}");
@@ -696,7 +696,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&unfiled)));
     assert!(
-        said.join(" ").contains("bo moved it out of"),
+        said.join(" ").contains("Bo moved it out of"),
         "a task taken out of a project says the one it left: {said:?}"
     );
 
@@ -714,7 +714,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&assigned)));
     assert!(
-        said.join(" ").contains("bo assigned it to"),
+        said.join(" ").contains("Bo assigned it to"),
         "a task given to someone says who: {said:?}"
     );
     assert!(
@@ -1034,12 +1034,13 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     drop(editors);
     ada.sync_with(&mut bo);
     // Reading the entry's diff: the change Bo made, as the history reads it.
-    let change = bo
-        .doc
-        .get_changes(&[])
-        .last()
-        .map(|change| change.hash().to_string())
-        .expect("Bo's change");
+    let change = ada
+        .host
+        .store()
+        .field_changed(&at, "body")
+        .unwrap()
+        .expect("the change that wrote the body")
+        .change;
     let before = ada.host.store().read_stats().doc;
     let work = automerge::work();
     let written = ada
@@ -1100,6 +1101,7 @@ impl tilolang_tilo::runtime::NameHost for Named {
     fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
         match who.0.as_str() {
             "ada" => "Ada Lovelace".to_owned(),
+            "bo" => "Bo".to_owned(),
             other => tilolang_tilo::names::unnamed(other),
         }
     }

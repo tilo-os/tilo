@@ -29,8 +29,6 @@ fn shows(node: &InspectionNode, id: &str) -> bool {
 fn bar(lists_actions: bool) -> Option<crate::widget::WindowBar> {
     Some(crate::widget::WindowBar {
         controls_width: 32.0,
-        revealed: true,
-        top_inset: 0.0,
         lists_actions,
     })
 }

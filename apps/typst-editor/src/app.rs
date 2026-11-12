@@ -80,7 +80,7 @@ enum ResourceIo {
 }
 
 fn typ_filter() -> FileFilter {
-    FileFilter::new("Typst source").glob("*.typ")
+    FileFilter::new(&crate::resource::CATALOG.t("typst-filter-source")).glob("*.typ")
 }
 
 fn typ_open_request() -> PickRequest {
@@ -99,7 +99,7 @@ fn typ_save_request(suggested: &str) -> PickRequest {
 fn pdf_export_request(suggested: &str) -> PickRequest {
     PickRequest::save("Export PDF", "Export", suggested)
         .thread_name("typst-portal-pdf")
-        .filter(FileFilter::new("PDF document").glob("*.pdf"))
+        .filter(FileFilter::new(&crate::resource::CATALOG.t("typst-filter-pdf")).glob("*.pdf"))
 }
 use ui::widget::{SplitHandle, SplitOrientation, SplitRatio, Widget};
 
@@ -349,7 +349,7 @@ impl TypstApp {
                 SplitOrientation::Horizontal,
                 SplitRatio::new(0.46).with_bounds(0.18, 0.82),
             )
-            .with_label("Resize the source and the preview"),
+            .with_label(crate::resource::CATALOG.t("typst-a11y-resize")),
             dirty: true,
             window_shown: ui::scroll_copy::ShownFrames::default(),
             actions: None,
@@ -1590,12 +1590,12 @@ impl Widget for TypstApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let source = AccessNode::new(Role::MultilineTextInput)
-            .with_name("Typst source")
+            .with_name(crate::resource::CATALOG.t("typst-a11y-source"))
             .with_value(self.source_cache.clone())
             .with_state(AccessState::new().focusable(true).multiline(true))
             .with_action_target("typst.source");
         let preview = AccessNode::new(Role::Canvas)
-            .with_name("Document preview")
+            .with_name(crate::resource::CATALOG.t("typst-a11y-preview"))
             .with_value(format!(
                 "Page {} of {}; zoom {:.0}%",
                 self.preview.current_page().saturating_add(1),
@@ -1603,9 +1603,9 @@ impl Widget for TypstApp {
                 self.preview.zoom() * 100.0
             ))
             .with_description(if self.compact {
-                "Compact layout; switch between source and preview with the Edit and Preview control"
+                crate::resource::CATALOG.t("typst-a11y-compact-layout")
             } else {
-                "Live rendered preview"
+                crate::resource::CATALOG.t("typst-a11y-live-preview")
             })
             .with_semantic_key("typst.preview")
             .with_hashed_key("typst.preview");
@@ -1616,8 +1616,8 @@ impl Widget for TypstApp {
 
         Some(
             AccessNode::new(Role::Document)
-                .with_name("Typst editor")
-                .with_description("Editable Typst source with a live document preview")
+                .with_name(crate::resource::CATALOG.t("typst-a11y-window"))
+                .with_description(crate::resource::CATALOG.t("typst-a11y-window-description"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

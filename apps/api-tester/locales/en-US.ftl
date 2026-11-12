@@ -75,3 +75,99 @@ api-tester-use-environment = Switched to the environment { $item }
 api-tester-add-variable = Added the variable { $key } to { $item }
 api-tester-open-sent = Opened { $item } again
 api-tester-record-sent = Sent a request that returned status { $status }
+
+## Accessibility
+api-tester-row-actions = Row actions
+api-tester-url-placeholder = Enter a URL
+
+## Window and accessibility copy
+api-tester-environment = Environment
+api-tester-a11y-use-row = Use this row
+api-tester-request-body = Request body
+api-tester-request-url = Request URL
+api-tester-method = Method
+api-tester-response-headers = Response headers
+api-tester-requests = Requests
+api-tester-add-row = Add { $field }
+
+## What the request's panels say when there is nothing to show
+api-tester-auth-not-used = This request does not use authentication.
+api-tester-body-absent = This request does not have a body.
+api-tester-form-fields = Form fields
+
+## What the window shows
+api-tester-name = Name
+api-tester-variable-key-field = Variable key
+api-tester-variable-value-field = Variable value
+api-tester-key = Key
+api-tester-value = Value
+api-tester-add-key = Add a key
+api-tester-add-value = Add a value
+api-tester-remove-row = Remove row
+api-tester-save-request-button = Save request
+api-tester-cancel-request = Cancel request
+api-tester-send = Send
+api-tester-query-parameters = Query parameters
+api-tester-headers = Headers
+api-tester-token = Token
+api-tester-username = Username
+api-tester-password = Password
+api-tester-header-name = Header name
+api-tester-copy-body = Copy body
+api-tester-copy-headers = Copy headers
+api-tester-copy-request = Copy request
+api-tester-new-collection-button = New collection
+api-tester-reset-area = Reset request area
+api-tester-size-more-than = More than { $size }
+
+## What the request builder's selectors are called
+api-tester-auth-none = No Auth
+api-tester-auth-bearer = Bearer Token
+api-tester-auth-basic = Basic Auth
+api-tester-auth-api-key = API Key
+api-tester-auth-stored = Stored Authentication
+api-tester-body-none = None
+api-tester-body-json = JSON
+api-tester-body-form = Form
+api-tester-body-raw = Raw
+api-tester-tab-params = Params
+api-tester-tab-headers = Headers
+api-tester-tab-auth = Auth
+api-tester-tab-body = Body
+api-tester-view-pretty = Pretty
+api-tester-view-raw = Raw
+api-tester-view-headers = Headers
+api-tester-split-label = Resize the request and the response
+api-tester-no-response-hint = Send the request to see what comes back.
+api-tester-waiting-response = Waiting for the server to respond.
+
+## Actions
+
+api-tester-effects-import-legacy = Import an old workspace
+api-tester-effects-send = Send request
+api-tester-effects-send-saved = Send saved request
+api-tester-effects-cancel-send = Cancel request
+api-tester-effects-copy-response = Copy response
+api-tester-effects-set-credential = Set the request's sign-in
+api-tester-effects-pick-environment = Choose environment
+api-tester-effects-set-secret-value = Set a secret value
+api-tester-effects-rename-collection = Rename collection…
+api-tester-effects-request-menu = Request actions
+api-tester-effects-environment-menu = Environment actions
+api-tester-workspace = API workspace
+api-tester-workspace-import-workspace = Apply a legacy import
+api-tester-workspace-new-request = New request
+api-tester-workspace-new-collection = New collection
+api-tester-workspace-delete-collection = Delete collection
+api-tester-workspace-add-request = Add request
+api-tester-workspace-save-request = Save request
+api-tester-workspace-open-request = Open request
+api-tester-workspace-delete-request = Delete request
+api-tester-workspace-new-environment = New environment
+api-tester-workspace-delete-environment = Delete environment
+api-tester-workspace-use-environment = Use environment
+api-tester-workspace-add-variable = Add variable
+api-tester-workspace-open-sent = Reopen sent request
+api-tester-workspace-save-sent = Save sent request
+api-tester-workspace-delete-sent = Forget sent request
+api-tester-workspace-record-sent = Record a sent request

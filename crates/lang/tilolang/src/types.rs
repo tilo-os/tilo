@@ -99,6 +99,11 @@ pub enum Ty {
     /// `.number`, `.bool`, `.null`). A value code holds while an invocation runs, not a
     /// stored field's type.
     Json,
+    /// `File`: a file the device's content store holds, named by the address of its bytes:
+    /// what a person picked (`file.choose`), or what a program was handed. Its name, media
+    /// type and size read on it, and `.text()` reads a text file's content
+    /// ([`crate::value::FileValue`]).
+    File,
     /// No value.
     #[default]
     Unit,
@@ -152,6 +157,8 @@ impl Ty {
     /// Whether an action's form can ask the person for a value of this type when nobody gave
     /// it: text, a number, a flag, a day, a moment, a length of time, an account of a service,
     /// a person, a resource, a case of an enum, or none of one of those. Each has its control.
+    /// A `File` is no form's: it comes from the person's own chooser (`file.choose(a)`), which
+    /// fills the parameter it stands for.
     #[must_use]
     pub fn asked_by_form(&self) -> bool {
         match self {
@@ -231,6 +238,11 @@ impl Ty {
         match self {
             Self::Enum(k) if k.app == own_app => format!("enum {}", k.name),
             Self::Enum(k) => format!("enum {}.{}", k.app, k.name),
+            // A type named as one the language provides is written with its app: the bare name
+            // reads as the language's one wherever a package's declaration shadows it.
+            Self::Record(k) if k.app == own_app && language_type(&k.name).is_some() => {
+                format!("{}.{}", k.app, k.name)
+            }
             Self::List(t) => format!("List<{}>", t.meta_text(own_app)),
             Self::Set(t) => format!("Set<{}>", t.meta_text(own_app)),
             Self::Map(t) => format!("Map<{}>", t.meta_text(own_app)),
@@ -292,6 +304,7 @@ impl Ty {
             Self::Bytes => "Bytes".into(),
             Self::Response => "Response".into(),
             Self::Json => "json.Value".into(),
+            Self::File => "File".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -364,14 +377,57 @@ impl Ty {
     }
 }
 
+/// The type the language provides under the bare name `name`, by the names source writes it.
+/// A package's own type, enum or alias of one of these names shadows it within the package
+/// (README, "Type names"); `std.` names the language's one there.
+#[must_use]
+pub fn language_type(name: &str) -> Option<Ty> {
+    Some(match name {
+        "Int" => Ty::Int,
+        "Float" => Ty::Float,
+        "Bool" => Ty::Bool,
+        "Text" => Ty::Text,
+        "Principal" => Ty::Principal,
+        "Date" => Ty::Date,
+        "Time" => Ty::Time,
+        "Duration" => Ty::Duration,
+        "RichText" => Ty::RichText,
+        "Bytes" => Ty::Bytes,
+        "Response" => Ty::Response,
+        "File" => Ty::File,
+        "Action" => Ty::Action,
+        "View" => Ty::View,
+        _ => return None,
+    })
+}
+
+/// The names [`language_type`] takes, in the order source lists them.
+pub const LANGUAGE_TYPE_NAMES: &[&str] = &[
+    "Int",
+    "Float",
+    "Bool",
+    "Text",
+    "RichText",
+    "Bytes",
+    "Principal",
+    "Date",
+    "Time",
+    "Duration",
+    "File",
+    "Response",
+    "Action",
+    "View",
+];
+
 /// The type a path names that the language itself declares, with no package behind it: `std`'s
-/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one.
+/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one. `std.` names
+/// the language's own type wherever a package's declaration shadows its bare name.
 #[must_use]
 pub fn named(dotted: &[&str]) -> Option<Ty> {
     match dotted {
         ["std", "Identifier"] => Some(Ty::Identifier),
-        ["std", "RichText"] => Some(Ty::RichText),
         ["json", "Value"] => Some(Ty::Json),
+        ["std", name] => language_type(name),
         _ => None,
     }
 }
@@ -393,107 +449,9 @@ pub fn is_any_resource(key: &TypeKey) -> bool {
     key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME
 }
 
-/// Why `text` is not an ISO calendar date `YYYY-MM-DD`, or nothing when it is one.
-pub fn check_date(text: &str) -> Result<(), String> {
-    let b = text.as_bytes();
-    let digits = |r: std::ops::Range<usize>| -> Option<u32> {
-        let part = text.get(r)?;
-        part.bytes()
-            .all(|c| c.is_ascii_digit())
-            .then(|| part.parse().ok())?
-    };
-    let shape = b.len() == 10 && b.get(4) == Some(&b'-') && b.get(7) == Some(&b'-');
-    let (Some(year), Some(month), Some(day)) = (digits(0..4), digits(5..7), digits(8..10)) else {
-        return Err(format!(
-            "`{text}` is not a date: write it `YYYY-MM-DD`, such as `2026-10-24`"
-        ));
-    };
-    if !shape {
-        return Err(format!(
-            "`{text}` is not a date: write it `YYYY-MM-DD`, such as `2026-10-24`"
-        ));
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => {
-            return Err(format!(
-                "`{text}` has no month {month}; months are 01 to 12"
-            ));
-        }
-    };
-    if day == 0 || day > days {
-        return Err(format!(
-            "`{text}` has no day {day}; that month has {days} days"
-        ));
-    }
-    Ok(())
-}
-
-/// Why `text` is not an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`, or nothing when it is one.
-pub fn check_time(text: &str) -> Result<(), String> {
-    clock(text, Zone::Utc)
-}
-
-/// Why `text` is not a wall-clock time `YYYY-MM-DDTHH:MM[:SS]`, or nothing when it is one: a time
-/// of day of no zone, read in the person's own where a value is built from it.
-pub fn check_wall_clock(text: &str) -> Result<(), String> {
-    clock(text, Zone::Person)
-}
-
-/// Whether a time text carries its zone.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Zone {
-    /// The instant itself, in UTC (`2026-10-21T09:30:00Z`).
-    Utc,
-    /// The person's own time of day (`2026-10-21T09:30`).
-    Person,
-}
-
-fn clock(text: &str, zone: Zone) -> Result<(), String> {
-    let shape = || match zone {
-        Zone::Utc => format!(
-            "`{text}` is not a time: write it in UTC as `YYYY-MM-DDTHH:MM:SSZ`, such as `2026-10-21T09:30:00Z`"
-        ),
-        Zone::Person => format!(
-            "`{text}` is not a wall-clock time: write it as `YYYY-MM-DDTHH:MM[:SS]`, such as `2026-10-21T09:30`"
-        ),
-    };
-    let (Some(date), Some(clock)) = (text.get(..10), text.get(10..)) else {
-        return Err(shape());
-    };
-    let b = clock.as_bytes();
-    let ok = b.first() == Some(&b'T')
-        && b.get(3) == Some(&b':')
-        && b.get(6) == Some(&b':')
-        && match zone {
-            Zone::Utc => b.len() == 10 && b.get(9) == Some(&b'Z'),
-            Zone::Person => matches!(b.len(), 6 | 9),
-        };
-    let part = |r: std::ops::Range<usize>| -> Option<u32> {
-        let p = clock.get(r)?;
-        p.bytes()
-            .all(|c| c.is_ascii_digit())
-            .then(|| p.parse().ok())?
-    };
-    let sec = if b.len() == 9 { part(7..9) } else { Some(0) };
-    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), sec) else {
-        return Err(shape());
-    };
-    if !ok {
-        return Err(shape());
-    }
-    check_date(date)?;
-    if h > 23 || m > 59 || sec > 59 {
-        return Err(format!(
-            "`{text}` is not a time of day: hours run 00 to 23, minutes and seconds 00 to 59"
-        ));
-    }
-    Ok(())
-}
+// A calendar literal is checked where the lexer reads it, so a date the language refuses is a
+// diagnostic on the literal rather than a type error.
+pub use tilolang_lex::calendar::{check_date, check_time, check_wall_clock};
 
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -608,6 +566,7 @@ impl MetaTy<'_> {
             "Bytes" => Some(Ty::Bytes),
             "Response" => Some(Ty::Response),
             "json.Value" => Some(Ty::Json),
+            "File" => Some(Ty::File),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {
@@ -657,6 +616,27 @@ impl MetaTy<'_> {
 mod tests {
     use super::Ty;
 
+    /// A package's own type named as one the language provides is written with its app, so
+    /// metadata reads back as that type and not as the language's one; each language type is
+    /// written and read bare, and `std.` names it.
+    #[test]
+    fn a_type_named_as_a_language_type_reads_back_as_itself() {
+        for name in super::LANGUAGE_TYPE_NAMES {
+            let record = Ty::Record(super::TypeKey {
+                app: "t.x".into(),
+                name: (*name).into(),
+            });
+            let text = record.meta_text("t.x");
+            assert_eq!(text, format!("t.x.{name}"));
+            assert_eq!(Ty::parse_meta(&text, "t.x"), Some(record), "{name}");
+
+            let builtin = super::language_type(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(builtin.meta_text("t.x"), *name);
+            assert_eq!(Ty::parse_meta(name, "t.x"), Some(builtin.clone()), "{name}");
+            assert_eq!(super::named(&["std", name]), Some(builtin), "std.{name}");
+        }
+    }
+
     /// Every type a form has a control for is asked by it; the rest are reached only by an
     /// argument given where the action runs or by a default.
     #[test]
@@ -686,6 +666,7 @@ mod tests {
             "Bytes",
             "Response",
             "json.Value",
+            "File",
             "Action",
             "View",
             "List<Text>",

@@ -24,10 +24,12 @@ pub const REPEATS_MS: [f64; 2] = [20.0, 200.0];
 pub const KEEPALIVE_MS: f64 = 3_000.0;
 
 /// The part of what a device says a queued frame carries: a frame for the
-/// same part replaces the one queued, so a burst says each part once.
+/// same part, said for the same run, replaces the one queued, so a burst says
+/// each part once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
     Person,
+    Profile,
     Arrived,
     Availability,
     Status,
@@ -44,6 +46,7 @@ impl Part {
     fn of(frame: &Presence) -> Self {
         match &frame.payload {
             collab_types::presence::Payload::Person { .. } => Self::Person,
+            collab_types::presence::Payload::Profile { .. } => Self::Profile,
             collab_types::presence::Payload::Arrived => Self::Arrived,
             collab_types::presence::Payload::Availability { .. } => Self::Availability,
             collab_types::presence::Payload::Status { .. } => Self::Status,
@@ -80,7 +83,7 @@ impl Schedule {
         if let Some(queued) = self
             .queued
             .iter_mut()
-            .find(|queued| Part::of(queued) == part)
+            .find(|queued| Part::of(queued) == part && queued.on_behalf == frame.on_behalf)
         {
             *queued = frame;
         } else {

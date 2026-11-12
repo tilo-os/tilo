@@ -1302,7 +1302,10 @@ fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
     text.push(tilo_pdf::StampText {
         at: at(8.0, base + 24.0),
         size: 7.5,
-        text: format!("Signed {}", s.date),
+        text: crate::t_args(
+            "pdf-drawn-signed",
+            &[("date", crate::dates::shown(&s.date).into())],
+        ),
     });
     tilo_pdf::NewAnnotation {
         page,
@@ -1314,7 +1317,13 @@ fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
         },
         color: tilo_pdf::Rgba::new(28, 33, 47, 255),
         author: s.signer.clone(),
-        contents: format!("Signed by {} on {}", s.signer.trim(), s.date),
+        contents: crate::t_args(
+            "pdf-signature-annotation",
+            &[
+                ("signer", s.signer.trim().to_owned().into()),
+                ("date", crate::dates::shown(&s.date).into()),
+            ],
+        ),
         name: s.id.clone(),
         modified: String::new(),
         in_reply_to: None,

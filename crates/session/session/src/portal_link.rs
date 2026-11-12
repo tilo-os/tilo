@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, ObservedInput, Selection};
+
 use tilo_desktop_model::capability::Capability;
 use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::DesktopHandle;
@@ -200,6 +201,10 @@ pub struct SessionLink {
 struct Live {
     target: Target,
     size: (u32, u32),
+    /// Whether the log already said a frame could not be read for it. The stream is fed at
+    /// [`FRAMERATE`] a second, so a window whose output is off would say it as often as that: it
+    /// is said when the reading starts failing, and cleared when one is read again.
+    unread: bool,
 }
 
 /// A portal side and the session side that answers it; `wake` wakes the session's loop.
@@ -504,7 +509,14 @@ impl SessionLink {
             SourceKind::Window => None,
         };
         let size = (shot.width, shot.height);
-        self.live.insert(node, Live { target, size });
+        self.live.insert(
+            node,
+            Live {
+                target,
+                size,
+                unread: false,
+            },
+        );
         self.pushed = None;
         producer.push(node, shot.width, shot.height, shot.rgba.into());
         Ok(Stream {
@@ -550,13 +562,19 @@ impl SessionLink {
         }
         self.pushed = Some(now);
         let mut gone = Vec::new();
-        for (node, live) in &self.live {
+        for (node, live) in &mut self.live {
             match compositor.read_back(&live.target) {
-                Ok(shot) => producer.push(*node, shot.width, shot.height, shot.rgba.into()),
+                Ok(shot) => {
+                    live.unread = false;
+                    producer.push(*node, shot.width, shot.height, shot.rgba.into());
+                }
                 // The stream waits for a session that is locked or an output that is off.
                 Err(tilo_compositor::Error::Backend(_)) if !compositor.locked() => gone.push(*node),
                 Err(error) => {
-                    tracing::warn!(%error, node, "a shared window's frame could not be read");
+                    if !live.unread {
+                        live.unread = true;
+                        tracing::warn!(%error, node, "a shared window's frame could not be read");
+                    }
                 }
             }
         }

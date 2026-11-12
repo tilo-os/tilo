@@ -103,6 +103,7 @@
 )]
 
 pub mod app;
+mod contents;
 pub mod customize;
 pub mod customize_image;
 pub mod handoff;

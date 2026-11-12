@@ -175,7 +175,10 @@ impl View<'_> {
             .is_some_and(|held| held == in_of(resource, field))
     }
 
-    /// The type of `resource`, if the index holds it.
+    /// The type the workspace holds `resource` to be: the one the index derived, or the one the
+    /// store's writes named — a record they made or moved, which the index derives at its next
+    /// step. `None` when neither names it: the writes took it away, or it was never here, and
+    /// the record answers for no resource the workspace does not hold.
     pub fn type_of(&self, resource: &str) -> Result<Option<String>, IndexError> {
         self.text(resource, TYPE)
     }
@@ -332,7 +335,7 @@ impl View<'_> {
             } else {
                 self.item_value(path, spec).map_err(index_error)?
             };
-            read.lit(value)
+            tilolang_runtime::store::field_lit_of(read, value)
         })
     }
 

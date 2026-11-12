@@ -207,18 +207,6 @@ pub trait CollabTransport: Send {
         let _ = wake;
     }
 
-    /// The whole action the change `change` was part of, when this transport
-    /// keeps the index of the actions it carries in `workspace`: every unit
-    /// the action wrote, which is what one undo takes back. Transports with no
-    /// such index answer none.
-    fn action_of(
-        &self,
-        _workspace: &str,
-        _change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        None
-    }
-
     /// Crate-internal access to the concrete transport behind the seam, for
     /// facilities that share the built-in worker's queues.
     #[doc(hidden)]
@@ -283,6 +271,21 @@ pub trait CollabTransport: Send {
     fn route_join_failure(&self, channel: &str) -> Option<String> {
         let _ = channel;
         None
+    }
+
+    /// Whether the join of `channel` is still on its way: it has neither
+    /// opened, nor found its record's history to read first, nor failed.
+    fn document_route_joining(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
+    /// Whether changes queued for record route `channel` were let go since
+    /// the last ask, because the route was not open to take them: its
+    /// owner sends the record whole once it is.
+    fn take_unpublished_route(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
     }
 
     /// Independently sampled read phases, for bounded test diagnostics only.

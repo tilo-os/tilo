@@ -19,7 +19,6 @@ homepage.workspace = true
 # the media stack nor a decoder.
 default = ["peer-view"]
 peer-view = [
-    "dep:neighbour-wire",
     "dep:tilo-callstream",
     "dep:tilo-media",
     "dep:tilo-color-pipeline",
@@ -30,6 +29,10 @@ peer-view = [
 # with: it fetches it the first time the centre opens
 # (`NOTIFICATION_CENTRE`).
 lazy-notification-centre = []
+# Leave a window page's viewer (the frame another device publishes, and the
+# renderer that draws it) out of what the program starts with: it fetches it
+# the first time a page travels to a desk (`PAGE`).
+lazy-page-view = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web
@@ -63,6 +66,9 @@ uuid.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
+# Another device's window: the wire its stream and a viewer's input travel
+# on (`window_input`, `surface::peer_view`), pure data on every target.
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 
 [dev-dependencies]
 tilo-copy-lint = { path = "../../dev/copy-lint" }
@@ -78,13 +84,11 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-# Another device's shared window: the wire it arrives on, the decoder that
-# turns its units into pictures, the colour that tone-maps an HDR stream to
-# this display, and the share's own rule for the input a viewer sends back.
-# All four run the media stack, which has no wasm32 build and which a host
+# Another device's shared window: the decoder that turns its units into
+# pictures, the colour that tone-maps an HDR stream to this display, and the
+# share's own rule for the input a viewer sends back. All four run the media stack, which has no wasm32 build and which a host
 # without a screen (a relay, an agent's participant) never presents. They are
 # the `peer-view` feature's, so such a host links this surface without them.
-neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire", optional = true }
 tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"], optional = true }
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"], optional = true }
 tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline", optional = true }

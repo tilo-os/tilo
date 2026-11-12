@@ -42,6 +42,7 @@ use crate::resource::{Workspace, workspace as verbs};
 use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
 use ui::framework::{Actions, Dispatcher, Live, Submit, ViewCx};
+use ui::widget::DrawChild;
 use ui::widget::{Slot, SlotHandle};
 
 mod store;
@@ -400,7 +401,7 @@ impl ApiTesterApp {
         ui::widget::Button::icon_only(
             "api.reset-request-area",
             ui::icons::Icon::AlignEndHorizontal,
-            "Reset request area",
+            &crate::locales::CATALOG.t("api-tester-reset-area"),
         )
         .on_view(move || reset.set(true))
         .enabled_from(&sink.area_resized)
@@ -424,7 +425,7 @@ impl ApiTesterApp {
         )
         .with_content_sized_first()
         .with_divider_id("api.request-divider")
-        .with_divider_label("Resize the request and the response");
+        .with_divider_label(crate::locales::CATALOG.t("api-tester-split-label"));
         Box::new(
             Stack::new()
                 .push(Box::new(
@@ -655,7 +656,7 @@ impl ApiTesterApp {
         options.extend(commands.iter().map(|(label, _)| (*label).to_owned()));
         let picker = Dropdown::from_state(options, state)
             .with_id("api.env")
-            .caption("Environment");
+            .caption(crate::locales::CATALOG.t("api-tester-environment"));
         Box::new(match sink.actions.borrow().as_ref() {
             Some(actions) => actions.bind_effect(picker, ApiTesterEffect::PICK_ENVIRONMENT),
             None => picker.with_enabled(false),
@@ -741,7 +742,7 @@ impl ApiTesterApp {
             && let (Some(slot), Some(data)) =
                 (&self.slots.response_body, &self.store.borrow().response)
         {
-            slot.set(response::body(data, self.response_view));
+            slot.set(response::body_view(data, self.response_view));
         }
     }
 
@@ -1068,7 +1069,7 @@ impl ApiTesterApp {
                 value: String::new(),
             },
         };
-        if self.request.auth.label() != next.label() {
+        if self.request.auth.scheme() != next.scheme() {
             let before = self.workspace.request.auth.clone();
             self.request.auth = next;
             let after = Credentials::of(&self.request.auth);
@@ -1540,7 +1541,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             None => {}
         }
         self.nav
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(open) = self.menu.as_mut() {
             open.menu.layout_within(text_renderer, theme);
             Widget::draw_overlay(
@@ -1591,7 +1592,7 @@ impl ui::widget::Decorator for ApiTesterApp {
                 .collect();
             node.children.push(
                 AccessNode::new(Role::Menu)
-                    .with_name("Row actions")
+                    .with_name(crate::locales::CATALOG.t("api-tester-row-actions"))
                     .with_hashed_key("api.row-menu")
                     .with_children(items),
             );

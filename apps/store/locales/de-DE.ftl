@@ -351,3 +351,41 @@ store-remotes-configured = Eingerichtete Quellen
 
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installiert, { $size } insgesamt
+store-window-name = App Store
+
+store-app-tilo = Tilo-App
+store-app-flatpak = Flatpak-App
+store-app-flatpak-from = Flatpak-App von { $source }
+store-app-flatpak-from-version = Flatpak-App von { $source }, Version { $version }
+
+## Actions
+
+store-catalog = App Store
+store-catalog-record-moderation-case = Moderationsfall erfassen
+store-effect-inspect-catalogue = Katalog ansehen
+store-effect-refresh = Katalog aktualisieren
+store-effect-update-all = Alle Apps aktualisieren
+store-effect-set-search = Apps durchsuchen
+store-effect-show-view = Store-Bereich anzeigen
+store-effect-show-more = Weitere Apps anzeigen
+store-effect-unblock-app = App entsperren
+store-effect-browse-remote = Flatpak-Repository durchsuchen
+store-effect-set-category = Kategorie anzeigen
+store-effect-clear-filters = Suche leeren
+store-effect-show-details = App-Details anzeigen
+store-effect-show-runtime-details = Laufzeit einer App prüfen
+store-effect-install-runtime = Signierte Laufzeit installieren
+store-effect-set-technical-details = Technische Details ein- oder ausblenden
+store-effect-import-package = Lokales Paket prüfen
+store-effect-open-reference = Flatpak-Referenz öffnen
+store-effect-show-catalogue = Zurück zu den Apps
+store-effect-show-remotes = Flatpak-Quellen anzeigen
+store-effect-show-trust = Vertrauen und Moderation anzeigen
+store-effect-open-link = Webseite öffnen
+store-effect-pin = Auf dem Gerät behalten
+store-effect-add-bot = Verzeichnis-Bot hinzufügen
+store-effect-refresh-remotes = Quellen aktualisieren
+store-effect-add-remote = Flatpak-Quelle hinzufügen
+store-effect-remove-remote = Quelle entfernen
+store-effect-prepare-moderation = Bericht vorbereiten
+store-effect-submit-report = Signierten Bericht senden

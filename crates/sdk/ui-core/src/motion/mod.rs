@@ -70,17 +70,18 @@ pub(crate) use clock::forget_frames_for_tests;
 pub(crate) use clock::laying_out_frame;
 #[cfg(feature = "native")]
 pub(crate) use clock::own;
+pub(crate) use clock::owning;
 pub(crate) use clock::pin_frame;
 #[cfg(test)]
 pub(crate) use clock::pin_frame_at;
 pub use clock::{
-    frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted, frames_wanted_by,
-    testing, want_frames_until,
+    MotionSurface, frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted,
+    frames_wanted_by, on_surface, testing, want_frames_until,
 };
 pub use curve::blend_across;
 pub use disclosure::Disclosure;
 pub use feel::Feel;
-pub use kept::{HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
+pub use kept::{Found, HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
 pub(crate) use kept::{closing_window, frame_ended, laying_out_window};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,

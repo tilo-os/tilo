@@ -7,6 +7,7 @@ use super::{
     PresenceCtx, Rect, Scene, SegmentedFace, Slot, Slots, TextRenderer, Theme, ToggleGroup,
     ToolbarRow, VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
+use crate::widget::DrawChild;
 
 impl ToolbarRow {
     /// Paint the row's menus, in the window's top layer.
@@ -33,13 +34,21 @@ impl ToolbarRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.measure_views(theme);
+        if self.measure_views(theme) {
+            self.measured = true;
+        }
+        // The words this paint lays down replace those of the paint before it.
+        let mut words = std::mem::take(&mut self.labels);
+        words.clear();
         let now = crate::motion::frame_now();
         self.start_slot_change(theme);
         if let Some((outgoing, opacity)) = self.fade.outgoing(now)
             && outgoing.is_some()
             && let Some((toolbar, slots)) = self.outgoing.as_ref()
         {
+            // The slots leaving say nothing of their own any more: they fade under the ones
+            // that come in, whose words are the row's.
+            let mut leaving = Vec::new();
             layered(scene, transform, self.row, opacity, |scene| {
                 let _ = paint_slots(
                     scene,
@@ -48,6 +57,7 @@ impl ToolbarRow {
                     toolbar,
                     slots,
                     (None, None),
+                    Some(&mut leaving),
                 );
             });
         } else if !self.fade.is_moving(now) {
@@ -81,9 +91,10 @@ impl ToolbarRow {
                 toolbar,
                 slots,
                 (Some(&interaction), crumbs),
+                Some(&mut words),
             );
             if let Some(field) = field {
-                Widget::draw(field, scene, transform, tr, theme, presence);
+                DrawChild::draw_child(field, scene, transform, tr, theme, presence);
             }
         });
         if let Some(trigger) = trigger {
@@ -104,8 +115,17 @@ impl ToolbarRow {
                 },
             ),
         );
+        // A compact window's notice says itself in its own strip under the row.
+        if let Some(notice) = self.strip.notice() {
+            words.push(crate::window_toolbar::BarLabel::new(
+                "BarStripNotice",
+                notice.text.clone(),
+                self.strip.text_rect(),
+            ));
+        }
         self.paint_leaving(scene, transform, (tr, theme, presence), incoming);
         self.paint_reactions(scene, transform, (tr, theme));
+        self.labels = words;
     }
 
     /// Start moving the slots the app changed since the last paint, now
@@ -156,6 +176,7 @@ impl ToolbarRow {
                 toolbar,
                 slots,
                 (None, None),
+                None,
             );
             scene.pop_layer();
         }
@@ -235,7 +256,8 @@ fn posed(
 }
 
 /// Paint `toolbar`'s slots. Returns where a location with choices painted
-/// its picker, which its menu hangs from.
+/// its picker, which its menu hangs from; the words they stand as are
+/// added to `words`, where a reader of the bar reads them.
 pub(super) fn paint_slots(
     scene: &mut Scene,
     transform: Affine,
@@ -243,6 +265,7 @@ pub(super) fn paint_slots(
     toolbar: &WindowToolbar,
     slots: &Slots,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
+    mut words: Option<&mut Vec<crate::window_toolbar::BarLabel>>,
 ) -> Option<Rect> {
     let face = |slot: Slot, enabled: bool, on: bool| ButtonFace {
         hovered: interaction.is_some_and(|i| i.hover.as_ref() == Some(&slot)),
@@ -250,6 +273,7 @@ pub(super) fn paint_slots(
         on,
         enabled,
         destructive: false,
+        primary: false,
     };
     let poses: Poses<'_> = interaction
         .map(|i| &i.poses)
@@ -312,9 +336,10 @@ pub(super) fn paint_slots(
     }
     for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
         let slot = Slot::Leading(i);
-        let lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
+        let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
+        lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Leading(i)));
         if action.labelled && slots.labelled && rect.area() > 0.0 {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
@@ -326,6 +351,10 @@ pub(super) fn paint_slots(
         }
         let Some(icon) = Icon::from_name(&action.icon).filter(|_| rect.area() > 0.0) else {
             continue;
+        };
+        let lifted = ButtonFace {
+            primary: action.primary,
+            ..lifted
         };
         posed(scene, transform, pose, (&slot, *rect), |scene, at| {
             paint_icon_button(scene, at, tr, theme, (*rect, icon), lifted);
@@ -386,7 +415,15 @@ pub(super) fn paint_slots(
             pose,
             (&Slot::ViewsMenu, slots.views_menu),
             |scene, at| {
-                paint_picker(scene, at, (tr, theme), picker, slots.views_menu, lift);
+                paint_picker(
+                    scene,
+                    at,
+                    (tr, theme),
+                    picker,
+                    slots.views_menu,
+                    lift,
+                    words.as_deref_mut(),
+                );
             },
         );
     }
@@ -395,10 +432,11 @@ pub(super) fn paint_slots(
         let mut lifted = face(slot.clone(), action.enabled, shows_on(toolbar, &slot));
         lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
         lifted.destructive = action.destructive;
+        lifted.primary = action.primary;
         // A command that names itself stands as words where the row has room for them, its
         // icon beside them; its icon alone where not.
         if action.labelled && slots.actions_labelled {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .toggled(lifted.on)
@@ -444,7 +482,7 @@ pub(super) fn paint_slots(
         let slot = Slot::Notice(i);
         let lifted = face(slot.clone(), action.enabled, false);
         if slots.notice_labelled.get(i).copied().unwrap_or(false) {
-            let face = labelled_face(*rect, &action.name)
+            let face = labelled_face(*rect, &action.name, action.primary)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .disabled(!lifted.enabled);
@@ -483,6 +521,7 @@ pub(super) fn paint_slots(
                 (location, crumbs),
                 (slots.location, slots.form),
                 (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),
+                words,
             );
         },
     );
@@ -514,6 +553,7 @@ pub(super) fn paint_location(
     ),
     (rect, form): (Rect, usize),
     (lift, notice): (LocationLift, Option<crate::widget::toast::ToastKind>),
+    words: Option<&mut Vec<crate::window_toolbar::BarLabel>>,
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
         let (shown, ink) = location_shown(location, form, theme);
@@ -524,6 +564,7 @@ pub(super) fn paint_location(
             PickerText::new(shown, ink).trailing(trailing_word(location)),
             rect,
             lift,
+            words,
         ));
     }
     let mut text_rect = rect;
@@ -532,7 +573,23 @@ pub(super) fn paint_location(
         face.paint_chrome(scene, transform, theme);
         text_rect = face.text_rect(theme);
     }
-    if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
+    if let Some(avatar) = &location.avatar {
+        // Who the location is: their face, and whether they are here, in place of an icon.
+        let side = crate::widget::AvatarSize::Small.side(theme);
+        let mut face = crate::widget::AvatarFace::new(&avatar.name, &avatar.identity);
+        if avatar.agent {
+            face = face.agent();
+        }
+        if let Some(presence) = avatar.presence {
+            face = face.status(presence.status());
+        }
+        let c = Point::new(text_rect.x0 + side / 2.0, rect.center().y);
+        face.paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            Rect::from_center_size(c, (side, side)),
+        );
+        text_rect.x0 += side + f64::from(theme.tokens.spacing.s2);
+    } else if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
         let c = Point::new(text_rect.x0 + LOCATION_ICON_PX / 2.0, rect.center().y);
         crate::icons::draw_icon(
             scene,
@@ -553,7 +610,7 @@ pub(super) fn paint_location(
     {
         if text_rect.width() > 0.0 {
             crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
-            Widget::draw(crumbs, scene, transform, tr, theme, presence);
+            DrawChild::draw_child(crumbs, scene, transform, tr, theme, presence);
         }
         return None;
     }
@@ -565,6 +622,18 @@ pub(super) fn paint_location(
         LocationLabel::measure(tr, theme, shown, trailing_word(location), text_rect.width());
     let y = rect.center().y - label.height / 2.0;
     label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
+    if let Some(words) = words {
+        words.push(label.bar_label(
+            // A notice says itself in the location's place until it has a strip of its own.
+            if notice.is_some() {
+                "BarNotice"
+            } else {
+                "BarLocation"
+            },
+            text_rect.x0,
+            y,
+        ));
+    }
     None
 }
 
@@ -585,12 +654,21 @@ pub(crate) fn location_shown<'a>(
     (location.form(form), theme.tokens.colors.text_primary)
 }
 
-/// A labelled leading action's text button in `rect`, saying `name`
-/// ([`crate::window_toolbar::ToolbarAction::labelled`]): the bar's plain
-/// face, at the size of its icon buttons.
-pub(crate) fn labelled_face(rect: Rect, name: &str) -> crate::widget::ButtonFace<'_> {
+/// A labelled action's text button in `rect`, saying `name`
+/// ([`crate::window_toolbar::ToolbarAction::labelled`]), at the size of the bar's icon
+/// buttons: the bar's plain face, or the primary button's accent where it is the app's one
+/// main action ([`crate::window_toolbar::ToolbarAction::primary`]).
+pub(crate) fn labelled_face(
+    rect: Rect,
+    name: &str,
+    primary: bool,
+) -> crate::widget::ButtonFace<'_> {
     crate::widget::ButtonFace::new(rect, name)
-        .role(crate::widget::ButtonRole::Plain)
+        .role(if primary {
+            crate::widget::ButtonRole::Primary
+        } else {
+            crate::widget::ButtonRole::Plain
+        })
         .control_size(crate::widget::ControlSize::Small)
 }
 
@@ -639,6 +717,7 @@ pub(crate) fn paint_picker(
     text: PickerText<'_>,
     rect: Rect,
     lift: LocationLift,
+    words: Option<&mut Vec<crate::window_toolbar::BarLabel>>,
 ) -> Rect {
     let pad = f64::from(theme.tokens.spacing.s2);
     let gap = f64::from(theme.tokens.spacing.s1);
@@ -666,6 +745,9 @@ pub(crate) fn paint_picker(
         (face_rect.x0 + pad, y),
         text.ink,
     );
+    if let Some(words) = words {
+        words.push(label.bar_label("BarPicker", face_rect.x0 + pad, y));
+    }
     let chevron_x = face_rect.x0 + pad + label_w + gap;
     crate::icons::draw_icon(
         scene,

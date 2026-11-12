@@ -38,7 +38,9 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
     /// decorator would silently answer it with the `Widget` default instead of
     /// the inner widget's answer.
     fn decorator_forwards_every_widget_method() {
-        let widget = block_methods(include_str!("mod.rs"), "pub trait Widget {");
+        // The trait itself lives in `contract.rs`; the widget tree's host side
+        // is `mod.rs`.
+        let widget = block_methods(include_str!("contract.rs"), "pub trait Widget {");
         let source = include_str!("decorator.rs");
         // `decorator_trait!` turns each `ref`/`mut` line into both copies;
         // the methods written out by hand must appear in both blocks.

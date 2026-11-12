@@ -16,6 +16,7 @@
 //! a caller is a device of the workspace's user.
 
 use std::collections::VecDeque;
+use tilo_session_client::{Cmd, Outbox};
 
 use tilo_actions::door::DoorError;
 use tilo_actions::remote::{
@@ -49,8 +50,9 @@ pub(crate) fn record_of(provider: &str, workspace: &str) -> Option<DocumentRoute
     })
 }
 
-/// The row offering to open `app` on a new record in workspace `workspace`.
-pub(crate) fn open_row(workspace: &str, app: &str) -> CatalogueRow {
+/// The row offering to open `app` on a new record in workspace `workspace`,
+/// under the name people read it by (`label`).
+pub(crate) fn open_row(workspace: &str, app: &str, label: &str) -> CatalogueRow {
     let target = application_open_target(workspace, app);
     CatalogueRow::for_action(
         target.provider,
@@ -60,11 +62,11 @@ pub(crate) fn open_row(workspace: &str, app: &str) -> CatalogueRow {
             semantic_identity: None,
             address: target.address,
             resource_kind: "applications.app".into(),
-            resource_label: app.to_owned(),
-            action_label: format!("Open {app}"),
+            resource_label: label.to_owned(),
+            action_label: format!("Open {label}"),
             keywords: Vec::new(),
             icon: None,
-            description: Some(format!("Open {app} on a new record in this workspace.")),
+            description: Some(format!("Open {label} on a new record in this workspace.")),
             locus: tilo_actions::ExecutionLocus::ServerPreferred,
             kind: tilo_actions::OperationKind::Effect,
             contract: tilo_actions::ActionContract::default(),
@@ -113,8 +115,8 @@ impl AgentParticipant {
                     reason: "an app action runs to completion when invoked".into(),
                 }),
             },
-            RemoteActionMessage::RecordRequest { correlation, .. } => {
-                RemoteActionMessage::RecordResponse {
+            RemoteActionMessage::RecordRead { correlation, .. } => {
+                RemoteActionMessage::RecordReading {
                     correlation,
                     result: Err(ActionHostError::Unavailable {
                         reason: "an agent keeps no records to lend".into(),
@@ -126,23 +128,56 @@ impl AgentParticipant {
             RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
                 RemoteActionMessage::ConfirmationResponse {
                     correlation,
-                    result: Err(ActionHostError::ConfirmationRequired),
+                    result: Err(ActionHostError::confirmation_required()),
+                }
+            }
+            // Nor does an agent confirm an action by its own word.
+            RemoteActionMessage::Confirm { correlation, .. } => {
+                RemoteActionMessage::ConfirmResponse {
+                    correlation,
+                    result: Err(ActionHostError::confirmation_required()),
+                }
+            }
+            // An agent keeps no content for others to put into.
+            RemoteActionMessage::ContentPutRequest { correlation, .. } => {
+                RemoteActionMessage::ContentPutResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
+                    }),
+                }
+            }
+            // Nor any for another device to read out of.
+            RemoteActionMessage::ContentGetRequest { correlation, .. } => {
+                RemoteActionMessage::ContentGetResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: tilo_actions::remote::CONTENT_GETS_UNAVAILABLE.into(),
+                    }),
                 }
             }
             RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::ContentPutResponse { .. }
+            | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
+            | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {
-                if let Err(error) = self.peer.send_remote_action(self.workspace_id, from, bytes) {
+                if let Err(error) =
+                    self.peer
+                        .send(Cmd::RemoteAction(self.workspace_id, from, bytes))
+                {
                     tracing::warn!(%error, "agent: a remote-action answer was not sent");
                 }
             }
@@ -175,12 +210,12 @@ impl AgentParticipant {
                 record_id: route.record.clone(),
                 browsable: false,
             });
-            for descriptor in self.survey(&route) {
-                rows.push(CatalogueRow::for_action(
-                    provider.clone(),
-                    route.app_id.clone(),
-                    descriptor,
-                ));
+            for mut row in self.survey_rows(&route) {
+                // The rows keep the resource each stands under: a query
+                // naming one resource of the record lists its children.
+                row.provider.clone_from(&provider);
+                row.app_id.clone_from(&route.app_id);
+                rows.push(row);
             }
         }
         let provider = workspace_provider(&workspace);
@@ -192,9 +227,8 @@ impl AgentParticipant {
             rows.extend(
                 self.catalogue
                     .iter()
-                    .map(ui::application::ApplicationDefinition::app_id)
-                    .filter(|app| self.identity.delegation.permits_app(app))
-                    .map(|app| open_row(&provider, app)),
+                    .filter(|definition| self.identity.delegation.permits_app(definition.app_id()))
+                    .map(|definition| open_row(&provider, definition.app_id(), definition.title())),
             );
             providers.push(CatalogueProvider {
                 provider,
@@ -337,12 +371,17 @@ pub(crate) enum Outcome {
     Failed(ActionFailure),
 }
 
+/// The code a door refuses an invocation the grants do not admit with.
+const PERMISSION_DENIED: &str = "permission_denied";
+
 pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
     match error {
         DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
             Outcome::Rejected(ActionHostError::UnknownAction)
         }
-        DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
+        DoorError::ConfirmationRequired => {
+            Outcome::Rejected(ActionHostError::confirmation_required())
+        }
         DoorError::MissingArgument(_)
         | DoorError::UnexpectedArgument(_)
         | DoorError::InvalidArguments(_)
@@ -350,6 +389,10 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
             Outcome::Rejected(ActionHostError::InvalidRequest {
                 reason: error.to_string(),
             })
+        }
+        // The grants refused it: not the caller's, whenever they ask again.
+        DoorError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
+            Outcome::Rejected(ActionHostError::NotPermitted)
         }
         DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),

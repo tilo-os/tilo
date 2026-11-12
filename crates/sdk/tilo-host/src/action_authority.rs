@@ -34,7 +34,12 @@ pub fn watch(path: &Path, changed: impl Fn() + Send + 'static) -> Result<Authori
     {
         let directory = path.parent().ok_or("host action policy has no directory")?;
         let name = path.to_owned();
-        tilo_files::native::watch_changes(directory, move |entry| entry == name, changed)
+        // A watch that hears the hold end as well as each publication over it: the
+        // policy is current only while the host holds the file, and that ends when its
+        // descriptor closes, which leaves the name and its bytes as they were.
+        tilo_files::native::Watcher::entries(directory)
+            .released()
+            .on_change(move |entry| entry == name, changed)
             .map(|watch| Box::new(watch) as AuthorityWatch)
             .map_err(|error| format!("host action policy cannot be watched: {error}"))
     }

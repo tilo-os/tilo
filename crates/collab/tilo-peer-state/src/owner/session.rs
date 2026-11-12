@@ -1,20 +1,17 @@
 //! One link per enrolled workspace: dialling the host its enrollment pins,
 //! holding the link ([`hold`]) over the direct lane, admitting what arrives
 //! into this device's owner, and publishing what the owner holds.
-mod cursor;
 mod hold;
 mod reach;
 
 pub use hold::{Holder, Link, hold};
 pub use reach::{Linked, OwnHost, Reach};
 
-use super::publication::SealRecord;
 use crate::direct::DirectSync;
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId};
-use crate::{Reseal, join::TransportHint};
-use ed25519_dalek::SigningKey;
+use crate::join::TransportHint;
+use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
@@ -81,12 +78,12 @@ impl Connect {
     /// continuity its record is at ([`Self::material`]).
     pub fn custody(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
-            let (cert, entries) = identity.current_native_material(view.workspace_id())?;
+            let (cert, entries) = identity.current_material(view.workspace_id())?;
             if &cert != view.device() {
                 return Err("native custody differs from enrollment".into());
             }
             view.peer()
-                .permissions(cert.device_public_key, std::time::SystemTime::now())
+                .permissions(cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| error.to_string())?;
             if !view.peer().certificates().contains(&cert) {
                 return Err("selected certificate differs from current admitted roster".into());
@@ -146,7 +143,7 @@ impl Connect {
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
             .with_current(self.workspace, |view| {
-                let (cert, _) = identity.current_native_material(view.workspace_id())?;
+                let (cert, _) = identity.current_material(view.workspace_id())?;
                 Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
             })
             .unwrap_or(false)
@@ -157,7 +154,7 @@ impl Connect {
     /// as [`Self::material`] refuses custody that differs from the record.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
-            let (cert, _) = identity.current_native_material(view.workspace_id())?;
+            let (cert, _) = identity.current_material(view.workspace_id())?;
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
         })
     }
@@ -166,8 +163,11 @@ impl Connect {
     ///
     /// # Errors
     /// The workspace is not held here.
-    pub fn link(&self, key: SigningKey) -> Result<DirectSync, String> {
-        DirectSync::over(self.owner.replica(self.workspace)?, key)
+    pub fn link(
+        &self,
+        signer: impl collab_types::signer::DeviceSigner + 'static,
+    ) -> Result<DirectSync, String> {
+        DirectSync::over(self.owner.replica(self.workspace)?, signer)
             .owning(self.owner.clone(), self.workspace)
     }
     /// The owner of the workspace's record.
@@ -193,14 +193,8 @@ pub struct Scope {
     device: DeviceCert,
     /// The owner continuity the link last validated against.
     continuity: std::sync::atomic::AtomicU64,
-    live: Mutex<bool>,
-    cursor: Mutex<cursor::Cursor>,
 }
 impl Scope {
-    #[must_use]
-    pub fn new(connect: Connect, hint: TransportHint, device: DeviceCert, continuity: u64) -> Self {
-        Self::via(connect, hint.clone(), hint, device, continuity)
-    }
     /// A link pinned to the workspace's governor `hint` that reached the host
     /// `via` instead.
     #[must_use]
@@ -217,8 +211,6 @@ impl Scope {
             via,
             device,
             continuity: std::sync::atomic::AtomicU64::new(continuity),
-            live: Mutex::new(true),
-            cursor: Mutex::new(cursor::Cursor::default()),
         }
     }
     #[must_use]
@@ -253,166 +245,44 @@ impl Scope {
     fn continuity(&self) -> u64 {
         self.continuity.load(std::sync::atomic::Ordering::SeqCst)
     }
-    pub fn close(&self) {
-        if let Ok(mut live) = self.live.lock() {
-            *live = false;
-        }
-    }
-    /// Compact the sealed record histories of this workspace that have used most
-    /// of their bound into one checkpoint each, through `open` and `seal`,
-    /// this device's channel keys, so the compactions publish with the
-    /// device's own custody (see
-    /// [`NativeWorkspaceOwner::compact_outgoing`]). Answers how many
-    /// histories were compacted.
-    pub fn compact(
-        &self,
-        identity: &HostIdentity,
-        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut SealRecord<'_>,
-    ) -> Result<usize, String> {
-        let (hint, device, continuity) = self.connect.material(identity)?;
-        if !self.pinned_to(&hint, &device, continuity) {
-            return Err("native compaction scope changed".into());
-        }
-        self.connect.owner.compact_outgoing(
-            self.connect.workspace,
-            &identity.device_signing_key,
-            open,
-            seal,
-            std::time::SystemTime::now(),
-        )
-    }
-    /// Reconcile the owner's outgoing custody and send, once per link, every
-    /// entry it may send now. Sealed writes that expired in custody are not
-    /// renewed: see [`Self::publish_renewing`].
-    pub fn publish(&self, link: &DirectSync, identity: &HostIdentity) -> Result<(), String> {
-        self.send(link, identity, None)
-    }
-    /// [`Self::publish`], first renewing this device's sealed writes that
-    /// expired in custody through `reseal`, the channels' key holder (see
-    /// [`NativeWorkspaceOwner::renew_outgoing`]).
+    /// Whether this device may still publish over this link: the workspace's current material
+    /// is the one the link is pinned to ([`Connect::material`]).
     ///
     /// # Errors
-    /// As [`Self::publish`].
-    pub fn publish_renewing(
-        &self,
-        link: &DirectSync,
-        identity: &HostIdentity,
-        reseal: &mut Reseal<'_>,
-    ) -> Result<(), String> {
-        self.send(link, identity, Some(reseal))
-    }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
-    )]
-    fn send(
-        &self,
-        link: &DirectSync,
-        identity: &HostIdentity,
-        reseal: Option<&mut Reseal<'_>>,
-    ) -> Result<(), String> {
-        let live = self
-            .live
-            .lock()
-            .map_err(|_| "native publication session poisoned")?;
-        if !*live {
-            return Err("native publication session closed".into());
-        }
+    /// This device's standing in the workspace, or the link's pin, changed.
+    pub fn current(&self, identity: &HostIdentity) -> Result<(), String> {
         let (hint, device, continuity) = self.connect.material(identity)?;
-        if !self.pinned_to(&hint, &device, continuity) {
-            return Err("native publication session changed".into());
+        if self.pinned_to(&hint, &device, continuity) {
+            Ok(())
+        } else {
+            Err("native publication session changed".into())
         }
-        // Retiring what the workspace refused or receipted persists a new
-        // record generation. Its failure must not prevent sending what is
-        // still in custody.
-        if let Err(error) = self.connect.owner.retire_outgoing(self.connect.workspace) {
-            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication retirement not committed");
-        }
-        if let Some(reseal) = reseal
-            && let Err(error) = self.connect.owner.renew_outgoing(
-                self.connect.workspace,
-                &identity.device_signing_key,
-                reseal,
-                std::time::SystemTime::now(),
-            )
-        {
-            tracing::warn!(workspace = %self.connect.workspace, %error, "native sealed write renewal blocked");
-        }
-        self.connect.owner.with_outgoing(
-            self.connect.workspace,
-            std::time::SystemTime::now(),
-            |view, outgoing| {
-                if view.device() != &self.device
-                    || view.transport_hint()? != &self.hint
-                    || view.continuity() != self.continuity()
-                {
-                    return Err("native publication authority changed".into());
-                }
-                let (selected, _) = identity.current_native_material(view.workspace_id())?;
-                if &selected != view.device() {
-                    return Err("native publication custody changed".into());
-                }
-                view.peer()
-                    .permissions(selected.device_public_key, std::time::SystemTime::now())
-                    .map_err(|error| error.to_string())?;
-                let mut cursor = self
-                    .cursor
-                    .lock()
-                    .map_err(|_| "native publication cursor poisoned")?;
-                cursor.drive(
-                    outgoing.queued(),
-                    outgoing.entries().map(|entry| {
-                        (
-                            entry.id(),
-                            entry.bytes(),
-                            entry.channel(),
-                            entry.retention(),
-                        )
-                    }),
-                    |bytes, _channel, _retention| {
-                        let message: NeighbourMsg =
-                            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
-                        link.send(message)
-                    },
-                )
-            },
-        )
     }
-}
-
-/// Another device's app write the owner took in for this device's apps.
-#[derive(Clone)]
-pub struct AppWrite {
-    /// The writer's peer handle, as the write names it.
-    pub peer: u64,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub record_id: String,
-    /// The author's standing in the workspace.
-    pub author: tilo_action_policy::Standing,
-    /// Whether the host replayed it from what it retains.
-    pub replayed: bool,
-    pub envelope: collab_types::SignedOp,
-}
-
-/// Whether the workspace took a frame in, as a device's apps read it: a write
-/// it accepted or holds already, this device's own included.
-#[must_use]
-pub fn took_in(report: &crate::AdmissionReport, retained: bool) -> bool {
-    match report.primary() {
-        crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_) => true,
-        // A host's replay of a frame this device took in before: its exact
-        // evidence is gone (a legacy state, or one folded by a compaction),
-        // so admission reports it as history it already holds. This device's
-        // apps may be new — a restarted session keeps the workspace and
-        // starts its apps empty — and the frame is part of their record: it
-        // goes to them as any other replayed frame does, and their CRDT drops
-        // what they already hold.
-        crate::InputDisposition::RetryLater(
-            crate::MissingPrerequisite::ExactHistoricalEvidence,
-        ) => retained && report.duplicate,
-        _ => false,
+    /// Whether the custody `view` holds still publishes over this link, as it stands in the
+    /// owner's turn: the same certificate, host and continuity, the certificate this device
+    /// selects for the workspace, and its permission to write.
+    ///
+    /// # Errors
+    /// What changed since the link was pinned.
+    pub fn authorize(
+        &self,
+        view: &NativeCommittedView,
+        identity: &HostIdentity,
+    ) -> Result<(), String> {
+        if view.device() != &self.device
+            || view.transport_hint()? != &self.hint
+            || view.continuity() != self.continuity()
+        {
+            return Err("native publication authority changed".into());
+        }
+        let (selected, _) = identity.current_material(view.workspace_id())?;
+        if &selected != view.device() {
+            return Err("native publication custody changed".into());
+        }
+        view.peer()
+            .permissions(selected.device_public_key, tilo_clock::wall())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -448,7 +318,7 @@ pub fn app_write(
     let standing = owner
         .with_current(workspace, |view| {
             view.peer()
-                .permissions(author, std::time::SystemTime::now())
+                .permissions(author, tilo_clock::wall())
                 .map(crate::MemberAuthority::standing)
                 .map_err(|error| error.to_string())
         })
@@ -567,6 +437,29 @@ impl Input {
             took_in(report, self.heard.retained),
         )
     }
+    /// Every app write `report` took in from other devices, for this device's
+    /// apps, in the order the workspace took them: the frame's own
+    /// ([`Self::app_write`]), then each held write it brought what it waited
+    /// for ([`crate::AdmissionReport::released`]). A held write reaches the
+    /// apps only this way: when it came, nothing of it was taken in.
+    #[must_use]
+    pub fn app_writes(&self, report: &crate::AdmissionReport) -> Vec<AppWrite> {
+        let own = self.scope.device.device_public_key;
+        self.app_write(report)
+            .into_iter()
+            .chain(report.released().iter().filter_map(|released| {
+                app_write(
+                    &self.scope.connect.owner,
+                    self.workspace(),
+                    own,
+                    released.author,
+                    &released.message,
+                    released.retained,
+                    true,
+                )
+            }))
+            .collect()
+    }
     /// The author's current standing in the workspace: the workspace's policy, and
     /// the bound on a device not theirs.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
@@ -575,7 +468,7 @@ impl Input {
             .owner
             .with_current(self.workspace(), |view| {
                 view.peer()
-                    .permissions(self.heard.author, std::time::SystemTime::now())
+                    .permissions(self.heard.author, tilo_clock::wall())
                     .map(crate::MemberAuthority::standing)
                     .map_err(|error| error.to_string())
             })

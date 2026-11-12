@@ -29,6 +29,20 @@ pub struct HintPlaces {
     /// it holds the keyboard. No hint points at a window that is being
     /// answered, where it would stand over the question.
     pub asking: bool,
+    /// The cards standing over the desk — the windows lifted out of the
+    /// strip as floating cards, each whole with its header — as one rect
+    /// each: content no hint may stand over, and no control under which it
+    /// can point.
+    pub over: Vec<Rect>,
+    /// Each shown window of the strip, as its whole rect and the content
+    /// below its bar: content no hint may stand over, save the window's own,
+    /// which a hint beside its bar or its edge teaches.
+    pub windows_on_desk: Vec<(Rect, Rect)>,
+    /// Where the shown windows' apps stand cards of their own over their
+    /// content (an agent's activity), as one rect each
+    /// ([`crate::presence::interaction_card_slots`]): a place no hint stands
+    /// either, since the app's card may be there whether or not it is now.
+    pub app_cards: Vec<Rect>,
 }
 
 /// Whether `window`'s content is asking the person to type: a text field of
@@ -63,22 +77,65 @@ impl GroupRow {
             .groups
             .iter()
             .enumerate()
-            .find(|(i, group)| shown(*i, group) && group.bar_grab_hit(self.last_cursor))
+            .find(|(i, group)| {
+                shown(*i, group)
+                    && !self.is_floating(group.id)
+                    && group.bar_grab_hit(self.last_cursor)
+            })
             .and_then(|(_, group)| title_grab(group));
+        // A window lifted out of the strip stands over the desk as a card, which is no window of
+        // the strip a hint teaches: its header does not take it as a strip bar does, and its edge
+        // resizes nothing. Pointing a hint there would put it over the card's own content.
         let focused = self
             .groups
             .iter()
             .enumerate()
-            .find(|(i, group)| group.focused && shown(*i, group))
+            .find(|(i, group)| group.focused && shown(*i, group) && !self.is_floating(group.id))
             .map(|(_, group)| group);
+        // A window of the strip stands its app's cards in the top-right corner of its content, and
+        // is content of its own: a hint keeps off both.
+        let on_desk: Vec<(Rect, Rect)> = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(i, group)| shown(*i, group) && !self.is_floating(group.id))
+            .map(|(_, group)| {
+                let rect = group.get_rect();
+                let content =
+                    Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
+                (rect, content)
+            })
+            .collect();
+        // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+        // window is reported whole with the content below its own bar.
         HintPlaces {
             viewport,
-            windows: self.groups.len(),
+            windows: self
+                .groups
+                .iter()
+                .filter(|group| !self.is_floating(group.id))
+                .count(),
             beyond,
             hovered_bar,
             focused_bar: focused.and_then(title_grab),
             focused_edge: focused.and_then(|group| nearest_edge(group, viewport, self.last_cursor)),
             asking: focused.is_some_and(asking_for_input),
+            over: self
+                .groups
+                .iter()
+                .filter(|group| self.is_floating(group.id))
+                .map(|group| group.get_rect().union(group.bar_rect()))
+                .collect(),
+            app_cards: on_desk
+                .iter()
+                .flat_map(|(_, content)| {
+                    crate::presence::interaction_card_slots(*content)
+                        .into_iter()
+                        .map(move |slot| slot.intersect(*content))
+                        .filter(|slot| !slot.is_zero_area())
+                })
+                .collect(),
+            windows_on_desk: on_desk,
         }
     }
 
@@ -90,7 +147,7 @@ impl GroupRow {
             && self
                 .groups
                 .iter()
-                .any(|group| group.bar_grab_hit(self.last_cursor))
+                .any(|group| !self.is_floating(group.id) && group.bar_grab_hit(self.last_cursor))
         {
             performed::note(Performed::HoveredWindowBar);
         }
@@ -215,7 +272,11 @@ const LEADING_SHARE: f64 = 0.25;
 #[cfg(test)]
 mod tests {
     use super::super::GroupRow;
-    use super::super::tests::{make_row_with_groups_with_taffy, relayout_row_owned};
+    use super::super::tests::{
+        make_row_with_groups_with_taffy, relayout_row_owned, relayout_row_owned_with,
+    };
+    use crate::theme::Theme;
+    use crate::widget::Widget as _;
     use vello::kurbo::{Point, Rect};
 
     // The move hint points at a window's title, where its bar takes it,
@@ -235,6 +296,7 @@ mod tests {
             toggles: false,
             destructive: false,
             labelled: false,
+            primary: false,
         };
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         for group in &mut row.groups {
@@ -268,6 +330,117 @@ mod tests {
             free.x0 >= group.tab_rects()[0].x1,
             "{free:?} past the title"
         );
+    }
+
+    // An app stands cards of its own over its window's content (an agent's activity): the corners it
+    // stands them in are reported as places no hint may stand, so the two never cover each other.
+    #[test]
+    fn a_shown_window_reports_the_corners_its_app_stands_cards_in() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        row.groups[0].focused = true;
+        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+        let places = row.hint_places();
+        let cards = places.app_cards;
+        assert_eq!(
+            cards.len(),
+            6,
+            "three cards' places for each of two windows: {cards:?}"
+        );
+        for (index, group) in row.groups.iter().enumerate() {
+            let rect = group.get_rect();
+            let content = Rect::new(rect.x0, group.bar_rect().y1.max(rect.y0), rect.x1, rect.y1);
+            let first = cards[index * 3];
+            assert_eq!(
+                first.x1,
+                content.x1 - 12.0,
+                "the window's trailing edge, a card's margin in: {first:?}"
+            );
+            assert_eq!(
+                first.y0,
+                content.y0 + 12.0,
+                "the top of its content: {first:?}"
+            );
+            assert!(content.contains_rect(first), "{first:?} in {content:?}");
+        }
+        // A window lifted out of the strip shows no content of its own here: its card's own corners
+        // are the floating card reported whole, not slots inside it.
+        use crate::widget::Widget as _;
+        use std::collections::HashMap;
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let mut floats = HashMap::new();
+        floats.insert(row.groups[1].id, Rect::new(880.0, 120.0, 1240.0, 640.0));
+        row.set_floats(floats);
+        let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+        assert_eq!(
+            row.hint_places().app_cards.len(),
+            3,
+            "the strip's one window keeps its corners"
+        );
+    }
+
+    // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
+    // window is reported whole, and its content from below its own bar, so a hint never stands
+    // over either.
+    #[test]
+    fn a_shown_window_reports_its_content_below_its_own_bar() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        row.set_top_overlay_inset(32.0);
+        // Windows come to rest below the bar at once, as they do when the person asks for less
+        // motion: the slide down to it is motion, not geometry.
+        let (row, _taffy, _root) =
+            relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
+        let places = row.hint_places();
+        assert_eq!(places.windows_on_desk.len(), 2, "{places:?}");
+        for (window, content) in &places.windows_on_desk {
+            assert!(
+                window.y0 > places.viewport.y0 + 1.0,
+                "fixture: the window stands clear of the bar: {window:?}"
+            );
+            let bar = row
+                .groups
+                .iter()
+                .find(|group| group.get_rect() == *window)
+                .map(|group| group.bar_rect());
+            assert_eq!(bar.map(|bar| bar.y1), Some(content.y0), "below its bar");
+            assert_eq!(
+                content.x0..content.x1,
+                window.x0..window.x1,
+                "its own width"
+            );
+        }
+    }
+
+    // A window lifted out of the strip is a card over the desk: its header does not take it as a
+    // strip bar does and its edge resizes nothing, so no hint points at it, and the card it draws
+    // is reported as content no hint may stand over.
+    #[test]
+    fn a_floating_card_is_no_window_a_hint_points_at() {
+        use crate::widget::Widget as _;
+        use std::collections::HashMap;
+
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let card = Rect::new(880.0, 120.0, 1240.0, 640.0);
+        let mut floats = HashMap::new();
+        floats.insert(row.groups[1].id, card);
+        row.set_floats(floats);
+        row.groups[1].focused = true;
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+        let places = row.hint_places();
+        assert_eq!(places.windows, 1, "the strip holds one window, not two");
+        assert_eq!(places.focused_bar, None, "a card's header takes no hint");
+        assert_eq!(places.focused_edge, None, "a card's edge resizes nothing");
+        let over = places.over;
+        assert_eq!(over.len(), 1, "{over:?}");
+        assert!(
+            over[0].contains_rect(row.groups[1].get_rect()),
+            "the card whole, header and body, is content no hint may stand over: {over:?}"
+        );
+        // The strip window keeps its own place for the hints.
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        row.groups[0].focused = true;
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+        assert!(row.hint_places().focused_edge.is_some());
+        assert!(row.hint_places().over.is_empty());
     }
 
     /// The move hint's place on `row`'s focused first window, checked to

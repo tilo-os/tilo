@@ -20,6 +20,7 @@ use ui::widget::{
 use crate::actions::RemoteEffect;
 use crate::app::Action;
 use crate::model::{AuthMethod, ConnectionId, ConnectionKind, Remote};
+use crate::resource::CATALOG;
 use ui::framework::Actions as ResourceActions;
 use ui::tilo_resource::Invoke;
 
@@ -83,7 +84,7 @@ pub(crate) fn rail(
     let requests = Rc::clone(requests);
     NavList::new(vec![NavSection::untitled("destinations", items)])
         .rail()
-        .with_accessible_name("Remote")
+        .with_accessible_name(crate::resource::CATALOG.t("remote-a11y-window"))
         .selected(selected.id())
         .on_view("remote.rail", move |id| {
             if let Some(destination) = Destination::from_id(&id) {
@@ -126,7 +127,7 @@ fn connection_row(
 ) -> ListRow {
     let mut list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
         .icon(kind_icon(row.kind))
-        .leading_tooltip(row.kind.label())
+        .leading_tooltip(CATALOG.t(row.kind.label_message()))
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
@@ -186,13 +187,13 @@ pub(crate) fn connection_list(
             Box::new(
                 EmptyState::new("No pinned connections")
                     .with_icon(Icon::Pin)
-                    .with_message("Pin the machines you use most to keep them here."),
+                    .with_message(CATALOG.t("remote-empty-pinned-hint")),
             )
         } else {
             Box::new(
                 EmptyState::new("No saved connections")
                     .with_icon(Icon::Monitor)
-                    .with_message("Save a machine to reach it over SSH, VNC or as a Tilo device.")
+                    .with_message(CATALOG.t("remote-empty-saved-hint"))
                     .with_action("New connection")
                     .with_action_id("remote.connection.new")
                     .on_view(queue(requests, Action::NewConnection)),
@@ -211,10 +212,13 @@ pub(crate) fn connection_list(
             vec![Box::new(Section::new(list(rows.iter().collect())))]
         } else {
             vec![
-                Box::new(Section::new(list(pinned)).with_header(SectionHeader::group("Pinned"))),
+                Box::new(
+                    Section::new(list(pinned))
+                        .with_header(SectionHeader::group(CATALOG.t("remote-pinned"))),
+                ),
                 Box::new(
                     Section::new(list(others))
-                        .with_header(SectionHeader::group("Other connections")),
+                        .with_header(SectionHeader::group(CATALOG.t("remote-other-connections"))),
                 ),
             ]
         };
@@ -303,7 +307,10 @@ fn offered_kinds(current: ConnectionKind) -> Vec<ConnectionKind> {
 fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
     let kinds = offered_kinds(model.kind);
     let selected = kinds.iter().position(|k| *k == model.kind).unwrap_or(0);
-    let segments = kinds.iter().map(|k| Segment::new(k.label())).collect();
+    let segments = kinds
+        .iter()
+        .map(|k| Segment::new(CATALOG.t(k.label_message())))
+        .collect();
     let queue_to = Rc::clone(requests);
     let protocol =
         ToggleGroup::new(segments, selected).on_view("remote.form.protocol", move |index| {
@@ -331,7 +338,9 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
             }) as Element
         })
         .collect();
-    Box::new(Section::new(rows).with_header(SectionHeader::group("Nearby devices")))
+    Box::new(
+        Section::new(rows).with_header(SectionHeader::group(CATALOG.t("remote-nearby-devices"))),
+    )
 }
 
 /// Which machine, where it is, who signs in and how, and how it is filed.
@@ -341,8 +350,8 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     let mut section = FormSection::new("Machine").field(protocol_field(requests, model));
     if model.kind == ConnectionKind::Rdp {
         section = section.content(Box::new(
-            Banner::warning("Remote can't open RDP connections")
-                .with_message("Choose SSH or VNC to keep using this machine."),
+            Banner::warning(CATALOG.t("remote-rdp-unsupported-title"))
+                .with_message(CATALOG.t("remote-rdp-unsupported-message")),
         ));
     }
     for problem in &model.problems.other {
@@ -354,7 +363,11 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     section = section.field(with_problem(
         Field::new(
             "Name",
-            text_field(&fields.name, "remote.field:name", "Home server"),
+            text_field(
+                &fields.name,
+                "remote.field:name",
+                &CATALOG.t("remote-placeholder-name"),
+            ),
         ),
         model.problems.name.as_ref(),
     ));
@@ -362,8 +375,12 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
         return section.field(with_problem(
             Field::new(
                 "Device",
-                text_field(&fields.host, "remote.field:host", "Device endpoint id")
-                    .with_kind(TextInputKind::Code),
+                text_field(
+                    &fields.host,
+                    "remote.field:host",
+                    &CATALOG.t("remote-placeholder-endpoint"),
+                )
+                .with_kind(TextInputKind::Code),
             ),
             model.problems.host.as_ref(),
         ));
@@ -372,23 +389,35 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
         .field(with_problem(
             Field::new(
                 "Host",
-                text_field(&fields.host, "remote.field:host", "Host name or IP address")
-                    .with_kind(TextInputKind::Url),
+                text_field(
+                    &fields.host,
+                    "remote.field:host",
+                    &CATALOG.t("remote-placeholder-host"),
+                )
+                .with_kind(TextInputKind::Url),
             ),
             model.problems.host.as_ref(),
         ))
         .field(with_problem(
             Field::new(
                 "Port",
-                text_field(&fields.port, "remote.field:port", "Port")
-                    .with_kind(TextInputKind::Number)
-                    .with_char_filter(|c| c.is_ascii_digit()),
+                text_field(
+                    &fields.port,
+                    "remote.field:port",
+                    &CATALOG.t("remote-placeholder-port"),
+                )
+                .with_kind(TextInputKind::Number)
+                .with_char_filter(|c| c.is_ascii_digit()),
             ),
             model.problems.port.as_ref(),
         ));
     sign_in_fields(requests, fields, model, section).field(Field::new(
         "Group",
-        text_field(&fields.group, "remote.field:group", "Optional"),
+        text_field(
+            &fields.group,
+            "remote.field:group",
+            &CATALOG.t("remote-placeholder-optional"),
+        ),
     ))
 }
 
@@ -404,13 +433,20 @@ fn sign_in_fields(
     if matches!(model.kind, ConnectionKind::Ssh | ConnectionKind::Rdp) {
         section = section.field(Field::new(
             "User",
-            text_field(&fields.user, "remote.field:user", "User name")
-                .with_kind(TextInputKind::Username),
+            text_field(
+                &fields.user,
+                "remote.field:user",
+                &CATALOG.t("remote-placeholder-user"),
+            )
+            .with_kind(TextInputKind::Username),
         ));
     }
     if methods.len() > 1 {
         let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
-        let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
+        let segments = methods
+            .iter()
+            .map(|a| Segment::new(CATALOG.t(a.label_message())))
+            .collect();
         let queue_to = Rc::clone(requests);
         let auth = ToggleGroup::new(segments, selected).on_view("remote.form.auth", move |index| {
             if let Some(method) = methods.get(index) {
@@ -420,13 +456,16 @@ fn sign_in_fields(
         section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     let (label, placeholder) = match model.auth {
-        AuthMethod::PublicKey => ("Key passphrase", "Optional"),
-        _ => ("Password", ""),
+        AuthMethod::PublicKey => (
+            CATALOG.t("remote-key-passphrase"),
+            CATALOG.t("remote-placeholder-optional"),
+        ),
+        _ => (CATALOG.t("remote-password"), String::new()),
     };
     section.field(
         Field::new(
             label,
-            text_field(&fields.secret, "remote.field:secret", placeholder)
+            text_field(&fields.secret, "remote.field:secret", &placeholder)
                 .with_kind(TextInputKind::Password),
         )
         .with_help("Kept on this device only."),
@@ -444,9 +483,12 @@ pub(crate) fn connection_form(
     let mut form = Form::new().section(machine_section(requests, fields, model));
     if let Some(id) = model.editing {
         form = form.with_actions(Actions::new(
-            Button::new("remote.form.delete", "Delete connection")
-                .role(ButtonRole::Destructive)
-                .on_view(queue(requests, Action::RequestDelete(id))),
+            Button::new(
+                "remote.form.delete",
+                &CATALOG.t("remote-delete-connection-button"),
+            )
+            .role(ButtonRole::Destructive)
+            .on_view(queue(requests, Action::RequestDelete(id))),
         ));
     }
     Box::new(FormPage::untitled(form))

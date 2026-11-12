@@ -80,14 +80,14 @@ pub(crate) fn reader_settings_panel(
             .with_step(10.0)
             .with_suffix("%")
             .with_id("feeds.reading-scale")
-            .with_accessible_name("Text size")
+            .with_accessible_name(crate::i18n::t("feeds-a11y-text-size"))
             .compact(),
         requests: Rc::clone(requests),
     };
     let fonts = ToggleGroup::new(
         ReadFont::ALL
             .iter()
-            .map(|f| Segment::new(f.label()))
+            .map(|f| Segment::new(crate::i18n::t(f.message())))
             .collect(),
         ReadFont::ALL
             .iter()
@@ -99,7 +99,7 @@ pub(crate) fn reader_settings_panel(
     let papers = ToggleGroup::new(
         ReadTheme::ALL
             .iter()
-            .map(|t| Segment::new(t.label()))
+            .map(|t| Segment::new(crate::i18n::t(t.message())))
             .collect(),
         ReadTheme::ALL
             .iter()

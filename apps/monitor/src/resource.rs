@@ -13,7 +13,7 @@ use ui::widget::Element;
 use crate::app::{MonitorApp, SortKey};
 use crate::model::MonitorModel;
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// How the process table is laid out, shared with everyone who sees it.
 /// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the
@@ -32,7 +32,26 @@ pub struct Monitor {
     pub flat: bool,
 }
 
-#[resource(kind = "monitor.processes", label = "Processes")]
+impl Monitor {
+    /// What the record holds: the shared table layout — the column sorted by, its direction, and
+    /// tree or flat.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "monitor.processes",
+    read_content = Monitor::read_document
+)]
 impl Monitor {}
 
 /// What Monitor does on this machine: work with no document delta, invoked
@@ -44,7 +63,7 @@ impl Monitor {}
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
     /// Refresh processes.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", label = "monitor-effect-refresh")]
     Refresh,
     /// Show tab.
     #[effect(kind = "read")]
@@ -684,3 +703,31 @@ mod tests {
 // someone opens lists this machine's processes, and walking its Kill
 // would signal every one of them, the test's own among them.
 ui::reach_tests!(MonitorShell);
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    use ui::i18n::ArgValue;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        let flat = |state: &str| {
+            catalog.t_args(
+                "monitor-monitor-flat",
+                &[("new", ArgValue::Text(state.to_owned()))],
+            )
+        };
+        catalog.set_locale("de-DE");
+        assert_eq!(flat("true"), "Die Prozesse flach aufgelistet");
+        catalog.set_locale("en-US");
+        assert_eq!(flat("true"), "Listed the processes flat");
+    }
+}

@@ -24,11 +24,14 @@
 pub(crate) use tilo_relay_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
+pub(crate) mod governed_access;
 pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
 pub mod retained;
+mod revocation_log;
+mod sealed;
 #[cfg(test)]
 pub(crate) use tilo_relay_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]
@@ -46,8 +49,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 #[cfg(test)]
 pub(crate) use tilo_relay_store::thread_fsyncs;
 pub use tilo_relay_store::{StoreError, fsyncs};
@@ -59,78 +60,17 @@ pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
-/// Atomic native-governance projection: exact workspace devices plus handshake roots.
-pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
+/// Native-governance projection: exact workspace devices plus handshake roots.
+pub use governed_access::GOVERNED_ACCESS_FILE;
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
 
-/// Root-signed device revocations enforced during relay authentication.
-pub const REVOCATIONS_FILE: &str = "revocations.json";
+pub use revocation_log::{
+    REVOCATIONS_FILE, append_revocation, append_revocations, load_revocations, save_revocations,
+};
 /// The metrics snapshot file is read by clients as well as the daemon.
 pub use tilo_relay_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
-
-/// Load root-signed revocation entries from the relay state root.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but can't be read, or fails to
-/// decode as JSON.
-pub fn load_revocations(
-    state_root: &Path,
-) -> Result<Vec<tilo_user_identity::RevocationEntry>, StoreError> {
-    let path = state_root.join(REVOCATIONS_FILE);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice(&fs::read(path)?).map_err(|error| StoreError::Json(error.to_string()))
-}
-
-/// Atomically replace the relay's root-signed revocation entries.
-///
-/// # Errors
-///
-/// Returns an error if the state root can't be created, `entries`
-/// can't be JSON-encoded, or the atomic write fails.
-pub fn save_revocations(
-    state_root: &Path,
-    entries: &[tilo_user_identity::RevocationEntry],
-) -> Result<(), StoreError> {
-    fs::create_dir_all(state_root)?;
-    let bytes =
-        serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
-    Ok(())
-}
-
-/// Add `entry` to the relay's revocation log unless the log already holds
-/// its root's revocation of its device as early. Whether the log changed.
-/// Each root's entries are its own: another root's entry naming the same key
-/// neither replaces nor is replaced by it.
-///
-/// # Errors
-///
-/// Returns an error if the log can't be read or replaced.
-pub fn append_revocation(
-    state_root: &Path,
-    entry: &tilo_user_identity::RevocationEntry,
-) -> Result<bool, StoreError> {
-    let mut entries = load_revocations(state_root)?;
-    let same = |known: &tilo_user_identity::RevocationEntry| {
-        (known.user_public_key, known.revoked_device_public_key)
-            == (entry.user_public_key, entry.revoked_device_public_key)
-    };
-    if entries
-        .iter()
-        .any(|known| same(known) && known.revoked_at_ns <= entry.revoked_at_ns)
-    {
-        return Ok(false);
-    }
-    entries.retain(|known| !same(known));
-    entries.push(entry.clone());
-    save_revocations(state_root, &entries)?;
-    Ok(true)
-}
 
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.
@@ -222,6 +162,10 @@ pub struct WorkspaceStore {
     capture_leases: Arc<replay::CaptureLeases>,
     /// Classifies retained co-edit bodies for checkpoint replacement.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    /// What the governed access log holds, shared by every handle on
+    /// `root` this open made: a write appends the change without reading
+    /// the log back ([`governed_access`]).
+    governed_access: Arc<std::sync::Mutex<Option<governed_access::Held>>>,
 }
 
 /// One server-local projection of the native workspace governor. Both sets share a
@@ -231,31 +175,6 @@ pub struct WorkspaceStore {
 pub(crate) struct GovernedAccessRecord {
     pub(crate) member_devices: Vec<[u8; 32]>,
     pub(crate) member_user_roots: Vec<[u8; 32]>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GovernedAccessFile {
-    version: u8,
-    member_devices: Vec<String>,
-    member_user_roots: Vec<String>,
-}
-
-fn decode_public_keys(kind: &str, values: Vec<String>) -> Result<Vec<[u8; 32]>, StoreError> {
-    values
-        .into_iter()
-        .map(|value| {
-            let bytes = hex::decode(&value).map_err(|error| {
-                StoreError::Json(format!("invalid governed {kind} key {value:?}: {error}"))
-            })?;
-            bytes.try_into().map_err(|bytes: Vec<u8>| {
-                StoreError::Json(format!(
-                    "governed {kind} key must be 32 bytes, got {}",
-                    bytes.len()
-                ))
-            })
-        })
-        .collect()
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -336,6 +255,7 @@ impl WorkspaceStore {
             workspace_id,
             pinned,
             payloads,
+            governed_access: Arc::default(),
         })
     }
 
@@ -437,47 +357,6 @@ impl WorkspaceStore {
         test_barrier::pause(&self.root, "membership-write");
         atomic_write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
-    }
-
-    /// Load the atomic native-governance projection. Absence is an empty
-    /// handshake-root projection; device-only membership remains readable through
-    /// [`Self::load_membership`] but can never admit another user root.
-    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
-        let path = self.root.join(GOVERNED_ACCESS_FILE);
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let encoded: GovernedAccessFile =
-            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
-        if encoded.version != 1 {
-            return Err(StoreError::Json(format!(
-                "unsupported governed access version {}",
-                encoded.version
-            )));
-        }
-        Ok(Some(GovernedAccessRecord {
-            member_devices: decode_public_keys("device", encoded.member_devices)?,
-            member_user_roots: decode_public_keys("user root", encoded.member_user_roots)?,
-        }))
-    }
-
-    /// Atomically replace exact workspace devices and global-handshake roots in one
-    /// crash-safe record.
-    pub(crate) fn save_governed_access(
-        &self,
-        access: &GovernedAccessRecord,
-    ) -> Result<Vec<u8>, StoreError> {
-        let encoded = GovernedAccessFile {
-            version: 1,
-            member_devices: access.member_devices.iter().map(hex::encode).collect(),
-            member_user_roots: access.member_user_roots.iter().map(hex::encode).collect(),
-        };
-        let bytes = serde_json::to_vec_pretty(&encoded)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
-        Ok(bytes)
     }
 
     /// Enqueue a delta for later delivery to `device_pubkey`. Each

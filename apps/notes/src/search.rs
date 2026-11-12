@@ -7,6 +7,7 @@
 //! them however many there are, and activates a hit through the `open` view
 //! action the page or block publishes.
 
+use crate::metadata::CATALOG;
 use ui::tilo_resource::SearchEntry;
 
 use crate::notebook::{Notebook, Page, page_of};
@@ -14,13 +15,13 @@ use crate::notebook::{Notebook, Page, page_of};
 /// The result group notes are listed under.
 #[must_use]
 pub fn note_kind() -> String {
-    ui::i18n!("notes-search-notes")
+    CATALOG.t("notes-search-notes")
 }
 
 /// The result group blocks are listed under.
 #[must_use]
 pub fn block_kind() -> String {
-    ui::i18n!("notes-search-blocks")
+    CATALOG.t("notes-search-blocks")
 }
 
 /// The longest block label a hit shows; the whole block is still searched.

@@ -836,7 +836,7 @@ fn mailbox_publishes_bounded_stable_places() {
             .find(|action| action.id == "inspect")
             .expect("explicit preview action");
         assert_eq!(open.label, "Open message");
-        assert_eq!(preview.label, "Preview without marking read");
+        assert_eq!(preview.label, "Preview");
         for id in ["reply", "reply-all", "forward"] {
             assert!(
                 resource.actions.iter().any(|action| action.id == id),

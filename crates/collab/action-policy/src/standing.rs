@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, Party, Subject, TreePath, Verdict,
-    WorkspacePolicy, roles,
+    ActionKind, Answer, Authority, Context, Grant, Subject, TreePath, Verdict, WorkspacePolicy,
+    roles,
 };
 
 /// A delegation bounding a person: its subject and the grants it carries
@@ -16,6 +16,10 @@ pub struct Bound {
     pub subject: Subject,
     #[serde(default)]
     pub grants: Vec<Grant>,
+    /// Whom the delegate is known as too: an agent's run of an issue is the
+    /// agent and the issue, so grants naming either decide for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<Subject>,
 }
 
 impl Bound {
@@ -31,15 +35,11 @@ impl Bound {
             &Subject::Person(person.to_owned()),
             &crate::Lifetime::UntilRevoked,
         );
-        Self { subject, grants }
-    }
-
-    /// The party this delegation stands for in a workspace whose own grants are
-    /// `workspace_grants`: its own grants and the workspace's grants naming its
-    /// subject.
-    #[must_use]
-    pub fn party<'a>(&'a self, workspace_grants: &'a [Grant]) -> Party<'a> {
-        Party::new(vec![self.subject.clone()], workspace_grants).with_grants(&self.grants)
+        Self {
+            subject,
+            grants,
+            also: Vec::new(),
+        }
     }
 }
 
@@ -61,7 +61,11 @@ fn subject_key(subject: &Subject) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Standing {
     pub person: String,
-    pub policy: WorkspacePolicy,
+    /// Shared, not copied: a host keeps every member device's standing in a
+    /// workspace, and each holds the workspace's whole policy, so a copy each
+    /// made one more member cost a copy of every member's policy. Encoded as
+    /// the policy itself.
+    pub policy: std::sync::Arc<WorkspacePolicy>,
     #[serde(default)]
     pub bounds: Vec<Bound>,
 }
@@ -69,10 +73,13 @@ pub struct Standing {
 impl Standing {
     /// A person acting as themselves.
     #[must_use]
-    pub fn person(policy: WorkspacePolicy, person: impl Into<String>) -> Self {
+    pub fn person(
+        policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
+        person: impl Into<String>,
+    ) -> Self {
         Self {
             person: person.into(),
-            policy,
+            policy: policy.into(),
             bounds: Vec::new(),
         }
     }
@@ -80,7 +87,11 @@ impl Standing {
     /// The person acting through a delegation.
     #[must_use]
     pub fn bounded_by(self, subject: Subject, grants: Vec<Grant>) -> Self {
-        self.with_bound(Bound { subject, grants })
+        self.with_bound(Bound {
+            subject,
+            grants,
+            also: Vec::new(),
+        })
     }
 
     /// The person acting through `bound`, such as
@@ -117,11 +128,7 @@ impl Standing {
     /// The authority this standing confers.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {
-        let mut authority = Authority::person(self.policy.party(&self.person));
-        for bound in &self.bounds {
-            authority = authority.bounded_by(bound.party(&self.policy.grants));
-        }
-        authority
+        crate::invoker::authority_of(&self.policy, &self.person, &self.bounds)
     }
 
     #[must_use]

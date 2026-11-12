@@ -25,12 +25,8 @@ use tilo_peer_state::owner::{
     NativeWorkspaceOwner, OwnerJoinWorkspaces, VerifiedNativeEnrollmentIntent, open_file,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCert, RevocationList};
-
-mod common;
-
-tilo_automerge_isolate::test_worker!();
 
 /// A device at `key` under `root`.
 fn device(root: u8, key: u8, label: &str) -> (SigningKey, SigningKey, DeviceCert) {
@@ -175,8 +171,8 @@ fn is_member(
 /// A workspace with three people: its owner's device answers the workspace's host, a
 /// second person's device holds it as a participant, and a third joins
 /// through that participant, which then removes them.
-#[test]
-fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
+#[tokio::test]
+async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
     let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
@@ -228,6 +224,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         &key_a,
         now,
     )
+    .await
     .unwrap();
     for message in outgoing(&a, workspace, now) {
         governor
@@ -261,7 +258,6 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -278,7 +274,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         .issue_invitation(
             workspace,
             &cert_b,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id: [3; 32],
                 role: MemberRole::Editor,
                 recipient_user_public_key: Some(cert_c.user_public_key),
@@ -289,10 +285,11 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
                     .unwrap(),
                 inviter_name: None,
             },
-            vec![hint(&cert_b, &key_b)],
+            &[hint(&cert_b, &key_b)],
             &key_b,
             now,
         )
+        .await
         .unwrap();
     let joined = JoinAnswer(OwnerJoinWorkspaces::new(b.clone(), key_b.clone()));
     let verified = join::decode_and_verify_invitation(
@@ -345,7 +342,6 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -371,19 +367,19 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         &key_b,
         now,
     )
+    .await
     .unwrap();
     assert!(
         !is_member(&b, workspace, &cert_c, now),
         "B's own engine dropped C"
     );
-    for (label, owner, key) in [("A", &a, &key_a), ("C", &c, &key_c)] {
+    for (label, owner) in [("A", &a), ("C", &c)] {
         for message in outgoing(&b, workspace, now) {
             owner
                 .receive(
                     workspace,
                     TransportOrigin::RelayDelta(cert_b.device_public_key),
                     message.clone(),
-                    Some(key),
                     now,
                 )
                 .unwrap_or_else(|error| panic!("{label} refuses B's removal: {error}"));
@@ -415,6 +411,7 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
             &key_c,
             now,
         )
+        .await
         .is_err(),
         "the removed device's writes are refused"
     );
@@ -423,8 +420,8 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
 /// An invitation is the issuer's own link: the person who made it lists it
 /// while it is redeemable and cancels it from their own device, after which
 /// the link admits nobody, and another person's device cancels nothing.
-#[test]
-fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
+#[tokio::test]
+async fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
     use tilo_peer_state::join::invitations::CancelInvitationRequest;
 
     let directory = tempfile::tempdir().unwrap();
@@ -470,7 +467,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -481,7 +477,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
         .issue_invitation(
             workspace,
             &cert_b,
-            IssueInvitationRequest {
+            &IssueInvitationRequest {
                 request_id: [13; 32],
                 role: MemberRole::Viewer,
                 recipient_user_public_key: None,
@@ -492,10 +488,11 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
                     .unwrap(),
                 inviter_name: None,
             },
-            vec![hint(&cert_b, &key_b)],
+            &[hint(&cert_b, &key_b)],
             &key_b,
             now,
         )
+        .await
         .unwrap();
     let pending = b.pending_invitations(workspace, now).unwrap();
     assert_eq!(pending.len(), 1, "B's one invitation is still open");
@@ -509,7 +506,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -566,7 +562,6 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
             workspace,
             TransportOrigin::RelayDelta(cert_b.device_public_key),
             message,
-            Some(&key_a),
             now,
         )
         .unwrap();
@@ -578,7 +573,7 @@ fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
 /// holds, after the link alone, what the other device holds, on disk too.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
-    use common::{addr, localhost_endpoint};
+    use crate::common::{addr, localhost_endpoint};
     use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 
     let directory = tempfile::tempdir().unwrap();
@@ -615,28 +610,31 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
             workspace,
             TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
             postcard::from_bytes(bytes).unwrap(),
-            Some(&key_a),
             now,
         )
         .unwrap();
     }
-    // A's device saves a shortcut of its own: a workspace change its own owner
-    // publishes, which B's device has no way to have before the link.
-    let mut hint = testing::shortcut("link");
-    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut hint, &cert_a, &key_a).unwrap();
-    a.commit_shortcut_change(
-        &OwnerCommitRequest {
+    // A's device saves a shortcut of its own, as one of the workspace's
+    // settings: a workspace change its own owner publishes, which B's device
+    // has no way to have before the link.
+    let mut saved = testing::shortcut("link");
+    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut saved, &cert_a, &key_a)
+        .unwrap();
+    a.commit_workspace_membership_command(
+        OwnerCommitRequest {
             workspace: WORKSPACE.into(),
-            operation: CommitOperation::ShortcutChange {
+            operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_a.clone(),
-                change: serde_json::to_vec(&tilo_automation::ShortcutChange::Save(Box::new(hint)))
-                    .unwrap(),
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+                    tilo_automation::ShortcutChange::Save(Box::new(saved.clone())),
+                )),
             },
         },
         &key_a,
         now,
     )
+    .await
     .unwrap();
     let held = a
         .with_current(workspace, |view| Ok(view.peer().workspace_heads()))
@@ -705,6 +703,16 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
             .unwrap(),
         held,
         "the link's frames are in B's record"
+    );
+    assert_eq!(
+        reopened
+            .with_current(workspace, |view| Ok(view
+                .peer()
+                .workspace()
+                .workspace_shortcuts()))
+            .unwrap(),
+        vec![tilo_automation::SavedShortcut::encode(&saved)],
+        "the shortcut A saved is one of the workspace's records on B's device"
     );
     link.abort();
 }

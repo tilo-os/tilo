@@ -126,7 +126,20 @@ struct Workspace {
 
 impl Workspace {
     fn new() -> Self {
+        Self::open(None)
+    }
+
+    /// As [`Self::new`], the app's actions reading the clock `at` from the seed on: what a test
+    /// sorting by when a field changed needs, so its versions stand one after another.
+    fn at(at: &str) -> Self {
+        Self::open(Some(at))
+    }
+
+    fn open(at: Option<&str>) -> Self {
         let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TASKS, "")]);
+        if let Some(at) = at.map(str::to_owned) {
+            ada.host.set_clock(move || at.clone());
+        }
         let meta = packages[0].meta.clone();
         let board = ada.host.root_of(APP).unwrap();
         ada.commit();
@@ -463,9 +476,18 @@ fn a_listing_kept_across_a_change_lists_as_one_read_anew() {
 /// from the index's stamps of those changes and no item of the workspace.
 #[test]
 fn a_listing_ordered_by_when_a_field_changed_reads_the_indexs_stamps() {
-    let mut workspace = Workspace::new();
-    // Checked in this order, the task checked last stands first.
+    // The tasks are seeded at 09:00, so their `done` was last changed by the version that made
+    // them; the two people's checks come after, one at 10:00 and one at 10:05.
+    let mut workspace = Workspace::at("2026-10-27T09:00:00Z");
+    workspace
+        .ada
+        .host
+        .set_clock(|| "2026-10-27T10:00:00Z".to_owned());
     workspace.call("check", vec![Value::resource(&workspace.tasks()[0])]);
+    workspace
+        .ada
+        .host
+        .set_clock(|| "2026-10-27T10:05:00Z".to_owned());
     workspace.call("check", vec![Value::resource(&workspace.tasks()[2])]);
     let task = workspace.ty("Task");
     let resolved = resolve(

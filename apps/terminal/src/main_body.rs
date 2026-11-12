@@ -80,8 +80,9 @@ pub(crate) fn classify_pty_read(
 }
 
 /// What the session banner says once the shell has exited.
-const SESSION_ENDED_MESSAGE: &str =
-    "Session ended. The shell has exited, so typing no longer reaches it.";
+fn session_ended_message() -> String {
+    crate::i18n::t("terminal-session-ended")
+}
 
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
@@ -469,6 +470,13 @@ pub struct TerminalWidget {
     local_session: Option<String>,
     /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
+    /// The device this terminal runs on and who uses it, as its window
+    /// says; `None` where the host does not say (a terminal an editor
+    /// starts in its panel), which then treats every session as its own.
+    here: Option<Here>,
+    /// The record says the session is set up in another device's window, or
+    /// another participant's: this terminal joins it instead of starting one.
+    runs_elsewhere: bool,
 
     /// True while the alternate screen is the active buffer.
     alt_active: bool,
@@ -649,6 +657,16 @@ pub struct TerminalWidget {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// The session's `run`, as this widget's record publishes it: what a
+    /// narrated run is shown at. `None` without a record of its own.
+    run_action: Option<ui::tilo_actions::ActionAddress>,
+}
+
+/// The device a terminal runs on and who uses it there: a session set up
+/// by them on it is this terminal's own to start again.
+struct Here {
+    device: String,
+    me: String,
 }
 
 /// The person's command history this terminal adds its runs to.
@@ -767,7 +785,7 @@ impl TerminalWidget {
             session_disconnected: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             child_killer: None,
-            session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
+            session_status_message: Arc::new(Mutex::new(session_ended_message())),
             grid: vec![" ".repeat(width); height],
             grid_attrs: vec![vec![Attr::default(); width]; height],
             cursor_x: 0,
@@ -790,6 +808,8 @@ impl TerminalWidget {
             recorded_target: None,
             local_session: None,
             recorded_relay_session: None,
+            here: None,
+            runs_elsewhere: false,
             alt_active: false,
             modes: TermModes::default(),
             scroll_offset: 0,
@@ -845,6 +865,7 @@ impl TerminalWidget {
             environments_panel: EnvironmentsPanel::default(),
             runs: RunState::default(),
             copy: ui::CopyWatch::default(),
+            run_action: None,
         }
     }
 
@@ -855,7 +876,8 @@ impl TerminalWidget {
     fn begin_local_session(&mut self) {
         self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
-        self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
+        let device = self.here_device();
+        self.submit(crate::resource::Terminal::CLAIM_PANE.with((self.pane_id.clone(), device)));
         self.begin_runs();
         self.emulating = true;
         self.emulator = crate::emulator::Emulator::new(self.width, self.height);
@@ -870,6 +892,22 @@ impl TerminalWidget {
         if let Ok(mut current) = self.waker.lock() {
             *current = waker;
         }
+    }
+
+    /// This terminal runs on `device`, used by `me`: a session another
+    /// device or participant set up is joined, not started again
+    /// ([`crate::resource::Terminal::runs_elsewhere`]).
+    pub(crate) fn runs_on(&mut self, device: &str, me: &str) {
+        self.here = Some(Here {
+            device: device.to_owned(),
+            me: me.to_owned(),
+        });
+    }
+
+    /// The device this terminal says its session is set up on, when its
+    /// host said.
+    pub(crate) fn here_device(&self) -> Option<String> {
+        self.here.as_ref().map(|here| here.device.clone())
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
@@ -922,10 +960,9 @@ impl TerminalWidget {
     }
 
     fn disconnected_message(&self) -> String {
-        self.session_status_message.lock().map_or_else(
-            |_| SESSION_ENDED_MESSAGE.to_owned(),
-            |message| message.clone(),
-        )
+        self.session_status_message
+            .lock()
+            .map_or_else(|_| session_ended_message(), |message| message.clone())
     }
 
     fn status_banner_message(&self) -> Option<String> {
@@ -1015,6 +1052,33 @@ impl TerminalWidget {
 
     fn terminal_transcript_target(&self) -> String {
         format!("terminal.transcript:{}", self.pane_id)
+    }
+
+    /// The line the session's input goes in, keyed per pane so two terminals
+    /// on one surface stay two places.
+    fn terminal_prompt_target(&self) -> String {
+        format!("terminal.prompt:{}", self.pane_id)
+    }
+
+    /// Where the prompt stands: the cursor's own cell. The on-screen
+    /// keyboard's caret and a run asked of the session both land here.
+    #[must_use]
+    pub fn prompt_rect(&self) -> Rect {
+        let row = self
+            .grid
+            .len()
+            .saturating_sub(self.height)
+            .saturating_add(self.cursor_y)
+            .saturating_sub(self.viewport_start_y);
+        let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
+        let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
+        Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
+    }
+
+    /// The `run` a narrated one lands at, as the record this terminal's
+    /// surface publishes it ([`Self::run_action`]).
+    pub(crate) fn set_run_action(&mut self, run: ui::tilo_actions::ActionAddress) {
+        self.run_action = Some(run);
     }
 
     fn terminal_link_resource_id(&self, link_id: u16) -> String {
@@ -1183,6 +1247,7 @@ impl TerminalWidget {
             OpenState::Unopened => ("unopened", None),
             OpenState::Opening => ("opening", None),
             OpenState::Open => ("open", None),
+            OpenState::Joined => ("joined", None),
             OpenState::AwaitingAllow => ("awaiting_allow", None),
             OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
             OpenState::NoRuntime(reason) => ("no_runtime", Some(reason.as_str())),
@@ -1212,7 +1277,8 @@ impl TerminalWidget {
                 self.links.get(&link_id).map(|url| {
                     AccessNode::new(Role::Link)
                         .with_name(link_resource_label(url))
-                        .with_description("Link in visible terminal output")
+                        .with_description(crate::i18n::t("terminal-link-in-output"))
+                        .with_semantic_key(self.terminal_link_resource_id(link_id))
                         .with_action_target(self.terminal_link_resource_id(link_id))
                         .with_state(AccessState::new().focusable(true))
                 })
@@ -1229,6 +1295,7 @@ impl TerminalWidget {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.chip_label()?)
+                .with_semantic_key(format!("terminal.target:{}", self.pane_id))
                 .with_action_target(format!("terminal.target:{}", self.pane_id))
                 .with_bounds(self.chip_rect)
                 .with_state(
@@ -1688,7 +1755,7 @@ impl TerminalWidget {
     /// End the process's input, as a failed write does. Test accessor.
     #[cfg(test)]
     pub(crate) fn mark_disconnected_for_test(&self) {
-        self.mark_disconnected("Session ended — input unavailable");
+        self.mark_disconnected(&crate::i18n::t("terminal-session-input-unavailable"));
     }
 
     pub fn context_menu_is_open(&self) -> bool {
@@ -2318,7 +2385,16 @@ impl TerminalWidget {
                 self.try_write_input(text.as_bytes())?;
             }
             E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
-            E::Interrupt => self.try_write_input(&[0x03])?,
+            E::Interrupt => {
+                if self.headless {
+                    // A terminal with no process of its own has no shell to
+                    // interrupt: the workspace's host stops the run it has
+                    // there, as Ctrl+C in that session does.
+                    self.submit(crate::resource::Terminal::STOP.with(()));
+                } else {
+                    self.try_write_input(&[0x03])?;
+                }
+            }
             E::Clear => self.try_write_input(&[0x0c])?,
             E::Restart => self.restart_session()?,
             E::CopySelection => {
@@ -2903,6 +2979,10 @@ impl TerminalWidget {
         self.runs.session = Some(std::rc::Rc::clone(state));
         self.recorded_target = state.session_target();
         self.recorded_relay_session = state.relay().map(str::to_owned);
+        self.runs_elsewhere = self
+            .here
+            .as_ref()
+            .is_some_and(|here| state.runs_elsewhere(&here.device, &here.me));
         if !state.pane_id().is_empty() {
             state.pane_id().clone_into(&mut self.pane_id);
         }
@@ -2973,7 +3053,7 @@ impl TerminalWidget {
             self.feed(&crate::scenarios::output(name));
         }
         if name == "ended" {
-            self.mark_disconnected("Session ended — input unavailable");
+            self.mark_disconnected(&crate::i18n::t("terminal-session-input-unavailable"));
         }
         self.stage_view(name);
     }
@@ -3042,7 +3122,8 @@ impl Widget for TerminalWidget {
         dyn Findable,
         dyn ui::AppWidget,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::LocalUndo
+        dyn ui::undo::LocalUndo,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -3460,17 +3541,7 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.focused.then(|| {
-            let row = self
-                .grid
-                .len()
-                .saturating_sub(self.height)
-                .saturating_add(self.cursor_y)
-                .saturating_sub(self.viewport_start_y);
-            let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
-            Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
-        })
+        self.focused.then(|| self.prompt_rect())
     }
 
     /// A terminal always declares terminal input, so the on-screen keyboard
@@ -3565,16 +3636,14 @@ impl Widget for TerminalWidget {
             .iter()
             .filter(|placement| placement.alternate_screen == self.alt_active)
             .count();
-        let mut description = if graphics == 0 {
-            "Terminal output shared with collaborators. Typing is sent to the live process. Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page Down reviews output history".to_string()
-        } else {
-            format!(
-                "Terminal output shared with collaborators. Typing is sent to the live process. \
-                 Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page \
-                 Down reviews output history. {graphics} graphical placement(s) are visible when \
-                 their image blobs are available"
-            )
-        };
+        let mut description = crate::i18n::t("terminal-a11y-description");
+        if graphics > 0 {
+            description.push(' ');
+            description.push_str(&crate::i18n::t_args(
+                "terminal-a11y-graphics",
+                &[("count", graphics.to_string().into())],
+            ));
+        }
         if self.is_disconnected() {
             description.push_str(". ");
             description.push_str(&self.disconnected_message());
@@ -3597,6 +3666,18 @@ impl Widget for TerminalWidget {
             );
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
+        }
+        // The prompt: the line input goes in, where a run the session's
+        // record is asked for is shown landing. It carries no verb of its
+        // own — typing reaches the process as keys, never as an action — and
+        // a terminal with no record behind it runs nothing to show.
+        if self.run_action.is_some() {
+            transcript.children.push(
+                AccessNode::new(Role::TextInput)
+                    .with_name(t("terminal-prompt"))
+                    .with_semantic_key(self.terminal_prompt_target())
+                    .with_bounds(self.prompt_rect()),
+            );
         }
         if let Some(failure) = self.start_failure_accessibility() {
             transcript.children.push(failure);
@@ -3715,6 +3796,21 @@ impl Widget for TerminalWidget {
         } else {
             false
         }
+    }
+}
+
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    /// The prompt is where a `run` on this session's record lands: the
+    /// framework shows a colleague or an agent acting there its cursor,
+    /// bound exactly as a button is to the action it presses.
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let Some(run) = &self.run_action else {
+            return Vec::new();
+        };
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self.terminal_prompt_target(),
+            kind: ui::widget::ControlBindingKind::Action(run.clone()),
+        }]
     }
 }
 
@@ -4267,6 +4363,12 @@ impl TerminalWidget {
         }
         if let Some(b) = bytes {
             let _ = self.try_write_input(&b);
+            // A terminal with no process of its own runs no shell for its
+            // session, so a Ctrl+C here has the workspace's host stop the
+            // run it has there.
+            if b == [0x03] && self.headless {
+                self.submit(crate::resource::Terminal::STOP.with(()));
+            }
             // Typing snaps the viewport back to the live bottom.
             self.set_scroll_offset(0);
             *handled = true;
@@ -5554,79 +5656,6 @@ pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
     )
 }
 
-/// Resolve the user's native shell for the standalone fallback path.
-/// Windows uses `COMSPEC`, falling back to `cmd.exe`.
-///
-/// Unix resolution order:
-/// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
-///    (this is how fish, when it is the login shell, gets launched here).
-/// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
-///    shell the system records for this account. A login session that spawned
-///    the terminal through a path that does not export `$SHELL` still lands on
-///    the right shell instead of a hardcoded `/bin/sh`.
-/// 3. **`/bin/sh`** — last resort so a session never fails to start.
-pub fn resolve_login_shell() -> String {
-    #[cfg(windows)]
-    {
-        std::env::var("COMSPEC")
-            .ok()
-            .filter(|shell| !shell.trim().is_empty())
-            .unwrap_or_else(|| "cmd.exe".into())
-    }
-    #[cfg(unix)]
-    resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
-}
-
-/// Pure core of [`resolve_login_shell`], with the two environment lookups
-/// injected so the precedence is testable without mutating process-global
-/// state (which would race parallel tests).
-#[cfg(unix)]
-pub(crate) fn resolve_login_shell_with(
-    shell_env: Option<String>,
-    passwd_shell: Option<String>,
-) -> String {
-    if let Some(s) = shell_env
-        && !s.is_empty()
-    {
-        return s;
-    }
-    if let Some(s) = passwd_shell
-        && !s.is_empty()
-    {
-        return s;
-    }
-    "/bin/sh".into()
-}
-
-/// The command the Host target runs off Tilo: the user's native shell as chosen
-/// by [`resolve_login_shell`], with the process environment inherited.
-pub(crate) fn login_shell_command() -> CommandBuilder {
-    CommandBuilder::new(resolve_login_shell())
-}
-
-/// The login shell recorded for the current real user in the passwd database
-/// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
-#[cfg(unix)]
-pub(crate) fn login_shell_from_passwd() -> Option<String> {
-    use std::ffi::CStr;
-    // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
-    // (valid until the next passwd/`getpwuid` call, of which we make none
-    // before copying out). We null-check before dereferencing, and copy the
-    // `pw_shell` C string into an owned `String` while the pointer is live.
-    unsafe {
-        let uid = tilo_process::uid();
-        let pw = libc::getpwuid(uid);
-        if pw.is_null() {
-            return None;
-        }
-        let shell = (*pw).pw_shell;
-        if shell.is_null() {
-            return None;
-        }
-        Some(CStr::from_ptr(shell).to_string_lossy().into_owned())
-    }
-}
-
 /// A PTY master with no process behind it.
 struct NullMaster;
 impl MasterPty for NullMaster {
@@ -5798,7 +5827,9 @@ impl TerminalBackend {
                     cmd.args(rest);
                     cmd
                 } else {
-                    login_shell_command()
+                    // The login shell this account starts, with the process
+                    // environment inherited.
+                    CommandBuilder::new(tilo_process::login_shell::login_shell())
                 };
                 Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
             }
@@ -6194,48 +6225,41 @@ fn ush_service_backend(
 ///
 /// # Errors
 /// No launcher connection, or the supervisor did not answer.
-#[cfg(unix)]
 pub(crate) fn ush_service_ask(
     request: &serde_json::Value,
     workspace: Option<&str>,
 ) -> Result<String, String> {
-    if !(USH_SERVICE.was_taken() || ush_service_fd().is_some()) {
-        return Err("environments are managed through Tilo's shell runtime".into());
-    }
+    use runtime_portal::service_socket::{ControlError, ServiceSocketError};
+
     let mut request = request.clone();
     crate::sessions::with_workspace(&mut request, workspace);
     let mut line = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     line.push(b'\n');
-    let ask = |stream: &std::os::unix::net::UnixStream| -> Result<String, String> {
-        let mut writer = stream;
-        writer
-            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-            .and_then(|()| writer.flush())
-            .map_err(|e| e.to_string())?;
-        let (hello, rights) =
-            runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| e.to_string())?;
-        let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
-        if !rights.is_empty()
-            || ready
-                .as_ref()
-                .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
-        {
-            return Err(t("terminal-service-protocol-unavailable"));
-        }
-        writer
-            .write_all(&line)
-            .and_then(|()| writer.flush())
-            .map_err(|e| e.to_string())?;
-        let (reply, rights) =
-            runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| e.to_string())?;
-        if !rights.is_empty() {
-            return Err("the shell runtime answered with descriptors nobody asked for".into());
-        }
-        String::from_utf8(reply).map_err(|e| e.to_string())
-    };
     // SAFETY: this instance alone owns the inherited fd; the exchange keeps
     // only the control connection and hands out no lease.
-    unsafe { USH_SERVICE.with_control(ask) }.map_err(|error| error.to_string())?
+    let exchanged = unsafe {
+        USH_SERVICE.exchange(|link| -> Result<String, String> {
+            link.send(b"{\"op\":\"hello\",\"protocol\":2}\n")
+                .map_err(|e| e.to_string())?;
+            let negotiation = link.answer().map_err(|e| e.to_string())?;
+            let ready = serde_json::from_slice::<serde_json::Value>(&negotiation).ok();
+            if ready
+                .as_ref()
+                .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
+            {
+                return Err(t("terminal-service-protocol-unavailable"));
+            }
+            link.send(&line).map_err(|e| e.to_string())?;
+            let answer = link.answer().map_err(|e| e.to_string())?;
+            String::from_utf8(answer).map_err(|e| e.to_string())
+        })
+    };
+    exchanged.map_err(|error| match error {
+        ControlError::Socket(
+            ServiceSocketError::Missing | ServiceSocketError::InUse | ServiceSocketError::Poisoned,
+        ) => "environments are managed through Tilo's shell runtime".to_owned(),
+        other => other.to_string(),
+    })?
 }
 
 #[cfg(windows)]
@@ -6688,11 +6712,11 @@ impl TerminalWidget {
             .name("tilo-terminal-child-wait".into())
             .spawn(move || {
                 let message = if child.wait().is_ok() {
-                    SESSION_ENDED_MESSAGE
+                    session_ended_message()
                 } else {
-                    "Session ended. The shell's exit status could not be read."
+                    crate::i18n::t("terminal-session-exit-unknown")
                 };
-                set_terminal_disconnected(&disconnected, &status, message);
+                set_terminal_disconnected(&disconnected, &status, &message);
                 child_exit.ended(SessionEnd::Exited);
                 request_terminal_wake(&waker);
             })
@@ -6729,8 +6753,9 @@ impl TerminalWidget {
         self.output_rx = output_rx;
         self.deferred_output.set(None);
         self.session_disconnected = Arc::new(AtomicBool::new(false));
-        self.session_status_message =
-            Arc::new(Mutex::new("Session ended — input unavailable".into()));
+        self.session_status_message = Arc::new(Mutex::new(crate::i18n::t(
+            "terminal-session-input-unavailable",
+        )));
         self.begin_local_session();
         self.runs.marks = backend.runs.map(crate::runs::Marks::new);
         let widget = self;
@@ -6758,7 +6783,7 @@ impl TerminalWidget {
                         set_terminal_disconnected(
                             &session_disconnected,
                             &session_status_message,
-                            "Session ended. The terminal can no longer read from the shell.",
+                            &crate::i18n::t("terminal-session-read-failed"),
                         );
                         request_terminal_wake(&waker);
                         break;
@@ -6774,7 +6799,7 @@ impl TerminalWidget {
                             set_terminal_disconnected(
                                 &session_disconnected,
                                 &session_status_message,
-                                SESSION_ENDED_MESSAGE,
+                                &session_ended_message(),
                             );
                             // The shell exited (its window closes), or the
                             // connection to a remote one was lost (the tab

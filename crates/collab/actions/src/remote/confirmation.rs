@@ -21,6 +21,26 @@ pub enum Confirmation {
     Witnessed(String),
 }
 
+/// What a confirmation is bound to of an invocation's arguments: their
+/// digest, so a host that keeps the person's answer for one invocation keeps
+/// no raw input, and arguments other than the ones answered find no answer.
+/// `argument` is the invocation's argument as it travels
+/// ([`InvokeArgument::to_slot`](super::InvokeArgument::to_slot)).
+#[must_use]
+pub fn argument_digest(argument: Option<&str>) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    match argument {
+        Some(value) => {
+            hasher.update(b"some\0");
+            hasher.update(value.as_bytes());
+        }
+        None => {
+            hasher.update(b"none\0");
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
 /// The person's answer to [`ActionHost::confirm`](super::ActionHost::confirm):
 /// the confirmation to invoke again with, and the arguments to invoke with.
 ///
@@ -65,7 +85,7 @@ impl ConfirmedInvocation {
 /// The device asking is the transport-authenticated one, so the labels here
 /// are shown as that device's own words; the answer names this one
 /// invocation and nothing else.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfirmationQuestion {
     /// Names this question, so the answer names it back.
@@ -76,11 +96,24 @@ pub struct ConfirmationQuestion {
     // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
     #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
-    /// The action, and what it acts on, as the asking device labels them.
+    /// The run the invocation is a step of, by the title its agent gave it;
+    /// empty when it named none.
+    pub run: String,
+    /// The action by the title its app declares, and the record it acts on
+    /// by its name, as the asking device labels them.
     pub action_label: String,
     pub resource_label: String,
+    /// The arguments it would run with, as a reviewer reads them
+    /// ([`Draft::summary`](crate::draft::Draft::summary)): secrets withheld.
+    pub arguments: Vec<(String, String)>,
     /// What the action risks, by [`RiskLevel::name`](crate::RiskLevel::name).
     pub risk: String,
+    /// What it is able to do, by [`ActionKind`](crate::ActionKind)'s name
+    /// (`read`, `undoable`, `outside`); empty when the asker cannot say.
+    pub kind: String,
+    /// Whether Undo takes it back
+    /// ([`ActionContract::can_be_undone`](crate::ActionContract::can_be_undone)).
+    pub undoable: bool,
 }
 
 /// The person's answer to a [`ConfirmationQuestion`].

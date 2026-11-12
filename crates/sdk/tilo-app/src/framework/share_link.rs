@@ -334,17 +334,38 @@ fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting,
     let args = &request.args;
     let text = |name: &str| args.get(name).and_then(serde_json::Value::as_str);
     let view = match text("view") {
-        Some(id) => request
-            .views
-            .iter()
-            .find(|view| view.id == id)
-            .ok_or_else(|| format!("This has no view `{id}`"))?,
+        Some(id) => Some(
+            request
+                .views
+                .iter()
+                .find(|view| view.id == id)
+                .ok_or_else(|| format!("This has no view `{id}`"))?,
+        ),
         None => request
             .views
             .iter()
             .find(|view| view.primary)
-            .or_else(|| request.views.first())
-            .ok_or("This has no view to link to")?,
+            .or_else(|| request.views.first()),
+    };
+    // Without a view the link names the record alone, which opens in its
+    // app: only a record's root offers the link so ([`tilo_resource::share::offer_record`]).
+    let Some(view) = view else {
+        let mode = match text("mode").unwrap_or("app") {
+            "app" => Mode::App,
+            "desktop" => Mode::Desktop,
+            other => return Err(format!("Unknown mode `{other}`")),
+        };
+        if args.get("start").is_some_and(|value| !value.is_null()) {
+            return Err("A record's link opens no range".into());
+        }
+        return Ok(Minting {
+            provider,
+            app,
+            record,
+            resource: None,
+            view: None,
+            mode,
+        });
     };
     let offset = |name: &str| -> Result<Option<usize>, String> {
         args.get(name)
@@ -588,6 +609,27 @@ mod tests {
             render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
             format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
         );
+    }
+
+    /// A record's root that declares no view still links: to the record, which opens in its app.
+    #[test]
+    fn a_root_without_views_links_its_record() {
+        let mut root = request(&serde_json::json!({}));
+        root.resource = "chat".into();
+        root.views.clear();
+        let record =
+            |root: &ShareRequest| render(&minting(root, &CHAT)?, &page(Some("https://tilo.so/")));
+        assert_eq!(
+            record(&root).unwrap(),
+            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
+        );
+        root.args.insert("mode".into(), "desktop".into());
+        assert_eq!(
+            record(&root).unwrap(),
+            format!("https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
+        );
+        root.args.insert("view".into(), "message".into());
+        assert!(record(&root).is_err(), "a view it does not have is refused");
     }
 
     /// A host answering with what the desk's `issue-invitation` answers.

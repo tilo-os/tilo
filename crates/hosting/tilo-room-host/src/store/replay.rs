@@ -60,6 +60,8 @@ pub(crate) struct CaptureLeases {
     /// How each retained channel's record syncs
     /// ([`super::record_sync`]).
     pub(super) records: super::record_sync::RecordClasses,
+    /// Which retained channels' records are sealed ([`super::sealed`]).
+    pub(super) sealed: super::sealed::SealedChannels,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -110,6 +112,7 @@ impl WorkspaceStore {
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
         every_record: bool,
+        channels: Option<&std::collections::BTreeSet<[u8; 32]>>,
     ) -> Result<Option<fs::DirEntry>, StoreError> {
         loop {
             let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
@@ -118,7 +121,15 @@ impl WorkspaceStore {
             let entry = entry?;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if !every_record && self.leaves_out_on_demand(&name)? {
+                if !every_record && self.leaves_out_on_demand(&name) {
+                    continue;
+                }
+                // A confined device is replayed the lineages of its own
+                // record's channel; another record's is none of its.
+                if channels.is_some_and(|channels| {
+                    super::record_sync::lineage_channel(&name)
+                        .is_some_and(|channel| !channels.contains(&channel))
+                }) {
                     continue;
                 }
             }
@@ -149,8 +160,9 @@ impl WorkspaceStore {
     }
 
     /// Forget what captures listed of every lineage on `channel`, of any
-    /// author.
+    /// author, and whether its record is sealed: its history is rewritten.
     pub(crate) fn forget_channel_listing(&self, channel: &[u8; 32]) {
+        self.capture_leases.sealed.forget(channel);
         let suffix = format!("-{}", hex::encode(channel));
         let mut listed = self.listed_lineages();
         let mut gone = 0usize;
@@ -395,21 +407,58 @@ fn v1_frame_charge(
 ) -> Result<u64, StoreError> {
     frame_charge(envelope, raw_len, frame_payload(framed), capacity)
 }
-/// Sort rank of a retained lineage (`<author>-<channel>`): a device's
-/// certificate channel replays first, because a shell drops what a device
-/// published until it holds that device's certificate, and channels are
-/// otherwise ordered by hash.
+/// Sort rank of a retained lineage (`<author>-<channel>`) by its name: a
+/// device's certificate channel replays first, because a shell drops what a
+/// device published until it holds that device's certificate; the workspace's
+/// shared desktop record after the governance, because it is what a joining
+/// page shows first and its desktop waits for it rather than for the whole
+/// replay; and channels are otherwise ordered by hash. A capture also ranks
+/// every lineage that carries no record (the workspace's own document, its
+/// channels' governance) right after the certificates
+/// ([`WorkspaceStore::capture_rank`]): a record's frames wait for the
+/// governance that admits their author and names the group whose keys open
+/// them, and a page asks to join a group only once it has heard of it.
 pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
-    let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
-        // ignored-failure: only a sort rank; a lineage not named for an author ranks last
-        let Ok(author) = hex::decode(author) else {
-            return false;
-        };
+    let Some((author, channel)) = lineage.split_once('-') else {
+        return "3";
+    };
+    // ignored-failure: only a sort rank; a lineage not named for an author ranks last
+    if let Ok(author) = hex::decode(author) {
         let mut route = b"identity-hello\0".to_vec();
         route.extend_from_slice(&author);
-        blake3::hash(&route).to_hex().as_str() == channel
-    });
-    if identity { "0" } else { "1" }
+        if blake3::hash(&route).to_hex().as_str() == channel {
+            return "0";
+        }
+    }
+    if channel == desktop_channel() {
+        "2"
+    } else {
+        "3"
+    }
+}
+
+/// The retained channel of the workspace's shared desktop record, as hex.
+fn desktop_channel() -> &'static str {
+    static CHANNEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CHANNEL.get_or_init(|| {
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+        hex::encode(neighbour_wire::retention::app_document_channel(
+            DESKTOP_APP,
+            DESKTOP_RECORD,
+        ))
+    })
+}
+
+impl WorkspaceStore {
+    /// The sort rank a capture gives the retained lineage `name`: its
+    /// [`lineage_rank`], and the governance's place right after the
+    /// certificates for a lineage that carries no record.
+    fn capture_rank(&self, name: &OsStr) -> &'static str {
+        match lineage_rank(&name.to_string_lossy()) {
+            "3" if !self.carries_record(name) => "1",
+            rank => rank,
+        }
+    }
 }
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
@@ -441,6 +490,9 @@ pub struct ReplayBuild {
     /// Replay every record, on-demand ones and earlier parts of chains
     /// included: a host attached to the workspace keeps all of it.
     every_record: bool,
+    /// Replay only these record channels' lineages: a browser environment's
+    /// device reaches its own record and nothing else of the workspace.
+    channels: Option<std::collections::BTreeSet<[u8; 32]>>,
     /// The frames listed to pin when the capture is prepared
     /// (`capture.manifest`): the retained frames, with the lease that keeps
     /// them in place until then ([`CaptureLeases`]), or a final cut's held
@@ -451,9 +503,8 @@ pub struct ReplayBuild {
 }
 /// The order a capture lists retained frame `name` of lineage `channel` in:
 /// by the lineage's rank, the lineage, its checkpoint first, then by name.
-fn lineage_key(channel: &OsStr, name: OsString) -> Vec<OsString> {
+fn lineage_key(rank: &'static str, channel: &OsStr, name: OsString) -> Vec<OsString> {
     let order = if name == "checkpoint.delta" { "0" } else { "1" };
-    let rank = lineage_rank(&channel.to_string_lossy());
     vec![rank.into(), channel.to_owned(), order.into(), name]
 }
 
@@ -461,6 +512,7 @@ fn lineage_key(channel: &OsStr, name: OsString) -> Vec<OsString> {
 /// what an earlier capture learned of it ([`ListedLineages`]).
 enum Lineage {
     Reading {
+        rank: &'static str,
         channel: OsString,
         generation: PathBuf,
         entries: fs::ReadDir,
@@ -469,6 +521,7 @@ enum Lineage {
         learned: Option<Vec<OsString>>,
     },
     Known {
+        rank: &'static str,
         channel: OsString,
         generation: PathBuf,
         frames: std::vec::IntoIter<OsString>,
@@ -521,6 +574,15 @@ impl ReplayBuild {
     /// Replay on-demand records and earlier parts of chains too.
     pub(crate) fn with_every_record(mut self, every_record: bool) -> Self {
         self.every_record = every_record;
+        self
+    }
+    /// Replay only the lineages of these record channels: everything else of
+    /// the workspace stays out of this device's replay.
+    pub(crate) fn with_channels(
+        mut self,
+        channels: Option<std::collections::BTreeSet<[u8; 32]>>,
+    ) -> Self {
+        self.channels = channels;
         self
     }
     /// Discard this build's work directory.
@@ -819,6 +881,7 @@ impl WorkspaceStore {
             next_pin: 0,
             skip: None,
             every_record: false,
+            channels: None,
             listed: Some((
                 io::BufWriter::new(File::create(root.join("capture.manifest"))?),
                 (!pending_only).then(|| self.lease_capture()),
@@ -913,7 +976,10 @@ impl WorkspaceStore {
             }
             if build.outer.is_none() {
                 let dir = match (build.phase, &build.held) {
-                    (2, _) => self.root.join("retained/v2"),
+                    (2, _) => {
+                        self.classify_lineages()?;
+                        self.root.join("retained/v2")
+                    }
                     (_, Some(held)) if !build.held_listed => held.clone(),
                     _ => self.pending_dir_for(&build.device),
                 };
@@ -930,6 +996,7 @@ impl WorkspaceStore {
             let selected = if let Some(lineage) = &mut build.child {
                 match lineage {
                     Lineage::Reading {
+                        rank,
                         channel,
                         generation,
                         entries,
@@ -948,7 +1015,7 @@ impl WorkspaceStore {
                                         *learned = None;
                                     }
                                 }
-                                Some((entry.path(), lineage_key(channel, name)))
+                                Some((entry.path(), lineage_key(rank, channel, name)))
                             } else {
                                 None
                             }
@@ -965,26 +1032,31 @@ impl WorkspaceStore {
                         }
                     }
                     Lineage::Known {
+                        rank,
                         channel,
                         generation,
                         frames,
                     } => {
                         if let Some(name) = frames.next() {
-                            Some((generation.join(&name), lineage_key(channel, name)))
+                            Some((generation.join(&name), lineage_key(rank, channel, name)))
                         } else {
                             build.child = None;
                             None
                         }
                     }
                 }
-            } else if let Some(entry) =
-                self.next_listed(&mut build.outer, build.phase, build.every_record)?
-            {
+            } else if let Some(entry) = self.next_listed(
+                &mut build.outer,
+                build.phase,
+                build.every_record,
+                build.channels.as_ref(),
+            )? {
                 let name = entry.file_name();
                 let kind = entry.file_type()?;
                 match build.phase {
                     2 if kind.is_dir() => {
                         let lineage = entry.path();
+                        let rank = self.capture_rank(&name);
                         // `next_listed` stepped over the lineages a capture
                         // leaves out. Counted: lineages listed from memory
                         // and from their generation.
@@ -992,6 +1064,7 @@ impl WorkspaceStore {
                         {
                             crate::timing::window("capture.lineage_known", crate::timing::start());
                             Some(Lineage::Known {
+                                rank,
                                 channel: name,
                                 generation,
                                 frames: frames.into_iter(),
@@ -999,6 +1072,7 @@ impl WorkspaceStore {
                         } else if let Some(active) = retained::current(&lineage)? {
                             crate::timing::window("capture.lineage_read", crate::timing::start());
                             Some(Lineage::Reading {
+                                rank,
                                 channel: name,
                                 entries: fs::read_dir(&active)?,
                                 generation: active,

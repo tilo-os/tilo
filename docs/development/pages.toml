@@ -36,3 +36,10 @@ source = "docs/security/README.md"
 section = "Rules"
 nav = "Security model"
 description = "The threat model, sign-in, boot chain, rollback and how secrets are kept."
+
+[[page]]
+slug = "testing-tilo-sh"
+source = "docs/testing-tilo-sh.md"
+section = "Start"
+nav = "Test tilo.sh locally"
+description = "Run the whole hosted product from your checkout with one command, point the tilo command, the SDKs and agents at it, and run its end-to-end check."

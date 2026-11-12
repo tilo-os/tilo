@@ -10,6 +10,11 @@
 //! changed), the IME window moving to another line or field, or the host
 //! asking for a fresh tree.
 //!
+//! A wheel scrolling moves every node on screen on every frame, which no
+//! reader follows: while it keeps turning, what changed waits until it rests
+//! ([`SCROLL_REST`]), or until [`SCROLL_LONGEST`] after the last delivery in
+//! a long scroll. Only focus moving or the host asking goes out at once.
+//!
 //! The host keeps the tree it holds, so after the first tree a delivery
 //! carries only what changed since the last one
 //! ([`ui::headless::write_inspection_patch`]), numbered so the host can tell
@@ -28,6 +33,12 @@ use ui::{
 #[cfg(target_arch = "wasm32")]
 pub(crate) const SEMANTICS_WINDOW_MS: u64 = 100;
 
+/// How long a wheel rests before the tree a scroll moved is delivered.
+pub(crate) const SCROLL_REST: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The longest a scroll holds the tree after the last delivery.
+pub(crate) const SCROLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How long after a presented frame its tree is built, at the soonest: long
 /// enough that the build runs in a task of its own, after the browser took
 /// the frame.
@@ -45,6 +56,35 @@ pub(crate) enum SemanticsDecision {
     Deferred(ui::time::Instant),
 }
 
+/// What the page's loop does about a tree waiting for its deadline.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TreeWait {
+    /// Deliver it now, in a status of its own.
+    Publish,
+    /// Come back at the instant, when it falls due later.
+    Wake(ui::time::Instant),
+}
+
+/// A tree past its deadline goes out with a status of its own, whatever the
+/// frame before it did. Asking for one more frame instead loses the tree
+/// whenever that frame does not come or does not draw — the GPU still holds
+/// the last one, the window presents itself as HTML, the page goes idle
+/// first — and the host then reads a screen whose content it cannot describe
+/// until some unrelated change delivers a tree. A status settles the windows
+/// a replayed frame replayed before it reads the tree, so a frame that
+/// replayed its windows needs no frame drawn first.
+pub(crate) fn tree_wait(
+    due: Option<ui::time::Instant>,
+    now: ui::time::Instant,
+) -> Option<TreeWait> {
+    let due = due?;
+    Some(if due <= now {
+        TreeWait::Publish
+    } else {
+        TreeWait::Wake(due)
+    })
+}
+
 pub(crate) struct SemanticsGate {
     schedule: PublicationSchedule,
     /// The status members of the last delivery: the whole tree, or a patch.
@@ -58,6 +98,12 @@ pub(crate) struct SemanticsGate {
     structure: u64,
     ime: u64,
     requested: bool,
+    /// The last input that could move things on screen was a wheel: until a
+    /// key, a press or a touch, the caret's line moving on screen is the
+    /// content scrolling under it, not the caret going to another line.
+    scrolling: bool,
+    /// When the last wheel input came.
+    wheel_at: Option<ui::time::Instant>,
 }
 
 impl SemanticsGate {
@@ -71,11 +117,70 @@ impl SemanticsGate {
             structure: 0,
             ime: 0,
             requested: false,
+            scrolling: false,
+            wheel_at: None,
         }
+    }
+    /// Read an input the mount took: a wheel scrolls what the caret is in, a
+    /// key, a press or a touch may move the caret itself.
+    pub(crate) fn note_input(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        now: ui::time::Instant,
+    ) {
+        use ui::winit::event::WindowEvent;
+        match event {
+            WindowEvent::MouseWheel { .. } => {
+                self.scrolling = true;
+                self.wheel_at = Some(now);
+            }
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::Ime(_)
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_) => self.scrolling = false,
+            _ => {}
+        }
+    }
+    /// Whether the IME window `ime` (its signature) stands on another line
+    /// than the tree the host holds says, as a reader must hear at once. While
+    /// a wheel scrolls, the line moves with the content and waits like it.
+    fn ime_moved(&self, ime: u64) -> bool {
+        ime != self.ime && !self.scrolling
+    }
+    /// While a wheel scrolls, when the tree it moved is due: once the wheel
+    /// rested, or [`SCROLL_LONGEST`] after the last delivery. `None` when no
+    /// wheel scrolls or that instant passed.
+    fn scroll_due(&self, now: ui::time::Instant) -> Option<ui::time::Instant> {
+        if !self.scrolling {
+            return None;
+        }
+        let rest = self.wheel_at?.checked_add(SCROLL_REST)?;
+        let due = match self.schedule.last_published() {
+            Some(last) => last
+                .checked_add(SCROLL_LONGEST)
+                .map_or(rest, |cap| rest.min(cap)),
+            None => rest,
+        };
+        (now < due).then_some(due)
+    }
+    /// Hold what a scroll changed until it is due ([`Self::scroll_due`]).
+    fn hold_scroll(&mut self, now: ui::time::Instant) -> Option<ui::time::Instant> {
+        let due = self.scroll_due(now)?;
+        self.schedule.hold(due);
+        Some(due)
     }
     /// The host wants the full tree with the next status even if unchanged.
     pub(crate) fn request(&mut self) {
         self.requested = true;
+    }
+    /// The keyboard owner path of the tree the host holds: what the page
+    /// matches its own accessible elements against, without building the
+    /// tree again. A focus change is a structure change, so it is published
+    /// at once rather than deferred, and this is the current one.
+    pub(crate) fn published_keyboard_owner(&self) -> Option<String> {
+        self.last
+            .as_ref()
+            .and_then(|last| last.keyboard_focus_owner.clone())
     }
     /// Whether a frame that only moved laid-out content would leave its
     /// tree unbuilt at `now` ([`Self::defer_unbuilt`], the IME line held),
@@ -100,7 +205,10 @@ impl SemanticsGate {
             return false;
         }
         let soon = now.checked_add(AFTER_FRAME).unwrap_or(now);
-        let urgent = self.requested || ime_signature(ime) != self.ime;
+        let urgent = self.requested || self.ime_moved(ime_signature(ime));
+        if !urgent && self.hold_scroll(now).is_some() {
+            return true;
+        }
         let at = match self.schedule.window_end(now) {
             Some(end) if !urgent => end.max(soon),
             _ => soon,
@@ -117,7 +225,7 @@ impl SemanticsGate {
         ime: Option<&ImeWindowState>,
         now: ui::time::Instant,
     ) -> bool {
-        if self.requested || self.last.is_none() || ime_signature(ime) != self.ime {
+        if self.requested || self.last.is_none() || self.ime_moved(ime_signature(ime)) {
             return false;
         }
         self.schedule.hold(now);
@@ -140,10 +248,10 @@ impl SemanticsGate {
         ime: Option<&ImeWindowState>,
         now: ui::time::Instant,
     ) -> bool {
-        if self.requested || self.last.is_none() || ime_signature(ime) != self.ime {
+        if self.requested || self.last.is_none() || self.ime_moved(ime_signature(ime)) {
             return false;
         }
-        self.schedule.defer(now).is_some()
+        self.hold_scroll(now).is_some() || self.schedule.defer(now).is_some()
     }
     /// Leave the tree of a frame that laid nothing out unbuilt: it shows
     /// what the last tree did, so there is nothing to deliver and nothing
@@ -156,7 +264,7 @@ impl SemanticsGate {
     ) -> bool {
         !self.requested
             && self.last.is_some()
-            && ime_signature(ime) == self.ime
+            && !self.ime_moved(ime_signature(ime))
             && self.schedule.nothing_due(now)
     }
     /// The status members a delivery from the last [`Self::decide`] adds,
@@ -191,7 +299,24 @@ impl SemanticsGate {
             self.schedule.clear_due();
             return SemanticsDecision::Unchanged;
         }
-        let forced = requested || structure != self.structure || ime != self.ime;
+        // Content a scroll brought on screen or took off it changes the
+        // structure too, and waits with the rest of the scroll; focus moving
+        // does not.
+        let focus_moved = self
+            .last
+            .as_ref()
+            .is_some_and(|last| last.keyboard_focus_owner != snapshot.keyboard_focus_owner);
+        let scroll_due = (!requested && !focus_moved)
+            .then(|| self.scroll_due(now))
+            .flatten();
+        let forced = requested
+            || focus_moved
+            || (structure != self.structure && scroll_due.is_none())
+            || self.ime_moved(ime);
+        if let Some(due) = scroll_due.filter(|_| !forced) {
+            self.schedule.hold(due);
+            return SemanticsDecision::Deferred(due);
+        }
         if forced {
             self.schedule.mark_published(now);
         } else if let PublicationDecision::Deferred(due) = self.schedule.decide(now) {
@@ -305,6 +430,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: Some(access),
             children: vec![],
         }
@@ -331,6 +457,7 @@ mod tests {
             child_clip: None,
             page_title: None,
             layout: None,
+            paint_key: None,
             semantics: None,
             children,
         };
@@ -486,10 +613,24 @@ mod tests {
         // After the first tree, a delivery is the patch to the last one: the
         // edited field alone.
         let patch = std::str::from_utf8(gate.text()).unwrap();
-        assert!(
-            patch.starts_with(r#""semanticsPatch":{"base":1,"keyboard_focus_owner":"/Column/TextInput[0]","seq":2,"viewport":[100,100],"ops":[{"p":["root",0,"s"],"own":{"#),
+        // Read as the page reads it: the members, in whatever order the
+        // build's JSON writer puts them.
+        let members: serde_json::Value = serde_json::from_str(&format!("{{{patch}}}")).unwrap();
+        let head = &members["semanticsPatch"];
+        assert_eq!(head["base"], 1, "{patch}");
+        assert_eq!(head["seq"], 2, "{patch}");
+        assert_eq!(
+            head["keyboard_focus_owner"], "/Column/TextInput[0]",
             "{patch}"
         );
+        assert_eq!(head["viewport"], serde_json::json!([100, 100]), "{patch}");
+        assert_eq!(head["ops"].as_array().map(Vec::len), Some(1), "{patch}");
+        assert_eq!(
+            head["ops"][0]["p"],
+            serde_json::json!(["root", 0, "s"]),
+            "{patch}"
+        );
+        assert!(head["ops"][0]["own"].is_object(), "{patch}");
         assert!(patch.contains(r#""value":"abcd""#), "{patch}");
         assert!(!patch.contains("TextInput[1]"), "{patch}");
         assert_eq!(gate.due(), None);
@@ -579,6 +720,81 @@ mod tests {
         );
     }
 
+    fn wheel() -> ui::winit::event::WindowEvent {
+        ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(0.0, 40.0),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        }
+    }
+
+    #[test]
+    fn a_scroll_carrying_the_caret_line_waits_for_the_wheel_to_rest_until_the_caret_moves() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut gate = window();
+        gate.decide(tree(&["a"], 0), Some(&ime(10, 200)), ms(0));
+        // A wheel scrolls the note under the caret: its line moves on screen
+        // on every frame, but nothing about it changed for a reader, and the
+        // tree waits until the wheel rests, past the window.
+        for (step, at) in [10, 50, 90, 130].into_iter().enumerate() {
+            gate.note_input(&wheel(), ms(at));
+            let y = 200 - 40 * u32::try_from(step + 1).unwrap();
+            assert!(
+                gate.defer_unbuilt(Some(&ime(10, y)), ms(at)),
+                "a scrolled frame waits for the wheel to rest"
+            );
+        }
+        assert_eq!(gate.due(), Some(ms(130) + SCROLL_REST));
+        assert_eq!(
+            gate.decide(tree(&["a"], 0), Some(&ime(10, 40)), ms(130) + SCROLL_REST),
+            SemanticsDecision::Unchanged
+        );
+        // A key moves the caret to another line: a reader hears it at once.
+        gate.note_input(
+            &ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::ArrowDown),
+            ms(300),
+        );
+        assert!(!gate.defer_unbuilt(Some(&ime(10, 56)), ms(300)));
+    }
+
+    #[test]
+    fn a_long_scroll_delivers_now_and_then_and_focus_moving_at_once() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let longest = u64::try_from(SCROLL_LONGEST.as_millis()).unwrap();
+        let mut gate = window();
+        gate.decide(tree(&["a", ""], 0), None, ms(0));
+        // Content the scroll brings on screen is a structure change: it waits
+        // with the scroll instead of going out on every frame.
+        gate.note_input(&wheel(), ms(20));
+        assert_eq!(
+            gate.decide(tree(&["a", "", "c"], 0), None, ms(20)),
+            SemanticsDecision::Deferred(ms(20) + SCROLL_REST)
+        );
+        // The wheel keeps turning: the tree waits, but never longer than the
+        // longest hold after the last delivery.
+        let mut at = 20;
+        while at + 16 < longest {
+            at += 16;
+            gate.note_input(&wheel(), ms(at));
+            assert!(gate.defer_unbuilt(None, ms(at)));
+        }
+        assert_eq!(gate.due(), Some(ms(longest)));
+        assert_eq!(
+            gate.decide(tree(&["a", "", "c"], 0), None, ms(longest)),
+            SemanticsDecision::Deliver { forced: true }
+        );
+        // Focus moving mid-scroll is heard at once.
+        gate.note_input(&wheel(), ms(longest + 16));
+        assert_eq!(
+            gate.decide(tree(&["a", "", "c"], 1), None, ms(longest + 16)),
+            SemanticsDecision::Deliver { forced: true }
+        );
+    }
+
     #[test]
     fn a_host_request_resends_even_an_unchanged_tree() {
         let t0 = ui::time::Instant::now();
@@ -606,6 +822,36 @@ mod tests {
         assert_eq!(
             gate.decide(tree(&["abc", ""], 0), None, ms(50)),
             SemanticsDecision::Deliver { forced: true }
+        );
+        assert_eq!(gate.due(), None);
+    }
+
+    #[test]
+    fn a_tree_past_its_deadline_is_published_whatever_the_frame_before_it_did() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        // A frame holds its tree for after it, then the deadline carries the
+        // tree out: the loop never waits for one more frame to draw it. A
+        // frame that replayed its windows instead of drawing them is the same
+        // case — its tree is settled before it is read — and so is a frame that
+        // never came.
+        assert_eq!(tree_wait(Some(ms(10)), ms(10)), Some(TreeWait::Publish));
+        assert_eq!(tree_wait(Some(ms(10)), ms(11)), Some(TreeWait::Publish));
+        // Before its instant the loop comes back for it.
+        assert_eq!(tree_wait(Some(ms(10)), ms(9)), Some(TreeWait::Wake(ms(10))));
+        // With nothing waiting, nothing is delivered or woken for.
+        assert_eq!(tree_wait(None, ms(10)), None);
+        // The gate leaves a presented frame's tree for its deadline, and the
+        // deadline alone carries it: the status is read from the screen the
+        // frame drew, not from a frame that would have to come first.
+        let mut gate = window();
+        gate.decide(tree(&["a", ""], 0), None, ms(0));
+        assert!(gate.after_frame(None, ms(20)));
+        let due = gate.due().expect("the tree waits for the window's end");
+        assert_eq!(tree_wait(Some(due), due), Some(TreeWait::Publish));
+        assert_eq!(
+            gate.decide(tree(&["ab", ""], 0), None, due),
+            SemanticsDecision::Deliver { forced: false }
         );
         assert_eq!(gate.due(), None);
     }

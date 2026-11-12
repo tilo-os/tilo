@@ -31,6 +31,11 @@ use virtual_rows::Virtual;
 pub(crate) type BoundId = usize;
 
 /// One view call: the root view, or a call inside another boundary.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent facet of the call: rendered, a row, a row that stands \
+              open, and a row that says of itself whether it is new"
+)]
 pub(crate) struct Bound {
     /// The key of the call's `fragment` in the tree; empty for the root.
     pub key: String,
@@ -61,6 +66,9 @@ pub(crate) struct Bound {
     /// its unseen part starts, which its own marks answer to. A row is built again when that
     /// changes under it, so a mark it drew for being new goes when the divider arrives.
     pub says_new: bool,
+    /// Whether the row stands open into its item where it stands: its document is built here,
+    /// and in no closed row. A row is built again when it opens or closes.
+    pub open: bool,
     pub retained: Vec<Retained>,
 }
 
@@ -84,6 +92,7 @@ impl Bound {
             state_seen: Vec::new(),
             changes_at: None,
             says_new: false,
+            open: stub.open,
             retained: Vec::new(),
         }
     }
@@ -429,6 +438,7 @@ impl Live {
             state_seen: Vec::new(),
             changes_at: None,
             says_new: false,
+            open: false,
             retained: Vec::new(),
         };
         let mut live = Self {
@@ -468,6 +478,30 @@ impl Live {
         self.bounds.get(id).and_then(Option::as_ref)
     }
 
+    /// Take `reads` into what the root boundary read, after it ran: a host converting what the
+    /// view shows reads more of the workspace than the view did (a record whose content a card
+    /// of it shows), and tells the view, so a change to it runs the root again and the host
+    /// converts again. The reads are the root's until it runs again, which replaces them with
+    /// what it read then; the host registers its own again after converting.
+    pub fn shows(&mut self, reads: impl IntoIterator<Item = (String, String)>) {
+        let Some(mut b) = self.bounds.get_mut(ROOT).and_then(Option::take) else {
+            return;
+        };
+        let mut added = false;
+        for read in reads {
+            if !b.reads.contains(&read) {
+                b.reads.push(read);
+                added = true;
+            }
+        }
+        if added {
+            self.index.add(ROOT, &b);
+        }
+        if let Some(slot) = self.bounds.get_mut(ROOT) {
+            *slot = Some(b);
+        }
+    }
+
     /// Plant a boundary by hand, as a boundary whose branch has left the tree stands: rendered,
     /// with the cached trail `path` of a call that is no longer placed. `target` is a call that
     /// renders, so a run of it has content to write: without the guard that refuses a boundary
@@ -486,6 +520,7 @@ impl Live {
                 target: Rc::new(target),
                 args,
                 lazy: false,
+                open: false,
                 depth: 1,
             },
             false,
@@ -590,10 +625,19 @@ impl Live {
             }
         }
         // A window's change mark counts every version in its document: any change there is a
-        // new one.
-        reach
-            .hit
-            .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+        // new one. A change that names its items' versions and nothing else names versions the
+        // window was told of before, provisional, that the record holds now: whoever reads an
+        // item's versions reads them again, and the count stands.
+        let renamed = !change.fields.is_empty()
+            && change
+                .fields
+                .iter()
+                .all(|key| key.resource != change.doc && key.field == crate::marks::DOC_VERSIONS);
+        if !renamed {
+            reach
+                .hit
+                .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+        }
         if change.fields.is_empty() {
             if let Some(set) = self.index.docs.get(&change.doc) {
                 reach.hit.extend(set.iter().copied());
@@ -743,6 +787,7 @@ impl Live {
     /// Mark the boundaries a change reaches.
     pub fn absorb(&mut self, core: &Core, change: &ChangeSummary) {
         let reach = self.reached(core, change);
+
         self.dirty.extend(reach.hit);
         self.pending.extend(reach.steps);
         self.mine_items.extend(reach.mine);
@@ -756,7 +801,7 @@ impl Live {
             return;
         }
         self.state_clock = clock;
-        let mut hit = Vec::new();
+        let mut left: Vec<(BoundId, &StateKey)> = Vec::new();
         for (key, ids) in &self.index.states {
             let now = states.generation(key);
             for id in ids {
@@ -766,7 +811,7 @@ impl Live {
                         .any(|(k, seen)| k == key && *seen != now)
                 });
                 if moved {
-                    hit.push(*id);
+                    left.push((*id, key));
                 }
             }
         }
@@ -774,7 +819,9 @@ impl Live {
         // The state a view declares is what its rows stand in: moving it leaves that view, and
         // the rows the person kept for looking at it settle
         // ([`crate::live::virtual_rows`]).
-        self.settle_kept(&hit);
+        let settling = self.left_lists(core, &left);
+        let hit: Vec<BoundId> = left.into_iter().map(|(id, _)| id).collect();
+        self.settle_kept(&settling);
         self.dirty.extend(hit);
     }
 
@@ -868,6 +915,7 @@ impl Live {
         // A row of a `list` that stands a divider where its unseen part starts: the divider
         // already says which rows are new, so a row there says it no further.
         let says_new = row.as_deref().is_some_and(|path| self.row_says_new(path));
+        let open = self.bound(id).is_some_and(|b| b.open);
         let old: HashMap<String, BoundId> = old_children
             .iter()
             .filter_map(|c| self.bound(*c).map(|b| (b.key.clone(), *c)))
@@ -900,6 +948,7 @@ impl Live {
             Some(Scoped {
                 prefix,
                 says_new,
+                open,
                 boundaries: Some(&mut builder),
             }),
         );
@@ -1626,6 +1675,13 @@ impl Live {
         self.list_node(list).map(|n| n.children.len())
     }
 
+    /// The list's length, as reading a row of it left it ([`Virtual::settle_len`]).
+    pub fn settle_len(&mut self, list: &str) {
+        if let Some(rows) = self.lists.get_mut(list) {
+            rows.settle_len();
+        }
+    }
+
     pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
         if let Some(rows) = self.lists.get(list) {
             return rows.key(index);
@@ -1774,10 +1830,22 @@ impl Boundaries for Builder<'_> {
                     && b.args == stub.args
             });
             if same {
-                let (rendered, dirty) = self.live.bound(id).map_or((false, false), |b| {
-                    (b.rendered, self.live.dirty.contains(&id))
-                });
+                let (rendered, dirty, opened) =
+                    self.live.bound(id).map_or((false, false, false), |b| {
+                        (b.rendered, self.live.dirty.contains(&id), b.open)
+                    });
                 self.new.push(id);
+                if opened != stub.open {
+                    // The row it stands in opened or closed into its item: the call runs again,
+                    // its tree holding the item's document or not.
+                    if let Some(b) = self.live.bound_mut(id) {
+                        b.open = stub.open;
+                    }
+                    if !rendered && lazy {
+                        return Ok(Vec::new());
+                    }
+                    return Ok(vec![self.live.render(self.core, id)?]);
+                }
                 if rendered && !dirty {
                     // Unchanged: its subtree is kept as it is.
                     self.live.reused.insert(stub.key.to_owned());

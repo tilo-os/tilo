@@ -4,7 +4,7 @@
 //! are the toolkit's own (`tilo_ui_graph::component`), generated from each widget's Rust
 //! definition, so `ui.ListRow(title: ...)` is checked against the widget as it is.
 
-pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, Offered, Type};
+pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, OPENS_PROP, Offered, Type};
 
 /// The app id of the toolkit's package.
 pub const UI_APP: &str = "tilo.ui";
@@ -115,8 +115,8 @@ fn lang_type(ty: &Type) -> crate::types::Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Choice { name, .. } | Type::Cases { name } => Ty::Enum(key(name)),
-        // Whichever enum the bound field declares, which a description does not name.
-        Type::Action | Type::Enum => Ty::Error,
+        // Whichever enum or record the bound field names, which a description does not name.
+        Type::Action | Type::Enum | Type::Link => Ty::Error,
     }
 }
 

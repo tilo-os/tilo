@@ -26,6 +26,7 @@ use crate::permissions::UserId;
 use crate::presence::{ParticipantKind, PresenceCtx};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::completion::{CompletionSource, Tier};
 use crate::widget::marks::{Mark, MarkSpan};
 use crate::widget::mention_picker::{self, MentionCandidate};
@@ -45,8 +46,9 @@ pub struct RichInputProps {
     pub placeholder: Option<String>,
     /// Whether it can be typed into now.
     pub enabled: bool,
-    /// Who spoke last in what it writes into, newest first: whom its `@` drawer offers first,
-    /// under "In this conversation". The system gives it to every rich input.
+    /// The people of the conversation it writes into, newest first: whom its `@` drawer offers
+    /// first, under "In this conversation". The view gives them, from the items the conversation
+    /// holds; the drawer reads nothing of what the conversation is about to say who is in it.
     pub speakers: Vec<Person>,
     /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
     /// system gives it to every rich input; given no one, the drawer offers the workspace's roster.
@@ -106,7 +108,7 @@ struct DrawerPeople {
     speakers: Vec<Person>,
     members: Vec<Person>,
     /// The kind and colour of each, in order, as the source was built with; `None` until built.
-    built: Option<Vec<(ParticipantKind, (u8, u8, u8))>>,
+    built: Option<Vec<(ParticipantKind, crate::tokens::PresenceHue)>>,
 }
 
 impl DrawerPeople {
@@ -130,7 +132,7 @@ impl DrawerPeople {
         }
         let said = |person: &Person| {
             let user = UserId(person.identity.clone());
-            (presence.participant_kind(&user), presence.color_for(&user))
+            (presence.participant_kind(&user), presence.hue_for(&user))
         };
         let now: Vec<_> = self
             .speakers
@@ -142,12 +144,12 @@ impl DrawerPeople {
             return None;
         }
         let candidate = |person: &Person| {
-            let (kind, color) = said(person);
+            let (kind, hue) = said(person);
             mention_picker::candidate(&MentionCandidate {
                 id: person.identity.clone(),
                 name: person.name.clone(),
                 kind,
-                color,
+                hue,
                 is_self: presence.is_own_identity(&person.identity),
             })
         };
@@ -390,6 +392,7 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
                 embeds.push(Embed {
                     reference: reference.clone(),
                     view: view.clone(),
+                    preview: None,
                 });
             }
         }
@@ -526,7 +529,8 @@ impl Decorator for RichInput {
             self.people_source = Some(source);
             self.offer();
         }
-        self.line.draw(scene, transform, text, theme, presence);
+        self.line
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     /// The field's completion drawer floats above everything, as every field's does.

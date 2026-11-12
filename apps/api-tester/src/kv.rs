@@ -144,12 +144,13 @@ fn text_cell(
     state: &LocalState<String>,
     name: &str,
     field: &'static str,
+    add_row: &str,
 ) -> Element {
     let id = ui::tilo_resource::Id::from_raw(row.id.clone());
     // The blank row under the pairs invites a new one; repeating the
     // column headers there read as a second header row.
     let placeholder = if row.pending.get() {
-        format!("Add {}", name.to_lowercase())
+        add_row.to_owned()
     } else {
         name.to_owned()
     };
@@ -216,7 +217,7 @@ pub(crate) struct KvTable {
 }
 
 /// A table of `rows` followed by the blank row `blank_id`.
-pub(crate) fn build(
+pub(crate) fn build_table(
     table: Table,
     label: &str,
     rows: &[KeyValue],
@@ -240,7 +241,9 @@ pub(crate) fn build(
                 let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 let state = row.enabled.clone();
                 gated(row, move || -> Element {
-                    let control = Checkbox::from_state(&state).with_accessible_name("Use this row");
+                    let control = Checkbox::from_state(&state).with_accessible_name(
+                        &crate::locales::CATALOG.t("api-tester-a11y-use-row"),
+                    );
                     Box::new(sink.bind_field(
                         control,
                         table.rows().item(&id).enabled,
@@ -252,16 +255,39 @@ pub(crate) fn build(
         // A pair reads across: on a wide window the key keeps to a third of
         // the readable measure so its value starts beside it, and the value
         // takes the rest of the panel.
-        ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0))
-            .max_width(Metrics::BASE.readable_width / 3.0)
-            .with_widget(move |row: &KvRow, _| -> Element {
-                text_cell(&key_sink, table, row, &row.key, "Key", "key")
-            }),
-        ColumnDef::new("value", "Value", ColumnWidth::Flex(2.0)).with_widget(
-            move |row: &KvRow, _| -> Element {
-                text_cell(&value_sink, table, row, &row.value, "Value", "value")
-            },
-        ),
+        ColumnDef::new(
+            "key",
+            crate::locales::CATALOG.t("api-tester-key"),
+            ColumnWidth::Flex(1.0),
+        )
+        .max_width(Metrics::BASE.readable_width / 3.0)
+        .with_widget(move |row: &KvRow, _| -> Element {
+            text_cell(
+                &key_sink,
+                table,
+                row,
+                &row.key,
+                &crate::locales::CATALOG.t("api-tester-key"),
+                "key",
+                &crate::locales::CATALOG.t("api-tester-add-key"),
+            )
+        }),
+        ColumnDef::new(
+            "value",
+            crate::locales::CATALOG.t("api-tester-value"),
+            ColumnWidth::Flex(2.0),
+        )
+        .with_widget(move |row: &KvRow, _| -> Element {
+            text_cell(
+                &value_sink,
+                table,
+                row,
+                &row.value,
+                &crate::locales::CATALOG.t("api-tester-value"),
+                "value",
+                &crate::locales::CATALOG.t("api-tester-add-value"),
+            )
+        }),
         ColumnDef::new("remove", "", ColumnWidth::Fixed(control)).with_widget(
             move |row: &KvRow, _| -> Element {
                 let sink = remove_sink.clone();
@@ -270,16 +296,20 @@ pub(crate) fn build(
                     let sink = sink.clone();
                     let row = id.clone();
                     Box::new(
-                        Button::icon_only(&format!("api.kv-remove.{id}"), Icon::X, "Remove row")
-                            .role(ButtonRole::Plain)
-                            // The removal is an edit, decided as one.
-                            .on_own_device_effect(move || {
-                                sink.borrow_mut().push(Cmd::Edit {
-                                    table,
-                                    row: row.clone(),
-                                    edit: RowEdit::Remove,
-                                });
-                            }),
+                        Button::icon_only(
+                            &format!("api.kv-remove.{id}"),
+                            Icon::X,
+                            &crate::locales::CATALOG.t("api-tester-remove-row"),
+                        )
+                        .role(ButtonRole::Plain)
+                        // The removal is an edit, decided as one.
+                        .on_own_device_effect(move || {
+                            sink.borrow_mut().push(Cmd::Edit {
+                                table,
+                                row: row.clone(),
+                                edit: RowEdit::Remove,
+                            });
+                        }),
                     )
                 })
             },

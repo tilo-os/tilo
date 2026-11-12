@@ -1,7 +1,9 @@
+use crate::KeptRecord;
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
-    DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
+    DocumentRead, History, Holding, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId,
+    RecordWrites, WorkspaceId, open_file,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -9,6 +11,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc,
@@ -23,8 +26,8 @@ mod busy_workspace;
 mod changes_read;
 #[path = "create_tests.rs"]
 mod create;
-#[path = "member_initialization_tests.rs"]
-mod member_initialization;
+#[path = "sealed_history_tests.rs"]
+mod sealed_history;
 #[path = "vouched_tests.rs"]
 mod vouched;
 
@@ -39,10 +42,16 @@ struct Enrolled {
 
 /// Enroll through the file store and admit the governor's history.
 fn enrolled() -> Enrolled {
+    enrolled_with(raw_fixture())
+}
+
+/// [`enrolled`] into the workspace `fixture` holds.
+fn enrolled_with(
+    (intent, bootstrap, messages, governor, now): crate::owner::testing::RawFixture,
+) -> Enrolled {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("joined-workspaces.json");
     let owner = open_file(&path).unwrap();
-    let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
@@ -59,7 +68,6 @@ fn enrolled() -> Enrolled {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
-                Some(&crate::owner::testing::member_key()),
                 now,
             )
             .unwrap();
@@ -233,7 +241,86 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 }
 
 #[test]
-fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
+fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let topic = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| {
+                let chat = AutoCommit::load(&view.peer().document(APP, "").ok_or("no chat")?)
+                    .map_err(|error| error.to_string())?;
+                Ok(chat
+                    .get(ROOT, "topic")
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+            })
+            .unwrap()
+    };
+    let newest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
+            .unwrap()
+            .unwrap()
+    };
+    owner
+        .commit_document(edit_with(owner, workspace, now, "kept"), now)
+        .unwrap();
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
+        )
+        .unwrap();
+    let refused = edit_with(owner, workspace, now, "refused");
+    let crate::owner_commit::CommitOperation::Document { envelope, .. } = refused.operation.clone()
+    else {
+        panic!("a document write");
+    };
+    owner.commit_document(refused, now).unwrap();
+    assert_eq!(topic(owner).as_deref(), Some("refused"));
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
+        )
+        .unwrap();
+    let answered = RecordWrites {
+        pending: 0,
+        durable: 1,
+        refused: 1,
+        last_order: Some(7),
+    };
+    assert_eq!(topic(owner).as_deref(), Some("kept"));
+    assert!(
+        owner
+            .with_current(workspace, |view| {
+                view.peer()
+                    .lookup_exact_local_document(APP, "", &envelope, now)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+            .is_none(),
+        "no evidence of the refused write stays to wait for"
+    );
+    assert_eq!(
+        owner
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(topic(&reopened).as_deref(), Some("kept"));
+    assert_eq!(
+        reopened
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
+}
+
+#[tokio::test]
+async fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let joined = enrolled();
     let stale = edit_with(&joined.owner, joined.workspace, joined.now, "stale edit");
     let first = edit_with(
@@ -250,12 +337,20 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
 
     let receipt = joined
         .owner
-        .commit_document_with_current(
+        .write(
             joined.workspace,
-            |view| edit_from_view(view, joined.now, "edit from current owner turn"),
+            |view| {
+                edit_from_view(view, joined.now, "edit from current owner turn")
+                    .map(|edit| vec![edit])
+            },
+            &crate::owner::testing::member_key(),
             joined.now,
         )
-        .unwrap();
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .1;
     assert!(receipt.generation > 1);
     joined
         .owner
@@ -335,6 +430,75 @@ fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence()
                 chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
                 Some("unordered edit")
             );
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Two local writers of this device sign their writes before the owner's
+/// turn orders them. The write that reaches the turn second, though signed
+/// first, is taken all the same, signed again past the record's floor; one
+/// still past the floor, and an exact retry of a taken write, are taken as
+/// they are.
+#[tokio::test]
+async fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
+    let joined = enrolled();
+    let key = member();
+    let envelope = |request: &OwnerCommitRequest| match &request.operation {
+        CommitOperation::Document { envelope, .. } => (**envelope).clone(),
+        _ => panic!("a document write"),
+    };
+    let earlier = unordered_edit(&joined, "signed first");
+    let later = unordered_edit(&joined, "signed second");
+    assert!(envelope(&earlier).seq < envelope(&later).seq);
+    let (taken, _) = joined
+        .owner
+        .commit_local_document(later.clone(), &key, joined.now)
+        .await
+        .unwrap();
+    assert_eq!(
+        envelope(&taken),
+        envelope(&later),
+        "a write past the floor is taken as it is"
+    );
+    assert_eq!(
+        joined
+            .owner
+            .commit_document(earlier.clone(), joined.now)
+            .unwrap_err(),
+        "native local document signed sequence is stale",
+        "the passed write as it was signed is a replay"
+    );
+    let (taken, receipt) = joined
+        .owner
+        .commit_local_document(earlier.clone(), &key, joined.now)
+        .await
+        .unwrap();
+    receipt.validate_local_document(&earlier, &taken).unwrap();
+    assert_ne!(envelope(&taken), envelope(&earlier));
+    assert!(envelope(&taken).seq > envelope(&later).seq);
+    let (again, _) = joined
+        .owner
+        .commit_local_document(taken.clone(), &key, joined.now)
+        .await
+        .unwrap();
+    assert_eq!(
+        envelope(&again),
+        envelope(&taken),
+        "an exact retry is the write already taken"
+    );
+    joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            for write in [&later, &taken] {
+                assert!(
+                    view.peer()
+                        .lookup_exact_local_document(APP, "", &envelope(write), joined.now)
+                        .map_err(|error| error.to_string())?
+                        .is_some(),
+                    "both writes are the record's"
+                );
+            }
             Ok(())
         })
         .unwrap();
@@ -469,7 +633,6 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
-                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -482,7 +645,9 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                     "a pending checkpoint is reported only to a reader of the record"
                 );
             }
-            Ok(DocumentRead::Unchanged(_)) => panic!("no revision was offered"),
+            Ok(DocumentRead::Unchanged(_) | DocumentRead::Changes(_)) => {
+                panic!("no revision was offered")
+            }
             Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
         }
     }
@@ -550,7 +715,12 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
     };
     let holds = |reader, known| {
         joined.owner.with_current(joined.workspace, |view| {
-            view.holds_revision(reader, APP, "", known, joined.now)
+            let history = History {
+                open: &mut |_| Err("the record is not sealed".into()),
+                kept: &mut KeptRecord::default(),
+            };
+            view.document_revision(reader, (APP, ""), joined.now, history)
+                .map(|revision| revision.map(|revision| revision == known))
         })
     };
     crate::owner::document_read::reset_captures();
@@ -754,35 +924,61 @@ fn a_members_sealed_compaction_is_published_as_a_checkpoint() {
     );
 }
 
-#[test]
-fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
+#[tokio::test]
+async fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let (mut opened, mut sealed) = (0, 0);
+    joined
+        .owner
+        .keep_sealed_histories(Arc::new(sealed_history::Held(keys)));
     let compacted = joined
         .owner
         .compact_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |_| {
-                opened += 1;
-                Err("no history is due".to_owned())
-            },
-            &mut |_, _, _| {
-                sealed += 1;
-                Err("no history is due".to_owned())
-            },
             joined.now,
         )
+        .await
         .unwrap();
     assert_eq!(compacted, 0);
-    assert_eq!((opened, sealed), (0, 0), "nothing is opened or sealed");
     assert_eq!(sent(&joined.owner, joined.workspace, joined.now).len(), 1);
 }
 
-#[test]
-fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
+/// Channel keys that renew sealed writes as `0` answers, and hold no history to compact.
+struct Renewing<F>(F);
+
+impl<F> crate::owner::SealedHistoryKeys for Renewing<F>
+where
+    F: Fn(&collab_types::SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>
+        + Send
+        + Sync,
+{
+    fn open(&self, _: WorkspaceId, _: &collab_types::SignedOp) -> Result<Vec<u8>, String> {
+        Err("no history keys".into())
+    }
+
+    fn seal_checkpoint(
+        &self,
+        _: WorkspaceId,
+        _: &str,
+        _: &str,
+        _: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        Err("no history keys".into())
+    }
+
+    fn renew(
+        &self,
+        _: WorkspaceId,
+        write: &collab_types::SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        (self.0)(write)
+    }
+}
+
+#[tokio::test]
+async fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
     let joined = enrolled();
     let (before, current) = rotated_channel();
     let original = commit_sealed(&joined, &before);
@@ -792,30 +988,36 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         .unwrap();
     assert!(sent(&joined.owner, joined.workspace, later).is_empty());
 
-    let mut asked = 0;
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let current_keys = current.clone();
+    let counted = Arc::clone(&asked);
     joined
+        .owner
+        .keep_sealed_histories(Arc::new(Renewing(move |op: &collab_types::SignedOp| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let metadata = op.encryption.ok_or("not sealed")?;
+            let plaintext = current_keys
+                .open_content(op.artifact, &metadata, &op.payload)
+                .map_err(|e| e.to_string())?;
+            current_keys
+                .seal_content(
+                    op.artifact,
+                    collab_types::ContentRetention::Delta,
+                    &plaintext,
+                )
+                .map_err(|e| e.to_string())
+        })));
+    let renewed = joined
         .owner
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |op| {
-                asked += 1;
-                let metadata = op.encryption.ok_or("not sealed")?;
-                let plaintext = current
-                    .open_content(op.artifact, &metadata, &op.payload)
-                    .map_err(|e| e.to_string())?;
-                current
-                    .seal_content(
-                        op.artifact,
-                        collab_types::ContentRetention::Delta,
-                        &plaintext,
-                    )
-                    .map_err(|e| e.to_string())
-            },
             later,
         )
+        .await
         .unwrap();
-    assert_eq!(asked, 1);
+    assert_eq!(renewed, 1);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
     let status = joined
         .owner
         .outgoing_status(joined.workspace, later)
@@ -862,8 +1064,8 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
     }
 }
 
-#[test]
-fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+#[tokio::test]
+async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
@@ -874,12 +1076,17 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         .unwrap();
     joined
         .owner
+        .keep_sealed_histories(Arc::new(Renewing(|_: &collab_types::SignedOp| {
+            Err("this device holds no current key".into())
+        })));
+    joined
+        .owner
         .renew_outgoing(
             joined.workspace,
             &crate::owner::testing::member_key(),
-            &mut |_| Err("this device holds no current key".into()),
             later,
         )
+        .await
         .unwrap();
     assert_eq!(record_on_disk(&joined.path), committed);
     assert_eq!(
@@ -894,12 +1101,8 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     assert!(
         joined
             .owner
-            .renew_outgoing(
-                joined.workspace,
-                &SigningKey::from_bytes(&[99; 32]),
-                &mut |_| panic!("another signer's renewal asked the key holder"),
-                later,
-            )
+            .renew_outgoing(joined.workspace, &SigningKey::from_bytes(&[99; 32]), later)
+            .await
             .is_err()
     );
 }
@@ -1126,7 +1329,14 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 #[test]
 fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
-    for (file, bytes) in record_on_disk(&joined.path) {
+    // The journals beside the files are binary.
+    for (file, bytes) in record_on_disk(&joined.path)
+        .into_iter()
+        .filter(|(file, _)| {
+            file.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+    {
         assert!(!bytes.contains(&b'\n'), "{} is compact", file.display());
     }
     let file = workspace_file(&joined.path, joined.workspace);
@@ -1159,7 +1369,6 @@ fn retained_replay_reuses_exact_committed_publication() {
             joined.workspace,
             TransportOrigin::RetainedRelayDelta(governor),
             message,
-            Some(&crate::owner::testing::member_key()),
             joined.now,
         )
         .unwrap();
@@ -1180,6 +1389,56 @@ fn retained_replay_reuses_exact_committed_publication() {
         before,
         "an unchanged authenticated replay must not rewrite durable owner state"
     );
+}
+
+/// A reader that keeps a sealed record opened opens each write once: a read again opens nothing,
+/// and a reader holding the revision is told it is unchanged.
+#[test]
+fn a_kept_sealed_record_opens_each_write_once() {
+    let joined = enrolled();
+    let reader = member().verifying_key().to_bytes();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let mut decryptions = 0;
+    let mut kept = KeptRecord::default();
+    let mut read = |holding: Holding<'_>, kept: &mut KeptRecord| {
+        joined.owner.with_current(joined.workspace, |view| {
+            let open = &mut |op: &collab_types::SignedOp| {
+                decryptions += 1;
+                let ciphertext =
+                    collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+                keys.open_content(
+                    op.artifact,
+                    &op.encryption.ok_or("not sealed")?,
+                    &ciphertext,
+                )
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| error.to_string())
+            };
+            view.read_document_with_history(
+                reader,
+                (APP, ""),
+                holding,
+                1024 * 1024,
+                joined.now,
+                History { open, kept },
+            )
+        })
+    };
+    let Ok(DocumentRead::Captured(first)) = read(Holding::default(), &mut kept) else {
+        panic!("a first read captures the history");
+    };
+    let holding = Holding {
+        revision: Some(first.revision),
+        heads: &first.heads,
+    };
+    assert!(
+        matches!(read(holding, &mut kept), Ok(DocumentRead::Unchanged(revision)) if revision == first.revision)
+    );
+    assert!(
+        matches!(read(Holding::default(), &mut kept), Ok(DocumentRead::Captured(again)) if again.bytes == first.bytes)
+    );
+    assert_eq!(decryptions, 1, "the kept record opened its one write once");
 }
 
 #[test]
@@ -1213,10 +1472,13 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
                 view.read_document_with_history(
                     [0x77; 32],
                     (APP, ""),
-                    None,
+                    Holding::default(),
                     1024 * 1024,
                     joined.now,
-                    &mut opener
+                    History {
+                        open: &mut opener,
+                        kept: &mut KeptRecord::default(),
+                    },
                 )
                 .is_err(),
                 "a stranger cannot open history"
@@ -1224,10 +1486,13 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
             view.read_document_with_history(
                 reader,
                 (APP, ""),
-                None,
+                Holding::default(),
                 1024 * 1024,
                 joined.now,
-                &mut opener,
+                History {
+                    open: &mut opener,
+                    kept: &mut KeptRecord::default(),
+                },
             )
         })
         .unwrap();
@@ -1255,12 +1520,15 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     drop(joined.owner);
     let reopened = open_file(&path).unwrap();
     assert!(matches!(reopened.with_current(workspace, |view| {
-        view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
-            1024 * 1024, now, &mut |op| {
+        let holding = Holding { revision: Some(captured.revision), heads: &[] };
+        view.read_document_with_history(reader, (APP, ""), holding, 1024 * 1024, now, History {
+            open: &mut |op| {
                 keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
                     &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
                     .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
-            })
+            },
+            kept: &mut KeptRecord::default(),
+        })
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
     assert_eq!(record_on_disk(&path), before);
 }

@@ -75,28 +75,195 @@ pub(super) async fn handle_remote_action(
     {
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
+    // A browser environment's device answers the page actions the relay hands
+    // it and originates none: what it holds is a window, not a member's
+    // standing to call the workspace's doors.
+    if session.environment(&peer.device_public_key).is_some()
+        && matches!(
+            tilo_actions::remote::RemoteActionFrame::decode(&frame),
+            Ok(tilo_actions::remote::RemoteActionFrame {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(_),
+                ..
+            })
+        )
+    {
+        return refuse(
+            U::NotAuthorised,
+            "a browser environment's device answers page actions, it does not call actions",
+        );
+    }
     if to == *session.own_device_public_key {
+        // An action of a window this host serves but does not hold (a Browser
+        // whose page runs on a VM host) is handed to the device that holds it,
+        // stamped with this sender, or answered by the plane itself, which may
+        // take its time about it.
+        if let Some(plane) = session.app_serving
+            && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+            && let Ok(caller) = session_caller(peer, session)
+            && let Some(route) =
+                plane.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
+        {
+            return hand_routed(
+                peer,
+                session,
+                &mut wr,
+                (workspace_id, version),
+                (&decoded, frame),
+                route,
+            );
+        }
+        let standing = super::change_standing(peer, &wr);
         // Never hold the workspace across the plane: it may take its time.
         drop(wr);
         let Some(plane) = session.app_serving else {
             return refuse(U::UnsupportedPeer, "this host does not serve apps");
         };
-        return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
-            .unwrap_or_else(|(reason, detail)| refuse(reason, detail));
+        let local = Local {
+            plane: plane.as_ref(),
+            workspace_id,
+            standing,
+        };
+        return serve_locally(peer, session, &local, &frame)
+            .unwrap_or_else(|(reason, detail)| refuse(reason, &detail));
     }
+    hand_over(peer, session, &mut wr, workspace_id, version, to, frame)
+}
+
+/// Write the answer the plane routed a request to, on the connection of the
+/// device that asked, whenever the plane has it: an answer it drops is the
+/// refusal the request's kind takes. `None`: nothing is returned to the
+/// connection handler, which is how a later answer is written.
+fn answered_by_plane(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    version: u16,
+    request: &tilo_actions::remote::RemoteActionFrame,
+    answer: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
+) -> Option<Envelope> {
+    let abandoned = tilo_actions::remote::refuse(
+        &request.message,
+        tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    );
+    let outbound = session.outbound.clone();
+    let to_device_public_key = peer.device_public_key;
+    let from_device_public_key = *session.own_device_public_key;
+    let from_user_public_key = *session.own_user_public_key;
+    answer_later(answer, abandoned, move |answer| {
+        let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
+            .encode()
+            .ok()?;
+        Some((
+            outbound,
+            Envelope::RemoteAction {
+                workspace_id,
+                version,
+                to_device_public_key,
+                from_device_public_key,
+                from_user_public_key,
+                frame,
+            },
+        ))
+    });
+    None
+}
+
+/// Hand `frame` to the connected device `to` of the workspace, stamped with
+/// the authenticated `peer` as its sender: the relay routes what it forwards,
+/// and never runs it.
+/// Where a plane routed the frame of `decoded`'s — `frame`, as the caller
+/// wrote it — in `workspace_id`: handed to the device holding the window, as
+/// the caller wrote it or as the plane wrote it in the caller's place, or
+/// answered here.
+fn hand_routed(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    (decoded, frame): (&tilo_actions::remote::RemoteActionFrame, Vec<u8>),
+    route: crate::app_serving::Routing,
+) -> Option<Envelope> {
+    match route {
+        crate::app_serving::Routing::Device(holder) => {
+            hand_over(peer, session, wr, workspace_id, version, holder, frame)
+        }
+        crate::app_serving::Routing::Replaced { to, message } => {
+            hand_over_replaced(peer, session, wr, (workspace_id, version), to, *message)
+        }
+        crate::app_serving::Routing::Answer(answer) => {
+            answered_by_plane(session, peer, workspace_id, version, decoded, answer)
+        }
+    }
+}
+
+/// [`hand_over`] of the frame `message` writes in place of the caller's: what
+/// a plane that answers for the person hands the window.
+///
+/// # Errors
+///
+/// Never: a frame that does not encode is refused as undeliverable.
+fn hand_over_replaced(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    to: [u8; 32],
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Option<Envelope> {
+    match tilo_actions::remote::RemoteActionFrame::new(message).encode() {
+        Ok(frame) => hand_over(peer, session, wr, workspace_id, version, to, frame),
+        Err(_) => Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: format!(
+                "{}: the host could not write the frame",
+                UnavailableReason::InvalidRequest.wire_token()
+            ),
+        }),
+    }
+}
+
+fn hand_over(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    workspace_id: u64,
+    version: u16,
+    to: [u8; 32],
+    frame: Vec<u8>,
+) -> Option<Envelope> {
+    use UnavailableReason as U;
+    let refuse = |reason: UnavailableReason, detail: &str| {
+        Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: format!("{}: {detail}", reason.wire_token()),
+        })
+    };
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
     let Some(target) = wr.state_sessions.get(&to) else {
         return refuse(
-            unavailable_target(&wr, &to),
+            unavailable_target(wr, &to),
             "addressed device is not connected to the workspace",
         );
     };
-    if action_peer_admitted(&wr, &target.peer, session).is_err() {
+    if action_peer_admitted(wr, &target.peer, session).is_err() {
         return refuse(
             U::NotAuthorised,
             "addressed device may not act in the workspace",
         );
+    }
+    let mut frame = frame;
+    if let Some(plane) = session.app_serving
+        && plane.tracks(workspace_id)
+        && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+        && let Some(answer) = plane.relayed(workspace_id, peer.device_public_key, &decoded.message)
+        && let Ok(encoded) = tilo_actions::remote::RemoteActionFrame::new(answer).encode()
+    {
+        frame = encoded;
     }
     let stamped = Envelope::RemoteAction {
         workspace_id,
@@ -107,7 +274,6 @@ pub(super) async fn handle_remote_action(
         frame,
     };
     let delivered = wr.route_directed(&to, stamped);
-    drop(wr);
     if delivered {
         None
     } else {
@@ -161,6 +327,34 @@ pub(super) fn handle_host_action(
             reason: "this host serves no host operations".into(),
         });
     };
+    // One of the host's own operations changes what it keeps for a person as
+    // theirs: it spends their change budget, as a change in one of their
+    // workspaces does, and is refused before it runs, saying when the budget
+    // admits the next one. Only a person's own devices and keys are answered
+    // here, so a server key spends the owner budget its certificate names and
+    // any other device the guest's, as a workspace's change standing sees them.
+    if matches!(
+        request.message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(_)
+    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
+        super::over_change_limit(
+            peer,
+            session,
+            if peer.cert.capabilities.server_key {
+                crate::member_limits::Standing::Owner
+            } else {
+                crate::member_limits::Standing::Guest
+            },
+        )
+    {
+        return refused(ActionHostError::Unavailable {
+            reason: format!(
+                "{}: {}",
+                tilo_relay_protocol::refusal::BACKPRESSURE,
+                tilo_relay_protocol::refusal::too_many_changes(retry_after)
+            ),
+        });
+    }
     let caller = match session_caller(peer, session) {
         Ok(caller) => caller,
         Err((_, detail)) => {
@@ -237,6 +431,14 @@ fn answer_later(
     });
 }
 
+/// Where [`serve_locally`] answers: the relay's app-serving plane, in one
+/// workspace, for a caller of the standing the change budget sees there.
+struct Local<'a> {
+    plane: &'a dyn crate::app_serving::AppServingPlane,
+    workspace_id: u64,
+    standing: crate::member_limits::Standing,
+}
+
 /// Answer a frame addressed to this relay through its app-serving plane,
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
@@ -246,35 +448,42 @@ fn answer_later(
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    plane: &dyn crate::app_serving::AppServingPlane,
-    workspace_id: u64,
+    local: &Local<'_>,
     frame: &[u8],
-) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
+) -> Result<Option<Envelope>, (UnavailableReason, String)> {
     use tilo_actions::remote::RemoteActionFrame;
+    let Local {
+        plane,
+        workspace_id,
+        standing,
+    } = *local;
     let request = RemoteActionFrame::decode(frame).map_err(|_| {
         (
             UnavailableReason::InvalidRequest,
-            "malformed remote action frame",
+            "malformed remote action frame".to_owned(),
         )
     })?;
-    let caller = session_caller(peer, session)?;
+    let caller =
+        session_caller(peer, session).map_err(|(reason, detail)| (reason, detail.to_owned()))?;
     if !plane.answers(&caller, &request.message) {
         return Err((
             UnavailableReason::UnsupportedPeer,
-            "this host does not serve apps",
+            "this host does not serve apps".to_owned(),
         ));
     }
     // An action the host runs for a member (a comment, linking their own
     // account) changes a record as theirs: it spends their change budget,
-    // as a change they send does.
+    // as a change they send does. It is refused before it runs, saying when
+    // the budget admits the next one, so the asker may simply ask again.
     if matches!(
         request.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(_)
-    ) && super::over_change_limit(peer, session).is_some()
+    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
+        super::over_change_limit(peer, session, standing)
     {
         return Err((
             UnavailableReason::Backpressure,
-            tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
+            tilo_relay_protocol::refusal::too_many_changes(retry_after),
         ));
     }
     let abandoned = tilo_actions::remote::refuse(
@@ -290,7 +499,7 @@ fn serve_locally(
         return if abandoned.is_some() {
             Err((
                 UnavailableReason::UnsupportedPeer,
-                "this host does not answer that request",
+                "this host does not answer that request".to_owned(),
             ))
         } else {
             Ok(None)
@@ -327,9 +536,10 @@ fn serve_locally(
     Ok(None)
 }
 
-/// Who `peer` acts as: the person on their own device, or the agent or bot
+/// Who `peer` acts as: the person on their own device, the agent that
+/// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
 /// whose live delegation that device carries.
-fn session_caller(
+pub(super) fn session_caller(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<tilo_actions::remote::Caller, (UnavailableReason, &'static str)> {
@@ -339,7 +549,7 @@ fn session_caller(
         .read_recover()
         .get(&peer.device_public_key)
         .cloned();
-    Ok(match agent {
+    let caller = match agent {
         Some(Some(delegation)) => match delegation.delegate {
             tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
                 Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
@@ -351,6 +561,34 @@ fn session_caller(
         Some(None) => {
             return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
         }
-        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
+        // An agent's grant (a key its person certified for a service acting
+        // for an agent they approved) is their agent: what it does is the
+        // agent's, for them, never above what an agent of theirs may do, and
+        // it governs nothing. It goes by the name the key was certified with.
+        None if peer.cert.capabilities.agent.is_some() => {
+            Caller::authenticated(peer.user_public_key, peer.device_public_key)
+                .delegated_to(grant_agent_id(&peer.device_public_key))
+                .named(&peer.cert.device_label)
+        }
+        None => {
+            let person = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+            match session.agent.get() {
+                Some(agent) => person.delegated_to(agent.clone()),
+                None => person,
+            }
+        }
+    };
+    // An agent's (or a key's) requests on this connection are one run, the
+    // host's to name.
+    Ok(match caller.principal() {
+        tilo_actions::remote::CallerPrincipal::Agent(_) => {
+            caller.in_execution(session.execution.clone())
+        }
+        _ => caller,
     })
+}
+
+/// The agent an agent's grant is, by its key: History names its runs.
+fn grant_agent_id(device: &[u8; 32]) -> String {
+    format!("grant-{}", hex::encode(device))
 }

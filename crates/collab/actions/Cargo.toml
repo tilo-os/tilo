@@ -36,13 +36,16 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 # JSON Schema patterns are ECMA-262, whose `\d`, `\w` and `\b` are ASCII as
 # here; the full `regex` engine would sit in the browser start module.
 regex-lite.workspace = true
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+uuid = { version = "1.23.1", features = ["v4", "v7", "serde"] }
 thiserror.workspace = true
 blake3.workspace = true
 # Appearance names are compared and stored NFC-normalized.
 unicode-normalization = "0.1.25"
 # An avatar is checked by its sniffed image type.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
+# The large parts of a recorded action are kept, sealed, as content.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tracing.workspace = true
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }

@@ -263,3 +263,25 @@ chip-design-operator-node-x = Moved an operator
 chip-design-operator-node-y = Moved an operator
 chip-design-operator-node-output-width = Changed the matrix output width of an operator
 chip-design-project-nodes = Changed the operators
+
+## Actions
+
+chip-design-project = Chip Design
+chip-design-project-import-report = Import analytical report
+chip-design-project-remove-report = Remove report
+chip-design-project-import-verification = Import verification receipt
+chip-design-project-remove-verification = Remove verification receipt
+chip-design-project-add-node = Add operator
+chip-design-project-set-shape = Set operator input shape
+chip-design-project-remove-node = Remove operator
+chip-design-project-connect = Connect operators
+chip-design-project-disconnect = Disconnect input
+chip-design-effect-import-file = Import report
+chip-design-effect-operator-graph = Open operator graph
+chip-design-effect-add-operator = Add operator
+chip-design-effect-inspect-operator = Inspect operator
+chip-design-effect-zoom-graph = Zoom the graph
+chip-design-effect-select-output = Choose output
+chip-design-effect-inspect-evidence = Inspect evidence
+chip-design-effect-open-evidence-subflow = Open evidence subflow
+chip-design-effect-inspect = Inspect report

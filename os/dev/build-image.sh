@@ -321,7 +321,6 @@ else
     || die "RPMS_REF must pin registry.tilo.so/tilo/rpms by sha256 digest"
   command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
   _tilo_rpms_digest="${RPMS_REF##*@}"
-  _tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
   _tilo_native_package_set_sha256="$("$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch "$(uname -m)" | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
   _tilo_rpms_provenance="$(cosign verify-attestation \
     --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$RPMS_REF")" \
@@ -330,26 +329,23 @@ else
     || die "frozen RPM signature verification failed"
   printf '%s' "$_tilo_rpms_provenance" | jq -e \
     --arg digest "$_tilo_rpms_digest" --arg base "$BASE_REF" \
-    --arg package_set_sha256 "$_tilo_package_set_sha256" \
-    --arg native_package_set_sha256 "$_tilo_native_package_set_sha256" \
+    --arg package_set_sha256 "$_tilo_native_package_set_sha256" \
     --arg native_arch "$_tilo_registry_arch" '
       [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
       | any(
-          ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
-            or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
-          and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+          ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-snapshot/v1")
+            or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-snapshot/v1")))
+          and .buildDefinition.externalParameters.architecture == $native_arch
           and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
-          and .buildDefinition.externalParameters.packageSetSha256ByArchitecture[$native_arch] == $native_package_set_sha256
           and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
           and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
         )
-    ' >/dev/null || die "frozen RPM provenance does not bind its package set, digest, base, and architectures"
+    ' >/dev/null || die "frozen RPM provenance does not bind this machine's architecture, package set, digest and base"
   command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect signed build inputs"
-  _tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
-    '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')" \
-    || die "could not inspect the frozen RPM index"
-  [ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
-    || die "frozen RPM index does not contain exactly amd64 and arm64"
+  _tilo_rpms_arch="$(skopeo inspect --config "docker://$RPMS_REF" | jq -r .architecture)" \
+    || die "could not inspect the frozen RPM snapshot"
+  [ "$_tilo_rpms_arch" = "$_tilo_registry_arch" ] \
+    || die "the frozen RPM snapshot is a ${_tilo_rpms_arch:-unreadable} image, not $_tilo_registry_arch"
 fi
 if [ "${_tilo_kernel_unread:-0}" = 1 ]; then
   : # This layer action builds nothing FROM the kernel; the kernel layer verifies it.

@@ -116,7 +116,6 @@ impl Widget for ColumnSlot {
 /// What the window's header buttons asked for since the app last looked.
 #[derive(Default)]
 pub(crate) struct HeaderRequests {
-    pub new_note: Cell<bool>,
     pub note_menu: Cell<bool>,
 }
 
@@ -158,9 +157,8 @@ mod tests {
     #[test]
     fn header_requests_are_taken_once() {
         let requests = HeaderRequests::default();
-        requests.new_note.set(true);
-        assert!(requests.new_note.take());
-        assert!(!requests.new_note.take());
+        requests.note_menu.set(true);
+        assert!(requests.note_menu.take());
         assert!(!requests.note_menu.take());
     }
 }

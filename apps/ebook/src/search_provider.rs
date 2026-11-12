@@ -18,7 +18,9 @@ use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
 
 use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
+use crate::resource::CATALOG;
 use crate::resource::{Ebook, book_place_resource, mark_place_resource};
+use ui::i18n::ArgValue;
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
@@ -235,7 +237,7 @@ impl BookSearch {
         for book in books.iter() {
             book_metadata.insert(
                 book.id.clone(),
-                (Self::book_title(book).to_string(), book.author.clone()),
+                (Self::book_title(book), book.author.clone()),
             );
         }
         for entry in registry.iter() {
@@ -306,7 +308,7 @@ impl BookSearch {
         };
 
         for (book_index, book) in books.iter().enumerate() {
-            let title = Self::book_title(book).to_string();
+            let title = Self::book_title(book);
             let mut result =
                 SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&book.id))
                     .with_icon(Icon::FileText);
@@ -370,7 +372,7 @@ impl BookSearch {
                 continue;
             }
             let title = if entry.title.trim().is_empty() {
-                "Untitled".to_string()
+                CATALOG.t("ebook-untitled")
             } else {
                 entry.title.clone()
             };
@@ -404,7 +406,7 @@ impl BookSearch {
             let (title, author) = book_metadata
                 .get(&annotation.doc_id)
                 .cloned()
-                .unwrap_or_else(|| ("Unknown book".into(), String::new()));
+                .unwrap_or_else(|| (CATALOG.t("ebook-annotation-unknown-book"), String::new()));
             let comment = annotation.kind == AnnoKind::Note
                 && groups.contains(&(annotation.doc_id.clone(), annotation.group));
             let result = SearchResult::new(
@@ -412,10 +414,16 @@ impl BookSearch {
                 Self::preview(annotation),
                 mark_place_resource(annotation, comment),
             )
-            .with_subtitle(format!(
-                "{} in chapter {} of {title}",
-                annotation.kind.label(),
-                annotation.chapter + 1
+            .with_subtitle(CATALOG.t_args(
+                "ebook-a11y-annotation-hit",
+                &[
+                    ("kind", ArgValue::Text(CATALOG.t(annotation.kind.message()))),
+                    (
+                        "chapter",
+                        ArgValue::Text((annotation.chapter + 1).to_string()),
+                    ),
+                    ("title", ArgValue::Text(title.clone())),
+                ],
             ))
             .with_icon(match annotation.kind {
                 AnnoKind::Bookmark => Icon::Bookmark,
@@ -423,9 +431,12 @@ impl BookSearch {
                 AnnoKind::Note => Icon::MessageSquare,
             });
             let kind = if comment {
-                format!("{} comment", annotation.kind.label())
+                CATALOG.t_args(
+                    "ebook-annotation-comment",
+                    &[("kind", ArgValue::Text(CATALOG.t(annotation.kind.message())))],
+                )
             } else {
-                annotation.kind.label().to_string()
+                CATALOG.t(annotation.kind.message())
             };
             if !add(
                 result,
@@ -498,11 +509,11 @@ impl BookSearch {
         })
     }
 
-    pub(crate) fn book_title(book: &Book) -> &str {
+    pub(crate) fn book_title(book: &Book) -> String {
         if book.title.trim().is_empty() {
-            "Untitled"
+            CATALOG.t("ebook-untitled")
         } else {
-            &book.title
+            book.title.clone()
         }
     }
 
@@ -519,7 +530,7 @@ impl BookSearch {
         };
         let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
-            annotation.kind.label().to_string()
+            CATALOG.t(annotation.kind.message())
         } else if collapsed.chars().count() > 72 {
             collapsed.chars().take(69).collect::<String>() + "…"
         } else {

@@ -23,6 +23,7 @@ use ui::framework::views::{
     Chip, FacetMenu, FacetOffer, FieldDecl, FieldRole, FilterKind, Form, Item, KindDecl, OpenFacet,
     QueryEngine, QuerySpec, RemoteError, RemoteSection, RemoteSource, ResultGroup, facet_bar,
 };
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
@@ -35,6 +36,7 @@ use vello::peniko::{BlendMode, Fill};
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, button_width, paint_scroll_thumb};
 use crate::library_index::{BookUnreachable, LibraryIndex, Read};
 use crate::model::Book;
+use crate::resource::CATALOG;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
 };
@@ -461,10 +463,7 @@ impl BooksApp {
     fn may_index(&self) -> bool {
         self.dispatch.may_invoke(&crate::resource::index_book(
             "",
-            crate::resource::StoredContent {
-                hash: String::new(),
-                size: 0,
-            },
+            ui::tilo_resource::Bytes::Empty,
         ))
     }
 
@@ -479,17 +478,16 @@ impl BooksApp {
             return;
         }
         for (book, segment) in built {
+            // Kept in the store however small: a device reads it from there
+            // before the book is here.
             match store.put(&segment) {
-                Ok(hash) => {
-                    let size = u64::try_from(segment.len()).unwrap_or(u64::MAX);
-                    self.edit(
-                        doc,
-                        crate::resource::index_book(
-                            &book,
-                            crate::resource::StoredContent { hash, size },
-                        ),
-                    );
-                }
+                Ok(reference) => self.edit(
+                    doc,
+                    crate::resource::index_book(
+                        &book,
+                        ui::tilo_resource::Bytes::kept_as(&segment, &reference),
+                    ),
+                ),
                 Err(error) => tracing::debug!(%book, %error, "books: an index could not be kept"),
             }
         }
@@ -761,14 +759,19 @@ impl BooksApp {
         );
         let span = (body.x0 + gutter, body.x1 - gutter);
         let found = results.order().len();
-        let count = (!results.query.is_empty()).then(|| match found {
-            1 => "1 result".to_owned(),
-            n => format!("{n} results"),
+        let count = (!results.query.is_empty()).then(|| {
+            CATALOG.t_args(
+                "ebook-search-results",
+                &[(
+                    "count",
+                    ui::i18n::ArgValue::Number(f64::from(u32::try_from(found).unwrap_or(u32::MAX))),
+                )],
+            )
         });
         // The title names what is shown: the words searched for, or the
         // chips alone when nothing is typed (their chips stand below).
         let title = match results.query.text.trim() {
-            "" if results.query.chips.is_empty() => "Search".to_owned(),
+            "" if results.query.chips.is_empty() => CATALOG.t("ebook-search-title"),
             "" => ui::framework::views::KeptViews::default_name(
                 &results.query,
                 self.query.engine.kinds(),
@@ -783,15 +786,10 @@ impl BooksApp {
         ) + gutter;
         y = self.query_chips(ctx, span, y, body, &results) + section;
         if results.query.is_empty() {
-            y = Self::query_note(
-                ctx,
-                span,
-                y,
-                "Type to search your books, their pages and your notes.",
-            );
+            y = Self::query_note(ctx, span, y, &CATALOG.t("ebook-query-hint"));
         } else {
             if results.local.is_empty() {
-                y = Self::query_note(ctx, span, y, "Nothing in your library matches.") + section;
+                y = Self::query_note(ctx, span, y, &CATALOG.t("ebook-query-no-local")) + section;
             }
             for group in &results.local {
                 y = self.query_group(ctx, span, body, y, group) + section;
@@ -1000,6 +998,38 @@ impl BooksApp {
     /// One result as a row: a passage by its words, a chapter or a note by
     /// its name, each with where it is; a store book with its author and
     /// the button that gets it.
+    /// The row's action and its name: a store book is got, a hit opened.
+    fn row_action(
+        item: &Item,
+        store: Option<&crate::store::StoreBook>,
+        title: &str,
+    ) -> (Action, String) {
+        match store {
+            Some(book) => (Action::GetBook(book.id), Self::get_label(book)),
+            None => (
+                Action::OpenHit(item.id.clone()),
+                CATALOG.t_args(
+                    "ebook-query-open",
+                    &[("title", ArgValue::Text(title.to_owned()))],
+                ),
+            ),
+        }
+    }
+
+    /// What the button that gets `book` from the store says.
+    fn get_label(book: &crate::store::StoreBook) -> String {
+        CATALOG.t_args(
+            "ebook-query-get",
+            &[
+                ("book", ui::i18n::ArgValue::Text(book.title.clone())),
+                (
+                    "store",
+                    ui::i18n::ArgValue::Text(crate::resource::CATALOG.t(crate::store::STORE_LABEL)),
+                ),
+            ],
+        )
+    }
+
     fn query_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1025,17 +1055,11 @@ impl BooksApp {
             .and_then(|entry| entry.icon.as_deref())
             .and_then(Icon::from_name)
             .unwrap_or(Icon::FileText);
-        let (action, label) = match &store {
-            Some(book) => (
-                Action::GetBook(book.id),
-                format!("Get {} from {}", book.title, crate::store::STORE_LABEL),
-            ),
-            None => (Action::OpenHit(item.id.clone()), format!("Open {title}")),
-        };
+        let (action, label) = Self::row_action(item, store.as_ref(), &title);
         let id = item.id.clone();
         let row_index = self.query.rows.len();
-        let get_label = "Get";
-        let get_width = ButtonFace::new(Rect::ZERO, get_label)
+        let get_label = CATALOG.t("ebook-get");
+        let get_width = ButtonFace::new(Rect::ZERO, &get_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(ctx.text, theme);
         // A store book's cover once it has arrived; its placeholder, the
@@ -1102,7 +1126,7 @@ impl BooksApp {
                 );
                 self.button(
                     ctx,
-                    ButtonFace::new(button, get_label)
+                    ButtonFace::new(button, &get_label)
                         .control_size(ControlSize::Small)
                         .role(ButtonRole::Secondary),
                     action,
@@ -1142,14 +1166,25 @@ impl BooksApp {
             y += h;
         } else if let Some(RemoteError(text)) = remote.failure() {
             let note = if text.is_empty() {
-                format!("{} can\u{2019}t be reached right now.", remote.label)
+                CATALOG.t_args(
+                    "ebook-query-unreachable",
+                    &[("store", ArgValue::Text(remote.label.clone()))],
+                )
             } else {
                 text.clone()
             };
             y = Self::query_note(ctx, span, y, &note);
             y = self.query_retry(ctx, span, body, y, &remote.source);
         } else if remote.is_answered() && remote.groups.is_empty() {
-            y = Self::query_note(ctx, span, y, &format!("No matches in {}.", remote.label));
+            y = Self::query_note(
+                ctx,
+                span,
+                y,
+                &CATALOG.t_args(
+                    "ebook-query-no-remote",
+                    &[("store", ArgValue::Text(remote.label.clone()))],
+                ),
+            );
         }
         for item in remote.rows() {
             y = self.query_row(ctx, span, body, y, item);
@@ -1169,7 +1204,7 @@ impl BooksApp {
         source: &str,
     ) -> f64 {
         let theme = ctx.theme;
-        let label = ui::i18n::I18nManager::lookup_plain("arriving-retry");
+        let label = crate::resource::CATALOG.t("arriving-retry");
         let y = y + f64::from(theme.tokens.spacing.rhythm.related);
         let width = button_width(ctx, &label, None, ControlSize::Small);
         let height = ButtonFace::height(ControlSize::Small, theme);

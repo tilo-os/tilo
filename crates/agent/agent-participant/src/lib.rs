@@ -52,7 +52,6 @@ pub mod message_lines;
 pub mod model;
 pub mod participant;
 pub mod planner;
-mod presence;
 pub mod profile;
 pub mod render;
 pub mod search;
@@ -61,9 +60,10 @@ pub mod vision;
 mod web_apps;
 pub mod worker;
 pub mod workspace_actions;
+mod workspace_records;
 
 pub use apps::{
-    AppCatalogue, AppError, Replica, ReplicaActor, Seed, agent_only_apps, component_apps,
+    AppCatalogue, AppError, PlacedApp, Replica, ReplicaActor, Seed, agent_only_apps, component_apps,
 };
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
@@ -75,7 +75,7 @@ pub use model::{
     OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
-pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped, RemoteMember};
+pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{
     DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
     StepAction, TurnRetries,

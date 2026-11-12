@@ -357,7 +357,7 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ListModel for ChainList<P, K
         Arrival::Ready(())
     }
 
-    fn request_range(&mut self, range: Range<usize>) {
+    fn request_range(&mut self, range: Range<usize>, _open: Option<&Self::Key>) {
         if self.earlier && range.start == 0 {
             self.pager.reached_top();
             // Here when the app's records take writes; otherwise at the

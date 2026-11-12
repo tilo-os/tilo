@@ -42,6 +42,8 @@ mod component_text_input;
 mod container_update_forwarding;
 #[path = "context_menu_test.rs"]
 mod context_menu_test;
+#[path = "control_label_stays_inside_its_control.rs"]
+mod control_label_stays_inside_its_control;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
 #[path = "copy_audit.rs"]

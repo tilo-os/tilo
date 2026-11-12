@@ -6,10 +6,8 @@
 //! and the view the place names, or the type's default view ([`ViewRegistry::default_for`]).
 //!
 //! The registry is filled once, when the app's code is loaded: every view of the crate that
-//! declares it is here, whatever module it lives in.
-
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
+//! declares it is here, whatever module it lives in. A web page's registry is empty: nothing on
+//! it draws a Rust app's view, and each app's code arrives in a module of its own.
 
 use crate::cx::ViewCx;
 use crate::node::{Node, ResourceRef};
@@ -106,11 +104,6 @@ impl ViewRegistry {
         }
     }
 
-    /// Every view of a resource of `kind`, by name.
-    pub fn of(kind: &str) -> impl Iterator<Item = &'static View> {
-        Self::views().filter(move |view| view.kind == kind)
-    }
-
     /// Every view any app declares, the default of a type first among its type's.
     pub fn views() -> impl Iterator<Item = &'static View> {
         let mut all: Vec<&'static View> = inventory::iter::<View>.into_iter().collect();
@@ -132,28 +125,6 @@ impl ViewRegistry {
         apps.dedup();
         apps
     }
-}
-
-/// The views of each app, by kind and name, for whoever wants them grouped: a debug view of
-/// what is linked, and what the tests read.
-#[must_use]
-pub fn by_kind() -> BTreeMap<&'static str, Vec<&'static View>> {
-    let mut out: BTreeMap<&'static str, Vec<&'static View>> = BTreeMap::new();
-    for view in ViewRegistry::views() {
-        out.entry(view.kind).or_default().push(view);
-    }
-    out
-}
-
-/// The static the first lookup fills, so `views()` walks the inventory once per process.
-static SORTED: OnceLock<()> = OnceLock::new();
-
-/// Fill the registry once: the first lookup walks the inventory, later ones read what it found.
-pub fn init() {
-    SORTED.get_or_init(|| {
-        let count = inventory::iter::<View>.into_iter().count();
-        tracing::debug!(count, "the views of this app are registered");
-    });
 }
 
 /// The views a kind's type may be shown through, by name: a place's `shown_as` finds one here, or

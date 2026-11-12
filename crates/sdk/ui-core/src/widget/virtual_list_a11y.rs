@@ -6,11 +6,13 @@
 //! so a reader hears what folding it away would hide. An action on such a node comes back to
 //! the list by its [`super::groups::HEADING_TARGET`].
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::edit::RenameStamp;
-use super::groups::{Band, Group, HEADING_TARGET};
+use super::groups::{Band, HEADING_TARGET};
+use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::widget::Widget;
@@ -107,6 +109,21 @@ impl<M: ListModel> VirtualList<M> {
         walked
     }
 
+    /// Whether `row`'s own widget tree is handed to a reader under the row's node: the item it
+    /// stands open into, whose document holds the fields that edit it, and any row whose widget
+    /// carries a control of its own (a box to tick, a field, a button) that the row's state
+    /// alone does not reach. A row of words stays summarized: the row states it, and its words
+    /// are not read twice.
+    pub(super) fn handing_controls(&self, row: &MountedRow<M::Key>) -> bool {
+        self.standing_open(row) || holds_controls(row.widget.as_ref())
+    }
+
+    /// Whether `row` stands open into its item where it stands: the item's document takes the
+    /// row's place in the list, so the row is the item, named and announced by what it states.
+    fn standing_open(&self, row: &MountedRow<M::Key>) -> bool {
+        self.open.as_ref() == Some(&row.key)
+    }
+
     /// The node of one mounted row: a list item holding the row's own semantics.
     pub(super) fn row_node(
         &self,
@@ -114,14 +131,25 @@ impl<M: ListModel> VirtualList<M> {
         enabled: bool,
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
-        let child = row.widget.accessibility();
+        // What the row states of itself: its widget's own node, or the node of the widget it wraps
+        // that names it. A row drawn by a box or a toolbar that adds no node stands where what it
+        // wraps does.
+        let child = crate::a11y::stated_node(row.widget.as_ref());
         // The item standing open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
-        let name = (self.open.as_ref() == Some(&row.key))
+        let name = self
+            .standing_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
             .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
-            .or_else(|| first_descendant_accessible_name(row.widget.as_ref()));
+            // A row still on its way has nothing of its own to read: its slot is reserved and
+            // its placeholder paints nothing. It is named for what it is, as a pending row of a
+            // table is, so a reader moving through the list hears a row that is loading rather
+            // than an unnamed slot in it — the row is focusable from the moment it stands.
+            .or_else(|| {
+                matches!(&row.state, MountedRowState::Pending)
+                    .then(|| widget_text("arriving-loading"))
+            });
         let mut item = AccessNode::new(if self.tree.is_some() {
             Role::TreeItem
         } else {
@@ -136,7 +164,7 @@ impl<M: ListModel> VirtualList<M> {
                 .selected(self.selection.is_selected(&row.key))
                 // A row whose menu the host offers can be asked for it, as a
                 // secondary click does.
-                .context_menu(self.menus.offers_row_menu())
+                .context_menu(self.menus.row_offers(&self.model, &row.key))
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -165,7 +193,7 @@ impl<M: ListModel> VirtualList<M> {
         }
         // The row standing open into its item says so, as the row over a document does: what
         // the item holds shows under the row, where the row stands in the list.
-        if self.open.as_ref() == Some(&row.key) {
+        if self.standing_open(row) {
             item.state.expanded = Some(true);
         }
         match &row.state {
@@ -209,24 +237,28 @@ impl<M: ListModel> VirtualList<M> {
             .filter(|field| field.key == row.key)
             .and_then(|field| {
                 Widget::accessibility(&field.input).map(|mut input| {
-                    input.name = Some(crate::i18n!("tree-rename-field"));
+                    input.name = Some(widget_text("tree-rename-field"));
                     input.bounds = Some(field.input.get_rect().into());
                     input
                 })
             });
-        // A row that is a tree item of its own is this node: its controls stand under the
-        // item itself, not under a second node of the same row.
-        let child = child.map(|node| {
-            if node.level.is_some() {
-                node.children
-            } else {
-                vec![node]
+        // The row's own widget is this node: the list states the row (its name, its place, its
+        // state), and whatever the widget says of itself inside it — how deep it stands, what it
+        // reads, the box to tick and the actions over its trailing corner — stands under the row
+        // itself, not under a second node of the same row. So do the controls of the item a row
+        // stands open into: that item is the row, named by the title it states, so a reader hears
+        // the row once and reaches what it holds.
+        let mut children: Vec<AccessNode> = Vec::new();
+        if let Some(node) = child {
+            if item.value.is_none() {
+                item.value = node.value;
             }
-        });
-        let children: Vec<AccessNode> = field
-            .into_iter()
-            .chain(child.into_iter().flatten())
-            .collect();
+            if item.item.is_none() {
+                item.item = node.item;
+            }
+            children = node.children;
+        }
+        children.splice(0..0, field);
         if !children.is_empty() {
             item = item.with_children(children);
         }
@@ -288,9 +320,16 @@ impl<M: ListModel> VirtualList<M> {
                     self.scroll_to_index(index);
                     true
                 }
-                // A tree row folds what stands under it, as its disclosure does.
+                // A tree row folds what stands under it, as its disclosure does. A row
+                // standing open shows its branch in its item's document, so collapsing it
+                // closes the row: the rows it holds come back to the list.
                 Action::Expand | Action::Collapse if self.tree.is_some() => {
-                    self.fold_row(&key, matches!(action, Action::Collapse))
+                    if matches!(action, Action::Collapse) && self.open.as_ref() == Some(&key) {
+                        self.open_where_it_stands(key);
+                        true
+                    } else {
+                        self.fold_row(&key, matches!(action, Action::Collapse))
+                    }
                 }
                 Action::ShowContextMenu if self.menus.offers_row_menu() => {
                     let point = self
@@ -312,12 +351,19 @@ impl<M: ListModel> VirtualList<M> {
                 _ => false,
             };
         }
-        // A row's own controls name the row, not the list: the row answers for
-        // them, as it did when the walk reached it as a widget of its own.
+        // A row's own controls name the row, not the list: the row answers for them, as it
+        // did when the walk reached it as a widget of its own. So does the widget that states
+        // the row where the row is drawn by a box or a toolbar that adds no node of its own:
+        // that widget published the node a reader acts on.
         for row in &mut self.mounted {
             if row
                 .widget
                 .perform_semantic_action(target, action, state, path)
+            {
+                return true;
+            }
+            if let Some(stated) = crate::a11y::stated_widget_mut(row.widget.as_mut())
+                && stated.perform_semantic_action(target, action, state, path)
             {
                 return true;
             }
@@ -398,7 +444,7 @@ impl<M: ListModel> VirtualList<M> {
             ),
             None => (None, None),
         };
-        let expanded = if self.open.as_ref() == Some(&row.key) {
+        let expanded = if self.standing_open(row) {
             Some(true)
         } else {
             folded
@@ -410,7 +456,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.offers_row_menu(),
+            menu: self.menus.row_offers(&self.model, &row.key),
             disabled: !enabled,
             level,
             expanded,
@@ -466,7 +512,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The heading's node in the accessibility tree: a disclosure saying whether its group
-    /// shows and how many rows it holds.
+    /// shows and how many of its rows are left to do.
     fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {
         let focused = self
             .focused_group
@@ -474,7 +520,7 @@ impl<M: ListModel> VirtualList<M> {
             .is_some_and(|(heading, _)| *heading == band.heading);
         AccessNode::new(Role::Button)
             .with_name(band.heading.clone())
-            .with_value(self.heading_rows(band).to_string())
+            .with_value(self.heading_open_rows(band).to_string())
             .with_action_target(format!("{HEADING_TARGET}{}", band.heading))
             .with_bounds(self.band_rect(band.top))
             .with_state(
@@ -485,46 +531,22 @@ impl<M: ListModel> VirtualList<M> {
                     .expanded(!band.closed),
             )
     }
-
-    /// How many rows the band's group holds, as the model says.
-    pub(super) fn heading_rows(&self, band: &Band) -> usize {
-        let len = self.model.len();
-        let tail = self.tail_title.as_deref();
-        let same = |index: usize| {
-            super::groups::group_of(&self.model, index, tail)
-                .is_some_and(|group: Group| group.heading == band.heading)
-        };
-        let mut start = band.index.min(len);
-        while start > 0 && same(start - 1) {
-            start -= 1;
-        }
-        let mut end = start;
-        while end < len && same(end) {
-            end += 1;
-        }
-        end - start
-    }
 }
 
-/// The title the item `widget` presents states, the first one it holds: a document titles
-/// itself in a heading, or in the field the person types its title in.
-fn first_page_title(widget: &dyn Widget) -> Option<String> {
-    Widget::own_page_title(widget)
-        .or_else(|| widget.children().into_iter().find_map(first_page_title))
-}
-
-fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
-    widget.children().into_iter().find_map(|child| {
-        child
-            .accessibility()
-            .and_then(|node| node.name)
-            .or_else(|| first_descendant_accessible_name(child))
-    })
+/// Whether `widget` holds a control a reader operates below it: a widget that takes keyboard
+/// focus (a field, a box, a button). Words, and the boxes that only hold them, are the row's
+/// own — the row already says them.
+fn holds_controls(widget: &dyn Widget) -> bool {
+    let mut holds = false;
+    widget.for_each_child(&mut |child| {
+        holds = holds || child.is_focusable() || holds_controls(child);
+    });
+    holds
 }
 
 #[cfg(test)]
 mod tests {
-    use super::first_page_title;
+    use super::super::open::first_page_title;
     use crate::tokens::TextRole;
     use crate::widget::arrange::Row;
     use crate::widget::{Element, Text};

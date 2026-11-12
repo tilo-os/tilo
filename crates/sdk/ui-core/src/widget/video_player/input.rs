@@ -4,7 +4,7 @@
 
 use super::{
     KEY_SEEK_STEP, MenuHit, OpenMenu, PlayerSettingControl, PlayerSettingEvent, VideoPlayer,
-    format_ms,
+    format_ms, said,
 };
 use crate::num::f64_of_u64;
 use vello::kurbo::Rect;
@@ -289,8 +289,12 @@ impl VideoPlayer {
             controls.push((
                 play_target.clone(),
                 AccessNode::new(Role::Button)
-                    .with_name(if self.is_playing() { "Pause" } else { "Play" })
-                    .with_description("Space")
+                    .with_name(said(if self.is_playing() {
+                        "media-pause"
+                    } else {
+                        "media-play"
+                    }))
+                    .with_description(said("media-key-play-pause"))
                     .with_action_target(play_target.clone())
                     .with_state(AccessState {
                         disabled: !self.transport_enabled,
@@ -303,13 +307,15 @@ impl VideoPlayer {
             controls.push((
                 seek_target.clone(),
                 AccessNode::new(Role::Slider)
-                    .with_name("Playback position")
-                    .with_value(format!(
-                        "{} of {}",
-                        format_ms(self.position_ms),
-                        format_ms(self.duration_ms)
+                    .with_name(said("now-playing-seek"))
+                    .with_value(crate::i18n::widget_format(
+                        "media-position-value",
+                        &[
+                            ("position", format_ms(self.position_ms).into()),
+                            ("duration", format_ms(self.duration_ms).into()),
+                        ],
                     ))
-                    .with_description("Left and Right Arrow seek five seconds")
+                    .with_description(said("now-playing-seek-help"))
                     .with_action_target(seek_target.clone())
                     .with_state(AccessState {
                         disabled: !self.transport_enabled,
@@ -322,7 +328,11 @@ impl VideoPlayer {
             controls.push((
                 mute_target.clone(),
                 AccessNode::new(Role::ToggleButton)
-                    .with_name(if self.muted { "Unmute" } else { "Mute" })
+                    .with_name(said(if self.muted {
+                        "media-unmute"
+                    } else {
+                        "media-mute"
+                    }))
                     .with_description("M")
                     .with_action_target(mute_target.clone())
                     .with_state(AccessState {
@@ -336,7 +346,7 @@ impl VideoPlayer {
             controls.push((
                 volume_target.clone(),
                 AccessNode::new(Role::Slider)
-                    .with_name("Volume")
+                    .with_name(said("media-volume"))
                     .with_value(format!("{}%", (self.effective_volume() * 100.0).round()))
                     .with_action_target(volume_target.clone())
                     .with_state(focusable(&volume_target)),
@@ -377,7 +387,7 @@ impl VideoPlayer {
             controls.push((
                 target.clone(),
                 AccessNode::new(Role::Button)
-                    .with_name("Playback settings")
+                    .with_name(said("media-playback-settings"))
                     .with_action_target(target.clone())
                     .with_state(AccessState {
                         expanded: Some(self.open_menu == Some(OpenMenu::Gear)),
@@ -398,7 +408,14 @@ impl VideoPlayer {
                     let value = match &setting.control {
                         PlayerSettingControl::Toggle { on } => {
                             state.checked = Some(*on);
-                            Some(if *on { "On".into() } else { "Off".into() })
+                            Some(
+                                said(if *on {
+                                    "media-toggle-on"
+                                } else {
+                                    "media-toggle-off"
+                                })
+                                .into_owned(),
+                            )
                         }
                         PlayerSettingControl::Choice { options, selected } => {
                             state.expanded = Some(self.gear_expanded == Some(*idx));
@@ -447,11 +464,11 @@ impl VideoPlayer {
         controls.push((
             fullscreen_target.clone(),
             AccessNode::new(Role::Button)
-                .with_name(if self.fullscreen {
-                    "Exit fullscreen"
+                .with_name(said(if self.fullscreen {
+                    "media-fullscreen-exit"
                 } else {
-                    "Enter fullscreen"
-                })
+                    "media-fullscreen-enter"
+                }))
                 .with_description("F")
                 .with_action_target(fullscreen_target.clone())
                 .with_state(focusable(&fullscreen_target)),

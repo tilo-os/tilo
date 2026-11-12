@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
@@ -36,6 +37,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
 use crate::workspaces::{MemberMark, Workspaces};
+use tilo_content::{ContentStore, WorkspaceStores};
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -187,7 +189,7 @@ pub struct BotRunner {
     workspace: String,
     host: DeviceCert,
     /// The bot's own device, which signs what its runs change.
-    bot_key: ed25519_dalek::SigningKey,
+    bot_key: SigningKey,
     catalogue: AppCatalogue,
     bot: InstalledBot,
     shortcut: Arc<Shortcut>,
@@ -200,6 +202,9 @@ pub struct BotRunner {
     state_file: PathBuf,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
+    /// Records of the workspace the bot follows that this host could not read
+    /// as last tried, said in the log as they appear, not on every pass.
+    unreadable: Mutex<BTreeSet<(String, String)>>,
     /// How many more changes are published before the workspace is made to
     /// refuse one, for a test.
     #[cfg(test)]
@@ -215,7 +220,7 @@ impl BotRunner {
         workspaces: Workspaces,
         workspace: String,
         host: DeviceCert,
-        bot_key: ed25519_dalek::SigningKey,
+        bot_key: SigningKey,
         bot: InstalledBot,
         connectors: BTreeMap<String, Arc<ConnectorProcess>>,
         state_file: PathBuf,
@@ -290,6 +295,7 @@ impl BotRunner {
             progress,
             state_file,
             kept: Mutex::new(BTreeSet::new()),
+            unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             refuse_after: Mutex::new(None),
         })
@@ -459,7 +465,7 @@ impl BotRunner {
             }
         }
         for (app, record) in self.routes().await? {
-            let Some(saved) = self.read(&app, &record).await? else {
+            let Some(saved) = self.reads(&app, &record).await else {
                 continue;
             };
             let key = format!("{app}/{record}");
@@ -571,7 +577,7 @@ impl BotRunner {
             ui::record::RecordId::parse(record).is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {
-            if let Some(saved) = self.read(&app, &record).await? {
+            if let Some(saved) = self.reads(&app, &record).await {
                 let route = DocumentRoute {
                     app_id: app.clone(),
                     cluster_id: self.workspace.clone(),
@@ -732,7 +738,11 @@ impl BotRunner {
         Ok(serde_json::json!({ "emoji": listed }))
     }
 
-    /// The workspace's readable records of the apps the bot works with.
+    /// The workspace's readable records of the apps the bot works with. A
+    /// member's own record — what they are writing and have not sent, their
+    /// browsing history — is that person's alone, sealed under a channel only
+    /// their devices hold: it is no record of the workspace's, and the bot
+    /// never follows one.
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
             .workspaces
@@ -741,6 +751,7 @@ impl BotRunner {
             .map_err(|error| error.to_string())?
             .into_iter()
             .filter(|(app, _)| self.apps.contains(app))
+            .filter(|(_, record)| tilo_action_policy::member_record(record).is_none())
             .collect())
     }
 
@@ -749,6 +760,38 @@ impl BotRunner {
             .record_document(&self.workspace, app, record)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// `record` of `app` as the governor's copy reads it now, or `None` when it
+    /// is not this host's to read: a record this device takes no part in the
+    /// channel of (yet), whose keys have not reached it, or which was written
+    /// before its channel was sealed and can no longer be opened. Such a
+    /// record is left out of the work the bot does and said once, so what the
+    /// bot does hold is not held up every pass by a record it never will. A
+    /// record shut because its channel has not admitted this device yet is
+    /// asked for, on the same path every member takes, and reads once it is.
+    async fn reads(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+        match self.read(app, record).await {
+            Ok(saved) => {
+                self.unreadable.lock_recover().remove(&named(app, record));
+                saved
+            }
+            Err(error) => {
+                if self.unreadable.lock_recover().insert(named(app, record)) {
+                    tracing::warn!(
+                        installation = %self.bot.installation,
+                        %app,
+                        %record,
+                        %error,
+                        "a record the bot follows cannot be read here; the pass goes on without it"
+                    );
+                }
+                self.workspaces
+                    .ask_to_open(&self.workspace, app, record)
+                    .await;
+                None
+            }
+        }
     }
 
     /// Put a run's changes into the workspace's record, signed by the bot's
@@ -786,6 +829,11 @@ impl BotRunner {
         tilo_files::native::atomic::write(&self.state_file, &bytes)
             .map_err(|error| error.to_string())
     }
+}
+
+/// `record` of `app`, as the runner names one record across passes.
+fn named(app: &str, record: &str) -> (String, String) {
+    (app.to_owned(), record.to_owned())
 }
 
 fn read_progress(path: &Path) -> Result<Progress, String> {
@@ -1143,51 +1191,85 @@ pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
         .is_ok_and(|secret| secret.is_some())
 }
 
-/// What a host gives the connectors its bots listen to: where each worker
-/// program is, the blobs they fetch and publish (served to the workspace's
-/// members once the first connector runs), and what the host serves
-/// publicly that a bridge's posts point at (avatars of authors it bridged
-/// out, links to the workspace's resources).
+/// What connectors run with on this host: their worker programs, what the
+/// host serves publicly for a bridge's posts (avatars of authors it bridged
+/// out, links to the workspace's resources), and the host's content, where
+/// what they fetch is kept in the workspace they serve.
 #[derive(Clone)]
 pub struct ConnectorHost {
     /// Worker programs by connector, where the default place is not used.
     pub workers: BTreeMap<String, PathBuf>,
     /// What the host serves publicly for a bridge's posts.
     pub public: super::discord::Served,
-    blobs: Arc<FsBlobs>,
-    served: Arc<std::sync::atomic::AtomicBool>,
+    content: Arc<WorkspaceStores>,
+    avatars: Option<Arc<crate::public_avatars::PublicAvatars>>,
 }
 
 impl ConnectorHost {
+    /// Connectors keeping what they fetch in `content`, publishing the
+    /// avatars a bridge posts through `avatars` when the host serves them.
     #[must_use]
     pub fn new(
         workers: BTreeMap<String, PathBuf>,
-        blobs: FsBlobs,
+        content: Arc<WorkspaceStores>,
+        avatars: Option<crate::public_avatars::PublicAvatars>,
         public: super::discord::Served,
     ) -> Self {
         Self {
             workers,
             public,
-            blobs: Arc::new(blobs),
-            served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            content,
+            avatars: avatars.map(Arc::new),
         }
     }
 
-    /// The blob store connectors use, served to `workspaces` the first time.
-    #[must_use]
-    pub fn blobs(&self, workspaces: &Workspaces) -> Arc<dyn tilo_connector::BlobAccess> {
-        self.store(workspaces)
+    /// The content the connectors of `workspace` keep and read.
+    ///
+    /// # Errors
+    /// `workspace` is not a workspace's id.
+    pub fn blobs(&self, workspace: &str) -> Result<Arc<dyn tilo_connector::BlobAccess>, String> {
+        Ok(Arc::new(WorkspaceBlobs {
+            store: self.content.get(workspace)?,
+            avatars: self.avatars.clone(),
+        }))
     }
 
-    /// The host's one blob store, served to `workspaces` the first time: what
-    /// connectors fetch and the files members post are kept side by side
-    /// ([`super::attachments`]).
-    #[must_use]
-    pub fn store(&self, workspaces: &Workspaces) -> Arc<FsBlobs> {
-        if !self.served.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            workspaces.serve_content(self.blobs.clone());
-        }
-        self.blobs.clone()
+    /// `workspace`'s content store on this host.
+    ///
+    /// # Errors
+    /// `workspace` is not a workspace's id.
+    pub fn store(&self, workspace: &str) -> Result<ContentStore, String> {
+        self.content.get(workspace)
+    }
+}
+
+/// One workspace's content, as its connectors' workers download and upload
+/// it: a blob a bridge publishes is an avatar served at the host's public
+/// avatar URL.
+struct WorkspaceBlobs {
+    store: ContentStore,
+    avatars: Option<Arc<crate::public_avatars::PublicAvatars>>,
+}
+
+impl tilo_connector::BlobAccess for WorkspaceBlobs {
+    fn read(&self, blake3: &str) -> Option<Vec<u8>> {
+        self.store.read(blake3)
+    }
+
+    fn store(&self, bytes: &[u8]) -> Result<String, String> {
+        self.store.put(bytes).map_err(|error| error.to_string())
+    }
+
+    fn publish(&self, blake3: &str) -> Result<(), String> {
+        let avatars = self
+            .avatars
+            .as_ref()
+            .ok_or("this host publishes no blobs")?;
+        let bytes = self.store.read(blake3).ok_or("no such blob")?;
+        avatars
+            .publish(&bytes)
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1205,85 +1287,4 @@ pub fn put_connector_secret(
         .item(purpose, "default")
         .put_blocking(secret)
         .map_err(|error| error.to_string())
-}
-
-/// The bytes connector workers download and upload, kept under one
-/// directory by their BLAKE3 hash; a published blob is an avatar served at
-/// the host's public avatar URL.
-pub struct FsBlobs {
-    dir: PathBuf,
-    public: Option<crate::public_avatars::PublicAvatars>,
-}
-
-impl FsBlobs {
-    /// Blobs under `dir`, published through `public` when the host serves
-    /// avatars.
-    ///
-    /// # Errors
-    /// `dir` cannot be created.
-    pub fn new(
-        dir: PathBuf,
-        public: Option<crate::public_avatars::PublicAvatars>,
-    ) -> std::io::Result<Self> {
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir, public })
-    }
-
-    fn path(&self, blake3: &str) -> Option<PathBuf> {
-        (!blake3.is_empty() && blake3.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| self.dir.join(blake3))
-    }
-
-    /// Whether the blob `blake3` is kept here.
-    #[must_use]
-    pub fn contains(&self, blake3: &str) -> bool {
-        self.path(blake3).is_some_and(|path| path.is_file())
-    }
-
-    /// Let go of the blob `blake3`; nothing when it is not kept.
-    ///
-    /// # Errors
-    /// The file is there and cannot be removed.
-    pub fn remove(&self, blake3: &str) -> std::io::Result<()> {
-        let Some(path) = self.path(blake3) else {
-            return Ok(());
-        };
-        match std::fs::remove_file(path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
-    }
-}
-
-/// Members of the workspaces this host's bots act in get what the bots fetched
-/// (a bridged person's avatar). The apps' surfaces are the host's own
-/// ([`crate::workspaces::Workspaces::content_answer`]).
-impl crate::workspaces::WorkspaceContent for FsBlobs {
-    fn read(&self, _room: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
-        tilo_connector::BlobAccess::read(self, hash)
-    }
-}
-
-impl tilo_connector::BlobAccess for FsBlobs {
-    fn read(&self, blake3: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.path(blake3)?).ok()
-    }
-
-    fn store(&self, bytes: &[u8]) -> Result<String, String> {
-        let hash = blake3::hash(bytes).to_hex().to_string();
-        let path = self.path(&hash).ok_or("not a hash")?;
-        if !path.is_file() {
-            tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())?;
-        }
-        Ok(hash)
-    }
-
-    fn publish(&self, blake3: &str) -> Result<(), String> {
-        let public = self.public.as_ref().ok_or("this host publishes no blobs")?;
-        let bytes = self.read(blake3).ok_or("no such blob")?;
-        public
-            .publish(&bytes)
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
 }

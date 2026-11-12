@@ -87,7 +87,7 @@ fn height_grows_with_text_scale_and_long_messages() {
     let mut text = TextRenderer::new();
     let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
     let short = BannerContent::new(BannerKind::Warning, "Your identity needs recovery");
-    let long = short.with_message(Some(message));
+    let long = short.clone().with_message(Some(message));
     let short_h = Banner::height(&short, 600.0, &mut text, &theme);
     let long_h = Banner::height(&long, 600.0, &mut text, &theme);
     assert!(long_h > short_h);
@@ -700,12 +700,18 @@ fn on_touch_a_banners_controls_are_a_fingers_target_inside_it() {
             banner.contains(rect.origin()) && banner.contains(Point::new(rect.x1, rect.y1)),
             "{control} {rect:?} stands inside the banner {banner:?}"
         );
-        let device = rect.y0 * 1.5;
-        assert!(
-            (device - device.round()).abs() < 1e-3,
-            "{control}'s top edge {} is on a device pixel at 1.5x",
-            rect.y0
-        );
+        for (side, edge) in [
+            ("top", rect.y0),
+            ("left", rect.x0),
+            ("right", rect.x1),
+            ("bottom", rect.y1),
+        ] {
+            let device = edge * 1.5;
+            assert!(
+                (device - device.round()).abs() < 1e-3,
+                "{control}'s {side} edge {edge} is on a device pixel at 1.5x"
+            );
+        }
     }
 }
 
@@ -740,5 +746,53 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
     assert!(
         crate::widget::controls::take_control_invocation(&mut banner).is_none(),
         "the press is taken once"
+    );
+}
+
+/// A banner too narrow for its actions keeps one column: what it says, then the action under it
+/// as the words it is, starting where the text starts — no block across the banner, and the
+/// same control beside it again once the window is wide enough.
+#[test]
+fn a_narrow_banner_puts_its_action_under_its_text_in_the_text_column() {
+    let banner = || {
+        Banner::warning("Can't reach sam@rivera.example")
+            .with_message("Connection refused · Last fetched 10:41")
+            .with_id("trouble")
+            .with_action(Button::new("trouble.retry", "Try again"))
+    };
+    let mut narrow = FrameHarness::new(
+        State::new(),
+        Box::new(Column::new().push(Box::new(banner()))),
+        (360, 400),
+    );
+    narrow.relayout();
+    let targets = narrow.targets();
+    let box_ = targets["trouble"];
+    let retry = targets["trouble.retry"];
+    assert!(
+        !retry.is_zero_area(),
+        "the action is placed: {retry:?} in {box_:?}"
+    );
+    assert!(
+        retry.x0 - box_.x0 < 60.0,
+        "it starts where the text does, not at the trailing edge: {retry:?} in {box_:?}"
+    );
+    assert!(
+        retry.y0 >= box_.center().y,
+        "it stands under what the banner says: {retry:?} in {box_:?}"
+    );
+
+    let mut wide = FrameHarness::new(
+        State::new(),
+        Box::new(Column::new().push(Box::new(banner()))),
+        (900, 400),
+    );
+    wide.relayout();
+    let targets = wide.targets();
+    let box_ = targets["trouble"];
+    let retry = targets["trouble.retry"];
+    assert!(
+        box_.x1 - retry.x1 < 40.0,
+        "a wide banner keeps its action at the trailing edge: {retry:?} in {box_:?}"
     );
 }

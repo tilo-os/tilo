@@ -80,14 +80,12 @@ mod tracker_runs;
     )
 )]
 mod wire;
-#[path = "workspace_checkpoints.rs"]
-mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    AwaitingHistory, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere, RecordRead,
+    AwaitingRecord, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, RecordRead,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
@@ -121,8 +119,9 @@ use std::time::Duration;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
+use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use collab_types::inbound::OpAdmission;
 use collab_types::presence::PresencePayload;
@@ -449,7 +448,6 @@ impl AdmittedJoinIdentity {
         workspace_id: &str,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
-        let bound = roles::foreign_device_bound();
         if (self.agent_id.is_none() || self.session_delegated)
             && self.verified.owns_personal_cluster(workspace_id)
         {
@@ -457,15 +455,8 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
-            let authority =
-                policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
-            let actor = self.broker_actor();
-            let carried = actor.session_grants(workspace_id, &self.principal_id);
-            let authority = match actor.delegate() {
-                Some(delegate) => authority.bounded_by(actor.party(&[], delegate, &carried)),
-                None => authority,
-            };
-            return Ok(decide(&authority));
+            let invoker = self.broker_actor().invoker(workspace_id);
+            return Ok(decide(&invoker.authority(&policy)));
         }
         let workspace = tree
             .ok_or("the identity has no workspace authority")?
@@ -473,9 +464,7 @@ impl AdmittedJoinIdentity {
             .iter()
             .find(|workspace| workspace.id().to_string() == workspace_id)
             .ok_or("the identity's workspace is no longer hosted")?;
-        Ok(self
-            .broker_actor()
-            .with_authority_in(workspace, &bound, decide))
+        Ok(self.broker_actor().with_authority_in(workspace, decide))
     }
 }
 
@@ -788,220 +777,9 @@ struct PresenceEnvelope {
 /// The broker's actor, its published actions and their admission: every host's.
 pub use tilo_broker_core::actor::{BrokerActor, RunFacts, principal_id_for_root};
 pub use tilo_broker_core::published::{PublishedAction, PublishedInput, PublishedSurface};
-
-fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), BrokerError> {
-    if action.operation_kind != tilo_actions::OperationKind::View {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must be a view operation"
-        )));
-    }
-    if action.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must not require confirmation"
-        )));
-    }
-    if action.params.iter().any(|parameter| parameter.required) {
-        return Err(BrokerError::failed(format!(
-            "resource view {role} action must not require caller parameters"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_resource_range_binding(
-    actions: &[PublishedAction],
-    action: &PublishedAction,
-    range: &tilo_actions::ResourceViewRangeSpec,
-) -> Result<(), BrokerError> {
-    let names = [&range.start_param, &range.end_param, &range.unit_param];
-    let target = actions
-        .iter()
-        .find(|target| target.resource == action.resource && target.action == range.action)
-        .ok_or_else(|| BrokerError::failed("resource range action missing".into()))?;
-    if names.iter().any(|name| name.is_empty())
-        || names[0] == names[1]
-        || names[0] == names[2]
-        || names[1] == names[2]
-        || target.operation_kind != tilo_actions::OperationKind::View
-        || target.contract.confirmation != tilo_actions::ConfirmationPolicy::None
-    {
-        return Err(BrokerError::failed("invalid resource range binding".into()));
-    }
-    for (name, ty) in [
-        (&range.start_param, tilo_actions::ParamType::Integer),
-        (&range.end_param, tilo_actions::ParamType::Integer),
-        (&range.unit_param, tilo_actions::ParamType::Text),
-    ] {
-        if !target
-            .params
-            .iter()
-            .any(|p| p.name.as_ref() == name && p.ty == ty)
-        {
-            return Err(BrokerError::failed(
-                "invalid resource range parameter".into(),
-            ));
-        }
-    }
-    if target
-        .params
-        .iter()
-        .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
-    {
-        return Err(BrokerError::failed(
-            "resource range requires unrelated input".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// The checks every published surface passes, whichever request carried it:
-/// addresses non-empty, unique and separator-free, kinds and labels present,
-/// contracts and parameters valid, resource views consistent.
-fn validate_published_surface(
-    rows: Vec<PublishedAction>,
-) -> Result<Vec<PublishedAction>, BrokerError> {
-    let mut seen = std::collections::HashSet::with_capacity(rows.len());
-    let mut actions = Vec::with_capacity(rows.len());
-    for published in rows {
-        if published.resource.is_empty()
-            || published.action.is_empty()
-            || published.resource.contains(tilo_actions::KEY_SEP)
-            || published.action.contains(tilo_actions::KEY_SEP)
-            || !seen.insert((published.resource.clone(), published.action.clone()))
-        {
-            return Err(BrokerError::failed(
-                "exported action addresses must be non-empty, unique, and contain no separator"
-                    .into(),
-            ));
-        }
-        if published.resource_kind.trim().is_empty()
-            || published.resource_label.trim().is_empty()
-            || published.action_label.trim().is_empty()
-        {
-            return Err(BrokerError::failed(
-                "exported actions require non-empty kind and labels".into(),
-            ));
-        }
-        if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
-            return Err(BrokerError::failed(format!(
-                "invalid exported action contract: {reason}"
-            )));
-        }
-        let mut parameter_names = std::collections::HashSet::new();
-        for parameter in &published.params {
-            if !parameter_names.insert(parameter.name.as_ref()) {
-                return Err(BrokerError::failed(
-                    "exported action parameter names must be unique".into(),
-                ));
-            }
-            if let Some(reason) = parameter.validate_declaration().into_iter().next() {
-                return Err(BrokerError::failed(format!(
-                    "invalid exported action parameter `{}`: {reason}",
-                    parameter.name
-                )));
-            }
-        }
-        actions.push(published);
-    }
-    validate_resource_view_descriptors(&actions)?;
-    Ok(actions)
-}
-
-/// Recheck the resource-view invariants after decoding an untrusted action
-/// surface. A view with a mount must carry that action in the same atomic
-/// publication/page so the broker can prove the binding before exposing it.
-fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), BrokerError> {
-    #[derive(Default)]
-    struct ResourceViews<'a> {
-        ids: std::collections::HashSet<&'a str>,
-        open_actions: std::collections::HashSet<&'a str>,
-        primary_count: usize,
-    }
-
-    let mut resources = std::collections::HashMap::<&str, ResourceViews<'_>>::new();
-    for action in actions {
-        let Some(view) = &action.view else {
-            continue;
-        };
-        if view.id.is_empty() || view.id.contains(tilo_actions::KEY_SEP) {
-            return Err(BrokerError::failed(
-                "resource view id must be non-empty and contain no separator".into(),
-            ));
-        }
-        if view.label.trim().is_empty() {
-            return Err(BrokerError::failed(
-                "resource view label must be non-empty".into(),
-            ));
-        }
-        if view.open_action != action.action {
-            return Err(BrokerError::failed(
-                "resource view must be attached to its open action".into(),
-            ));
-        }
-        validate_view_action_binding(action, "open")?;
-
-        let seen = resources.entry(&action.resource).or_default();
-        if !seen.ids.insert(&view.id) {
-            return Err(BrokerError::failed(
-                "resource view ids must be unique per resource".into(),
-            ));
-        }
-        if !seen.open_actions.insert(&view.open_action) {
-            return Err(BrokerError::failed(
-                "at most one resource view may reference an open action".into(),
-            ));
-        }
-        if view.primary {
-            seen.primary_count = seen.primary_count.saturating_add(1);
-            if seen.primary_count > 1 {
-                return Err(BrokerError::failed(
-                    "at most one resource view may be primary".into(),
-                ));
-            }
-        }
-
-        if let Some(range) = &view.range {
-            validate_resource_range_binding(actions, action, range)?;
-        }
-
-        let Some(mount) = &view.mount else {
-            continue;
-        };
-        if mount.action.trim().is_empty()
-            || mount.capability_param.trim().is_empty()
-            || mount.view_param.trim().is_empty()
-            || mount.capability_param == mount.view_param
-        {
-            return Err(BrokerError::failed(
-                "resource view mount requires an action and distinct parameter names".into(),
-            ));
-        }
-        let mount_action = actions.iter().find(|candidate| {
-            candidate.resource == action.resource && candidate.action == mount.action
-        });
-        let Some(mount_action) = mount_action else {
-            return Err(BrokerError::failed(
-                "resource view mount action is not exported by its resource".into(),
-            ));
-        };
-        validate_view_action_binding(mount_action, "mount")?;
-        for (role, name) in [
-            ("capability", mount.capability_param.as_str()),
-            ("view", mount.view_param.as_str()),
-        ] {
-            if !mount_action.params.iter().any(|parameter| {
-                parameter.name.as_ref() == name
-                    && parameter.ty == tilo_actions::ParamType::Text
-                    && !parameter.required
-            }) {
-                return Err(BrokerError::failed(format!(
-                    "resource view mount {role} parameter `{name}` must name an optional text parameter"
-                )));
-            }
-        }
-    }
-    Ok(())
-}
+pub(crate) use tilo_broker_core::published::{
+    validate_published_surface, validate_resource_view_descriptors,
+};
 
 #[derive(Clone, Debug)]
 pub struct InvocationEnvelope {
@@ -1529,6 +1307,12 @@ mod policy_context;
 mod published_service;
 
 impl AppBrokerState {
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, as the session gave them.
+    pub(crate) fn hosted_workspaces(&self) -> Option<Arc<dyn crate::services::HostedWorkspaces>> {
+        self.services.hosted_workspaces.clone()
+    }
+
     /// Attach the authority a harness admits its devices under, when it
     /// has one; a broker takes one authority, from wherever it comes.
     fn attach_certificate_authority(
@@ -1730,7 +1514,6 @@ impl AppBrokerState {
             &current.broker_actor(),
             now,
         )?;
-        self.authorize_checkpoint_result(&caller.workspace, current.certificate.as_ref(), record)?;
         Ok(())
     }
 
@@ -2733,19 +2516,7 @@ struct ConfirmationGrant {
     expires: std::time::Instant,
 }
 
-fn argument_digest(argument: Option<&str>) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    match argument {
-        Some(value) => {
-            hasher.update(b"some\0");
-            hasher.update(value.as_bytes());
-        }
-        None => {
-            hasher.update(b"none\0");
-        }
-    }
-    *hasher.finalize().as_bytes()
-}
+use tilo_actions::remote::argument_digest;
 
 /// One subscription onto the broker fanout. Slot-indexed inside a
 /// [`ChannelSubscribers`] table so it can be dropped en masse when
@@ -2768,6 +2539,9 @@ struct ContextSub {
     private_alias: bool,
     /// The workspace's verified agents this receiver was last told.
     history_agents: Vec<collab_types::history::RosterAgent>,
+    /// The apps installed here, by what each is called, this receiver was last told: it is sent
+    /// the context again when one is installed, removed, or renamed.
+    apps: Vec<collab_types::history::NamedApp>,
 }
 
 #[derive(Clone)]
@@ -2787,8 +2561,85 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
-type ActionCatalogueSnapshot = Option<Arc<str>>;
-type ActionCatalogueSubscriber = (String, BrokerActor, watch::Sender<ActionCatalogueSnapshot>);
+/// The catalogue one audience may see, each surface's actions shared by its
+/// followers.
+type CatalogueRows = Vec<(runtime_collab::CatalogueSurfaceId, Arc<[PublishedAction]>)>;
+type ActionCatalogueSubscriber = (String, BrokerActor, Weak<CatalogueFollower>);
+
+fn catalogue_rows(surfaces: Vec<runtime_collab::BrokerActionSurface>) -> CatalogueRows {
+    surfaces
+        .into_iter()
+        .map(|surface| (surface.id(), Arc::from(surface.actions)))
+        .collect()
+}
+
+/// One connection following the catalogue: what it holds, and the change
+/// it is sent next. Changes made while it has not read compose into one.
+struct CatalogueFollower {
+    following: Mutex<CatalogueFollowing>,
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct CatalogueFollowing {
+    publication: runtime_collab::CataloguePublication,
+    pending: Option<runtime_collab::CatalogueChange>,
+    /// Its audience's authorization failed: it is sent nothing more.
+    ended: bool,
+}
+
+impl CatalogueFollower {
+    /// A follower that is sent `rows` whole first.
+    fn new(rows: &CatalogueRows) -> Arc<Self> {
+        let follower = Arc::new(Self {
+            following: Mutex::new(CatalogueFollowing::default()),
+            changed: tokio::sync::Notify::new(),
+        });
+        follower.follow(rows);
+        follower
+    }
+
+    /// Queue the change from what it holds to `rows`.
+    fn follow(&self, rows: &CatalogueRows) {
+        let mut following = self.following.lock_recover();
+        let change = following.publication.next(rows);
+        if change.is_empty() {
+            return;
+        }
+        following.pending = Some(match following.pending.take() {
+            Some(pending) => pending.then(change),
+            None => change,
+        });
+        drop(following);
+        self.changed.notify_one();
+    }
+
+    /// Send nothing more, not even a change not read yet: a failed
+    /// authorization must never let a slow reader consume stale discovery.
+    fn end(&self) {
+        let mut following = self.following.lock_recover();
+        following.ended = true;
+        following.pending = None;
+        drop(following);
+        self.changed.notify_one();
+    }
+
+    /// The next change, once there is one; `Err` once it has ended.
+    async fn next(&self) -> Result<runtime_collab::CatalogueChange, ()> {
+        loop {
+            {
+                let mut following = self.following.lock_recover();
+                if following.ended {
+                    return Err(());
+                }
+                if let Some(change) = following.pending.take() {
+                    return Ok(change);
+                }
+            }
+            self.changed.notified().await;
+        }
+    }
+}
 
 /// Exact pinned host and route, minted only alongside a broker-allocated Unix pair.
 /// This scope is never accepted from the wire or exposed as a public constructor.
@@ -2851,20 +2702,17 @@ struct AdmissionProvenance<'a> {
     retained_time: Option<&'a crate::policy_clock::PolicyTime>,
 }
 /// What an admission's intent records besides the surface it resolves to:
-/// which invocation, for whom, and the exact request the caller asked for.
+/// who asks for it and the exact request the caller asked for.
 /// Built once per admission, so a repeated invocation is compared with what
 /// was recorded.
 #[derive(Clone, Copy)]
 struct IntentInputs<'a> {
     peer_id: u64,
-    id: u64,
-    invocation: tilo_actions::InvocationId,
     actor: &'a BrokerActor,
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
     durable: Option<DurableContext<'a>>,
-    origin: Option<&'a InvocationCaller>,
     local_report: Option<&'a crate::local_document_action::Request>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,
@@ -2881,7 +2729,7 @@ pub struct AppBrokerState {
     /// The held committed-read waits (`Await`) of each channel, by
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
-    committed_waits: Mutex<HashMap<String, Vec<Weak<tokio::sync::Notify>>>>,
+    committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.
@@ -2935,6 +2783,8 @@ pub struct AppBrokerState {
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
+    /// Builds the catalogue its subscribers follow, off the connection thread.
+    catalogue_refresh: surface_publication::CatalogueRefresh,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
@@ -2956,9 +2806,11 @@ pub struct AppBrokerState {
     /// A conversation turn's questions, waiting for the person's answer on
     /// the system's sheet ([`conversation_ask`]).
     conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
-    /// Applications with a grant question on screen, by workspace: one at a
-    /// time each, so an app cannot bury the person in sheets.
-    app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
+    /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
+    /// time for each action an app asks for, so an app cannot bury the person
+    /// in sheets, while the two apps one action of it changes are asked about
+    /// in turn.
+    app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -2985,9 +2837,6 @@ pub struct AppBrokerState {
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
-    // Retain result authorization even when the host has no durable journal.
-    // Entries share the completed invocation cache's bounded lifetime.
-    checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
     /// Jobs whose action's contract declares untrusted content, so every
     /// observation of them says so. They share the completed invocation
     /// cache's bounded lifetime.
@@ -3253,7 +3102,7 @@ impl AppBrokerState {
     const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         self.expire_stale_invocations_at(
             now,
             Self::INVOCATION_IDLE_TIMEOUT,
@@ -3390,9 +3239,6 @@ impl AppBrokerState {
                     break;
                 };
                 completed.remove(&oldest);
-                if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
-                    checkpoints.remove(&oldest);
-                }
                 if let Ok(mut untrusted) = self.untrusted_jobs.lock() {
                     untrusted.remove(&oldest);
                 }
@@ -3423,41 +3269,56 @@ impl AppBrokerState {
     async fn commit_owner_request(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
     ) -> Result<(), BrokerError> {
-        // Dropping the waiting RPC cannot convert an admitted effect into a
-        // refusal or leave the standalone capability apparently healthy.
-        struct Waiting<'a> {
-            failure: &'a Mutex<Option<String>>,
-            complete: bool,
-        }
-        impl Drop for Waiting<'_> {
-            fn drop(&mut self) {
-                if !self.complete
-                    && let Ok(mut failure) = self.failure.lock()
-                {
-                    failure
-                        .get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
-                }
-            }
-        }
         self.owner_health().map_err(BrokerError::failed)?;
-        let mut waiting = Waiting {
-            failure: &self.owner_commit_failure,
-            complete: false,
-        };
-        let result = self.publisher.commit_owner(request, record_kind).await;
-        waiting.complete = true;
-        match result {
-            Ok(_) => Ok(()),
-            Err(reason) => {
-                // The owner answered: retain its actual refusal/failure for
-                // later clients instead of labeling this as a dropped RPC.
-                if let Ok(mut failure) = self.owner_commit_failure.lock() {
-                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
-                }
-                Err(BrokerError::failed(reason))
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let result = self.publisher.commit_owner(request, None).await;
+        waiting.answered();
+        result.map(drop).map_err(|reason| {
+            // The owner answered: retain its actual refusal/failure for
+            // later clients instead of labeling this as a dropped RPC.
+            self.retain_owner_failure(&reason);
+            BrokerError::failed(reason)
+        })
+    }
+
+    /// Commit a document write of this device through the owner: the signed
+    /// write as the record took it. A write the owner refuses is its writer's alone: it
+    /// is answered the refusal and takes the write back out, and nothing else
+    /// waits on it. An answer that does not prove the write leaves the owner
+    /// unknown, as a dropped wait does.
+    async fn commit_owner_document(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> Result<SignedOp, BrokerError> {
+        self.owner_health().map_err(BrokerError::failed)?;
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let answered = self
+            .publisher
+            .commit_owner_document(request.clone(), record_kind)
+            .await;
+        waiting.answered();
+        let (committed, receipt) = answered.map_err(BrokerError::failed)?;
+        receipt
+            .validate_local_document(&request, &committed)
+            .map_err(|reason| {
+                self.retain_owner_failure(&reason);
+                BrokerError::failed(reason)
+            })?;
+        match committed.operation {
+            tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } => {
+                Ok(*envelope)
             }
+            _ => Err(BrokerError::failed(
+                "the owner committed no document".into(),
+            )),
+        }
+    }
+
+    fn retain_owner_failure(&self, reason: &str) {
+        if let Ok(mut failure) = self.owner_commit_failure.lock() {
+            failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
         }
     }
 
@@ -3526,7 +3387,7 @@ impl AppBrokerState {
                 .map_err(BrokerError::failed)?;
             durable.wait().await.map_err(BrokerError::failed)?;
         }
-        self.commit_owner_request(request, None).await
+        self.commit_owner_request(request).await
     }
 
     /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
@@ -3661,7 +3522,8 @@ impl AppBrokerState {
             .and_then(Option::as_ref)
             .map_or(1, InvocationJournal::next_wire_id);
         (
-            Arc::new(Self {
+            Arc::new_cyclic(|state| Self {
+                catalogue_refresh: surface_publication::CatalogueRefresh::new(state.clone()),
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
                 lifecycle: RwLock::new(()),
@@ -3728,7 +3590,6 @@ impl AppBrokerState {
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
-                checkpoint_jobs: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
@@ -3950,6 +3811,20 @@ impl AppBrokerState {
             ))
         }));
         result
+    }
+
+    /// `action` on `resource` as connection `peer` publishes it now.
+    pub(super) fn offered_by(
+        &self,
+        peer: u64,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&peer)?
+            .action_projection(resource, action)
     }
 
     /// Resolve against the current selected source, independently of the
@@ -4608,7 +4483,7 @@ impl AppBrokerState {
             .confirmation_grants
             .lock()
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
@@ -4670,24 +4545,24 @@ impl AppBrokerState {
             .map_err(BrokerError::failed)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue projection applies one ordered authorization and serialization pass"
-    )]
     #[cfg(test)]
-    fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor))
+    fn action_catalogue(
+        &self,
+        cluster_id: &str,
+        actor: &str,
+    ) -> Result<Vec<runtime_collab::BrokerActionSurface>, String> {
+        self.action_catalogue_for(cluster_id, &BrokerActor::person(actor))
     }
 
     #[allow(
         clippy::too_many_lines,
-        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
+        reason = "catalogue projection and policy filtering remain adjacent so a published action cannot bypass the actor check"
     )]
-    fn action_catalogue_json_for(
+    fn action_catalogue_for(
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<runtime_collab::BrokerActionSurface>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let membership = self
             .membership
@@ -4813,48 +4688,54 @@ impl AppBrokerState {
                     .collect::<Vec<_>>();
                 Ok::<_, String>((published, applications, task_steps))
             })??;
-        let mut surfaces = published
-            .into_iter()
-            .filter_map(|surface| {
-                let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
-                (!surface.actions.is_empty()).then(|| {
-                    serde_json::json!({
-                        "peer_id": surface.peer_id,
-                        "provider": provider,
-                        "app_id": surface.app_id,
-                        "cluster_id": surface.route.cluster_id,
-                        "record_id": surface.route.record_id,
-                        "live": surface.live,
-                        "actions": surface.actions,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        for (provider, app_id, actions) in task_steps {
-            if actions.is_empty() {
-                continue;
+        // A row's display state is no follower's: a change of it alone sends nothing.
+        let stateless = |mut action: PublishedAction| {
+            action.state = tilo_actions::ActionState::default();
+            action
+        };
+        let mut surfaces: Vec<runtime_collab::BrokerActionSurface> = Vec::new();
+        let mut offer = |surface: runtime_collab::BrokerActionSurface| {
+            if !surface.actions.is_empty() {
+                surfaces.push(surface);
             }
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "provider": provider,
-                "app_id": app_id,
-                "cluster_id": cluster_id,
-                "record_id": "",
-                "live": true,
-                "actions": actions.iter().map(PublishedAction::from).collect::<Vec<_>>(),
-            }));
+        };
+        for surface in published {
+            let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: surface.peer_id,
+                provider,
+                app_id: surface.app_id,
+                cluster_id: surface.route.cluster_id,
+                record_id: surface.route.record_id,
+                live: surface.live,
+                actions: surface.actions.into_iter().map(stateless).collect(),
+            });
+        }
+        for (provider, app_id, actions) in task_steps {
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: 0,
+                provider: Some(provider.to_owned()),
+                app_id,
+                cluster_id: cluster_id.to_owned(),
+                record_id: String::new(),
+                live: true,
+                actions: actions
+                    .iter()
+                    .map(|descriptor| stateless(PublishedAction::from(descriptor)))
+                    .collect(),
+            });
         }
         for app in applications {
             let package_id = app.package_id;
             let display_name = app.display_name;
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "provider": tilo_actions::remote::workspace_provider(cluster_id),
-                "app_id": package_id,
-                "cluster_id": cluster_id,
-                "record_id": "",
-                "live": true,
-                "actions": [PublishedAction {
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: 0,
+                provider: Some(tilo_actions::remote::workspace_provider(cluster_id)),
+                app_id: package_id.clone(),
+                cluster_id: cluster_id.to_owned(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![PublishedAction {
                     state: tilo_actions::ActionState::default(),
                     resource: format!("app.{package_id}"),
                     semantic_identity: None,
@@ -4864,35 +4745,29 @@ impl AppBrokerState {
                     resource_label: display_name,
                     keywords: Vec::new(),
                     icon: None,
-                    description: Some(
-                        "Launch this application into the current workspace".into(),
-                    ),
+                    description: Some("Launch this application into the current workspace".into()),
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),
                     contract: tilo_actions::ActionContract::default(),
                     view: None,
                     input: PublishedInput::None,
                 }],
-            }));
+            });
         }
-        serde_json::to_string(&serde_json::json!({
-            "version": 1,
-            "surfaces": surfaces,
-        }))
-        .map_err(|error| error.to_string())
+        Ok(surfaces)
     }
 
     /// Invalidate retained discovery only after a real service-surface mutation.
     fn publish_changed_action_catalogue(&self) {
         self.surfaces_changed();
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     /// The host's own steps changed what they offer (the session's
     /// arrangement gained a place, a window opened): every connection
     /// following the catalogue is handed it again.
     pub fn host_steps_changed(&self) {
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     fn publish_action_catalogue(&self) {
@@ -4902,32 +4777,30 @@ impl AppBrokerState {
             .map(|subscribers| {
                 subscribers
                     .iter()
-                    .map(|(peer, (cluster, actor, tx))| {
-                        (*peer, cluster.clone(), actor.clone(), tx.clone())
+                    .map(|(peer, (cluster, actor, follower))| {
+                        (*peer, cluster.clone(), actor.clone(), follower.clone())
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let mut audiences: HashMap<(String, BrokerActor), ActionCatalogueSnapshot> = HashMap::new();
+        let mut audiences: HashMap<(String, BrokerActor), Option<CatalogueRows>> = HashMap::new();
         let mut disconnected = Vec::new();
-        for (peer, cluster, actor, tx) in subscribers {
-            let snapshot = audiences
+        for (peer, cluster, actor, follower) in subscribers {
+            let Some(follower) = follower.upgrade() else {
+                disconnected.push(peer);
+                continue;
+            };
+            let rows = audiences
                 .entry((cluster.clone(), actor.clone()))
                 .or_insert_with(|| {
-                    self.action_catalogue_json_for(&cluster, &actor)
+                    self.action_catalogue_for(&cluster, &actor)
                         .ok()
-                        .map(Arc::<str>::from)
-                })
-                .clone();
-            if let Some(snapshot) = snapshot {
-                if tx.send(Some(snapshot)).is_err() {
-                    disconnected.push(peer);
-                }
+                        .map(catalogue_rows)
+                });
+            if let Some(rows) = rows {
+                follower.follow(rows);
             } else {
-                // Invalidate an unread prior snapshot before removing this
-                // audience. A failed current authorization must never let
-                // a slow reader consume stale discovery state.
-                tx.send_replace(None);
+                follower.end();
                 disconnected.push(peer);
             }
         }
@@ -5004,7 +4877,7 @@ impl AppBrokerState {
             .confirmation_grants
             .lock()
             .map_err(|_| "the confirmation registry is unavailable".to_string())?;
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
@@ -5015,7 +4888,7 @@ impl AppBrokerState {
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
                 host_witnessed: None,
-                expires: std::time::Instant::now()
+                expires: tilo_clock::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
             },
@@ -5236,7 +5109,10 @@ impl AppBrokerState {
         // In native workspaces an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a workspace grant alone (including after its run has stopped).
-        if actor.is_agent && self.confines_agents_to_tasks(&offered.0.route.cluster_id) {
+        if actor.is_agent
+            && !actor.is_app()
+            && self.confines_agents_to_tasks(&offered.0.route.cluster_id)
+        {
             match durable {
                 Some(DurableContext::Task { binding, .. })
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
@@ -5351,6 +5227,16 @@ impl AppBrokerState {
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
+        // What the run's person answered it "always" for, where its tracker
+        // keeps those answers itself (an agent door connection's run): decided
+        // with the workspace's grants, as an answer granted there is.
+        let answers = match durable {
+            Some(DurableContext::Task { binding, .. }) => self
+                .tracker_runs(&offered.0.route.cluster_id)
+                .map(|tracker| tracker.kept_answers(&offered.0.route.cluster_id, &binding.task_id))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
@@ -5360,6 +5246,15 @@ impl AppBrokerState {
             .ok_or("workspace authority unavailable")?
             .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let answered;
+                let workspace = if answers.is_empty() {
+                    workspace
+                } else {
+                    let mut copy = workspace.clone();
+                    copy.policy.grants.extend(answers.iter().cloned());
+                    answered = copy;
+                    &answered
+                };
                 let run = match durable {
                     Some(DurableContext::Task { binding, .. }) => Some(binding),
                     _ => None,
@@ -5432,23 +5327,20 @@ impl AppBrokerState {
             receipt_context = receipt_context.enriched_by(ambient);
         }
         let intent = match journal.as_ref() {
-            Some(_) => Some(self.invocation_intent(
+            Some(_) => Some(Self::invocation_intent(
                 &offered,
                 IntentInputs {
                     peer_id,
-                    id,
-                    invocation,
                     actor,
                     argument,
                     revision,
                     original_request,
                     durable,
-                    origin: origin.as_ref(),
                     local_report,
                     typed_local_arguments: typed_local_arguments.as_ref(),
                     receipt_context: &receipt_context,
                 },
-            )?),
+            )),
             _ => None,
         };
         // Only what this connection's own admission decides has a record to
@@ -5493,7 +5385,7 @@ impl AppBrokerState {
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
             if (requires_store_witness(&offered.0.app_id, &offered.1.action)
                 && grant.host_witnessed.is_none())
-                || grant.expires < std::time::Instant::now()
+                || grant.expires < tilo_clock::now()
                 || grant.peer_id != peer_id
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
@@ -5612,15 +5504,6 @@ impl AppBrokerState {
         // Spent now, not once durable: a grant used once never admits twice,
         // even should this admission fail.
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
-        let checkpoint = (offered.0.app_id == "so.tilo.desktop"
-            && offered.1.resource == workspace_checkpoints::RESOURCE)
-            .then(|| {
-                (
-                    offered.0.route.cluster_id.clone(),
-                    offered.1.action.clone(),
-                    offered.1.contract.clone(),
-                )
-            });
         let untrusted = offered.1.contract.carries_untrusted_content();
         // Admitted: an offloadable action may now run on a better-placed
         // device, which the turn asks the route about. The device that runs it
@@ -5709,7 +5592,7 @@ impl AppBrokerState {
             operation_kind: offered.1.operation_kind,
             cluster_id: offered.0.route.cluster_id.clone(),
             context: receipt_context,
-            last_activity: std::time::Instant::now(),
+            last_activity: tilo_clock::now(),
             cancellation_requested_at: None,
             cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
@@ -5731,7 +5614,6 @@ impl AppBrokerState {
                 envelope,
                 sender,
                 offload,
-                checkpoint,
                 untrusted,
             })),
         })
@@ -5741,67 +5623,27 @@ impl AppBrokerState {
     /// request the caller asked for, and everything that decides it. Built
     /// once, so a repeated invocation is compared with what was admitted.
     fn invocation_intent(
-        &self,
         offered: &(PublishedSurface, PublishedAction),
         inputs: IntentInputs<'_>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> serde_json::Value {
         let IntentInputs {
             peer_id,
-            id,
-            invocation,
             actor,
             argument,
             revision,
             original_request,
             durable,
-            origin,
             local_report,
             typed_local_arguments,
             receipt_context,
         } = inputs;
-        let request = if offered.0.app_id == "so.tilo.desktop"
-            && offered.1.resource == workspace_checkpoints::RESOURCE
-        {
-            let certificate = match origin {
-                Some(InvocationCaller::Certified { caller, .. }) => self
-                    .current_action_caller(caller)?
-                    .certificate
-                    .ok_or("checkpoint caller certificate absent")?,
-                Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
-                _ => return Err("checkpoint requires original certified caller custody".into()),
-            };
-            let mut intent = workspace_checkpoints::intent(
-                &offered.0.route.cluster_id,
-                &certificate,
-                &InvocationEnvelope {
-                    id,
-                    invocation,
-                    resource: offered.1.resource.clone(),
-                    action: offered.1.action.clone(),
-                    argument: argument.map(str::to_owned),
-                    actor: actor.id.clone(),
-                    context: None,
-                },
-            )?;
-            if let Some(request) = original_request {
-                intent
-                    .as_object_mut()
-                    .ok_or("checkpoint intent invalid")?
-                    .insert(
-                        "remote_request".into(),
-                        workspace_checkpoints::remote_request(request)?,
-                    );
-            }
-            intent
-        } else {
-            match durable {
-                Some(context) => context.intent(),
-                None => serde_json::json!({
-                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                    "original_request": original_request,
-                }),
-            }
+        let request = match durable {
+            Some(context) => context.intent(),
+            None => serde_json::json!({
+                "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                "original_request": original_request,
+            }),
         };
         let request = match local_report {
             Some(report) => serde_json::json!({
@@ -5820,12 +5662,12 @@ impl AppBrokerState {
             }),
             None => request,
         };
-        Ok(serde_json::json!({ "request": request,
+        serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
             "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
             "record_id": offered.0.route.record_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
-            "action": offered.1.action, "revision": revision }))
+            "action": offered.1.action, "revision": revision })
     }
 
     /// What `record`'s invocation is answered with when it is asked for
@@ -5985,8 +5827,10 @@ impl AppBrokerState {
     }
 
     /// A receiver that sees every later published-surface change; what it
-    /// has seen so far counts as seen.
-    pub(crate) fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    /// has seen so far counts as seen. What a session holding a window reads
+    /// to notice the app publishing what it now offers — a page holding a
+    /// request that nothing has answered yet — without asking again.
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.surface_changes.subscribe()
     }
 
@@ -6012,14 +5856,14 @@ impl AppBrokerState {
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
-                    && self.take_witness(token, binding)
+                    && (self.take_witness(token, binding) || Self::host_witnessed(token, binding))
             }
             _ => false,
         };
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself.
         if requires_store_witness(app, &offered.action) && !witnessed {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
@@ -6032,7 +5876,7 @@ impl AppBrokerState {
                 return Ok(None);
             }
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {
@@ -6066,7 +5910,7 @@ impl AppBrokerState {
     ) -> Result<String, String> {
         let unavailable = || "the confirmation registry is unavailable".to_owned();
         let token = uuid::Uuid::new_v4().to_string();
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let expires = now
             .checked_add(std::time::Duration::from_secs(60))
             .ok_or_else(unavailable)?;
@@ -6095,7 +5939,7 @@ impl AppBrokerState {
     ///
     /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
     pub(crate) fn witness_confirmation(&self, binding: &WitnessBinding) -> Option<String> {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let expires = now.checked_add(std::time::Duration::from_secs(60))?;
         let token = uuid::Uuid::new_v4().to_string();
         let mut witnessed = self.witnessed_confirmations.lock().ok()?;
@@ -6113,12 +5957,34 @@ impl AppBrokerState {
 
     /// Spend the person's answer `token` names, when it was given for this
     /// very invocation.
+    /// Whether `token` is the answer of the host that certified this device,
+    /// for exactly `binding`: this device's own person let `binding`'s
+    /// invocation of this action, with these arguments, run. Only the key
+    /// that issued this device's certificate answers for it; another host's
+    /// word, like a changed action, is no answer at all.
+    fn host_witnessed(token: &str, binding: &WitnessBinding) -> bool {
+        let Some(witness) = tilo_user_identity::HostWitness::decode(token) else {
+            return false;
+        };
+        let Ok((_, cert)) = tilo_identity_host::broker::trusted_current_device(&binding.workspace)
+        else {
+            return false;
+        };
+        let argument = binding.argument_digest;
+        witness.stands_for(&cert, tilo_clock::unix_now_ns())
+            && witness.invocation == *binding.invocation.0.as_bytes()
+            && witness.provider == binding.provider
+            && witness.resource == binding.resource
+            && witness.action == binding.action
+            && witness.argument == argument
+    }
+
     fn take_witness(&self, token: &str, binding: &WitnessBinding) -> bool {
         let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
             return false;
         };
         let matches = witnessed.get(token).is_some_and(|witness| {
-            witness.expires >= std::time::Instant::now() && witness.binding == *binding
+            witness.expires >= tilo_clock::now() && witness.binding == *binding
         });
         if matches {
             witnessed.remove(token);
@@ -6253,7 +6119,7 @@ impl AppBrokerState {
             .ok_or_else(|| "the invocation is not running".to_string())?;
         let durable = self.persist_cancellation(job)?;
         if job.cancellation_requested_at.is_none() {
-            job.cancellation_requested_at = Some(std::time::Instant::now());
+            job.cancellation_requested_at = Some(tilo_clock::now());
             self.execution_activity.publish_status(
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
@@ -6359,6 +6225,13 @@ impl AppBrokerState {
         target: runtime_collab::TaskAction<'_>,
         (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
     ) -> Result<StagedJob, String> {
+        // The action as its window publishes it now: one mounted anew as the
+        // window settled carries it under a new alias.
+        let current = self.published_now(target);
+        let target = runtime_collab::TaskAction {
+            resource: current.as_deref().unwrap_or(target.resource),
+            ..target
+        };
         let runtime_collab::TaskAction {
             peer_id: target_peer,
             provider: _,
@@ -6371,12 +6244,8 @@ impl AppBrokerState {
             return Err("the task was cancelled; no further action may start".into());
         }
         let (surface, descriptor) = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task action surface unavailable")?
-            .get(&target_peer)
-            .filter(|surface| surface.route.cluster_id == run.cluster_id)
-            .and_then(|surface| surface.action_projection(resource, action))
+            .offered_by(target_peer, resource, action)
+            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
             .ok_or("the task action is no longer published in this workspace")?;
         self.admit_task_action(
             &run,
@@ -6523,7 +6392,7 @@ impl AppBrokerState {
         }
         self.disconnect_native_task_stream(peer_id);
         self.fail_pending_invocations_of(peer_id);
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     /// Fail every invocation still pending on `peer_id`, which went away
@@ -7002,7 +6871,8 @@ impl AppBrokerState {
             CollabEvent::Context {
                 collaborators,
                 permissions,
-            } => Self::fanout_context(channels, except, collaborators, permissions),
+                apps,
+            } => Self::fanout_context(channels, except, collaborators, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
@@ -7037,9 +6907,6 @@ impl AppBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
-            | CollabEvent::SelectedDiscoveryResult { .. }
-            | CollabEvent::OpenSelectedV2Result { .. }
-            | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
@@ -7153,13 +7020,15 @@ impl AppBrokerState {
         except: u64,
         collaborators: &[ui::collaboration::Collaborator],
         permissions: &[String],
+        apps: &[collab_types::history::NamedApp],
     ) {
         let env = ContextUpdate::Snapshot {
             collaborators: collaborators.to_vec(),
             permissions: permissions.to_vec(),
+            apps: apps.to_vec(),
         };
         for subs in channels {
-            subs.context.retain(|s| {
+            subs.context.retain_mut(|s| {
                 if s.peer_id == except {
                     return true;
                 }
@@ -7169,7 +7038,11 @@ impl AppBrokerState {
                 if s.native.is_some() {
                     return true;
                 }
-                s.tx.send(env.clone()).is_ok()
+                if s.tx.send(env.clone()).is_err() {
+                    return false;
+                }
+                s.apps = apps.to_vec();
+                true
             });
         }
     }
@@ -7241,10 +7114,14 @@ impl AppBrokerState {
         native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
+        // What each app installed here is called, with the people's names: what this window's
+        // history names another app's changes by.
+        let apps = self.installed_apps();
         if let Some(native) = native.as_ref() {
             let _ = tx.send(ContextUpdate::Snapshot {
                 collaborators: native.roster.clone(),
                 permissions: Vec::new(),
+                apps: apps.clone(),
             });
         }
         // Who the app's history names for changes an agent's own key signed.
@@ -7264,6 +7141,7 @@ impl AppBrokerState {
                     native,
                     private_alias: false,
                     history_agents,
+                    apps,
                 });
         }
         // The records of its app's trees this device already holds in the
@@ -7298,6 +7176,7 @@ impl AppBrokerState {
                     native: subscriber.native.clone(),
                     private_alias: true,
                     history_agents: subscriber.history_agents.clone(),
+                    apps: subscriber.apps.clone(),
                 });
             if let Some(subscriber) = subscriber {
                 let context = &mut channels.entry(alias.to_owned()).or_default().context;
@@ -7305,6 +7184,59 @@ impl AppBrokerState {
                 context.push(subscriber);
             }
         }
+    }
+
+    /// Who is in `workspace` now, as its membership names them: its people
+    /// and the agents delegated in it. Presentation only, as the roster is:
+    /// nothing is admitted by it, and a host that keeps no membership names
+    /// nobody.
+    pub fn here(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<Vec<tilo_actions::remote::Here>> {
+        let workspace = caller.workspace()?;
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        let (agents, people) = self
+            .membership
+            .as_ref()?
+            .decide_in_workspace(workspace, |workspace| {
+                let workspace = workspace?;
+                let agents = workspace.agent_members_at(now);
+                let people: Vec<(String, String)> = workspace
+                    .roster()
+                    .into_iter()
+                    .map(|(person, _)| person)
+                    .filter(|person| !workspace.is_blocked(person))
+                    .map(|person| {
+                        let name = workspace
+                            .collaborators
+                            .iter()
+                            .find(|row| row.id == person)
+                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        (person, name)
+                    })
+                    .collect();
+                Some((agents, people))
+            })
+            .ok()??;
+        let mut here: Vec<tilo_actions::remote::Here> = people
+            .into_iter()
+            .map(|(who, name)| tilo_actions::remote::Here {
+                who,
+                name,
+                kind: "person".into(),
+            })
+            .collect();
+        here.extend(
+            agents
+                .into_iter()
+                .map(|(agent, _)| tilo_actions::remote::Here {
+                    who: format!("agent:{agent}"),
+                    name: agent,
+                    kind: "agent".into(),
+                }),
+        );
+        Some(here)
     }
 
     /// Complete workspace membership for one retained native receiver. This is
@@ -7337,13 +7269,21 @@ impl AppBrokerState {
                 let people = people
                     .into_iter()
                     .map(|person| {
-                        let name = workspace
-                            .collaborators
-                            .iter()
-                            .find(|row| row.id == person)
-                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        let row = workspace.collaborators.iter().find(|row| row.id == person);
+                        let name = row.map_or_else(|| person.clone(), |row| row.name.clone());
+                        // The colour presence draws them in: the one they
+                        // chose, or the one their identity derives, so an app
+                        // paints a person as their desk and everyone else's
+                        // does. No word of them yet, and they are painted in
+                        // what their id derives, as everywhere.
+                        let colour = row
+                            .and_then(|row| row.cursor_color.as_deref())
+                            .and_then(ui::presence::parse_hex_color)
+                            .and_then(|(red, green, blue)| {
+                                ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
+                            });
                         let joined = workspace.policy.joined_at(&person);
-                        (person, name, joined)
+                        (person, name, colour, joined)
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
@@ -7362,18 +7302,18 @@ impl AppBrokerState {
                 is_self: true,
                 joined_at: people
                     .iter()
-                    .find(|(person, _, _)| *person == admitted.principal_id)
-                    .and_then(|(_, _, joined)| *joined),
+                    .find(|(person, _, _, _)| *person == admitted.principal_id)
+                    .and_then(|(_, _, _, joined)| *joined),
             });
         }
-        for (person, name, joined_at) in people {
+        for (person, name, colour, joined_at) in people {
             if admitted.agent_id.is_none() && person == admitted.principal_id {
                 continue;
             }
             collaborators.push(ui::collaboration::Collaborator {
                 id: person,
                 name,
-                colour: None,
+                colour,
                 is_agent: false,
                 is_self: false,
                 joined_at,
@@ -7383,10 +7323,13 @@ impl AppBrokerState {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
+            // The colour its face wears everywhere ([`participant_color`] of an agent): an app
+            // draws it as the bar does, one rule for every surface.
+            let colour = ui::presence::participant_hue(&agent, true);
             collaborators.push(ui::collaboration::Collaborator {
                 id: format!("agent:{agent}"),
                 name: agent,
-                colour: None,
+                colour: Some(colour),
                 is_agent: true,
                 is_self,
                 joined_at: None,
@@ -7506,6 +7449,15 @@ impl AppBrokerState {
             admitted: current,
             roster,
         }))
+    }
+
+    /// What each app installed on this device is called, as the host's authority knows it: what
+    /// a window's history names another app's change by. Presentation only.
+    fn installed_apps(&self) -> Vec<collab_types::history::NamedApp> {
+        self.membership
+            .as_ref()
+            .map(|membership| membership.installed_apps())
+            .unwrap_or_default()
     }
 
     /// The delegated agents of the workspace `channel` belongs to whose person's
@@ -7630,7 +7582,9 @@ impl AppBrokerState {
     }
 
     /// Tell one native context subscriber what its workspace's governance now
-    /// admits: the roster. Returns whether the roster changed.
+    /// admits: the roster, and the name of every app installed here, when one
+    /// was installed or removed since it was last told. Returns whether it
+    /// heard something new.
     fn tell_context_subscriber(
         &self,
         route: &CrdtRoute,
@@ -7654,6 +7608,7 @@ impl AppBrokerState {
         }
 
         let roster = self.native_membership_roster(route, current)?;
+        let apps = self.installed_apps();
         let mut channels = self
             .channels
             .lock()
@@ -7667,7 +7622,7 @@ impl AppBrokerState {
                 if subscriber.peer_id != peer_id || native.admitted != *admitted {
                     return true;
                 }
-                if same_roster(&native.roster, &roster) {
+                if same_roster(&native.roster, &roster) && subscriber.apps == apps {
                     return true;
                 }
                 changed = true;
@@ -7676,12 +7631,14 @@ impl AppBrokerState {
                     .send(ContextUpdate::Snapshot {
                         collaborators: roster.clone(),
                         permissions: Vec::new(),
+                        apps: apps.clone(),
                     })
                     .is_err()
                 {
                     return false;
                 }
                 native.roster.clone_from(&roster);
+                subscriber.apps.clone_from(&apps);
                 true
             });
         }
@@ -7919,7 +7876,7 @@ struct JoinPhases {
 
 impl JoinPhases {
     fn start() -> Self {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         Self {
             started: now,
             last: now,
@@ -7928,7 +7885,7 @@ impl JoinPhases {
     }
 
     fn mark(&mut self, phase: &'static str) {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         self.spans.push((phase, now.duration_since(self.last)));
         self.last = now;
     }
@@ -8487,11 +8444,13 @@ impl<'a> DirectoryQuestion<'a> {
             // under the caller's ordinary resource policy, not owner UI.
             // That exception requires a known View kind: a tag alone cannot
             // disclose resource-only metadata with an unknown governing kind.
+            // Another read of the record (`review-restore`) discloses it the
+            // same way.
             private_view: (operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
                 && !contract.is_participant_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_document()),
+                    && contract.reads_record()),
         }
     }
 
@@ -8593,7 +8552,8 @@ fn directory_row_question(
                 }
             }
             let published = published_directory_action(row)?;
-            validate_resource_view_descriptors(std::slice::from_ref(&published))?;
+            validate_resource_view_descriptors(std::slice::from_ref(&published))
+                .map_err(BrokerError::failed)?;
             Ok(DirectoryQuestion::of(
                 &row.resource_kind,
                 &row.resource,
@@ -8657,7 +8617,7 @@ fn filter_directory_page(
         .filter(|row| row.action.is_some())
         .map(published_directory_action)
         .collect::<Result<Vec<_>, _>>()?;
-    validate_resource_view_descriptors(&page_actions)?;
+    validate_resource_view_descriptors(&page_actions).map_err(BrokerError::failed)?;
     let questions = page
         .rows
         .iter()
@@ -8909,7 +8869,7 @@ fn handle_signed_op_send_for_artifact(
                     AuditEntry {
                         envelope: Box::new(envelope),
                         rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                        at: std::time::SystemTime::now(),
+                        at: tilo_clock::wall(),
                     },
                 );
             }
@@ -8927,7 +8887,7 @@ fn handle_signed_op_send_for_artifact(
                     AuditEntry {
                         envelope: Box::new(envelope),
                         rejection: Some(reason),
-                        at: std::time::SystemTime::now(),
+                        at: tilo_clock::wall(),
                     },
                 );
             }
@@ -8971,6 +8931,38 @@ impl AppBrokerState {
         let personal = self.services.personal.as_ref()?;
         (personal.read(tilo_peer_state::PersonalStore::store_key) == route.cluster_id)
             .then_some(personal)
+    }
+}
+
+/// An owner commit being waited for: dropping the wait before the owner
+/// answered cannot convert an admitted effect into a refusal or leave the
+/// standalone capability apparently healthy, so the owner's outcome is unknown
+/// from then on.
+struct OwnerWait<'a> {
+    failure: &'a Mutex<Option<String>>,
+    answered: bool,
+}
+
+impl<'a> OwnerWait<'a> {
+    const fn on(failure: &'a Mutex<Option<String>>) -> Self {
+        Self {
+            failure,
+            answered: false,
+        }
+    }
+
+    fn answered(mut self) {
+        self.answered = true;
+    }
+}
+
+impl Drop for OwnerWait<'_> {
+    fn drop(&mut self) {
+        if !self.answered
+            && let Ok(mut failure) = self.failure.lock()
+        {
+            failure.get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
+        }
     }
 }
 
@@ -9160,43 +9152,35 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
 
 struct ActionCatalogueStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
-    reader: Rc<AsyncMutex<ActionCatalogueReader>>,
-}
-
-struct ActionCatalogueReader {
-    rx: watch::Receiver<ActionCatalogueSnapshot>,
-    initial: bool,
-}
-
-impl ActionCatalogueReader {
-    async fn next(&mut self) -> Result<Arc<str>, ()> {
-        if self.initial {
-            self.initial = false;
-        } else {
-            self.rx.changed().await.map_err(|_| ())?;
-        }
-        let snapshot = self.rx.borrow_and_update().clone();
-        snapshot.ok_or(())
-    }
+    follower: Arc<CatalogueFollower>,
 }
 
 impl ActionCatalogueStreamServer {
-    /// The catalogue as it stands now, then each time it changes.
+    /// The whole catalogue, then each change to it, as JSON.
     #[allow(
         clippy::future_not_send,
         reason = "the stream is served on the connection's single-threaded local set"
     )]
-    async fn next(&self) -> Result<Arc<str>, BrokerError> {
+    async fn next(&self) -> Result<String, BrokerError> {
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-        let snapshot = self
-            .reader
-            .lock()
-            .await
+        let change = self
+            .follower
             .next()
             .await
             .map_err(|()| BrokerError::disconnected("action catalogue stream closed".into()))?;
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-        Ok(snapshot)
+        let json = serde_json::to_string(&change)
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
+        if change.reset {
+            // The session's normal tracing filter passes only errors. Its
+            // flight recorder captures stderr; report numeric metadata
+            // without exporting any authorized catalogue contents.
+            eprintln!(
+                "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+                json.len()
+            );
+        }
+        Ok(json)
     }
 }
 
@@ -9944,7 +9928,7 @@ async fn serve_broker_thread(
     // delivered at.
     let mut delivered = None;
     loop {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let epoch = tilo_identity_host::policy_change::epoch();
         if policy.due(now, epoch).is_some_and(|due| due <= now) {
             let clocked = state.refresh_policy_surfaces();
@@ -10003,7 +9987,7 @@ async fn serve_broker_thread(
         // policy announcements, and with them runs to deliver, through
         // `policy_turn`; connected apps run as
         // tasks of this LocalSet.
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
         let armed = policy_watch.arm();
         if (recheck.is_none() && armed != policy.epoch())
@@ -10855,7 +10839,6 @@ pub mod tests {
         ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
             Ok(self.attest_process(pid, app, workspace).then_some(
                 crate::services::AuthenticatedApplicationLaunch {
-                    creation: None,
                     continuation_instance: None,
                     launch_ticket: Some(31),
                     windowless: false,
@@ -11524,6 +11507,8 @@ pub mod tests {
         revision: String,
         pub resolve_mode: DirectoryResolveMode,
         result: tilo_actions::ResultSpec,
+        /// What the action is: opening Atlas, a view, unless a test makes it another.
+        pub operation: tilo_actions::OperationKind,
         confirmation_required: bool,
         params: Vec<tilo_actions::ActionParam>,
         query_count: usize,
@@ -11532,12 +11517,14 @@ pub mod tests {
 
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
-            let mut contract = tilo_actions::ActionContract::view();
+            let mut contract = tilo_actions::ActionContract::for_operation(self.operation);
             // Opening Atlas changes the invoking participant's view, not the
             // publishing participant's private UI.
-            contract
-                .tags
-                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+            if self.operation == tilo_actions::OperationKind::View {
+                contract
+                    .tags
+                    .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+            }
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
@@ -11558,7 +11545,7 @@ pub mod tests {
                 keywords: Vec::new(),
                 icon: None,
                 description: Some("Open the Atlas workspace".into()),
-                operation_kind: tilo_actions::OperationKind::View,
+                operation_kind: self.operation,
                 params: self.params.clone(),
                 contract: contract.clone(),
                 input: runtime_collab::ExportedInput::None,
@@ -11574,7 +11561,7 @@ pub mod tests {
                 descriptor: Some(descriptor),
                 has_children: false,
                 visibility: Some(runtime_collab::RowVisibility {
-                    governing_kind: Some(tilo_actions::OperationKind::View),
+                    governing_kind: Some(self.operation),
                     action: "open".into(),
                     contract,
                 }),
@@ -11659,6 +11646,8 @@ pub mod tests {
     include!("record_content_tests.rs");
     #[cfg(test)]
     include!("offload_door_tests.rs");
+    #[cfg(test)]
+    include!("hosted_workspace_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -11870,54 +11859,6 @@ pub mod tests {
             .await;
     }
 
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn selected_open_rpc_requires_actual_files_peer_and_original_invocation() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let fixture = local_directory_fixture();
-                let channel = fixture.invocation_channel();
-                let discovery = runtime_collab::open_selected::discovery::Request {
-                    invocation: None,
-                    protocol: runtime_collab::open_selected::discovery::PROTOCOL.into(),
-                    schema: 1,
-                    request_id: uuid::Uuid::new_v4().to_string(),
-                    components: vec![b"document.md".to_vec()],
-                };
-                let error = channel
-                    .local_file_selected_discovery(&discovery, None)
-                    .await
-                    .expect_err("discovery cannot mint a local Files peer");
-                assert!(error.to_string().contains("launcher-attested"), "{error}");
-                let selected = runtime_collab::open_selected::v2::Request {
-                    protocol: runtime_collab::open_selected::v2::PROTOCOL.into(),
-                    resource: "entry:document".into(),
-                    request: runtime_collab::open_selected::v2::RootRequest {
-                        schema: 2,
-                        request_id: uuid::Uuid::new_v4().to_string(),
-                        components: vec![b"document.md".to_vec()],
-                        app_id: "so.tilo.text-editor".into(),
-                        access: runtime_collab::open_selected::v2::SelectedAccess::EditInParent,
-                    },
-                    selected_descriptor: 3,
-                    parent_descriptor: 4,
-                    proof_descriptor: 5,
-                };
-                let error = channel
-                    .local_file_open_selected_v2(&selected, Some(*uuid::Uuid::new_v4().as_bytes()))
-                    .await
-                    .expect_err("Edit requires its actual semantic invocation");
-                assert!(error.to_string().contains("absent"), "{error}");
-                let navigation = selected.navigation();
-                let error = channel
-                    .local_file_open_selected(&navigation, Some(*uuid::Uuid::new_v4().as_bytes()))
-                    .await
-                    .expect_err("Read requires its actual semantic invocation");
-                assert!(error.to_string().contains("absent"), "{error}");
-            })
-            .await;
-    }
-
     #[cfg(test)]
     #[tokio::test(flavor = "current_thread")]
     async fn audio_output_raw_admitted_channel_cannot_open_or_write_host_pcm() {
@@ -12112,6 +12053,7 @@ pub mod tests {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
             result: tilo_actions::ResultSpec::None,
+            operation: tilo_actions::OperationKind::View,
             confirmation_required: false,
             params: Vec::new(),
             query_count: 0,
@@ -13377,6 +13319,19 @@ pub mod tests {
                 )
                 .is_err()
         );
+        // An agent wears the colour its face wears everywhere, so the card it
+        // shows in a window is drawn as the bar draws it.
+        for agent in roster.iter().filter(|row| row.is_agent) {
+            let key = agent
+                .id
+                .strip_prefix("agent:")
+                .expect("an agent's id names its key");
+            assert_eq!(
+                agent.colour,
+                Some(ui::presence::participant_hue(key, true)),
+                "{key}"
+            );
+        }
 
         let channel = route.channel_key();
         let native = state
@@ -13421,6 +13376,7 @@ pub mod tests {
                 channels.values_mut(),
                 u64::MAX,
                 std::slice::from_ref(&forged),
+                &[],
                 &[],
             );
         }
@@ -13738,7 +13694,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
@@ -13772,7 +13728,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             2,
             collab_types::EncryptionMetadata::mls_application(7, expected_channel),
         );
@@ -13919,7 +13875,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
@@ -13970,7 +13926,7 @@ pub mod tests {
             author,
             document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         state.fanout_to_route(
@@ -14029,8 +13985,39 @@ pub mod tests {
         }
     }
 
+    /// A window mounting a component anew publishes its resource under a new
+    /// alias: an action named on the old one is found on the one it is on now,
+    /// unless it is withdrawn or two aliases of the resource carry it.
+    #[test]
+    fn a_task_action_is_found_under_the_alias_its_window_publishes_now() {
+        let alias = |component: &str| {
+            format!(
+                "{}host:{component}:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode("composer")
+            )
+        };
+        let (before, now) = (alias("1"), alias("2"));
+        let mut surface = catalogue_surface(4, "workspace", &now);
+        assert_eq!(surface.current_resource(&now, "open"), Some(now.as_str()));
+        assert_eq!(
+            surface.current_resource(&before, "open"),
+            Some(now.as_str())
+        );
+        assert_eq!(surface.current_resource(&before, "close"), None);
+        assert_eq!(surface.current_resource("composer", "open"), None);
+        let mut twice = surface.actions[0].clone();
+        twice.resource = alias("3");
+        surface.actions.push(twice);
+        assert_eq!(surface.current_resource(&before, "open"), None);
+    }
+
     #[cfg(test)]
-    fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> PublishedSurface {
+    pub(super) fn catalogue_surface(
+        peer_id: u64,
+        cluster: &str,
+        resource: &str,
+    ) -> PublishedSurface {
         PublishedSurface {
             peer_id,
             app_id: "so.tilo.files".into(),
@@ -14105,22 +14092,33 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn catalogue_test_channel() -> (
-        watch::Sender<ActionCatalogueSnapshot>,
-        watch::Receiver<ActionCatalogueSnapshot>,
-    ) {
-        watch::channel(Some(Arc::<str>::from("{}")))
+    fn catalogue_test_follower() -> Arc<CatalogueFollower> {
+        CatalogueFollower::new(&Vec::new())
     }
 
     #[cfg(test)]
-    fn current_catalogue(
-        receiver: &mut watch::Receiver<ActionCatalogueSnapshot>,
-    ) -> ActionCatalogueSnapshot {
-        receiver.borrow_and_update().clone()
+    /// Apply the change `follower` is sent next, if one is queued.
+    fn read_catalogue(
+        follower: &CatalogueFollower,
+        held: &mut runtime_collab::ActionCatalogue,
+    ) -> bool {
+        let Some(change) = follower.following.lock().unwrap().pending.take() else {
+            return false;
+        };
+        held.apply(&change).unwrap();
+        true
+    }
+
+    #[cfg(test)]
+    fn offers(held: &runtime_collab::ActionCatalogue, resource: &str) -> bool {
+        held.surfaces()
+            .iter()
+            .flat_map(|surface| &surface.actions)
+            .any(|action| action.resource == resource)
     }
 
     #[test]
-    fn catalogue_publication_computes_once_per_exact_audience_and_keeps_only_latest_state() {
+    fn catalogue_publication_computes_once_per_audience_and_sends_only_what_changed() {
         let CountingCatalogueFixture {
             state,
             calls,
@@ -14128,40 +14126,59 @@ pub mod tests {
             ..
         } = counting_catalogue_state("owner");
         let actor = BrokerActor::person("owner");
-        let (first_tx, mut first_rx) = catalogue_test_channel();
-        let (second_tx, mut second_rx) = catalogue_test_channel();
+        let (reading, slow) = (catalogue_test_follower(), catalogue_test_follower());
         state.action_catalogue_subscribers.lock().unwrap().extend([
-            (1, (cluster.clone(), actor.clone(), first_tx)),
-            (2, (cluster.clone(), actor, second_tx)),
+            (
+                1,
+                (cluster.clone(), actor.clone(), Arc::downgrade(&reading)),
+            ),
+            (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
         ]);
+        let publish = |peer: u64, resource: Option<&str>| {
+            let mut surfaces = state.surfaces.lock().unwrap();
+            match resource {
+                Some(resource) => {
+                    surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
+                }
+                None => surfaces.remove(&peer),
+            };
+            drop(surfaces);
+            state.publish_action_catalogue();
+        };
+        publish(11, Some("files.entry:first"));
+        publish(12, Some("files.entry:second"));
+        let mut held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&reading, &mut held));
+        assert_eq!(held.surfaces().len(), 2);
 
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(11, catalogue_surface(11, &cluster, "files.entry:first"));
-        state.publish_action_catalogue();
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(12, catalogue_surface(12, &cluster, "files.entry:second"));
-        state.publish_action_catalogue();
+        publish(12, Some("files.entry:renamed"));
+        publish(11, None);
+        let change = reading.following.lock().unwrap().pending.clone().unwrap();
+        assert!(!change.reset);
+        assert_eq!(change.surfaces.len(), 1, "only the changed surface travels");
+        assert_eq!(change.surfaces[0].surface.peer_id, 12);
+        assert_eq!(change.removed.len(), 1);
+        assert!(read_catalogue(&reading, &mut held));
+        assert!(offers(&held, "files.entry:renamed"));
+        assert!(!offers(&held, "files.entry:first") && !offers(&held, "files.entry:second"));
 
+        let mut slow_held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&slow, &mut slow_held));
+        assert_eq!(
+            slow_held.surfaces(),
+            held.surfaces(),
+            "a slow reader is sent one change for everything it missed"
+        );
+        state.publish_action_catalogue();
+        assert!(
+            !read_catalogue(&reading, &mut held),
+            "an unchanged catalogue sends nothing"
+        );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "each synchronous publication computes one snapshot for a shared exact audience"
+            5,
+            "each publication computes one catalogue for a shared exact audience"
         );
-        for receiver in [&mut first_rx, &mut second_rx] {
-            let latest: serde_json::Value =
-                serde_json::from_str(&current_catalogue(receiver).unwrap()).unwrap();
-            assert_eq!(latest["surfaces"].as_array().unwrap().len(), 2);
-            assert!(
-                !receiver.has_changed().unwrap(),
-                "a slow reader retains no obsolete complete catalogue"
-            );
-        }
     }
 
     #[test]
@@ -14185,24 +14202,43 @@ pub mod tests {
         other.set_owner("same");
         let other_cluster = other.id().to_string();
         tree.lock().unwrap().workspaces.push(other);
-        let (person_tx, mut person_rx) = catalogue_test_channel();
-        let (agent_tx, mut agent_rx) = catalogue_test_channel();
-        let (other_tx, mut other_rx) = catalogue_test_channel();
+        let person = catalogue_test_follower();
+        let agent = catalogue_test_follower();
+        let other = catalogue_test_follower();
         state.action_catalogue_subscribers.lock().unwrap().extend([
-            (1, (cluster.clone(), BrokerActor::person("same"), person_tx)),
-            (2, (cluster, BrokerActor::agent("same"), agent_tx)),
-            (3, (other_cluster, BrokerActor::person("same"), other_tx)),
+            (
+                1,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("same"),
+                    Arc::downgrade(&person),
+                ),
+            ),
+            (
+                2,
+                (cluster, BrokerActor::agent("same"), Arc::downgrade(&agent)),
+            ),
+            (
+                3,
+                (
+                    other_cluster,
+                    BrokerActor::person("same"),
+                    Arc::downgrade(&other),
+                ),
+            ),
         ]);
 
         state.publish_action_catalogue();
 
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
-        let person = current_catalogue(&mut person_rx).unwrap();
-        let agent = current_catalogue(&mut agent_rx).unwrap();
-        let other = current_catalogue(&mut other_rx).unwrap();
-        assert!(person.contains("files.entry:owner"));
-        assert!(!agent.contains("files.entry:owner"));
-        assert!(!other.contains("files.entry:owner"));
+        let catalogue = |follower: &CatalogueFollower| {
+            let mut held = runtime_collab::ActionCatalogue::default();
+            read_catalogue(follower, &mut held);
+            offers(&held, "files.entry:owner")
+        };
+        assert!(catalogue(&person));
+        assert!(!catalogue(&agent));
+        assert!(!catalogue(&other));
     }
 
     #[test]
@@ -14219,18 +14255,19 @@ pub mod tests {
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let (tx, mut rx) = catalogue_test_channel();
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(1, (cluster, BrokerActor::person("owner"), tx));
-        state.publish_action_catalogue();
-        assert!(
-            current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner")
+        let follower = catalogue_test_follower();
+        state.action_catalogue_subscribers.lock().unwrap().insert(
+            1,
+            (
+                cluster,
+                BrokerActor::person("owner"),
+                Arc::downgrade(&follower),
+            ),
         );
+        state.publish_action_catalogue();
+        let mut held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&follower, &mut held));
+        assert!(offers(&held, "files.entry:owner"));
 
         {
             let mut tree = tree.lock().unwrap();
@@ -14238,44 +14275,28 @@ pub mod tests {
             tree.workspaces[0].dismiss("owner");
         }
         state.publish_action_catalogue();
-        assert!(
-            !current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner")
-        );
+        assert!(read_catalogue(&follower, &mut held));
+        assert!(!offers(&held, "files.entry:owner"));
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
-    async fn catalogue_stream_starts_with_latest_state_and_rejects_invalidated_pending_state() {
-        let (initial_tx, initial_rx) = watch::channel(Some(Arc::<str>::from("initial")));
-        let mut initial_reader = ActionCatalogueReader {
-            rx: initial_rx,
-            initial: true,
-        };
-        assert_eq!(&*initial_reader.next().await.unwrap(), "initial");
-        drop(initial_tx);
+    async fn catalogue_stream_starts_whole_and_ending_drops_an_unread_change() {
+        let follower = catalogue_test_follower();
         assert!(
-            initial_reader.next().await.is_err(),
-            "a closed stream with no pending state disconnects"
+            follower.next().await.unwrap().reset,
+            "first the whole catalogue"
         );
-
-        let (tx, rx) = watch::channel(Some(Arc::<str>::from("initial")));
-        tx.send(Some(Arc::<str>::from("newer"))).unwrap();
-        let mut reader = ActionCatalogueReader { rx, initial: true };
-        assert_eq!(&*reader.next().await.unwrap(), "newer");
-
-        tx.send(Some(Arc::<str>::from("unread"))).unwrap();
-        tx.send_replace(None);
-        drop(tx);
+        let unread = catalogue_test_follower();
+        unread.end();
         assert!(
-            reader.next().await.is_err(),
-            "projection failure invalidates an unread stale snapshot"
+            unread.next().await.is_err(),
+            "an ended follower is sent no unread change"
         );
     }
 
     #[test]
-    fn catalogue_projection_failure_invalidates_and_removes_its_audience() {
+    fn catalogue_projection_failure_ends_and_removes_its_audience() {
         let CountingCatalogueFixture {
             state,
             calls,
@@ -14288,36 +14309,45 @@ pub mod tests {
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let (tx, mut rx) = catalogue_test_channel();
-        let (second_tx, mut second_rx) = catalogue_test_channel();
-        let (closed_tx, closed_rx) = catalogue_test_channel();
-        drop(closed_rx);
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(1, (cluster.clone(), BrokerActor::person("owner"), tx));
-        state.action_catalogue_subscribers.lock().unwrap().insert(
-            2,
-            (cluster.clone(), BrokerActor::person("owner"), second_tx),
-        );
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(3, (cluster, BrokerActor::person("owner"), closed_tx));
+        let first = catalogue_test_follower();
+        let second = catalogue_test_follower();
+        let closed = catalogue_test_follower();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (
+                1,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&first),
+                ),
+            ),
+            (
+                2,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&second),
+                ),
+            ),
+            (
+                3,
+                (
+                    cluster,
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&closed),
+                ),
+            ),
+        ]);
+        drop(closed);
         state.publish_action_catalogue();
-        assert!(
-            current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner"),
-            "the current authorized catalogue is initially available"
-        );
-        assert!(
-            current_catalogue(&mut second_rx)
-                .unwrap()
-                .contains("files.entry:owner")
-        );
+        for follower in [&first, &second] {
+            let mut held = runtime_collab::ActionCatalogue::default();
+            assert!(read_catalogue(follower, &mut held));
+            assert!(
+                offers(&held, "files.entry:owner"),
+                "the current authorized catalogue is initially available"
+            );
+        }
         assert!(
             !state
                 .action_catalogue_subscribers
@@ -14329,8 +14359,11 @@ pub mod tests {
 
         failed.store(true, std::sync::atomic::Ordering::Relaxed);
         state.publish_action_catalogue();
-        assert!(rx.borrow_and_update().is_none());
-        assert!(second_rx.borrow_and_update().is_none());
+        for follower in [&first, &second] {
+            let following = follower.following.lock().unwrap();
+            assert!(following.ended);
+            assert!(following.pending.is_none());
+        }
         let subscribers = state.action_catalogue_subscribers.lock().unwrap();
         assert!(!subscribers.contains_key(&1));
         assert!(!subscribers.contains_key(&2));
@@ -14497,15 +14530,17 @@ pub mod tests {
             .route
             .cluster_id
             .clone();
-        let owner_catalogue = state
-            .action_catalogue_json(&action_cluster, "owner")
-            .expect("owner catalogue");
-        assert!(owner_catalogue.contains("files.entry:/tmp/report"));
-        let denied_catalogue = state
-            .action_catalogue_json(&action_cluster, "stranger")
-            .expect("filtered catalogue");
+        let offered = |actor: &str| {
+            state
+                .action_catalogue(&action_cluster, actor)
+                .expect("catalogue")
+                .iter()
+                .flat_map(|surface| &surface.actions)
+                .any(|action| action.resource == "files.entry:/tmp/report")
+        };
+        assert!(offered("owner"));
         assert!(
-            !denied_catalogue.contains("files.entry:/tmp/report"),
+            !offered("stranger"),
             "denied actions must be absent from discovery, not merely refused later"
         );
 
@@ -14576,7 +14611,7 @@ pub mod tests {
                 .expect("cancellation registry")
                 .contains(&refresh.id)
         );
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         {
             let mut pending = state.pending_invocations.lock().expect("pending");
             pending
@@ -14698,9 +14733,11 @@ pub mod tests {
         assert_eq!(archived[0].actions[0].action, "new-window");
         assert!(
             !state
-                .action_catalogue_json(&archived[0].route.cluster_id, "owner")
+                .action_catalogue(&archived[0].route.cluster_id, "owner")
                 .expect("live-only direct catalogue")
-                .contains("new-window"),
+                .iter()
+                .flat_map(|surface| &surface.actions)
+                .any(|action| action.action == "new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
     }
@@ -14883,7 +14920,7 @@ pub mod tests {
             )
             .with_app("org.tilo.Writer", "Writer")
             .with_group("task:release", "Release", "task"),
-            last_activity: std::time::Instant::now(),
+            last_activity: tilo_clock::now(),
             cancellation_requested_at: None,
             cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
@@ -15041,7 +15078,7 @@ impl AppBrokerState {
             .ok_or_else(|| {
                 BrokerError::failed("invocation changed while committing; outcome unknown".into())
             })?;
-        pending.last_activity = std::time::Instant::now();
+        pending.last_activity = tilo_clock::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         state.publish_pending_activity(pending, &update);

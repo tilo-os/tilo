@@ -53,6 +53,9 @@ const FORMERLY: &str = "formerly";
 /// replicated input, not a request to allocate one local document per entry.
 pub const MAX_DISCOVERED_RECORDS: usize = 64;
 const MAX_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_RECORDS * 4;
+/// The longest workspace index this store reads: automerge reads a document whole, and an index is
+/// a list of names rather than the records' own content.
+const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -563,6 +566,13 @@ pub struct RecordSet {
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// Records the workspace's hosts sent everything they hold of, until something of them arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// This store's records come from its workspace's hosts
+    /// ([`RecordStore::ask_workspace_for_missing`]): a record not here is
+    /// asked for and new only once they answered they hold none of it.
+    asks_workspace: std::cell::Cell<bool>,
+    /// The records not here that were opened while [`Self::asks_workspace`]:
+    /// what the workspace is asked for ([`RecordStore::wanted_records`]).
+    wanted: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// The windows that read this store's records, woken when another replica's change arrives,
     /// which no input or wake of theirs announces.
     readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
@@ -629,6 +639,8 @@ impl RecordSet {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -662,6 +674,8 @@ impl RecordSet {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -1164,7 +1178,7 @@ impl RecordSet {
         // The package actor belongs to its index, and a bootstrap fork actor to pre-admission
         // edits; every later canonical operation belongs to this record's original persistent
         // writer.
-        merged.set_actor(store.actor().clone());
+        merged.set_actor(store.actor());
         *doc = merged;
         let mut autosave = store.writer();
         if let Some(mut stored) = stored {
@@ -1300,17 +1314,11 @@ impl RecordSet {
             if slot.kind != want.kind {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-            if validate_identity(doc, want, &self.home).is_err() {
-                let bridge = self
-                    .native_initial
-                    .as_ref()
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge
-                    .record(&self.package_id, &self.home, want)?
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                validate_creation_capture(doc, want, &self.home, &read)?;
-            }
+            validate_identity(
+                slot.doc.as_ref().ok_or(RecordOpenError::Busy)?,
+                want,
+                &self.home,
+            )?;
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
         // A record no committed read answers (the app's own channel serves
@@ -1327,28 +1335,9 @@ impl RecordSet {
             } else {
                 app_state::DocStore::exclusive(backend, key)?
             };
-            let creation = read.clone();
-            // The creation's graph is the snapshot's: its heads are those of the snapshot as it
-            // is decoded to be validated first, never decoded again only to read them.
-            let creation_heads: std::cell::RefCell<Option<Vec<automerge::ChangeHash>>> =
-                std::cell::RefCell::default();
-            let (mut doc, autosave) = canonical_read::finish_created(
-                store,
-                read,
-                |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
-                |doc| {
-                    let mut heads = creation_heads.borrow_mut();
-                    let heads = heads.get_or_insert_with(|| doc.base_heads());
-                    validate_created_graph(
-                        doc,
-                        want,
-                        &self.home,
-                        creation.creation_workspace().map(|scope| scope.id.as_str()),
-                        heads,
-                    )
-                    .map_err(|error| error.to_string())
-                },
-            )
+            let (mut doc, autosave) = canonical_read::finish(store, read, |doc| {
+                validate_identity(doc, want, &self.home).map_err(|error| error.to_string())
+            })
             .map_err(RecordOpenError::Initialization)?;
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
@@ -1412,7 +1401,7 @@ impl RecordSet {
                 )?
                 .ok_or(RecordOpenError::MissingRecord)?,
             };
-            doc.set_actor(owner.actor().clone());
+            doc.set_actor(owner.actor());
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
                 return Err(RecordOpenError::IdentityMismatch);
             }
@@ -1592,68 +1581,6 @@ enum Durability {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
-impl RecordStore {
-    /// Initialize only the exact host-created original record, never an empty restore.
-    pub(crate) fn initialize_admitted_record(
-        &self,
-        checkout: &RecordCheckout,
-        initialization: &crate::collaboration::native_initial::RecordInitialization,
-        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<(), RecordOpenError> {
-        let original = self.read_checked(&checkout.id, Clone::clone)?;
-        let workspace = initialization.workspace().ok_or_else(|| {
-            RecordOpenError::Initialization("original creation scope unavailable".into())
-        })?;
-        if workspace.id != self.0.borrow().home {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        initialization.validate_original(checkout, |read| {
-            validate_creation_capture(&original, checkout, &workspace.id, read)
-        })?;
-        let original_heads = original.base_heads();
-        let mut document = original.clone();
-        genesis(&mut document, checkout, &workspace.id, initialize)?;
-        let mut preserved = original;
-        document
-            .merge_incoming(&mut preserved)
-            .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
-        seed(&mut document).map_err(RecordOpenError::Initialization)?;
-        commit_genesis(&mut document);
-        validate_identity(&document, checkout, &workspace.id)?;
-        let bytes = document.save();
-        initialization
-            .commit(checkout.kind.as_str(), bytes)
-            .map_err(RecordOpenError::Initialization)?;
-        // Ordinary peer merges require an initialized local identity; only this exact original
-        // creation may install its acknowledged genesis, and only after the blocking owner ACK,
-        // never replacing intervening edits.
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.home != workspace.id {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        let slot = set
-            .open
-            .get_mut(&checkout.id)
-            .filter(|slot| slot.kind == checkout.kind)
-            .ok_or(RecordOpenError::IdentityMismatch)?;
-        let current = slot.doc.as_mut().ok_or(RecordOpenError::Busy)?;
-        if current.pending_ops() != 0 || current.base_heads() != original_heads {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        slot.history.rebase(&mut document);
-        slot.action_state.generation = slot
-            .action_state
-            .generation
-            .and_then(|generation| generation.checked_add(1));
-        *current = document;
-        if let Some(writer) = &mut slot.autosave {
-            writer.request(current);
-        }
-        Ok(())
-    }
-}
-
 type OwnerIndex =
     Rc<std::cell::RefCell<HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>>>;
 
@@ -1790,6 +1717,8 @@ impl RecordOwners {
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             answered: std::cell::RefCell::default(),
+            asks_workspace: std::cell::Cell::new(false),
+            wanted: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
@@ -2075,81 +2004,14 @@ fn validate_identity(
     Ok(())
 }
 
-fn validate_created_identity(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    creation_workspace: Option<&str>,
-) -> Result<(), RecordOpenError> {
-    if creation_workspace != Some(workspace)
-        || workspace.is_empty()
-        || !want.is_valid_local_storage_request()
-        || !primary_document(doc)
-        || home(doc).is_some_and(|found| found != workspace)
-        || workspace_scope(doc).is_some_and(|found| found != workspace)
-        || transfer::is_retired(doc)
-    {
-        return Err(RecordOpenError::IdentityMismatch);
-    }
-    Ok(())
-}
-
 impl From<crate::collaboration::native_initial::RecordReadError> for RecordOpenError {
     fn from(error: crate::collaboration::native_initial::RecordReadError) -> Self {
         use crate::collaboration::native_initial::RecordReadError;
         match error {
-            RecordReadError::IdentityMismatch => Self::IdentityMismatch,
             RecordReadError::Arriving => Self::Arriving,
             RecordReadError::Initialization(error) => Self::Initialization(error),
         }
     }
-}
-
-pub(crate) fn validate_creation_capture(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    read: &crate::collaboration::CommittedDocument,
-) -> Result<(), RecordOpenError> {
-    let heads = creation_capture_heads(read)?;
-    validate_created_graph(
-        doc,
-        want,
-        workspace,
-        read.creation_workspace().map(|scope| scope.id.as_str()),
-        &heads,
-    )
-}
-
-fn validate_created_graph(
-    doc: &AutoCommit,
-    want: &RecordCheckout,
-    workspace: &str,
-    creation_workspace: Option<&str>,
-    heads: &[automerge::ChangeHash],
-) -> Result<(), RecordOpenError> {
-    validate_created_identity(doc, want, workspace, creation_workspace)?;
-    if doc.pending_ops() != 0 || doc.base_heads() != heads {
-        return Err(RecordOpenError::IdentityMismatch);
-    }
-    Ok(())
-}
-
-fn creation_capture_heads(
-    read: &crate::collaboration::CommittedDocument,
-) -> Result<Vec<automerge::ChangeHash>, RecordOpenError> {
-    read.with_mutation(|mutation| {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return Err(RecordOpenError::Initialization(
-                "creation capture is not a snapshot".into(),
-            ));
-        };
-        let original = AutoCommit::load(bytes).map_err(|_| {
-            RecordOpenError::Initialization("creation capture snapshot cannot be parsed".into())
-        })?;
-        Ok(original.base_heads())
-    })
-    .map_err(RecordOpenError::Initialization)?
 }
 
 #[derive(Clone)]
@@ -2430,6 +2292,26 @@ impl Drop for RecordReservation {
     }
 }
 
+/// The document of `id`, a record of `kind` the workspace `home` keeps in `store`, as last made
+/// durable; `None` and a log when it cannot be read here — it has not reached this device, or its
+/// bytes do not read as a record.
+fn read_record(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    home: &str,
+    id: &RecordId,
+    kind: &RecordKind,
+) -> Option<AutoCommit> {
+    let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
+    match transfer::read(store, package, home, &origin) {
+        Ok(doc) => Some(doc),
+        Err(error) => {
+            tracing::warn!(record = %id, workspace = %home, %error, "a workspace record is not readable; left out");
+            None
+        }
+    }
+}
+
 impl RecordStore {
     /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
@@ -2469,18 +2351,8 @@ impl RecordStore {
             {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            if let Some(doc) = set.peek(&checkout.id)
-                && validate_identity(doc, checkout, &set.home).is_err()
-            {
-                let bridge = set
-                    .native_initial
-                    .as_ref()
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge
-                    .record(&set.package_id, &set.home, checkout)?
-                    .ok_or(RecordOpenError::IdentityMismatch)?;
-                validate_creation_capture(doc, checkout, &set.home, &read)?;
-                return set.wire_route(&checkout.id);
+            if let Some(doc) = set.peek(&checkout.id) {
+                validate_identity(doc, checkout, &set.home)?;
             }
         }
         self.route(checkout)
@@ -2720,20 +2592,99 @@ impl RecordStore {
             .collect::<Vec<_>>();
         let mut found = ids
             .iter()
-            .filter_map(|id| {
-                let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
-                match transfer::read(&store, &package, &home, &origin) {
-                    Ok(doc) => Some((id.clone(), doc)),
-                    Err(error) => {
-                        tracing::warn!(record = %id, workspace = %home, %error, "window record not readable; left out");
-                        None
-                    }
-                }
-            })
+            .filter_map(|id| Some((id.clone(), read_record(&store, &package, &home, id, kind)?)))
             .collect::<Vec<_>>();
         found.extend(self.0.borrow().retired_window_records(&store, kind, &ids));
         found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
+    }
+
+    /// Every record of `kind` this workspace holds, sorted by id, as last made durable, each with
+    /// the name the workspace's index gives it: the window default records this device's windows
+    /// started ([`Self::window_records`]) and the records the index names, so a document a window
+    /// on another device made, or an agent made in a hosted workspace, is listed too. Read without
+    /// taking a writer; a record whose document is not here is left out and logged, and one the
+    /// index does not name has no name.
+    pub fn workspace_records(
+        &self,
+        kind: &RecordKind,
+    ) -> Vec<(RecordId, AutoCommit, Option<String>)> {
+        let Some(store) = self.backend() else {
+            return Vec::new();
+        };
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<(RecordId, AutoCommit, Option<String>)> = self
+            .window_records(kind)
+            .into_iter()
+            .map(|(id, doc)| (id, doc, None))
+            .collect();
+        for (id, name) in self.indexed_records(kind) {
+            match found.binary_search_by(|(held, _, _)| held.cmp(&id)) {
+                // A window here started it and the index names it: the name is the index's.
+                Ok(at) => found[at].2 = name,
+                Err(at) => {
+                    if let Some(doc) = read_record(&store, &package, &home, &id, kind) {
+                        found.insert(at, (id, doc, name));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// The records of `kind` the workspace's index names, each with the name it gives it, sorted by
+    /// id: what an app's windows and a hosted workspace's agent published here, whether or not a
+    /// window of this device started them.
+    fn indexed_records(&self, kind: &RecordKind) -> Vec<(RecordId, Option<String>)> {
+        let Some(index) = self.workspace_index() else {
+            return Vec::new();
+        };
+        let mut named: Vec<(RecordId, Option<String>)> = index::discoverable_references(&index)
+            .into_iter()
+            .filter(|checkout| &checkout.kind == kind)
+            .map(|checkout| {
+                let name = index::name_of(&index, &checkout.id);
+                (checkout.id, name)
+            })
+            .collect();
+        named.compact_sort_by(|a, b| a.0.cmp(&b.0));
+        named
+    }
+
+    /// The workspace's index document — the names of the records this package keeps here — as this
+    /// device last wrote it, read without taking a writer since an app of the workspace owns it.
+    fn workspace_index(&self) -> Option<AutoCommit> {
+        let store = self.backend()?;
+        let (package, home) = self.package_and_home();
+        if home.is_empty() {
+            return None;
+        }
+        let stored = match store.read(&StorageKey::workspace_index(&package, &home)) {
+            Ok(stored) => stored?,
+            Err(error) => {
+                tracing::warn!(%package, workspace = %home, %error, "a workspace's index is not read");
+                return None;
+            }
+        };
+        // Automerge reads a document whole, and an index is a list of names rather than the
+        // records' own content: a file past this is not one a workspace wrote.
+        if stored.bytes.is_empty() || stored.bytes.len() > MAX_INDEX_BYTES {
+            return None;
+        }
+        // An app keeping the index appends to it, and this read may land on a tail it has not
+        // finished writing: the changes before it are the index as of the last write that completed.
+        AutoCommit::load_with_options(
+            &stored.bytes,
+            automerge::LoadOptions::new()
+                .on_partial_load(automerge::OnPartialLoad::Ignore),
+        )
+        .inspect_err(|error| {
+            tracing::warn!(%error, %package, workspace = %home, "a workspace's index does not load");
+        })
+        .ok()
     }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.
@@ -2749,9 +2700,41 @@ impl RecordStore {
         ))
     }
 
-    /// Open Existing only; a missing document is never implicitly initialized. # Errors Reports
+    /// Open Existing only; a missing document is never implicitly initialized. In a store whose
+    /// records come from its workspace's hosts ([`Self::ask_workspace_for_missing`]) a record not
+    /// here is [`RecordOpenError::Arriving`] until they answered they hold none of it: only then is
+    /// it [`RecordOpenError::MissingRecord`], which a caller may take as new. # Errors Reports
     /// ownership contention, absence, identity or schema refusal and storage failures.
     pub fn try_open_record(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        let opened = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy)?
+            .try_open_record(want);
+        match opened {
+            Err(RecordOpenError::MissingRecord) if self.awaits_workspace(&want.id) => {
+                Err(RecordOpenError::Arriving)
+            }
+            Ok(outcome) => {
+                if let Ok(set) = self.0.try_borrow() {
+                    set.wanted.borrow_mut().remove(&want.id);
+                }
+                Ok(outcome)
+            }
+            other => other,
+        }
+    }
+
+    /// Open `want` if this store holds it, without asking the workspace for
+    /// one it does not hold: what a list checks for each record it could
+    /// name. [`RecordOpenError::MissingRecord`] says only that it is not here.
+    ///
+    /// # Errors
+    /// As [`Self::try_open_record`], a record not here always missing.
+    pub fn open_if_held(
         &self,
         want: &RecordCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
@@ -2759,6 +2742,45 @@ impl RecordStore {
             .try_borrow_mut()
             .map_err(|_| RecordOpenError::Busy)?
             .try_open_record(want)
+    }
+
+    /// Take this store's records to come from its workspace's hosts, which
+    /// may send a device a record only once it asks for it (a public
+    /// workspace sends a newcomer its governance and shared desktop, and the
+    /// rest when opened): a record not here is not new until they said they
+    /// hold none of it ([`Self::note_workspace_answered`]). Opening one asks
+    /// for it ([`Self::wanted_records`]) and is
+    /// [`RecordOpenError::Arriving`] meanwhile; it opens once it arrives.
+    /// Without this a record not here after the workspace's replay was
+    /// taken as new, and the fresh document a window founded overwrote or
+    /// forked the workspace's own.
+    pub fn ask_workspace_for_missing(&self) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.asks_workspace.set(true);
+        }
+    }
+
+    /// The records opened here that are not here yet and that the
+    /// workspace's hosts have not answered: what to ask them for.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.0
+            .try_borrow()
+            .map(|set| set.wanted.borrow().iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether `id`, not here, waits for the workspace's hosts to send it or
+    /// to say they have none of it; it is wanted from them then.
+    fn awaits_workspace(&self, id: &RecordId) -> bool {
+        let Ok(set) = self.0.try_borrow() else {
+            return false;
+        };
+        if !set.asks_workspace.get() || set.answered.borrow().contains(id) {
+            return false;
+        }
+        set.wanted.borrow_mut().insert(id.clone());
+        true
     }
 
     /// Reserve a New identity with its gate and no document/history/writer yet:
@@ -3281,7 +3303,14 @@ impl RecordStore {
             .get(id)
             .and_then(|parked| parked.doc.as_ref())
             .ok_or(RecordOpenError::MissingRecord)?;
+        // A component's pass that reads it reads it again once it moved.
+        crate::component_inputs::read_record(self, id, document);
         Ok(read(document))
+    }
+
+    /// What tells this store from another holding the same records.
+    pub(crate) fn key(&self) -> usize {
+        std::rc::Rc::as_ptr(&self.0).cast::<()>() as usize
     }
 
     /// One exclusive record admission for the document and owned action frame.
@@ -3355,6 +3384,7 @@ impl RecordStore {
         Ok(parked.action_state.writers.borrow().clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn require_invocation_provenance(
         &self,
         checkout: &RecordCheckout,
@@ -3434,9 +3464,11 @@ impl RecordStore {
         .map_err(|error| error.to_string())?
     }
 
-    /// Merge broker-admitted bytes atomically into the canonical owner. Validate
-    /// on a private copy before ending local typing or changing the undo baseline.
-    pub(crate) fn merge_remote_document(
+    /// Merge a replica's mutation into the open record, validated on a private
+    /// copy first: whether it changed, and the change hashes it carried.
+    /// # Errors
+    /// The bytes are not a valid mutation of this record, or it is not open.
+    pub fn merge_replica(
         &self,
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
@@ -3548,8 +3580,7 @@ impl RecordStore {
         })
         .map_err(|error| error.to_string())?;
         if let Ok((true, _)) = &merged {
-            self.arrived(&checkout.id);
-            self.wake_readers();
+            self.peer_change_merged(&checkout.id);
         }
         merged
     }
@@ -3566,7 +3597,7 @@ impl RecordStore {
         checkout: &RecordCheckout,
         document: Vec<u8>,
     ) -> Result<bool, String> {
-        self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
+        self.merge_replica(checkout, collab_types::DocumentMutation::Snapshot(document))
             .map(|(changed, _)| changed)
     }
 
@@ -3582,7 +3613,7 @@ impl RecordStore {
         checkout: &RecordCheckout,
         changes: Vec<u8>,
     ) -> Result<bool, String> {
-        self.merge_remote_document(
+        self.merge_replica(
             checkout,
             collab_types::DocumentMutation::Incremental(changes),
         )
@@ -3618,6 +3649,11 @@ impl RecordStore {
             .0
             .try_borrow_mut()
             .map_err(|_| RecordOpenError::Busy.to_string())?;
+        let set = &mut *set;
+        let portable = set
+            .portable
+            .as_ref()
+            .map(|cache| (cache, portable::key(&set.package_id, &set.home, id)));
         let parked = set
             .open
             .get_mut(id)
@@ -3654,7 +3690,37 @@ impl RecordStore {
                     action_state.notices.held.clear();
                     return Ok(None);
                 }
-                let actor = doc.get_actor().clone();
+                // The withdrawn changes left this copy but not the workspace:
+                // its relay holds them under this copy's writer and the
+                // writers derived from it (`bound_dispatch::document_writer`,
+                // `author_writer`), numbered. Written on under those writers,
+                // the rebuilt document would number its next changes the
+                // same again, and a record holding two changes under one
+                // writer and sequence reads whole nowhere. So the copy
+                // writes under a writer of its own from here; what it wrote
+                // before and still holds stays its own to publish.
+                let before = doc.get_actor().clone();
+                let device = crate::history_source::authors::DeviceActors::of(&before);
+                {
+                    let mut writers = action_state.writers.borrow_mut();
+                    writers.note(before.clone());
+                    for change in doc.get_changes_meta(&[]) {
+                        if device.wrote(&change.actor.to_hex_string()) {
+                            writers.note(change.actor.into_owned());
+                        }
+                    }
+                }
+                let actor = automerge::ActorId::random();
+                if let Some((cache, key)) = &portable {
+                    cache.claim(key, actor.to_bytes().to_vec())?;
+                } else if let Some(writer) = autosave.as_mut() {
+                    // A device keeps the writer it saved under: restored on
+                    // the next open, it would number that open's first
+                    // changes the withdrawn ones' sequences again. Taking a
+                    // change back replaces the saved writer, as a page's
+                    // claim replaces its saved row's.
+                    writer.replace_writer(&actor)?;
+                }
                 let mut rebuilt = doc
                     .fork_at(&kept_heads)
                     .map_err(|error| error.to_string())?;
@@ -3821,21 +3887,6 @@ impl RecordStore {
         })
     }
 
-    /// Merge a replica's mutation into the open record, validating the
-    /// record's identity on a private copy first; local undo stays local.
-    /// Returns whether the document changed and the change hashes the
-    /// mutation carried, for the replicating frontier's `observe`.
-    ///
-    /// # Errors
-    /// The bytes are not a valid mutation of this record, or it is not open.
-    pub fn merge_replica(
-        &self,
-        checkout: &RecordCheckout,
-        mutation: collab_types::DocumentMutation,
-    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        self.merge_remote_document(checkout, mutation)
-    }
-
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
@@ -3875,7 +3926,9 @@ impl RecordStore {
         let set = self.0.try_borrow().ok()?;
         set.not_lent(id).ok()?;
         let parked = set.open.get(id)?;
-        Some(read(parked.doc.as_ref()?, &parked.history))
+        let document = parked.doc.as_ref()?;
+        crate::component_inputs::read_record(self, id, document);
+        Some(read(document, &parked.history))
     }
 
     /// Every record this store holds.
@@ -4000,12 +4053,19 @@ mod opening;
 pub use opening::RecordOpening;
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]
-mod named_creation_tests;
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
+mod native_head_tests;
 #[cfg(test)]
 mod replica_merge_tests;
+#[cfg(test)]
+mod workspace_answer_tests;
 
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod portable_tests;
+
+#[cfg(test)]
+mod native_writer_tests;

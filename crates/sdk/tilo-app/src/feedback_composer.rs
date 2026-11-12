@@ -266,7 +266,26 @@ impl FeedbackDraft {
     }
 }
 
-#[resource(kind = "tilo.feedback-draft", label = "Feedback")]
+impl FeedbackDraft {
+    /// What the record holds: what a person reports — their words about the issue,
+    /// and which of the context, the screenshot and the recording they include.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "tilo.feedback-draft",
+    read_content = FeedbackDraft::read_document
+)]
 impl FeedbackDraft {}
 
 #[derive(Clone, Debug, Effect)]
@@ -693,7 +712,7 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
 
 /// Why an action did not run, as the person reads it where it is said.
 fn said(key: &str) -> String {
-    ui_core::i18n::I18nManager::lookup(key, None)
+    ui_core::i18n::widget_text(key)
 }
 
 fn error_label(error: &crate::feedback::Error) -> &'static str {
@@ -709,7 +728,9 @@ fn error_label(error: &crate::feedback::Error) -> &'static str {
 fn restore_progress(services: &FeedbackServices, status: &LocalState<String>) {
     match services.controller.try_borrow() {
         Ok(composer) => match composer.state() {
-            Ok(Some(state)) => status.set(delivery_label(&state).to_owned()),
+            Ok(Some(state)) => {
+                status.set_if_changed(delivery_label(&state).to_owned());
+            }
             Ok(None) => {}
             Err(_) => status.set("feedback-retry-needed".to_owned()),
         },

@@ -421,8 +421,9 @@ fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
 /// Publish the transforms under the agent's own route.
 #[must_use]
 pub fn publication() -> CollabRequest {
-    CollabRequest::PublishActions {
-        actions: descriptors().iter().map(exported).collect(),
+    let actions: Vec<ExportedAction> = descriptors().iter().map(exported).collect();
+    CollabRequest::PublishActionSurface {
+        delta: ui::collaboration::SurfacePublication::next(None, &actions).0,
     }
 }
 
@@ -1415,9 +1416,12 @@ mod tests {
                 assert_ne!(param.ty, ParamType::Secret);
             }
         }
-        let CollabRequest::PublishActions { actions } = publication() else {
+        let CollabRequest::PublishActionSurface { delta } = publication() else {
             panic!("the publication publishes actions");
         };
+        let mut surface = ui::collaboration::SurfaceTable::default();
+        surface.apply(&delta).unwrap();
+        let actions = surface.actions();
         assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
         // The audience crosses the publication boundary too, so the session
         // that serves these into search leaves them out of people's listings.

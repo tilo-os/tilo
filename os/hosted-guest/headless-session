@@ -1,0 +1,92 @@
+#!/bin/sh
+# One headless Tilo desktop in a workspace's VM, drawn on the CPU, that joins
+# its workspace as a device of it (docs/hosted-browser.md). Both of the VM's
+# sessions run it: Browser's (browser-session, as the image's unprivileged
+# browser user, with no X11) and the Linux apps' (apps-session, as the tenant,
+# with Xwayland for X11 programs). It runs as whoever started it: who that is
+# is the caller's to decide.
+#
+# The session knows what it holds from the mark its host set
+# (`TILO_HOSTED_BROWSER`, `TILO_HOSTED_APPS`). What workspace it joins arrives
+# on its standard input as one line of material, and what it reports goes to its
+# standard output.
+#
+# Every setting here has a default the image needs; an operator or the build's
+# smoke test may name a shell-compatible KEY=VALUE file to override them, and
+# `TILO_SESSION_ARGS` holds the session's own arguments.
+#
+# Usage: headless-session --no-x11|--x11 [CONFIG]
+#   --no-x11  serve no X display (Browser is no X11 client)
+#   --x11     serve one, through Xwayland, started when an X11 program connects
+#   CONFIG    default: $TILO_SESSION_CONFIG, when it names one
+#
+# SIGTERM to this script ends the session and the bus beside it, and the script
+# once they have.
+set -eu
+
+case ${1:-} in
+    --no-x11) x11=--no-x11 ;;
+    --x11) x11= ;;
+    *) echo 'usage: headless-session --no-x11|--x11 [CONFIG]' >&2; exit 2 ;;
+esac
+shift
+
+config=${1:-${TILO_SESSION_CONFIG:-}}
+if [ -n "$config" ] && [ -r "$config" ]; then
+    # shellcheck disable=SC1090 # the file the agent wrote is the point
+    . "$config"
+fi
+
+# The account's own home, whatever HOME the agent started this with: the
+# session writes its identity, caches and runtime directory there.
+home=$(getent passwd "$(id -u)" | cut -d: -f6)
+export HOME=$home
+umask 077
+
+# A device keeps its own runtime directory, caches and state: there is no
+# systemd here to make one, so this makes the one a login would have.
+runtime=${TILO_SESSION_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$home/.local/share/tilo/runtime}}
+mkdir -p -m 700 "$runtime" "$home/.cache" "$home/.config" \
+    "$home/.local/state" "$home/.local/share"
+export XDG_RUNTIME_DIR=$runtime
+
+# The VM has no GPU: the session and every app it starts draw with Mesa's
+# software Vulkan driver, and an empty TILO_DMABUF_DEVICE advertises no render
+# node, so nothing probes /dev/dri for a GPU that is not there.
+for icd in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
+    if [ -f "$icd" ]; then
+        VK_DRIVER_FILES=$icd
+        export VK_DRIVER_FILES VK_ICD_FILENAMES=$icd
+        break
+    fi
+done
+export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
+
+# The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
+# secrets go to the sealed file store a machine without a Secret Service uses.
+# The identity is the one the material hands it at every start, which is what
+# the relay certifies for each session; the image holds none.
+mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
+export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
+
+size=${TILO_HEADLESS_SIZE:-1280x800}
+# The session and its bus are a process group of their own (setsid does not
+# fork here: a background job of this shell leads no group), because
+# dbus-run-session ends on SIGTERM without handing it on. SIGTERM goes to the
+# whole group, and this script ends once every process in it has, so whatever
+# the caller does after the session ended (Browser saves its profile) sees a
+# session that wrote its last. Word splitting is the point below:
+# TILO_SESSION_ARGS carries the session's own arguments as written in the
+# configuration file.
+exec 3<&0
+# shellcheck disable=SC2086
+setsid dbus-run-session -- /usr/bin/tilo-session --backend headless $x11 \
+    --size "$size" ${TILO_SESSION_ARGS:-} <&3 &
+group=$!
+trap 'kill -TERM -"$group" 2>/dev/null || true' TERM INT
+status=0
+wait "$group" || status=$?
+while kill -0 -"$group" 2>/dev/null; do
+    sleep 0.1
+done
+exit "$status"

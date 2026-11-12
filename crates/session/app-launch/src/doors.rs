@@ -31,29 +31,70 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// An app and a workspace: one process serves one of each.
 type Key = (String, String);
 
-/// The connections a window of a running app holds of its own.
-#[derive(Default)]
-pub struct WindowConnections {
-    /// The window's collaboration connection, attested as its own launch.
-    pub collaboration: Option<OwnedFd>,
-    /// The window's shell-ui connection, attributed to the app's launch.
-    pub shell_ui: Option<OwnedFd>,
-}
-
 /// How the session makes a window's connections to itself: the collaboration
 /// socket and the shell-ui socket, each of the window's own, so a request the
 /// window makes is answered for it alone.
 pub trait Connects {
-    /// The connections of the window `instance` of `app` in `workspace`, whose
-    /// launch is the process `launcher_pid` while it runs.
-    fn window(
+    /// The collaboration connection of the window `instance` of `app` in
+    /// `workspace`, attested as that window of the launch whose process is
+    /// `launcher_pid` while it runs.
+    fn collaboration(
         &self,
         app: &str,
         workspace: &str,
         instance: u64,
         launcher_pid: Option<u32>,
-    ) -> WindowConnections;
+    ) -> Option<OwnedFd>;
+
+    /// The shell-ui connection of that window, attributed to its launch.
+    fn shell_ui(&self, app: &str, instance: u64, launcher_pid: Option<u32>) -> Option<OwnedFd>;
 }
+
+/// A window of a tilolang app whose instance a tilolang host runs: the
+/// window holds none of the app's data and shows what its instance sends over
+/// its patch connection. The session hands the instance to the host of its
+/// workspace and author with the host's end of that connection and the
+/// window's own collaboration connection.
+pub struct HostedWindow {
+    pub app: String,
+    pub workspace: String,
+    /// The window's instance.
+    pub instance: u64,
+    /// The launch the window belongs to.
+    pub launcher_pid: u32,
+    /// The host's end of the window's patch connection.
+    pub patch: OwnedFd,
+    /// The instance's collaboration connection, attested as the window.
+    pub collaboration: OwnedFd,
+    /// What the window was asked to show, which its instance opens on.
+    pub opens: Opens,
+}
+
+/// What a window is asked to show: the record a launch named, and the item the window opens on.
+/// A window that holds its app's data opens the record itself, from its launch's command line,
+/// and the item from its window request; a hosted window's instance is handed both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Opens {
+    /// The record the launch named, by its id.
+    pub record: Option<String>,
+    /// The item the window opens on, by its anchor: a search hit's, an agent's `open`, the
+    /// conversation a send landed in.
+    pub reveal: Option<String>,
+}
+
+impl Opens {
+    /// A window asked to open on the item `reveal`, when it names one.
+    #[must_use]
+    pub fn revealing(reveal: Option<&str>) -> Self {
+        Self {
+            record: None,
+            reveal: reveal.map(str::to_owned),
+        }
+    }
+}
+
+/// What the session does with a hosted window's instance.
+pub type HostsInstances = Box<dyn Fn(HostedWindow)>;
 
 /// A reserved or running process's door, by `(app, workspace)`.
 struct Door {
@@ -71,6 +112,9 @@ struct Door {
     serves: Serves,
     /// Windows asked for before the app said whether it opens them.
     queued: Vec<Queued>,
+    /// A tilolang app whose instances a tilolang host runs: its process is
+    /// its windows alone, each shown over a patch connection the door carries.
+    hosted: bool,
 }
 
 /// Whether the app behind a door opens the windows the session asks for.
@@ -91,8 +135,8 @@ pub type StartAlone = Box<dyn FnOnce()>;
 struct Queued {
     app: String,
     workspace: String,
-    /// The item the shell opened the window on, when it named one.
-    reveal: Option<String>,
+    /// What the shell asked the window to show.
+    opens: Opens,
     /// The window's instance: the tab the shell held for it, or one the door
     /// names when the shell named none.
     instance: Option<u64>,
@@ -111,6 +155,8 @@ pub enum Routed {
 /// The doors of the apps this session started, by app and workspace.
 pub struct Doors {
     connections: Box<dyn Connects>,
+    /// Where a hosted window's instance goes.
+    hosts: std::cell::RefCell<Option<HostsInstances>>,
     inner: Mutex<HashMap<Key, Door>>,
     generations: AtomicU64,
     instances: AtomicU64,
@@ -126,6 +172,7 @@ impl Doors {
     pub fn new(connections: impl Connects + 'static) -> Rc<Self> {
         Rc::new(Self {
             connections: Box::new(connections),
+            hosts: std::cell::RefCell::new(None),
             inner: Mutex::new(HashMap::new()),
             generations: AtomicU64::new(1),
             instances: AtomicU64::new(1),
@@ -136,16 +183,6 @@ impl Doors {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Whether a process of `app` already serves `workspace` and opens the
-    /// windows asked of it: another window of the app there is a new window
-    /// in that process, not a second copy.
-    #[must_use]
-    pub fn opens_more_windows(&self, app: &str, workspace: &str) -> bool {
-        self.doors()
-            .get(&key(app, workspace))
-            .is_some_and(|door| door.serves == Serves::Yes)
     }
 
     /// Reserve the door of the process about to start for `app` in `workspace`,
@@ -175,6 +212,7 @@ impl Doors {
                 generation,
                 serves: Serves::Unknown,
                 queued: Vec::new(),
+                hosted: false,
             },
         );
         Some(Reservation {
@@ -214,7 +252,7 @@ impl Doors {
         &self,
         app: &str,
         workspace: &str,
-        reveal: Option<&str>,
+        opens: &Opens,
         alone: &dyn Fn() -> StartAlone,
         instance: Option<u64>,
     ) -> Routed {
@@ -235,13 +273,13 @@ impl Doors {
                 door.queued.push(Queued {
                     app: app.to_owned(),
                     workspace: workspace.to_owned(),
-                    reveal: reveal.map(str::to_owned),
+                    opens: opens.clone(),
                     instance,
                     alone: alone(),
                 });
                 Routed::Opened
             }
-            Serves::Yes => match send_window(self, door, app, workspace, reveal, instance) {
+            Serves::Yes => match send_window(self, door, app, workspace, opens, instance) {
                 Ok(()) => Routed::Opened,
                 Err(error) => {
                     // The process is gone; the next launch starts another.
@@ -265,7 +303,7 @@ impl Doors {
                     door,
                     &queued.app,
                     &queued.workspace,
-                    queued.reveal.as_deref(),
+                    &queued.opens,
                     queued.instance,
                 )
                 .is_err()
@@ -307,7 +345,7 @@ impl Doors {
                             door,
                             &queued.app,
                             &queued.workspace,
-                            queued.reveal.as_deref(),
+                            &queued.opens,
                             queued.instance,
                         )
                         .is_err()
@@ -327,6 +365,25 @@ impl Doors {
         start_alone(alone);
     }
 
+    /// Reserve the door of a process about to start for `app` in `workspace`
+    /// with no window: `None` when a process of the app runs there already,
+    /// or is starting, and serves the workspace in its place.
+    ///
+    /// # Errors
+    /// No door could be made for the process.
+    pub fn reserve_unless_running(
+        self: &Rc<Self>,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<Reservation>, String> {
+        if self.doors().contains_key(&key(app, workspace)) {
+            return Ok(None);
+        }
+        self.reserve(app, workspace)
+            .map(Some)
+            .ok_or_else(|| format!("no window door for {app}"))
+    }
+
     /// Where a window of `app` in `workspace` opens: in the process already
     /// serving the workspace, or in one this launch starts, whose door it
     /// reserves. Only a `routable` launch, the app's own window with nothing
@@ -340,29 +397,76 @@ impl Doors {
         app: &str,
         workspace: &str,
         routable: bool,
-        reveal: Option<&str>,
+        opens: &Opens,
         alone: &dyn Fn() -> StartAlone,
         instance: Option<u64>,
     ) -> Result<Option<Reservation>, Routed> {
         if !routable {
             return Ok(None);
         }
-        if self.open_in_running(app, workspace, reveal, alone, instance) == Routed::Opened {
+        if self.open_in_running(app, workspace, opens, alone, instance) == Routed::Opened {
             return Err(Routed::Opened);
         }
         let reserved = self.reserve(app, workspace);
         // Another launch reserved it in between: its process opens this one.
         if reserved.is_none()
-            && self.open_in_running(app, workspace, reveal, alone, instance) == Routed::Opened
+            && self.open_in_running(app, workspace, opens, alone, instance) == Routed::Opened
         {
             return Err(Routed::Opened);
         }
         Ok(reserved)
     }
 
+    /// Hand the instances of hosted windows to `hosts` from here on.
+    pub fn hand_instances_to(&self, hosts: HostsInstances) {
+        *self.hosts.borrow_mut() = Some(hosts);
+    }
+
+    /// The process reserved for `app` in `workspace` is a tilolang app's
+    /// windows alone: a tilolang host runs their instances. Whether its door
+    /// is reserved.
+    pub fn host_instances(&self, app: &str, workspace: &str) -> bool {
+        self.doors()
+            .get_mut(&key(app, workspace))
+            .map(|door| door.hosted = true)
+            .is_some()
+    }
+
+    /// The first window of the hosted app `app` in `workspace`, which the
+    /// launch whose door it serves started: send it its patch connection on
+    /// the door, and hand its instance to its host.
+    ///
+    /// # Errors
+    /// The door is not served, or the connections could not be made.
+    pub fn first_hosted_window(
+        &self,
+        app: &str,
+        workspace: &str,
+        instance: u64,
+        opens: &Opens,
+    ) -> std::io::Result<()> {
+        let hosted = self
+            .doors()
+            .get(&key(app, workspace))
+            .filter(|door| door.hosted)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
+            .and_then(|door| hosted_window(self, door, app, workspace, instance, opens))?;
+        self.hand_over(hosted);
+        Ok(())
+    }
+
+    fn hand_over(&self, hosted: HostedWindow) {
+        if let Some(hosts) = self.hosts.borrow().as_ref() {
+            hosts(hosted);
+        } else {
+            tracing::error!(app = %hosted.app, "a tilolang window's instance has no host to go to");
+        }
+    }
+
     /// The instance a window asked for from here on is named by: one of its
     /// own, which its tab and the requests it makes about that tab keep.
-    fn next_instance(&self) -> u64 {
+    #[must_use]
+    pub fn next_instance(&self) -> u64 {
         self.instances.fetch_add(1, Ordering::Relaxed)
     }
 }
@@ -447,34 +551,77 @@ fn start_alone(queued: Vec<Queued>) {
     }
 }
 
+/// The window `instance` of the hosted app `app` in `workspace`, whose
+/// process is behind `entry`: its patch connection is sent on the door, before
+/// the window is asked for, and the host's end goes with the instance, with
+/// what the window `opens`.
+fn hosted_window(
+    door: &Doors,
+    entry: &Door,
+    app: &str,
+    workspace: &str,
+    instance: u64,
+    opens: &Opens,
+) -> std::io::Result<HostedWindow> {
+    let launcher_pid = entry.launcher_pid.ok_or(std::io::ErrorKind::NotConnected)?;
+    let collaboration = door
+        .connections
+        .collaboration(app, workspace, instance, Some(launcher_pid))
+        .ok_or_else(|| std::io::Error::other("the instance has no collaboration connection"))?;
+    let (window, host) = runtime_portal::tilolang_host::pair()?;
+    runtime_portal::windows::send_patch(&entry.ours, instance, &window)?;
+    Ok(HostedWindow {
+        app: app.to_owned(),
+        workspace: workspace.to_owned(),
+        instance,
+        launcher_pid,
+        patch: host,
+        collaboration,
+        opens: opens.clone(),
+    })
+}
+
 /// Ask the process behind `door` for a window of `app` in `workspace`.
 fn send_window(
     door: &Doors,
     entry: &Door,
     app: &str,
     workspace: &str,
-    reveal: Option<&str>,
+    opens: &Opens,
     instance: Option<u64>,
 ) -> std::io::Result<()> {
     // The shell names the tab a window takes, which is the window's instance;
     // a window asked for with no tab of its own gets one from the door.
     let instance = instance.unwrap_or_else(|| door.next_instance());
-    let connections = door
-        .connections
-        .window(app, workspace, instance, entry.launcher_pid);
+    // A tilolang host runs the window's instance: the window gets its patch
+    // connection, and the instance the window's collaboration connection.
+    let hosted = entry
+        .hosted
+        .then(|| hosted_window(door, entry, app, workspace, instance, opens))
+        .transpose()?;
+    let collaboration = if hosted.is_some() {
+        None
+    } else {
+        door.connections
+            .collaboration(app, workspace, instance, entry.launcher_pid)
+    };
+    let shell_ui = door.connections.shell_ui(app, instance, entry.launcher_pid);
     let request = ui::window_door::WindowRequest {
         instance,
-        collaboration: connections.collaboration.is_some(),
-        shell_ui: connections.shell_ui.is_some(),
-        reveal: reveal.map(str::to_owned),
+        collaboration: collaboration.is_some(),
+        shell_ui: shell_ui.is_some(),
+        reveal: opens.reveal.clone(),
     };
     ui::window_door::send(
         &entry.ours,
         &request,
-        connections.collaboration.as_ref(),
-        connections.shell_ui.as_ref(),
+        collaboration.as_ref(),
+        shell_ui.as_ref(),
     )?;
     tracing::info!(app, instance, "window opened in the running app");
+    if let Some(hosted) = hosted {
+        door.hand_over(hosted);
+    }
     Ok(())
 }
 
@@ -521,19 +668,25 @@ mod tests {
     }
 
     impl Connects for Rc<TestConnections> {
-        fn window(
+        fn collaboration(
             &self,
             app: &str,
             _workspace: &str,
             _instance: u64,
             _launcher_pid: Option<u32>,
-        ) -> WindowConnections {
+        ) -> Option<OwnedFd> {
             let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("a socket");
             self.made.borrow_mut().push((app.to_owned(), theirs.into()));
-            WindowConnections {
-                collaboration: Some(ours.into()),
-                shell_ui: None,
-            }
+            Some(ours.into())
+        }
+
+        fn shell_ui(
+            &self,
+            _app: &str,
+            _instance: u64,
+            _launcher_pid: Option<u32>,
+        ) -> Option<OwnedFd> {
+            None
         }
     }
 
@@ -628,7 +781,7 @@ mod tests {
         const ELSEWHERE: &str = "7a110d00-0000-4000-8000-000000000005";
         let (doors, _) = doors();
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::NotRunning
         );
         doors.reserve_for_test(APP, WORKSPACE);
@@ -637,7 +790,7 @@ mod tests {
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         let opening = ui::window_door::receive(&launcher_end)
@@ -646,7 +799,7 @@ mod tests {
         let first = opening.request.instance;
         assert!(opening.request.collaboration, "the window's own connection");
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         let plain = ui::window_door::receive(&launcher_end)
@@ -666,7 +819,7 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                Some("chat/channels/c_ada"),
+                &Opens::revealing(Some("chat/channels/c_ada")),
                 &never_alone,
                 None,
             ),
@@ -685,13 +838,13 @@ mod tests {
         assert_ne!(plain.instance, told.instance);
 
         assert_eq!(
-            doors.open_in_running(APP, ELSEWHERE, None, &never_alone, None),
+            doors.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
             Routed::NotRunning
         );
         drop(launcher_end);
         drop(held);
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::NotRunning,
             "the process is gone"
         );
@@ -710,7 +863,7 @@ mod tests {
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, Some(77)),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
             Routed::Opened
         );
         let request = ui::window_door::receive(&launcher_end)
@@ -741,7 +894,7 @@ mod tests {
         let alone = alone_into(started);
 
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
             Routed::Opened,
             "waits for the app to answer"
         );
@@ -753,7 +906,7 @@ mod tests {
             doors.open_in_running(
                 APP,
                 WORKSPACE,
-                None,
+                &Opens::default(),
                 &alone_into(std::sync::mpsc::channel().0),
                 None
             ),
@@ -773,7 +926,7 @@ mod tests {
         let mut held = doors.hold(APP, WORKSPACE).expect("held");
         let launcher_end = held.serve(std::process::id()).expect("the launcher's end");
         assert_eq!(
-            doors.open_in_running(APP, WORKSPACE, None, &never_alone, None),
+            doors.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
             Routed::Opened
         );
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
@@ -792,11 +945,11 @@ mod tests {
     fn a_launch_that_names_what_it_opens_reserves_a_door_and_starts() {
         let (doors, _) = doors();
         let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, false, None, &never_alone, None)
+            .route_or_reserve(APP, WORKSPACE, false, &Opens::default(), &never_alone, None)
             .expect("not routed");
         assert!(reserved.is_none(), "a process of its own, without a door");
         let reserved = doors
-            .route_or_reserve(APP, WORKSPACE, true, None, &never_alone, None)
+            .route_or_reserve(APP, WORKSPACE, true, &Opens::default(), &never_alone, None)
             .expect("reserved");
         assert!(reserved.is_some(), "the first window reserves the door");
         drop(reserved);
@@ -804,5 +957,95 @@ mod tests {
             !has_door(&doors, APP, WORKSPACE),
             "a launch that never started"
         );
+    }
+
+    /// A tilolang app whose instances a tilolang host runs: each window gets
+    /// its patch connection on the door before it is asked for, and no
+    /// collaboration connection of its own; its instance goes to the host
+    /// with the other end of that connection and the window's collaboration.
+    #[test]
+    fn a_hosted_windows_instance_goes_to_its_host_with_its_patch_connection() {
+        use std::io::{Read as _, Write as _};
+        const APP: &str = "so.tilo.window-door-tilolang";
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000008";
+        let (doors, _) = doors();
+        let handed = Rc::new(RefCell::new(Vec::new()));
+        let into = Rc::clone(&handed);
+        doors.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
+        doors.reserve_for_test(APP, WORKSPACE);
+        assert!(doors.host_instances(APP, WORKSPACE));
+        let mut held = doors.hold(APP, WORKSPACE).expect("held");
+        let launcher_end = held.serve(4_100_008).expect("the launcher's end");
+        runtime_portal::windows::send_serves(&launcher_end).unwrap();
+
+        let first_opens = Opens {
+            record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
+            reveal: None,
+        };
+        doors
+            .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
+            .unwrap();
+        let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
+            runtime_portal::windows::receive_message(&launcher_end).unwrap()
+        else {
+            panic!("the first window's patch connection");
+        };
+        assert_eq!(first, 5);
+
+        assert_eq!(
+            doors.open_in_running(
+                APP,
+                WORKSPACE,
+                &Opens::revealing(Some("tl.notes.Note:7")),
+                &never_alone,
+                Some(6)
+            ),
+            Routed::Opened
+        );
+        let Some(runtime_portal::windows::Message::Patch(patched, _)) =
+            runtime_portal::windows::receive_message(&launcher_end).unwrap()
+        else {
+            panic!("the window's patch connection comes first");
+        };
+        let opening = ui::window_door::receive(&launcher_end)
+            .expect("a request")
+            .expect("open");
+        assert_eq!(
+            opening.request.instance, patched,
+            "for the window asked for"
+        );
+        assert_eq!(patched, 6);
+        assert!(
+            !opening.request.collaboration && opening.collaboration.is_none(),
+            "the window holds none of the app's data"
+        );
+
+        let handed = handed.borrow();
+        let instances: Vec<(u64, u32)> = handed
+            .iter()
+            .map(|hosted| (hosted.instance, hosted.launcher_pid))
+            .collect();
+        assert_eq!(instances, [(5, 4_100_008), (6, 4_100_008)]);
+        assert_eq!(
+            handed[0].opens, first_opens,
+            "the first window's instance opens the record its launch named"
+        );
+        assert_eq!(
+            handed[1].opens.reveal.as_deref(),
+            Some("tl.notes.Note:7"),
+            "a later window's instance opens on the item it was asked for"
+        );
+        assert_eq!(
+            opening.request.reveal.as_deref(),
+            Some("tl.notes.Note:7"),
+            "the window is told as any window is"
+        );
+        // The host's end and the window's are one connection.
+        let mut host = std::os::unix::net::UnixStream::from(handed[0].patch.try_clone().unwrap());
+        host.write_all(b"patch").unwrap();
+        let mut window = std::os::unix::net::UnixStream::from(first_patch);
+        let mut read = [0_u8; 5];
+        window.read_exact(&mut read).unwrap();
+        assert_eq!(&read, b"patch");
     }
 }

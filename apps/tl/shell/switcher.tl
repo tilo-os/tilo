@@ -51,7 +51,8 @@ view switcher(d: Desk) {
                     )
                 } else {
                     stack(gap: .section) {
-                        row(gap: .related, align: .center, distribute: .center, wrap: true) {
+                        // A wall of windows: each card keeps the gap cards stand by.
+                        row(gap: .sibling, align: .center, distribute: .center, wrap: true) {
                             for w in shown {
                                 window_card(w)
                             }

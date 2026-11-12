@@ -49,6 +49,8 @@ base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
 channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
+# The bytes and content addresses a joined workspace's files hydrate with.
+bytes.workspace = true
 chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
 fs-protocol = { path = "../../system/fs-protocol" }
@@ -59,8 +61,13 @@ hex.workspace = true
 http-body-util = "0.1.3"
 hyper = { version = "1.8.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
+futures-util.workspace = true
 # The endpoint joined rooms sync over, keyed by this device's key.
 iroh.workspace = true
+# The relays that endpoint uses, as the person set them, held back until
+# something needs this device reachable.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+iroh-blobs.workspace = true
 # The launcher's manifest view, service names and developer-override gate;
 # its binary builds every Linux app sandbox.
 launcher = { path = "../../packaging/launcher" }
@@ -110,12 +117,18 @@ tilo-content-device = { path = "../../system/content-device" }
 # the admission door it answers with: the engine's own membership.
 # The relay session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# A workspace host's signed address, which a key enters a workspace at.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The offload route a session's action door places offloadable actions
 # through: the compute session with the home relay, placement and the
 # room-scoped route (`tilo_relay::offload`). Its tests also start real relays.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
+# `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
+tilo-session-client = { path = "../../session/client" }
+tilo-session-core = { path = "../../session/core" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
@@ -163,6 +176,8 @@ collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
+# A relay on this machine's loopback, which is what a test's devices relay through.
+test-relay = { path = "../../dev/test-relay" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
 

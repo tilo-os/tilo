@@ -9,6 +9,7 @@ description = "A host's offers to a person's account, read from what its hosted-
 [dependencies]
 chrono = { workspace = true, features = ["std"] }
 legacy-vm = { path = "../../runtime/legacy-vm" }
+serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }

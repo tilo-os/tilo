@@ -10,7 +10,7 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
@@ -33,6 +33,11 @@
 # copied again, and fonts, data and the compute module are kept. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
+# `--names` (desktop bundle) keeps the modules' function names (their wasm
+# name section), which a shipped bundle strips: a profile of the page then
+# names the functions it spends its time in rather than numbering them. It is
+# otherwise the same build, compiled, split and optimized alike, so it
+# measures what ships; build.json records the wasm-opt flags it ran with.
 # `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
 # data/ and apps.json) and records how in wasm.json; it reads no git
 # metadata, so a build cache can key it by its sources alone. `--module-only`
@@ -43,12 +48,14 @@
 # pages, locales and fonts from this tree, and build.json for this tree's
 # revision. A change to the pages alone then compiles nothing.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
-# crate's pinned wasm-bindgen.
+# crate's pinned wasm-bindgen. Compiles with `cargo`, or with the cargo `$CARGO`
+# names: a cargo that compiles elsewhere brings the module back to this tree's
+# target directory, and the script reads it there as it always does.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
 out=${1:?$usage}
 shift
 profile=release
@@ -59,6 +66,7 @@ update=0
 wasm_only=0
 module_only=0
 wasm_from=
+names=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
@@ -66,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --no-wasm-opt) optimize=0; shift ;;
     --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
     --no-split) split=0; shift ;;
+    --names) names=1; shift ;;
     --update) update=1; shift ;;
     --wasm-only) wasm_only=1; shift ;;
     --module-only) module_only=1; shift ;;
@@ -92,6 +101,9 @@ esac
 [[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
+# The runtime bundle's profile strips the symbols at link time; the desktop's
+# keeps them for its splitter.
+[[ $names == 0 || $bundle == desktop ]] || { echo '--names is for the desktop bundle' >&2; exit 2; }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
   desktop) package=tilo-web-desktop ;;
@@ -135,6 +147,7 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
   export AR_wasm32_unknown_unknown="$repo/crates/hosting/tilo-relay/scripts/wasm-ar.sh"
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
+cargo=${CARGO:-cargo}
 if [[ -z $wasm_from ]]; then
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
   [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
@@ -158,9 +171,9 @@ build_wasm() {
 if [[ $bundle == desktop ]]; then
   python3 tools/web/generate_web_desktop.py --check
 fi
-cargo build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
+"$cargo" build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile"
 # Read Cargo's artifact location; never redirect it.
-target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
+target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
@@ -217,6 +230,11 @@ fi
 # What the app SDK's own web build passes wasm-opt, so the module a size gate
 # measures is the module the site serves (tools/web/wasm-opt-flags).
 wasm_opt_flags=$(grep -v '^[[:space:]]*#' "$repo/tools/web/wasm-opt-flags" | xargs)
+# With --names, the same passes, writing the name section the splitter keeps
+# (-g: binaryen writes no names without it) instead of dropping it.
+if [[ $names == 1 ]]; then
+  wasm_opt_flags="$(printf '%s\n' $wasm_opt_flags | grep -vx -- --strip-debug | xargs) -g"
+fi
 if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
   # A few at a time: the start module alone takes gigabytes to optimize.
@@ -261,6 +279,14 @@ PY
   [[ ! -d $wasm_from/data ]] || cp -R "$wasm_from/data" "$out/data"
   [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
 fi
+# The module the page loads first, whole: a pkg/ without it is a page that
+# never starts, so the build stops here rather than reporting a bundle. It goes
+# missing when something else writes into OUTPUT_DIR while this build runs.
+for file in tilo_browser_runtime.js tilo_browser_runtime_bg.wasm; do
+  [[ -s "$out/pkg/$file" ]] || {
+    echo "$out/pkg has no $file: did another build write into $out meanwhile?" >&2; exit 1;
+  }
+done
 if [[ $module_only == 1 ]]; then
   # Only what Cargo compiles and wasm-bindgen writes: what a test that drives
   # the runtime's exports serves beside the page's modules.
@@ -331,10 +357,9 @@ PY
 fi
 
 # What the page has to resolve: every module the generated JavaScript imports. A bare name is
-# one only the document host provides (`tilo_model`, the imports a Rust app's model module calls
-# — the model's own crate built as a module), and a page has nothing to resolve it with: the
-# entry stops at its first import and never reaches the desktop. A bundle that links a model
-# where it links an app that draws one keeps it, so the build refuses it here instead.
+# one no page has to resolve — nothing outside a browser provides it — and a page has nothing to
+# resolve it with: the entry stops at its first import and never reaches the desktop. The build
+# refuses such a bundle here rather than shipping a page that cannot start.
 python3 - "$out" <<'PY'
 import pathlib, re, sys
 out = pathlib.Path(sys.argv[1])

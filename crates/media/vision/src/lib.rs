@@ -9,6 +9,7 @@
 //! inferred from filenames, EXIF, or fixtures.
 
 use std::io::Cursor;
+use tilo_image_codec::DecodedImage;
 
 use agent_provider_config::{ModelDescriptor, ProviderConfig};
 use base64::Engine as _;
@@ -188,11 +189,13 @@ fn discover_local_model(
 ///
 /// Returns [`Error::EmptyImage`] for an empty image and [`Error::Image`] if
 /// JPEG encoding fails.
-pub fn prepare(image: &DynamicImage, original_bytes: &[u8]) -> Result<PreparedImage, Error> {
+pub fn prepare(image: &DecodedImage, original_bytes: &[u8]) -> Result<PreparedImage, Error> {
+    let image = dynamic(image)?;
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 || original_bytes.is_empty() {
         return Err(Error::EmptyImage);
     }
+    let image = &image;
     let mut preview = bounded_resize(image);
     for quality in [85, 74, 62, 50] {
         let encoded = encode_jpeg(&preview, quality)?;
@@ -272,7 +275,7 @@ pub fn analyze(
 /// cluster outside the supplied photo ids.
 pub fn cluster_faces(
     capability: &LocalFaceCapability,
-    images: Vec<(String, DynamicImage, Vec<u8>)>,
+    images: Vec<(String, DecodedImage, Vec<u8>)>,
 ) -> Result<FaceClusterResponse, Error> {
     if images.is_empty() || images.len() > MAX_FACE_BATCH {
         return Err(Error::EmptyImage);
@@ -283,7 +286,7 @@ pub fn cluster_faces(
         if !valid_photo_id(&photo_id) || !ids.insert(photo_id.clone()) {
             return Err(Error::InvalidResponse);
         }
-        let preview = prepare_face_preview(&image, &bytes)?;
+        let preview = prepare_face_preview(&dynamic(&image)?, &bytes)?;
         requests.push(tilo_model_client::FaceImage {
             photo_id,
             media_type: preview.media_type.to_owned(),
@@ -428,6 +431,13 @@ fn valid_cluster_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
+/// The toolkit codec's pixels as the encoder reads them.
+fn dynamic(image: &DecodedImage) -> Result<DynamicImage, Error> {
+    image::RgbaImage::from_raw(image.width, image.height, image.rgba.clone())
+        .map(DynamicImage::ImageRgba8)
+        .ok_or(Error::EmptyImage)
+}
+
 fn bounded_resize(image: &DynamicImage) -> DynamicImage {
     let (width, height) = image.dimensions();
     let pixels = u64::from(width).saturating_mul(u64::from(height));
@@ -467,7 +477,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use agent_provider_config::{ModelDescriptor, ProviderProfile};
-    use image::{DynamicImage, Rgba, RgbaImage};
 
     use super::*;
 
@@ -480,6 +489,7 @@ mod tests {
             id: "vision-1".into(),
             label: "Vision 1".into(),
             context_window: Some(8_192),
+            max_output_tokens: None,
             request_limits: None,
             revision: Some("a".repeat(40)),
             vision,
@@ -506,8 +516,7 @@ mod tests {
             );
         }
         {
-            let image =
-                DynamicImage::ImageRgba8(RgbaImage::from_pixel(3_200, 2_000, Rgba([5, 7, 9, 255])));
+            let image = DecodedImage::filled(3_200, 2_000, [5, 7, 9, 255]);
             let prepared = prepare(&image, b"original photo bytes").unwrap();
             assert!(prepared.width <= MAX_INPUT_EDGE);
             assert!(prepared.height <= MAX_INPUT_EDGE);

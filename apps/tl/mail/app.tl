@@ -9,6 +9,9 @@ type Account (origin: imap.account) {
     name: Text
     trouble: Text
     online: Bool
+    /// When the account's mail was last taken in from its server, as the clock the person read
+    /// it at: the epoch when it never was.
+    fetched: Time = Time("1970-01-01T00:00:00Z")
     /// What the account's messages end with: the person's own, per account, as every mail
     /// client signs a message. Empty for none.
     signature: Text
@@ -168,19 +171,26 @@ action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Sign
     a.signature = signature
 }
 
+/// Asks the account's server for its mail now: what a person presses when the window says the
+/// server could not be reached, or that what it fetched could not be saved. The account says
+/// how it stands once it answers.
+action check_now(a: Account) (icon: .refresh, label: "Check now") {
+    outside("imap.check", a.key)
+}
+
 /// Starts a message from the account.
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
-    let signature = signature_of(m, a.key)
-    m.drafts.insert(Draft(from: a.key, body: signature))
+    m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
 }
 
-/// Starts a message from the first account.
+/// Starts a message from the first account, where there is one: a window with no account offers
+/// nothing to press and says where an account comes from, rather than a control that cannot run.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     require not m.accounts.is_empty() "Add a mail account in Settings first"
+    applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
-    let signature = signature_of(m, from)
-    m.drafts.insert(Draft(from: from, body: signature))
+    m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
 }
 
 /// The subject an answer to a conversation has.
@@ -192,6 +202,18 @@ fn re(subject: Text) -> Text {
 /// what a reader sees should not depend on which.
 fn as_lines(body: Text) -> Text {
     body.replace("\r\n", "\n")
+}
+
+/// The clock time a moment falls at, as people read one: `10:41` or `10:41 AM`, in the clock the
+/// person chose in Settings, as every other time the window shows reads. What the window says
+/// when an account's mail was last read from its server; an account whose mail never came says
+/// nothing, its moment standing at the epoch.
+fn fetched_clock(a: Account) -> Text {
+    let never = Time("1970-01-01T00:00:00Z")
+    if a.fetched <= never {
+        return ""
+    }
+    a.fetched.clock()
 }
 
 /// Where the quotation in what a message says begins: the blank line above the line naming who
@@ -439,7 +461,7 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
 action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
     require d.sent and not d.recalled "It is not waiting to go"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, "Scheduled send cancelled")
+    withdraw(d, say("Scheduled send cancelled"))
     d.sent = false
     d.recalled = true
 }
@@ -542,7 +564,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
 action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
     require d.sent and not d.recalled "It has not been sent"
     require delivery(d)?.state != "sent" "It went already"
-    withdraw(d, "Taken back before it went")
+    withdraw(d, say("Taken back before it went"))
     d.sent = false
     d.recalled = true
 }
@@ -588,9 +610,31 @@ fn label_query(name: Text) -> Text {
 /// What the window calls the place `query` shows: the filters' and the labels' names, and
 /// "All mail" for every conversation.
 fn place_title(m: Mail, query: Text) -> Text {
-    filters(Thread).find(f -> f.query == query)?.label
-        ?? m.labels.find(l -> label_query(l.name) == query)?.name
-        ?? "All mail"
+    // No query is the window on every conversation: the place the sidebar calls All mail.
+    if query.is_empty() {
+        say("All mail")
+    } else {
+        filters(Thread).find(f -> f.query == query)?.label
+            ?? m.labels.find(l -> label_query(l.name) == query)?.name
+            ?? say("All mail")
+    }
+}
+
+/// What the account's server says of itself, over the mail it holds: the notice in the list's
+/// own gutter, so its rounded card stands where the rows' boxes do. An account that stands well
+/// says nothing and takes no room, so the list stands at the column's edge.
+view account_notice(a: Account) {
+    if a.trouble != "" {
+        stack(padding: .group) {
+            std.service_banner(
+                a.address,
+                a.online,
+                a.trouble,
+                retry: check_now(a),
+                fetched: fetched_clock(a),
+            )
+        }
+    }
 }
 
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one
@@ -623,6 +667,13 @@ view unified(m: Mail) {
             overview_title: title,
             overview_count: shown.len(),
         ) {
+            sidebar_actions: {
+                // The accounts whose server does not stand well, beside the name of the accounts
+                // they are: each mark names its own account on hover, so none is passed over.
+                for acct in m.accounts {
+                    std.service_mark(acct.address, acct.online, acct.trouble)
+                }
+            }
             sidebar: {
                 ui.NavList(selected: query) {
                     ui.NavItem("is:inbox", "All inboxes", icon: .inbox) {
@@ -657,7 +708,13 @@ view unified(m: Mail) {
                 }
             }
             overview: {
-                thread_list(shown, fill)
+                // The list shows `a`'s mail, so what the account's server says of itself is
+                // said over it, and `Try again` asks the server that account reads from. The
+                // notice keeps its own gutter, so the list stands under it with none between.
+                stack(fill, gap: .none) {
+                    account_notice(a)
+                    thread_list(shown, fill)
+                }
             }
         }
     }
@@ -668,6 +725,10 @@ view unified(m: Mail) {
 /// conversation reads it. The mailbox is the window's, as people type it in search
 /// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox. The person's
 /// labels come after the mailboxes, each showing the conversations it is on.
+///
+/// The account's server is the window's too: a mark beside the account's address says while it
+/// cannot be reached or what it fetched could not be saved, and the same is said over its mail,
+/// where the person reads it.
 view mailboxes(a: Account) {
     state query: Text = "is:inbox"
     let m = root Mail
@@ -680,6 +741,9 @@ view mailboxes(a: Account) {
         overview_title: title,
         overview_count: shown.len(),
     ) {
+        sidebar_actions: {
+            std.service_mark(a.address, a.online, a.trouble)
+        }
         sidebar: {
             ui.NavList(selected: if query == "" { "all" } else { query }) {
                 for p in places {
@@ -708,18 +772,24 @@ view mailboxes(a: Account) {
             }
         }
         overview: {
-            thread_list(shown, fill)
+            stack(fill, gap: .none) {
+                account_notice(a)
+                thread_list(shown, fill)
+            }
         }
     }
 }
 
 /// A mailbox on its own, as a place shows it: the conversations in it, newest first, as its
 /// account's window lists them under it. The inbox leaves out what is snoozed or muted, as
-/// its place in the window does.
+/// its place in the window does, and it says what its account's server does over them.
 view inbox(b: Mailbox) {
     let m = root Mail
     if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        thread_list(in_mailbox(a, b), fill)
+        stack(fill, gap: .none) {
+            account_notice(a)
+            thread_list(in_mailbox(a, b), fill)
+        }
     } else {
         ui.EmptyState("Nothing here", icon: .inbox)
     }
@@ -779,19 +849,21 @@ view draft_row(d: Draft) {
 /// why, taken back, or not known.
 fn delivery_says(d: Draft) -> Text {
     if d.recalled {
-        "Taken back, and a draft again"
+        say("Taken back, and a draft again")
     } else if let s = delivery(d) {
         if s.state == "sent" {
-            "Sent"
+            say("Sent")
         } else if s.state == "sending" {
-            "Sending"
+            say("Sending")
         } else if s.state == "rejected" {
-            "Not sent: {s.reason}"
+            say("Not sent: {s.reason}")
         } else if s.state == "unknown" {
-            "Not known whether it was sent"
+            say("Not known whether it was sent")
         } else if s.state == "held" {
-            "Sending in a moment"
-        } else if s.reason == "" { "Waiting to send" } else { "Waiting to go online: {s.reason}" }
+            say("Sending in a moment")
+        } else if s.reason == "" {
+            say("Waiting to send")
+        } else { say("Waiting to go online: {s.reason}") }
     } else { "" }
 }
 
@@ -806,7 +878,7 @@ view conversation(t: Thread) {
     state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            ui.Docked(page_column: true) {
+            ui.Docked {
                 foot: {
                     row {
                         ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
@@ -839,7 +911,9 @@ view message(m: Message) {
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }
     let quoted_part = if let i = at { body.slice(i + 2, body.len()) } else { "" }
-    stack(gap: .related) {
+    // The card of what the message says stands a section's gap under the line naming who wrote
+    // it: close enough to belong to it, far enough to be a card of its own.
+    stack(gap: .section) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
             ui.Time(m.received, role: .caption, past: true, secondary: true)
@@ -1242,6 +1316,88 @@ scenario "a reply being written" -> Draft {
 /// No account yet: what a first start shows.
 scenario "no account yet" {
     root Mail
+}
+
+/// An account whose server cannot be reached: the mail under it is what was last fetched, and
+/// the window says so beside the account and over its mail.
+scenario "an account that cannot be reached" -> Account {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            trouble: "connection refused",
+            online: false,
+            fetched: 2026-06-30T10:41,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 2, total: 3))
+    a.mailboxes.insert(Mailbox(key: "archive", name: "Archive", role: "archive", total: 1))
+    a.mailboxes.insert(Mailbox(key: "sent", name: "Sent", role: "sent", total: 1))
+    a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
+    let lease = a.threads.insert(
+        Thread(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            latest: 2026-06-30T10:25,
+            snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
+            senders: "Mill Lane Lettings",
+            count: 1,
+            unread: true,
+            flagged: true,
+        ),
+    )
+    lease.boxes.add("inbox")
+    lease.messages.insert(
+        Message(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            from: "office@lettings.example",
+            from_name: "Mill Lane Lettings",
+            to: "sam@rivera.example",
+            received: 2026-06-30T10:25,
+            snippet: "The new lease is attached.",
+            body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
+            message_id: "lease@lettings.example",
+            attachments: "Lease 2026.pdf",
+            unread: true,
+            flagged: true,
+            mailbox: "inbox",
+        ),
+    )
+    let dinner = a.threads.insert(
+        Thread(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            latest: 2026-06-30T08:51,
+            snippet: "Shall we try the new place on Mill Lane? I can book for eight.",
+            senders: "Bo Chen",
+            count: 1,
+            unread: true,
+        ),
+    )
+    dinner.boxes.add("inbox")
+    dinner.messages.insert(
+        Message(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            from: "bo@chen.example",
+            from_name: "Bo Chen",
+            to: "sam@rivera.example",
+            received: 2026-06-30T08:51,
+            snippet: "Shall we try the new place?",
+            body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo",
+            message_id: "dinner@bo.example",
+            unread: true,
+            mailbox: "inbox",
+        ),
+    )
+    a
 }
 
 /// One mailbox on its own, as a place on someone's canvas shows it: an account, its inbox and

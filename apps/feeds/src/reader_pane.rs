@@ -26,8 +26,10 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
+use crate::i18n::CATALOG;
 use crate::model::{BlockKind, ContentBlock, Filter, Id, ReadFont, TagKey};
 use crate::reader_theme::ReaderPalette;
+use ui::i18n::ArgValue;
 
 /// A leaf that fills its column, registered for the host's sweeps.
 pub(crate) fn fill_leaf<W: Widget + 'static>(
@@ -156,9 +158,10 @@ impl Core {
             self.reader.scroller.set_content_size(area.width(), 0.0);
             // An empty library has one empty state, in the list.
             if !self.store.feeds.is_empty() {
+                let no_article = crate::i18n::t("feeds-no-article");
                 let content = EmptyStateContent {
                     icon: Some(Icon::FileText),
-                    ..EmptyStateContent::new("No article selected")
+                    ..EmptyStateContent::new(&no_article)
                 };
                 EmptyState::paint(
                     &mut PaintCtx::new(scene, t, text, &page_theme),
@@ -491,7 +494,7 @@ impl Core {
     pub(crate) fn reader_accessibility(&self) -> AccessNode {
         let Some(article) = self.open_article() else {
             return AccessNode::new(Role::Document)
-                .with_name("No article selected")
+                .with_name(crate::i18n::t("feeds-no-article"))
                 .with_bounds(self.reader.rect);
         };
         let mut children =
@@ -511,8 +514,10 @@ impl Core {
                 .find_map(|(rect, found)| (*found == key).then_some(*rect))?;
             Some(
                 AccessNode::new(Role::Link)
-                    .with_name(format!("Tag {tag}"))
-                    .with_description("Show articles with this tag")
+                    .with_name(
+                        CATALOG.t_args("feeds-a11y-tag", &[("tag", ArgValue::Text(tag.clone()))]),
+                    )
+                    .with_description(crate::i18n::t("feeds-articles-with-tag"))
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(rect)
                     .with_action_target(format!("feeds.reader-tag:{key}")),
@@ -620,7 +625,7 @@ impl Widget for ReaderPane {
             .tags
             .iter()
             .find(|(r, _)| r.contains(point))
-            .map(|(rect, _)| (*rect, "Show articles with this tag".to_string()))
+            .map(|(rect, _)| (*rect, crate::i18n::t("feeds-articles-with-tag")))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

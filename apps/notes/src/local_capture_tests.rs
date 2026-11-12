@@ -106,22 +106,19 @@ fn local_capture_notes_create_rename_and_body_are_immediate() {
             .iter()
             .any(|(_, text)| text == "Already visible")
     );
+    // What applies is the notebook's edit of this note's body, reported as
+    // the notebook's action the body's edit is published under.
     let body = assert_notes_capture(
         &queue,
         &mut doc,
         &before,
-        &actions::page_resource_id(page),
-        &Invoke::<tilo_document::RichText>::apply(&op).unwrap(),
+        "notes.notebook",
+        &Invoke::<Notebook>::apply(&actions::edit_body_action(page, &op)).unwrap(),
     );
     assert!(!body.mutation_hashes.is_empty());
     assert_eq!(body.original_heads, renamed.mutation_hashes);
     assert_ne!(body.invocation, renamed.invocation);
-    // The published child verb must survive wrapping in a parent field edit.
     assert_eq!(body.encoded.type_id, actions::encode(&create).type_id);
-    assert_eq!(
-        body.published.as_ref().unwrap().action,
-        ui::tilo_resource::APPLY
-    );
     let applied: serde_json::Value = serde_json::from_slice(&body.encoded.payload).unwrap();
     let expected: serde_json::Value =
         serde_json::from_slice(&actions::encode(&actions::edit_body_action(page, &op)).payload)

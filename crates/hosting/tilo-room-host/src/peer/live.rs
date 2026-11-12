@@ -302,8 +302,8 @@ pub(super) async fn handle_presence(
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
-        // next live checkpoint (the per-device checkpoint gate in
-        // `fanout_delta`).
+        // next live checkpoint (the per-device checkpoint gate of the live
+        // fan-out).
         if !attached {
             wr.request_checkpoint(&peer.device_public_key);
         }
@@ -321,6 +321,46 @@ pub(super) async fn handle_presence(
         }
     }
     Ok(None)
+}
+
+/// Handle `HostSaid`: the host's own word for a run it executes
+/// ([`tilo_relay_protocol::host_voice`]), fanned out to the workspace's other
+/// subscribers. Only this host's own device speaks for its runs, and only
+/// with its signature over a run's word: anything else is dropped here, as
+/// every device drops it again on arrival. The frame never touches the live
+/// plane, so a host that is no member of it speaks without its keys.
+pub(super) async fn handle_host_said(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) {
+    let Envelope::HostSaid {
+        workspace_id,
+        said,
+        signature,
+    } = &env
+    else {
+        return;
+    };
+    let host = session.own_device_public_key;
+    if peer.device_public_key != *host || !subscribed.contains(workspace_id) {
+        tracing::debug!(
+            workspace_id,
+            "host frame dropped: only the host's own subscribed device speaks for its runs"
+        );
+        return;
+    }
+    if let Err(error) =
+        tilo_relay_protocol::host_voice::HostSaid::open(said, signature, *workspace_id, host)
+    {
+        tracing::debug!(workspace_id, %error, "host frame dropped");
+        return;
+    }
+    let ws = session.workspaces.lock().await.get(workspace_id).cloned();
+    if let Some(ws) = ws {
+        ws.lock().await.fanout_presence(host, &env);
+    }
 }
 
 /// Handle `RecordContentWant`: fan a member's request for content out to the
@@ -353,7 +393,8 @@ pub(super) async fn handle_content_want(
             "content wanted before subscribing to workspace".into(),
         ));
     }
-    let frame = std::mem::take(frame);
+    // The members fanned out to read the same request the host answers.
+    let frame = frame.clone();
     *from_device_public_key = peer.device_public_key;
     let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(ws) = ws else {
@@ -473,7 +514,7 @@ pub(super) async fn route_record_content(
         && let Err(limited) = limits.admit_content(
             &peer.user_public_key,
             u64::try_from(frame.len()).unwrap_or(u64::MAX),
-            std::time::Instant::now(),
+            tilo_clock::now(),
         )
     {
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");

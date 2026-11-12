@@ -1236,7 +1236,8 @@ policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 policy["default"] = [{"type": "reject"}]
 docker = policy["transports"]["docker"]
 for name in list(docker):
-    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "tilo-vm", "tilo-ci", "tilo-dev"):
+    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "tilo-vm", "tilo-ci",
+                                  "tilo-dev"):
         del docker[name]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")
 PY

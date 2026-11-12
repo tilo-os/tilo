@@ -14,29 +14,10 @@
 //! ([`AppActionGrants`](crate::services::AppActionGrants)). Nobody present
 //! means nobody to ask: the request is refused without a sheet.
 
-use std::sync::Arc;
+pub use tilo_broker_core::access::{AppActionAccess, AppActionAccessResolver, nothing_declared};
 
 use tilo_action_policy::Lifetime;
 use tokio::sync::oneshot;
-
-/// What an application declared it may do on the door under its own
-/// identity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AppActionAccess {
-    /// Read the catalogue of actions the person using the app is offered.
-    pub query: bool,
-    /// Invoke actions other apps publish, as this app.
-    pub invoke: bool,
-}
-
-/// Where declared access is read from, by package id.
-pub type AppActionAccessResolver = Arc<dyn Fn(&str) -> AppActionAccess + Send + Sync>;
-
-/// A resolver under which no application declared anything.
-#[must_use]
-pub fn nothing_declared() -> AppActionAccessResolver {
-    Arc::new(|_| AppActionAccess::default())
-}
 
 /// What the person is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,10 +164,6 @@ pub enum AppActionConsent {
 }
 
 impl AppActionConsent {
-    /// The allowing answers, in the order the sheet offers them: the
-    /// narrowest first, and selected by default.
-    pub const ALLOWING: [Self; 3] = [Self::Once, Self::Session, Self::Always];
-
     /// How long the grant this answer records lives; `None` records
     /// nothing.
     #[must_use]
@@ -407,6 +384,5 @@ mod tests {
             Some(Lifetime::UntilRevoked)
         );
         assert_eq!(AppActionConsent::Deny.grant_lifetime(), None);
-        assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
     }
 }

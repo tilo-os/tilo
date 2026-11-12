@@ -28,6 +28,7 @@ fn browser() -> WindowToolbar {
             toggles: false,
             destructive: false,
             labelled: false,
+            primary: false,
         }],
         ..WindowToolbar::default()
     }
@@ -696,7 +697,7 @@ fn a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room() {
     assert!(narrow.slots().overflow.area() > 0.0);
     assert!(narrow.open_overflow());
     assert_eq!(
-        narrow.menu_entries.first().copied().flatten(),
+        narrow.menu_entries.first().cloned().flatten(),
         Some(MenuEntry::View(0)),
         "the menu starts with the views"
     );
@@ -735,7 +736,7 @@ fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
         .iter()
         .flatten()
         .filter(|entry| matches!(entry, MenuEntry::View(_)))
-        .filter_map(|entry| row.entry_semantics(*entry))
+        .filter_map(|entry| row.entry_semantics(entry.clone()))
         .collect()
 }
 
@@ -902,7 +903,7 @@ fn a_compact_row_folds_today_then_the_views_and_keeps_its_navigation_and_locatio
     assert!(slots.location.x0 >= slots.leading[1].x1);
     assert!(slots.overflow.x0 >= slots.location.x1);
     assert!(compact.open_overflow());
-    let listed: Vec<MenuEntry> = compact.menu_entries.iter().flatten().copied().collect();
+    let listed: Vec<MenuEntry> = compact.menu_entries.iter().flatten().cloned().collect();
     assert_eq!(
         listed.get(..4),
         Some(
@@ -1045,7 +1046,7 @@ fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
             .menu_entries
             .iter()
             .flatten()
-            .any(|entry| *entry == MenuEntry::Item(0, 1)),
+            .any(|entry| *entry == MenuEntry::Item("format".into(), 1)),
         "the overflow menu carries Format's items"
     );
 }
@@ -1610,3 +1611,21 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
 
 #[path = "reactions_tests.rs"]
 mod reactions;
+
+/// The window's main action is painted as the primary button, where the row has room for its
+/// words; every other action stands on the bar's plain face.
+#[test]
+fn the_windows_main_action_is_painted_as_the_primary_button() {
+    let primary = paint::labelled_face(crate::kurbo::Rect::ZERO, "New task", true);
+    assert_eq!(
+        primary.role_of(),
+        crate::widget::ButtonRole::Primary,
+        "the main action stands on the accent"
+    );
+    let other = paint::labelled_face(crate::kurbo::Rect::ZERO, "Sort", false);
+    assert_eq!(
+        other.role_of(),
+        crate::widget::ButtonRole::Plain,
+        "every other action stands on the bar's plain face"
+    );
+}

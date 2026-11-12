@@ -12,6 +12,7 @@
 //! them with Flathub records anyway, and using our own uniform shape keeps
 //! that seam explicit.
 
+use crate::resource::CATALOG;
 use serde::{Deserialize, Serialize};
 use ui::search::{FieldWeight, ListIndex};
 
@@ -68,10 +69,10 @@ pub enum StoreTrust {
 impl StoreTrust {
     pub fn label(self) -> String {
         match self {
-            Self::TrustedAttestor => ui::i18n!("store-package-local-trust"),
+            Self::TrustedAttestor => CATALOG.t("store-package-local-trust"),
             Self::PublisherSigned => "Publisher + registry verified".to_string(),
             Self::Flathub => "Flathub distribution".to_string(),
-            Self::ConfiguredRemote => ui::i18n!("store-remote-trust-short"),
+            Self::ConfiguredRemote => CATALOG.t("store-remote-trust-short"),
         }
     }
 }
@@ -390,11 +391,16 @@ impl StoreItem {
             .map(|arch| processor_name("store-processor", arch))
             .collect::<Vec<_>>()
             .join(", ");
-        Some(ui::i18n!(
+        Some(CATALOG.t_args(
             "store-not-for-this-device-reason",
-            "name" => self.name.clone(),
-            "processors" => processors,
-            "device" => processor_name("store-device-processor", std::env::consts::ARCH)
+            &[
+                ("name", self.name.clone().into()),
+                ("processors", processors.into()),
+                (
+                    "device",
+                    processor_name("store-device-processor", std::env::consts::ARCH).into(),
+                ),
+            ],
         ))
     }
 
@@ -545,7 +551,7 @@ impl StoreItem {
         if action == ActionKind::RuntimeInstall && self.installed.is_installed() {
             Some((
                 "runtime_already_installed",
-                ui::i18n!("store-runtime-already-installed"),
+                CATALOG.t("store-runtime-already-installed"),
             ))
         } else if action == ActionKind::FlatpakInstall
             && let Some(reason) = self.not_built_for_this_device_reason()
@@ -554,7 +560,7 @@ impl StoreItem {
         } else if self.managed_by_device(action) {
             Some((
                 "device_managed_repository",
-                ui::i18n!("store-remote-managed"),
+                CATALOG.t("store-remote-managed"),
             ))
         } else if self.awaiting_developer
             && matches!(
@@ -564,7 +570,7 @@ impl StoreItem {
         {
             Some((
                 "waiting_for_developer",
-                ui::i18n!("store-waiting-for-developer"),
+                CATALOG.t("store-waiting-for-developer"),
             ))
         } else if matches!(
             action,
@@ -575,7 +581,7 @@ impl StoreItem {
         {
             Some((
                 "device_version_unavailable",
-                ui::i18n!("store-device-version-unavailable"),
+                CATALOG.t("store-device-version-unavailable"),
             ))
         } else {
             None
@@ -616,7 +622,7 @@ impl StoreItem {
 fn processor_name(prefix: &str, arch: &str) -> String {
     let key = format!("{prefix}-{arch}");
     if ui::i18n::I18nManager::has_message(&key) {
-        ui::i18n::I18nManager::lookup_plain(&key)
+        crate::resource::CATALOG.t(&key)
     } else {
         arch.to_owned()
     }

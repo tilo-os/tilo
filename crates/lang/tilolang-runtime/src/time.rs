@@ -41,6 +41,13 @@ impl Core {
                 let local = self.local_wall(at);
                 ret_i64(i64::from(local.time().num_seconds_from_midnight()))
             }
+            // The time of day a moment falls at, as the person reads a clock: `10:41` or
+            // `10:41 AM`, in the style they chose in Settings.
+            Imp::TimeClock => {
+                let at = self.instant_arg(a.h(0)?)?;
+                let local = self.local_wall(at);
+                self.ret_h(Value::Text(self.clock_text(local.hour(), local.minute())))
+            }
             Imp::DayShift => {
                 let day = self.day(a.h(0)?)?;
                 let secs = a.long(1)?;

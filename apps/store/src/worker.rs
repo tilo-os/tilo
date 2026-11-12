@@ -1,6 +1,7 @@
 //! Serialized package actor with cooperative catalogue refreshes. Independent
 //! source reads share its authenticated connection; the UI drains snapshots.
 
+use crate::resource::CATALOG;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -161,7 +162,7 @@ impl LocaleContext {
     }
 
     fn apply(&self) {
-        crate::resource::STORE_CATALOG.set_locale(&self.selected);
+        crate::resource::CATALOG.set_locale(&self.selected);
         ui::i18n::I18nManager::set_pseudo_locale(self.pseudo);
     }
 }
@@ -392,7 +393,7 @@ fn defer_import(
         deferred.push_back(queued);
         return true;
     }
-    let error = ui::i18n!("store-package-review-busy");
+    let error = CATALOG.t("store-package-review-busy");
     let alive = send_tracked(
         snapshots,
         state,
@@ -539,7 +540,7 @@ fn poll_refresh(
         let label = state
             .operation_notice
             .clone()
-            .unwrap_or_else(|| ui::i18n!("store-catalogue-refreshed"));
+            .unwrap_or_else(|| CATALOG.t("store-catalogue-refreshed"));
         let alive = send(
             snapshots,
             state,
@@ -563,7 +564,7 @@ fn poll_refresh(
             status_line: state
                 .operation_notice
                 .clone()
-                .unwrap_or_else(|| ui::i18n!("store-catalogue-loading")),
+                .unwrap_or_else(|| CATALOG.t("store-catalogue-loading")),
             query: None,
             detail: None,
             remotes: state.remotes.clone(),
@@ -612,12 +613,12 @@ fn runtime_details(
     let host = state
         .host
         .as_ref()
-        .ok_or_else(|| ui::i18n!("store-runtime-service-unavailable"))?;
+        .ok_or_else(|| CATALOG.t("store-runtime-service-unavailable"))?;
     let repositories = crate::config::repositories(Some(host))?;
     if selected_registry
         .is_some_and(|name| !repositories.enabled().any(|registry| registry.name == name))
     {
-        return Err(ui::i18n!("store-runtime-unavailable"));
+        return Err(CATALOG.t("store-runtime-unavailable"));
     }
     // Unreadable installs only cost the review its "already installed":
     // installing the same verified offer again changes nothing.
@@ -650,14 +651,14 @@ fn runtime_details(
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
         {
-            return Err(ui::i18n!("store-runtime-offer-mismatch"));
+            return Err(CATALOG.t("store-runtime-offer-mismatch"));
         }
         if selected.is_some() {
-            return Err(ui::i18n!("store-runtime-offer-ambiguous"));
+            return Err(CATALOG.t("store-runtime-offer-ambiguous"));
         }
         selected = Some(runtime_item(offer, &installed));
     }
-    selected.ok_or_else(|| ui::i18n!("store-runtime-unavailable"))
+    selected.ok_or_else(|| CATALOG.t("store-runtime-unavailable"))
 }
 
 #[expect(
@@ -735,7 +736,7 @@ fn handle(
 ) -> (bool, Option<Outcome>) {
     match request {
         Request::Refresh => {
-            let error = ui::i18n!("store-refresh-in-progress");
+            let error = CATALOG.t("store-refresh-in-progress");
             let alive = send_tracked(
                 snapshots,
                 state,
@@ -753,7 +754,7 @@ fn handle(
             let opened = runtime_details(&runtime, registry.as_deref(), state);
             let (label, detail, error) = match &opened {
                 Ok(item) => (
-                    ui::i18n::I18nManager::format(
+                    crate::resource::CATALOG.t_args(
                         "store-runtime-reviewed",
                         &[("name", ui::i18n::ArgValue::Text(item.name.clone()))],
                     ),
@@ -812,7 +813,7 @@ fn handle(
                         version: package.expected.version.clone(),
                     };
                     state.imported_package = Some(package);
-                    (ui::i18n!("store-package-ready"), Some(detail), None)
+                    (CATALOG.t("store-package-ready"), Some(detail), None)
                 }
                 Err(error) => (error.clone(), None, Some(error)),
             };
@@ -837,13 +838,13 @@ fn handle(
                 .filter(|package| {
                     package.expected.app_id == app && package.expected.package_root.to_hex() == root
                 })
-                .ok_or_else(|| ui::i18n!("store-package-review-required"))
+                .ok_or_else(|| CATALOG.t("store-package-review-required"))
                 .and_then(|package| {
                     // Recheck immutable handed bytes against the latest independent offers.
                     let host = state
                         .host
                         .as_ref()
-                        .ok_or_else(|| ui::i18n!("store-package-unavailable"))?;
+                        .ok_or_else(|| CATALOG.t("store-package-unavailable"))?;
                     if let Some(review) = &package.local {
                         host.install_local(&package.bytes, review)?;
                     } else {
@@ -853,7 +854,7 @@ fn handle(
                         )?;
                         host.install_offer(&current.registry, &current.expected)?;
                     }
-                    Ok(Finished::status(ui::i18n!("store-package-installed")))
+                    Ok(Finished::status(CATALOG.t("store-package-installed")))
                 });
             if result.is_ok() {
                 state.imported_package = None;
@@ -1128,7 +1129,7 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             }
             state.details.clear();
             sync_authoritative_catalogue(state);
-            let label = ui::i18n::I18nManager::format(
+            let label = crate::resource::CATALOG.t_args(
                 "store-remote-results",
                 &[
                     ("name", ui::i18n::ArgValue::Text(title)),
@@ -1146,7 +1147,7 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             (alive, Some(Ok(Finished::status(label))))
         }
         Err(error) => {
-            let label = ui::i18n::I18nManager::format(
+            let label = crate::resource::CATALOG.t_args(
                 "store-remote-error",
                 &[("error", ui::i18n::ArgValue::Text(error))],
             );
@@ -1234,7 +1235,7 @@ fn update_all(
     for (index, item) in items.iter().enumerate() {
         let progress = Snapshot {
             items: state.base_items.clone(),
-            status_line: ui::i18n::I18nManager::format(
+            status_line: crate::resource::CATALOG.t_args(
                 "store-update-all-progress",
                 &[
                     (
@@ -1289,11 +1290,11 @@ fn update_all(
 }
 
 fn update_all_summary(total: usize, failures: &[String]) -> String {
-    use ui::i18n::{ArgValue, I18nManager};
+    use ui::i18n::ArgValue;
     let count = |n: usize| ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX)));
     match failures {
-        [] => I18nManager::format("store-update-all-done", &[("total", count(total))]),
-        [first, rest @ ..] => I18nManager::format(
+        [] => crate::resource::CATALOG.t_args("store-update-all-done", &[("total", count(total))]),
+        [first, rest @ ..] => crate::resource::CATALOG.t_args(
             if rest.is_empty() {
                 "store-update-all-failed"
             } else {
@@ -1395,7 +1396,7 @@ mod tests {
     #[test]
     fn update_all_reports_what_it_updated_and_the_first_failure() {
         use super::update_all_summary;
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         assert_eq!(update_all_summary(1, &[]), "Updated 1 app.");
         assert_eq!(update_all_summary(3, &[]), "Updated 3 apps.");
         assert_eq!(

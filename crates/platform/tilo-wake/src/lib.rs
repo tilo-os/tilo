@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use tilo_lock::MutexRecover as _;
 
@@ -38,10 +38,74 @@ struct Route {
     /// Signalled whenever the scope is woken, a reply lands or it closes:
     /// what [`WakeHandle::settle`] waits on.
     changed: Condvar,
+    /// Moves whenever something the owner reads may have changed: every
+    /// wake, and every change noted on the owner's thread
+    /// ([`WakeHandle::note_change`]). Never taken or reset, unlike the
+    /// pending flags a host drains, so an owner that compares it before
+    /// and after proves that nothing reached it in between, whoever drained
+    /// the wakes meanwhile.
+    revision: AtomicU64,
+    /// Moves with every move of [`Self::revision`] made from another thread
+    /// than the one the scope was made on: work off the frame landing (a
+    /// worker's reply, a save landing). Such a move can land while the
+    /// owner's pass runs, after the pass read what it changed: a pass it
+    /// moved during proves nothing ([`WakeHandle::crossed`]).
+    crossed: AtomicU64,
+    /// The thread the scope was made on: its owner's.
+    thread: std::thread::ThreadId,
+    /// The scope that was current when this one was made: a component built
+    /// inside another is part of what that one shows, so what moves this
+    /// revision moves the enclosing one's too.
+    parent: Option<Weak<Route>>,
+}
+
+impl Route {
+    /// Move this scope's input revision and every enclosing scope's.
+    fn moved(&self) {
+        let crossed = std::thread::current().id() != self.thread;
+        self.bump(crossed);
+        let mut parent = self.parent.as_ref().and_then(Weak::upgrade);
+        while let Some(route) = parent {
+            route.bump(crossed);
+            parent = route.parent.as_ref().and_then(Weak::upgrade);
+        }
+    }
+
+    fn bump(&self, crossed: bool) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        if crossed {
+            self.crossed.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 }
 
 thread_local! {
     static CURRENT: RefCell<Option<Weak<Route>>> = const { RefCell::new(None) };
+    /// How deep the passes running here are those of a component that work
+    /// off the frame must report back to ([`FeedsComponent`]).
+    static FEEDS_COMPONENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks that the component whose code runs here wires work off the frame: a
+/// wake captured while this lives and that reaches no component could never
+/// report back to it, so a debug build fails where the wire is made
+/// ([`WakeHandle::new`]), rather than at the frame that later skipped what it
+/// changed.
+#[doc(hidden)]
+#[must_use]
+pub struct FeedsComponent(());
+
+impl FeedsComponent {
+    pub fn begin() -> Self {
+        FEEDS_COMPONENT.with(|feeds| feeds.set(feeds.get().saturating_add(1)));
+        Self(())
+    }
+}
+
+impl Drop for FeedsComponent {
+    fn drop(&mut self) {
+        FEEDS_COMPONENT.with(|feeds| feeds.set(feeds.get().saturating_sub(1)));
+    }
 }
 
 /// The non-clone owner of one mount incarnation. Drop closes it.
@@ -71,8 +135,17 @@ impl WakeScope {
                 open: AtomicBool::new(true),
                 destination: Mutex::new(Destination::default()),
                 changed: Condvar::new(),
+                revision: AtomicU64::new(0),
+                crossed: AtomicU64::new(0),
+                thread: std::thread::current().id(),
+                parent: CURRENT.with(|current| current.borrow().clone()),
             }),
         }
+    }
+
+    /// The scope's input revision ([`WakeHandle::revision`]).
+    pub fn revision(&self) -> u64 {
+        self.route.revision.load(Ordering::Acquire)
     }
 
     pub fn handle(&self) -> WakeHandle {
@@ -291,14 +364,37 @@ impl WakeHandle {
         })
     }
 
+    /// The wake of the scope that runs here: a component's own during its
+    /// construction, its passes and its callbacks. Work it starts off the
+    /// frame holds this and wakes it when there is something to take up.
     pub fn new() -> Self {
-        Self {
+        let handle = Self {
             route: CURRENT.with(|current| current.borrow().clone()),
-        }
+        };
+        debug_assert!(
+            !(handle.is_detached() && FEEDS_COMPONENT.with(std::cell::Cell::get) > 0),
+            "work a component starts captured a wake that reaches no component: take the wake \
+             from the component that runs now, not from a construction that already ended"
+        );
+        handle
     }
 
     pub const fn detached() -> Self {
         Self { route: None }
+    }
+
+    /// What tells this handle's scope from every other open one, `None` for
+    /// a detached handle.
+    pub fn scope_key(&self) -> Option<usize> {
+        self.route
+            .as_ref()
+            .map(|route| route.as_ptr().cast::<()>() as usize)
+    }
+
+    /// Whether the handle was captured outside every scope: nothing it
+    /// publishes reaches an owner.
+    pub const fn is_detached(&self) -> bool {
+        self.route.is_none()
     }
 
     pub fn is_active(&self) -> bool {
@@ -341,6 +437,43 @@ impl WakeHandle {
 
     pub fn wake(&self) {
         self.send_wake(true, false);
+    }
+
+    /// Note, on the owner's own thread, that something its owner reads
+    /// changed, without waking it: the owner's pass that is running or due
+    /// takes it up, and an owner that rests between passes while its
+    /// [`Self::revision`] stands knows it missed nothing. A typed local
+    /// state written by another window's callback says so through its
+    /// owner's handle. Detached and closed handles note nothing.
+    pub fn note_change(&self) {
+        if let Some(route) = self.route.as_ref().and_then(Weak::upgrade)
+            && route.open.load(Ordering::Acquire)
+        {
+            route.moved();
+        }
+    }
+
+    /// The owner's input revision: it moves with every wake and every noted
+    /// change ([`Self::note_change`]). `None` for a detached handle, or once
+    /// the scope closed.
+    pub fn revision(&self) -> Option<u64> {
+        let route = self.route.as_ref()?.upgrade()?;
+        route
+            .open
+            .load(Ordering::Acquire)
+            .then(|| route.revision.load(Ordering::Acquire))
+    }
+
+    /// How often the owner's input revision moved from another thread than
+    /// the owner's ([`Self::revision`]): a pass that reads it before and
+    /// after knows whether work off the frame landed while it ran. `None`
+    /// for a detached handle, or once the scope closed.
+    pub fn crossed(&self) -> Option<u64> {
+        let route = self.route.as_ref()?.upgrade()?;
+        route
+            .open
+            .load(Ordering::Acquire)
+            .then(|| route.crossed.load(Ordering::Acquire))
     }
 
     /// Wake the owner because a record's save moved on (a write landed or
@@ -482,6 +615,7 @@ impl WakeHandle {
             destination.pending = true;
             destination.pending_sync |= requires_sync;
             destination.settling.woken = true;
+            route.moved();
             destination.sink.as_ref().map(Arc::clone)
         };
         route.changed.notify_all();
@@ -557,19 +691,59 @@ impl<T> Reply<T> {
     }
 }
 
+/// The report-back side of a [`waking_channel`]: the component that opened it
+/// is woken for every message, before the message can be received and again
+/// once it can.
+///
+/// Both wakes matter: a frame that finds a message has a wake to answer for
+/// it, and a message that lands between a component's drain and the end of
+/// its pass ([`WakeHandle::crossed`]) is already announced, so a component
+/// that then rests never skipped what the message changed.
+struct Reporting {
+    wake: WakeHandle,
+}
+
+impl Reporting {
+    fn new() -> Self {
+        Self {
+            wake: WakeHandle::new(),
+        }
+    }
+
+    fn announce<T>(
+        &self,
+        queue: impl FnOnce() -> Result<(), std::sync::mpsc::SendError<T>>,
+    ) -> Result<(), std::sync::mpsc::SendError<T>> {
+        self.wake.wake();
+        let queued = queue();
+        if queued.is_ok() {
+            self.wake.wake();
+        }
+        queued
+    }
+}
+
+impl Clone for Reporting {
+    fn clone(&self) -> Self {
+        Self {
+            wake: self.wake.clone(),
+        }
+    }
+}
+
 /// The worker's end of a [`waking_channel`]: every message it sends wakes
 /// the scope that opened the channel, so the app drains it on its next sync
 /// instead of pumping frames to poll for it.
 pub struct WakingSender<T> {
     sender: Sender<T>,
-    wake: WakeHandle,
+    reporting: Reporting,
 }
 
 impl<T> Clone for WakingSender<T> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
-            wake: self.wake.clone(),
+            reporting: self.reporting.clone(),
         }
     }
 }
@@ -578,9 +752,8 @@ impl<T> WakingSender<T> {
     /// Queue `message` and wake the owner to take it. A gone receiver (the
     /// window closed) is an error.
     pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
-        self.sender.send(message)?;
-        self.wake.wake();
-        Ok(())
+        let sender = &self.sender;
+        self.reporting.announce(|| sender.send(message))
     }
 }
 
@@ -589,7 +762,43 @@ impl<T> Drop for WakingSender<T> {
     /// the owner too, so the owner sees the channel disconnected instead of
     /// waiting forever.
     fn drop(&mut self) {
-        self.wake.wake();
+        self.reporting.wake.wake();
+    }
+}
+
+/// The worker's end of a [`waking_sync_channel`]: as [`WakingSender`], for a
+/// worker that must not queue faster than its owner takes.
+pub struct WakingSyncSender<T> {
+    sender: SyncSender<T>,
+    reporting: Reporting,
+}
+
+impl<T> Clone for WakingSyncSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            reporting: self.reporting.clone(),
+        }
+    }
+}
+
+impl<T> WakingSyncSender<T> {
+    /// Queue `message`, waiting for room when the channel is full, and wake
+    /// the owner to take it.
+    ///
+    /// # Errors
+    ///
+    /// The message back, when the receiver (the window) is gone.
+    pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+        let sender = &self.sender;
+        self.reporting.announce(|| sender.send(message))
+    }
+}
+
+impl<T> Drop for WakingSyncSender<T> {
+    /// As [`WakingSender`]: a worker that ends wakes the owner to see it end.
+    fn drop(&mut self) {
+        self.reporting.wake.wake();
     }
 }
 
@@ -604,7 +813,22 @@ pub fn waking_channel<T>() -> (WakingSender<T>, Receiver<T>) {
     (
         WakingSender {
             sender,
-            wake: WakeHandle::new(),
+            reporting: Reporting::new(),
+        },
+        receiver,
+    )
+}
+
+/// [`waking_channel`] with room for `bound` messages: a worker whose replies
+/// cost memory (a picture, an analysis) sends through it, so it waits for its
+/// owner to take them instead of piling up.
+#[must_use]
+pub fn waking_sync_channel<T>(bound: usize) -> (WakingSyncSender<T>, Receiver<T>) {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(bound);
+    (
+        WakingSyncSender {
+            sender,
+            reporting: Reporting::new(),
         },
         receiver,
     )
@@ -633,6 +857,66 @@ mod tests {
         scope.handle().wake();
         assert_eq!(scope.take_pending(), None);
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn every_wake_and_noted_change_moves_the_revision_whoever_drains_the_wakes() {
+        let (scope, _rx) = bound_scope();
+        let handle = scope.handle();
+        let start = handle.revision().unwrap();
+        handle.notify_events();
+        let _ = scope.take_pending();
+        assert_ne!(
+            handle.revision(),
+            Some(start),
+            "a drained wake still moved it"
+        );
+        let woken = handle.revision();
+        handle.note_change();
+        assert_ne!(handle.revision(), woken, "a noted change moves it");
+        assert_eq!(scope.take_pending(), Some((false, false)), "without waking");
+        assert_eq!(WakeHandle::detached().revision(), None);
+        let noted = scope.revision();
+        drop(scope);
+        handle.note_change();
+        assert_eq!(handle.revision(), None, "a closed scope has none");
+        assert!(noted >= start + 2);
+    }
+
+    #[test]
+    fn only_a_move_from_another_thread_counts_as_crossed() {
+        let (scope, _rx) = bound_scope();
+        let handle = scope.handle();
+        handle.notify_events();
+        handle.note_change();
+        assert_eq!(handle.crossed(), Some(0), "the owner's own thread");
+        let remote = handle.clone();
+        std::thread::spawn(move || remote.notify_events())
+            .join()
+            .unwrap();
+        assert_eq!(handle.crossed(), Some(1), "a wake from a worker");
+    }
+
+    #[test]
+    fn a_scope_made_inside_another_moves_the_enclosing_revision() {
+        let outer = WakeScope::new();
+        let inner = {
+            let _entry = outer.enter();
+            WakeScope::new()
+        };
+        let sibling = WakeScope::new();
+        let (before, beside) = (outer.revision(), sibling.revision());
+        inner.handle().note_change();
+        assert_ne!(outer.revision(), before, "the enclosing scope moved");
+        assert_eq!(sibling.revision(), beside, "a scope beside it did not");
+        let moved = outer.revision();
+        outer.handle().note_change();
+        assert_eq!(
+            inner.revision(),
+            1,
+            "an enclosing change moves no scope inside it"
+        );
+        assert_ne!(outer.revision(), moved);
     }
 
     #[test]
@@ -703,43 +987,103 @@ mod tests {
         (scope, rx)
     }
 
+    /// Every wake the owner was sent, drained: a message is announced
+    /// before it can be received and again once it can.
+    fn drain(rx: &Receiver<WakeEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
     #[test]
     fn a_worker_reply_on_a_waking_channel_wakes_its_owner() {
         let (scope, rx) = bound_scope();
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || sender.send(7).unwrap())
+                .join()
+                .unwrap();
+            assert!(
+                rx.recv().unwrap().requires_sync(),
+                "the reply woke the owner"
+            );
+            assert_eq!(replies.try_recv().unwrap(), 7);
+            // The worker's end went away with its thread: one more wake.
+            assert!(rx.recv().is_ok());
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            drop(replies);
+            assert!(sender.send(1).is_err(), "the message reaches nobody");
+            // Announced before it could be received, as every message is; a
+            // wake no owner takes up costs a closed window nothing.
+            assert!(rx.try_recv().is_ok(), "the attempt was announced");
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            drop(sender);
+            drain(&rx);
+        }
+        {
+            let (sender, replies) = {
+                let _entry = scope.enter();
+                waking_channel::<u32>()
+            };
+            std::thread::spawn(move || drop(sender)).join().unwrap();
+            assert!(
+                rx.recv().is_ok(),
+                "a worker that ends without a reply wakes too"
+            );
+            assert!(matches!(
+                replies.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            ));
+            drain(&rx);
+        }
+    }
+
+    #[test]
+    fn a_worker_reply_on_a_bounded_waking_channel_wakes_its_owner() {
+        let (scope, rx) = bound_scope();
         let (sender, replies) = {
             let _entry = scope.enter();
-            waking_channel::<u32>()
+            waking_sync_channel::<u32>(1)
         };
         std::thread::spawn(move || sender.send(7).unwrap())
             .join()
             .unwrap();
         assert!(
             rx.recv().unwrap().requires_sync(),
-            "the reply woke the owner"
+            "the reply woke its owner before it could be received"
         );
         assert_eq!(replies.try_recv().unwrap(), 7);
         // The worker's end went away with its thread: one more wake.
         assert!(rx.recv().is_ok());
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        drop(replies);
-        assert!(sender.send(1).is_err(), "a gone receiver wakes nobody");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        let (sender, replies) = {
-            let _entry = scope.enter();
-            waking_channel::<u32>()
-        };
-        std::thread::spawn(move || drop(sender)).join().unwrap();
-        assert!(
-            rx.recv().is_ok(),
-            "a worker that ends without a reply wakes too"
-        );
-        assert!(matches!(
-            replies.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
+    }
+
+    /// A component's pass wiring work off the frame must capture the
+    /// component's wake: one that reaches no scope can never report back to
+    /// it, and is caught where the wire is made.
+    #[test]
+    #[should_panic(expected = "reaches no component")]
+    fn a_wake_wired_for_a_running_component_reaches_its_component() {
+        let _feeds = super::FeedsComponent::begin();
+        let _detached = WakeHandle::new();
+    }
+
+    #[test]
+    fn a_wake_wired_inside_a_scope_reaches_its_component() {
+        let (scope, rx) = bound_scope();
+        let feeds = super::FeedsComponent::begin();
+        let entry = scope.enter();
+        let handle = WakeHandle::new();
+        drop(entry);
+        drop(feeds);
+        handle.wake();
+        assert!(scope.accepts(&rx.try_recv().unwrap()));
     }
 
     #[test]

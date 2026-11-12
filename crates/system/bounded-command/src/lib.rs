@@ -13,7 +13,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::time::Instant;
 
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -70,10 +71,10 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
         // SAFETY: the child was placed in its own pid-named process group; a
         // negative pid targets exactly that group.
         unsafe { libc::kill(group, libc::SIGTERM) };
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(grace)
             .unwrap_or_else(Instant::now);
-        while Instant::now() < deadline {
+        while tilo_clock::now() < deadline {
             // The leader exiting is not enough: a worker it started may still
             // be winding down in the group. Signal 0 only probes for one.
             // SAFETY: as above; signal 0 delivers nothing.
@@ -96,7 +97,7 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
 /// still running at the deadline; it is left running. On Unix this sleeps in
 /// [`wait_child_or`] rather than polling.
 pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
-    let deadline = Instant::now().checked_add(timeout);
+    let deadline = tilo_clock::now().checked_add(timeout);
     #[cfg(unix)]
     {
         Ok(match wait_child_or(child, None, deadline)? {
@@ -109,7 +110,7 @@ pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if deadline.is_some_and(|deadline| tilo_clock::now() >= deadline) {
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -569,7 +570,7 @@ fn run_prepared_inner(
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
     let err_reader =
         std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
-    let deadline = Instant::now()
+    let deadline = tilo_clock::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
     let status = loop {
@@ -577,7 +578,7 @@ fn run_prepared_inner(
             break Some(status);
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
-        if cancelled || Instant::now() >= deadline {
+        if cancelled || tilo_clock::now() >= deadline {
             kill_tree(&mut child);
             let _ = child.wait();
             break None;

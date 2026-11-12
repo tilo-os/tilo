@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
@@ -21,6 +22,7 @@ use ui::widget::{
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::actions::TubeEffect;
+use crate::i18n::CATALOG;
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
 use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
@@ -998,7 +1000,7 @@ fn set_skip_setting(model: &TubeModel, v: &Video, player: &mut ui::widget::Video
             Icon::SkipForward,
             t_args(
                 "tube-skip-segment",
-                &[arg("segment", segment.category.label().to_lowercase())],
+                &[arg("segment", t(segment.category.message()).to_lowercase())],
             ),
             2,
         )),
@@ -1527,28 +1529,30 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
             .unwrap_or(SkipMode::Skip);
         let modes = [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled];
         let dropdown = Dropdown::from_state(
-            modes.iter().map(|m| m.label().to_string()).collect(),
-            &ui::LocalState::new(stored.label().to_string()),
+            modes.iter().map(|m| t(m.message())).collect(),
+            &ui::LocalState::new(t(stored.message())),
         )
         .with_id(&format!("mode_{}", category.api_key()))
-        .with_accessible_name(category.label())
+        .with_accessible_name(t(category.message()))
         .with_enabled(s.sponsorblock_enabled);
         let dropdown = ui.bind_effect(
             dropdown,
             TubeEffect::SET_SEGMENT_HANDLING.map(move |label: String| {
                 let mode = modes
                     .iter()
-                    .find(|m| m.label() == label)
+                    .find(|m| t(m.message()) == label)
                     .map_or(label, |m| m.key().to_owned());
                 (category.api_key().to_owned(), mode)
             }),
         );
-        let name =
-            Chip::new(category.label()).with_lead(ChipLead::Dot(category_colour(theme, category)));
+        let name = Chip::new(t(category.message()))
+            .with_lead(ChipLead::Dot(category_colour(theme, category)));
         let about = stack()
             .with_gap(rhythm.tight)
             .push(Box::new(Row::new().no_wrap().push(Box::new(name))))
-            .push(Box::new(text(category.blurb(), TextRole::Caption).dimmed()));
+            .push(Box::new(
+                text(&t(category.blurb()), TextRole::Caption).dimmed(),
+            ));
         section = section.content(Box::new(
             Row::new()
                 .no_wrap()
@@ -1782,7 +1786,7 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
     let filters = SearchType::ALL.into_iter().fold(Row::new(), |row, kind| {
         row.push(Box::new(
             ui.effect(
-                Chip::new(kind.label())
+                Chip::new(t(kind.message()))
                     .with_id(format!("search_type_{}", kind.id()))
                     .selected(ui.model.search_type_filter.shows(kind)),
                 &TubeEffect::FilterSearch {
@@ -1818,9 +1822,10 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
                     ) as Element
                 })
                 .collect();
-            children.push(Box::new(
-                Section::new(rows).with_header(SectionHeader::group(SearchType::Playlist.label())),
-            ));
+            children
+                .push(Box::new(Section::new(rows).with_header(
+                    SectionHeader::group(t(SearchType::Playlist.message())),
+                )));
         }
         if ui.model.search_type_filter.shows(SearchType::Creator) {
             let rows = ui
@@ -1840,13 +1845,17 @@ pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
                     ) as Element
                 })
                 .collect();
-            children.push(Box::new(
-                Section::new(rows).with_header(SectionHeader::group(SearchType::Creator.label())),
-            ));
+            children
+                .push(Box::new(Section::new(rows).with_header(
+                    SectionHeader::group(t(SearchType::Creator.message())),
+                )));
         }
     }
     page(vec![Box::new(Section::new(children).with_header(
-        SectionHeader::heading(format!("Search: {query}")),
+        SectionHeader::heading(CATALOG.t_args(
+            "tube-search-heading",
+            &[("query", ArgValue::Text(query.to_owned()))],
+        )),
     ))])
 }
 

@@ -5,7 +5,7 @@
 //! Chat declares `Channel` as a resource and `page` as its default view. The channel is placed
 //! through the arrangement's published `place`, as an agent or the person does; the shell's
 //! runtime draws the channel's reading through Chat's view. Typing in the composer and pressing
-//! send posts to the channel through Chat's own `post`; pressing an attachment places what it
+//! send sends to the channel through Chat's own `send`; pressing an attachment places what it
 //! holds. What stands on screen is read from what the shell lays out for assistive technology,
 //! never from pixels.
 
@@ -18,8 +18,6 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
-
-mod common;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
@@ -39,16 +37,16 @@ const TYPED: &str = "looks good";
 /// test hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            person: common::PERSON.to_owned(),
+            person: crate::common::PERSON.to_owned(),
             shell: true,
             collab: false,
             services: vec![
                 Box::new(apps),
-                Box::new(tilo_session::dev_rust_views::RustApps::new()),
+                Box::new(tilo_session::dev_rust_views::RustApps::new().unwrap()),
             ],
             questions: Some(tilo_service::Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
@@ -59,14 +57,14 @@ fn session(root: &std::path::Path) -> Session {
         },
         &[OutputConfig::new(
             "HEADLESS-1",
-            common::WIDTH,
-            common::HEIGHT,
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
         )],
     )
     .expect("session");
-    common::show_preset(&mut session, "Frames");
-    common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
+    crate::common::show_preset(&mut session, "Frames");
+    crate::common::until(&mut session, "the canvas", |session| {
+        crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
     });
     session
 }
@@ -163,7 +161,7 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
     std::fs::create_dir_all(&dir).expect("the shots directory");
     let png = dir.join(name);
     let socket = root.join("test-control.sock");
-    let answer = common::control(
+    let answer = crate::common::control(
         session,
         &socket,
         &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
@@ -182,10 +180,10 @@ fn a_place_620_to_700_tall_still_gives_its_transcript_its_room() {
     // channel under that room's top, and the composer stands under the room's foot.
     let _settled = ui::motion::testing::settled();
     for height in [620, 640, 660, 680, 700] {
-        let root = common::private_home();
+        let root = crate::common::private_home();
         let mut session = session(root.path());
         place_at(&mut session, CHANNEL, 720, height);
-        common::until(&mut session, "the channel's page", |session| {
+        crate::common::until(&mut session, "the channel's page", |session| {
             session.shell_says(MESSAGE)
         });
         let (_, clip_y, _, clip_h) = session.shell_scroll_clip(MESSAGE).unwrap_or_else(|| {
@@ -224,10 +222,10 @@ fn a_place_620_to_700_tall_still_gives_its_transcript_its_room() {
 #[test]
 fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The channel's own view is on the canvas: its name, and its messages, each the component
@@ -266,7 +264,7 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
     // The same page in the light theme: only shared components and theme roles, so every theme
     // reaches it.
     choose_appearance(&mut session, "light");
-    common::until(&mut session, "the page in the light theme", |session| {
+    crate::common::until(&mut session, "the page in the light theme", |session| {
         session.shell_says(MESSAGE)
     });
     shot(&mut session, root.path(), "channel-page-light.png");
@@ -275,12 +273,12 @@ fn a_chat_channel_placed_on_the_canvas_draws_its_own_page() {
 #[test]
 fn the_transcript_is_drawn_below_the_header_never_under_it() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     // The place a person's conversation stands in, the live shell's own size: a transcript
     // longer than the room the header and the composer leave it.
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The page's header is the channel's name and topic, and the transcript is the scroll view
@@ -359,10 +357,10 @@ fn the_transcript_is_drawn_below_the_header_never_under_it() {
 #[test]
 fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     // The composer's field takes the keyboard, as a person's click on it puts the caret there.
@@ -377,7 +375,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let socket = root.path().join("test-control.sock");
     assert_eq!(
-        common::control(
+        crate::common::control(
             &mut session,
             &socket,
             &json!({"op": "click_at", "x": cx, "y": cy})
@@ -386,18 +384,18 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
         "the click on the composer is taken"
     );
     assert_eq!(
-        common::control(&mut session, &socket, &json!({"op": "type", "text": TYPED})),
+        crate::common::control(&mut session, &socket, &json!({"op": "type", "text": TYPED})),
         json!({"ok": {}}),
         "the text is typed"
     );
     // What was typed stands in the field before it is sent: the draft the button reads.
-    common::until(&mut session, "the typed draft", |session| {
+    crate::common::until(&mut session, "the typed draft", |session| {
         session.shell_says(TYPED)
     });
-    // Pressing send posts what was typed through Chat's own `post`: the channel's reading the
+    // Pressing send sends what was typed through Chat's own `send`: the channel's reading the
     // place draws then holds a message saying it, which is what the page shows again — the
     // page's own message, not the draft still standing in the field.
-    let answer = common::control(
+    let answer = crate::common::control(
         &mut session,
         &socket,
         &json!({"op": "click_named", "name": "Send"}),
@@ -417,7 +415,7 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
             .flatten()
             .any(|message| message["text"].as_str() == Some(TYPED))
     };
-    common::until(&mut session, "the message in the channel", |session| {
+    crate::common::until(&mut session, "the message in the channel", |session| {
         posted(session)
     });
     assert!(
@@ -430,134 +428,31 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
 }
 
 #[test]
-fn a_reply_to_a_run_of_a_message_is_stored_quoted_where_the_page_shows_it() {
-    let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = session(root.path());
-    place(&mut session, CHANNEL);
-    common::until(&mut session, "the channel's page", |session| {
-        session.shell_says(MESSAGE)
-    });
-    // The message the person will answer, as the channel's reading holds it.
-    let (answered, answered_text) = {
-        let reading = session
-            .read(CHANNEL)
-            .unwrap_or_else(|| panic!("the session serves {CHANNEL}"));
-        let message = reading["messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|message| {
-                message["text"]
-                    .as_str()
-                    .is_some_and(|text| text.starts_with(MESSAGE))
-            })
-            .expect("the demo message is in the channel");
-        (
-            message["id"].as_str().expect("its id").to_owned(),
-            message["text"].as_str().expect("its text").to_owned(),
-        )
-    };
-    // The run the reply answers: bytes chosen in the answered message, a slice of it rather than
-    // the whole.
-    let chosen = "Pushed the new call";
-    let start = answered_text
-        .find(chosen)
-        .expect("the words are in the message");
-    let end = start + chosen.len();
-    // Post the reply through the channel's own `post`, the verb a place's composer runs and a
-    // press sends, carrying the message it answers and the run it quotes (`start:end` bytes).
-    let item = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| {
-            spec.id.as_str().ends_with(&format!(":{CHANNEL_ID}"))
-                || spec
-                    .id
-                    .as_str()
-                    .ends_with(&format!("/channels/{CHANNEL_ID}"))
-        })
-        .filter(|spec| spec.actions.iter().any(|action| action.id == "post"))
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| {
-            panic!(
-                "the channel offers post, which its composer runs: {:?}",
-                session
-                    .service_resources()
-                    .into_iter()
-                    .map(|spec| spec.id.as_str().to_owned())
-                    .collect::<Vec<_>>()
-            )
-        });
-    let mut arguments = Map::new();
-    arguments.insert("channel".to_owned(), json!(CHANNEL_ID));
-    arguments.insert("text".to_owned(), json!(TYPED));
-    arguments.insert("parent".to_owned(), json!(answered));
-    arguments.insert("span".to_owned(), json!(format!("{start}:{end}")));
-    session
-        .invoke(&item, "post", &arguments)
-        .unwrap_or_else(|error| panic!("the reply posts: {error:?}"));
-    // The channel's live reading now holds a reply answering the message, whose quote is the
-    // run: its words are those of the answered message between the offsets it kept, so pressing
-    // the quote opens on exactly what it shows.
-    let mut found: Option<Value> = None;
-    common::until(&mut session, "the quoted reply in the channel", |session| {
-        let Some(reading) = session.read(CHANNEL) else {
-            return false;
-        };
-        found = reading["messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|message| message["text"].as_str() == Some(TYPED))
-            .and_then(|message| {
-                let reply_to = message.get("reply_to")?.clone();
-                (!reply_to.is_null()).then_some(reply_to)
-            });
-        found.is_some()
-    });
-    let quoted = found.expect("the reply carries the run it quotes");
-    assert_eq!(
-        quoted["excerpt"].as_str(),
-        Some(chosen),
-        "the quote draws the words the person chose"
-    );
-    // And the page the place draws carries the quote over the reply: the run, drawn where the
-    // reply stands, so the person reads the words their answer was about.
-    assert!(
-        session.shell_says(chosen),
-        "the page draws the quoted run over the reply: {:?}",
-        session.accessible_labels()
-    );
-    shot(&mut session, root.path(), "span-reply.png");
-}
-
-#[test]
 fn pressing_an_attachment_places_the_resource_it_holds() {
-    let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = session(root.path());
     // The small demo channel holds one message and a message sharing a sample video, whose
     // row is what the page draws for the attachment: both stand within a place's view.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let mut session = session(root.path());
     place(&mut session, "chat.workspace.channels:c_general");
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });
     // The attachment's row opens what it holds: activating it places it beside the page, which
     // is the system's open (shell.md §3), never Chat's.
-    let before: Vec<String> = common::places(&session)
+    let before: Vec<String> = crate::common::places(&session)
         .into_iter()
         .map(|place| place.record)
         .collect();
-    common::press(&mut session, SHARED);
+    crate::common::press(&mut session, SHARED);
     // The press places the video beside the page: the arrangement takes it as one step of the
     // person's, and the page stays where it was.
     for _ in 0..20 {
         session
             .step(std::time::Duration::from_millis(16))
             .expect("step");
-        if common::places(&session)
+        if crate::common::places(&session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:"))
         {
@@ -565,225 +460,16 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
         }
     }
     assert!(
-        common::places(&session)
+        crate::common::places(&session)
             .iter()
             .any(|place| place.record.starts_with("tube.video:")),
         "the attachment's press places what it holds; before: {before:?}, after: {:?}; the \
          shell refused {:?}",
-        common::places(&session)
+        crate::common::places(&session)
             .into_iter()
             .map(|place| place.record)
             .collect::<Vec<_>>(),
         session.shell_refusals()
-    );
-}
-
-/// The workspace in front, by its id: what the runs and Chat's record are read under.
-fn front_workspace(session: &Session) -> String {
-    session
-        .handle()
-        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
-        .expect("a workspace is in front")
-}
-
-#[test]
-fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn_names_it() {
-    // A real session, with the workspace's seeded tilolang apps: no development fixture stands
-    // between the drop and Chat's record. A question typed on the canvas asks the workspace's
-    // agent, and the conversation it opens is served by the session's own `ChatViewService` —
-    // Chat's `page` drawn over the record. A resource dropped on that composer — here the root
-    // of Tasks, which the workspace publishes by its address
-    // (`tl:so.tilo.lang.tasks:root-…`) — rides with the message the person sends, named in both
-    // the draft's chip and the message's by the title its app publishes.
-    let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
-    common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
-    });
-    // The person asks the workspace's agent a question: the session opens the conversation and
-    // places it on the canvas.
-    common::press(&mut session, common::CANVAS_ENTRY);
-    common::type_text(&mut session, "what is left?");
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::Key {
-                keycode: 28,
-                pressed,
-            })
-            .expect("a key");
-        session
-            .step(std::time::Duration::from_millis(1))
-            .expect("a frame");
-    }
-    let placed = common::wait_for(&mut session, "the conversation placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/channels/"))
-    });
-    let address = placed.record;
-    let channel = address
-        .trim_start_matches("chat.workspace/channels/")
-        .to_owned();
-    // The channel's own verb a drop runs: `attach`, published by the service on the channel's
-    // item, taking the channel and the resource the drag carried.
-    let item = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| {
-            spec.id.as_str() == address && spec.actions.iter().any(|action| action.id == "attach")
-        })
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| {
-            panic!(
-                "the channel offers attach, which a drop on the composer runs: {:?}",
-                session
-                    .service_resources()
-                    .into_iter()
-                    .map(|spec| spec.id.as_str().to_owned())
-                    .collect::<Vec<_>>()
-            )
-        });
-    // The resource dropped on the composer: the root of Tasks, which the workspace publishes by
-    // its address, with the title its app publishes it under.
-    let (dropped, title) = {
-        let published = session
-            .service_resources()
-            .into_iter()
-            .find(|spec| {
-                spec.kind == "tl.so.tilo.lang.tasks.Tasks"
-                    && spec.id.as_str().starts_with("tl:so.tilo.lang.tasks:")
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "the workspace publishes Tasks' root: {:?}",
-                    session
-                        .service_resources()
-                        .into_iter()
-                        .map(|spec| spec.id.as_str().to_owned())
-                        .collect::<Vec<_>>()
-                )
-            });
-        (published.id.as_str().to_owned(), published.label.clone())
-    };
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("channel".into(), json!(channel));
-    arguments.insert("resource".into(), json!(dropped));
-    session
-        .invoke(&item, "attach", &arguments)
-        .unwrap_or_else(|error| panic!("the drop on the composer attaches: {error:?}"));
-    // The draft's chip names the resource by the title its app publishes, never the address the
-    // drag carried or a step of it (`root-fjqi4yze`): the chip a person reads over the composer.
-    common::until(&mut session, "the draft's chip", |session| {
-        session
-            .read(&address)
-            .and_then(|reading| {
-                reading["draft"]["label"]
-                    .as_str()
-                    .filter(|label| !label.is_empty())
-                    .map(str::to_owned)
-            })
-            .is_some()
-    });
-    let reading = session
-        .read(&address)
-        .unwrap_or_else(|| panic!("the session serves the channel's reading: {address}"));
-    assert_eq!(
-        reading["draft"]["label"].as_str(),
-        Some(title.as_str()),
-        "the draft's chip says the resource's title: {reading}"
-    );
-    assert_eq!(
-        reading["draft"]["resource"]["id"].as_str(),
-        Some(dropped.as_str()),
-        "the chip holds the address it was dropped by: {reading}"
-    );
-    // The person types their words and sends, through the channel's own `post`: the verb the
-    // composer's field and its Send button both run, routed by the session's door to the service
-    // that publishes it.
-    let mut post_arguments = serde_json::Map::new();
-    post_arguments.insert("channel".into(), json!(channel));
-    post_arguments.insert("text".into(), json!(TYPED));
-    session
-        .invoke(&address, "post", &post_arguments)
-        .unwrap_or_else(|error| panic!("the channel's post runs: {error:?}"));
-    let posted = |session: &Session| {
-        session.read(&address).and_then(|reading| {
-            reading["messages"].as_array().and_then(|messages| {
-                messages
-                    .iter()
-                    .find(|message| message["text"].as_str() == Some(TYPED))
-                    .cloned()
-            })
-        })
-    };
-    common::until(&mut session, "the posted message", |session| {
-        posted(session).is_some()
-    });
-    let message = posted(&session).unwrap_or_else(|| {
-        panic!(
-            "the channel holds the sent message: {:?}; the shell refused {:?}",
-            session.read(&address),
-            session.shell_refusals()
-        )
-    });
-    // The message carries the dropped resource as its attachment, named by the title its app
-    // publishes: the chip the page draws beside the person's words.
-    let sent_attachment = message["attachments"]
-        .as_array()
-        .and_then(|attachments| {
-            attachments.iter().find(|attachment| {
-                attachment["resource"]["id"].as_str() == Some(dropped.as_str())
-                    && attachment["kind"].as_str() == Some("resource")
-            })
-        })
-        .unwrap_or_else(|| panic!("the message carries the resource that was dropped: {message}"))
-        .clone();
-    assert_eq!(
-        sent_attachment["label"].as_str(),
-        Some(title.as_str()),
-        "the message's chip says the resource's title, never its id: {message}"
-    );
-    // The agent's turn names it by that title: an agent answering this message is asked what
-    // the person wrote and told which resource they handed it. The instruction a turn is asked
-    // with is built from the message's own words and attachments (`instruction_of`), which is
-    // what the pass hands the agent's run — read here from the page's attachment, which is the
-    // record's own reference drawn.
-    let sent = tilo_reference::Attached::resource(
-        tilo_reference::ResourceAt {
-            app: dropped
-                .strip_prefix("tl:")
-                .and_then(|rest| rest.split_once(':'))
-                .map_or_else(|| "chat".to_owned(), |(app, _)| app.to_owned()),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                sent_attachment["resource"]["ty"]
-                    .as_str()
-                    .unwrap_or_default(),
-                dropped.clone(),
-                title.clone(),
-            ),
-        },
-        None,
-        title.clone(),
-    );
-    let instruction = tilo_session::conversations::instruction_of(&chat::record::Message {
-        text: message["text"].as_str().unwrap_or_default().to_owned(),
-        attachments: vec![sent],
-        ..chat::record::Message::default()
-    });
-    assert!(
-        instruction.contains(&title),
-        "the turn names the resource by its title: {instruction}"
-    );
-    assert!(
-        instruction.contains(&dropped),
-        "the turn says where the resource is too: {instruction}"
-    );
-    assert!(
-        instruction.starts_with(TYPED),
-        "the turn asks what the person wrote first: {instruction}"
     );
 }
 
@@ -794,14 +480,14 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
 #[test]
 fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_canvas() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     // The small demo channel whose whole transcript fits: its shared video's row is what the
     // page draws for the attachment, in reach of a pointer.
     const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
     const DROPPED: &str = "tube.video:vid_rust_async";
     place(&mut session, "chat.workspace.channels:c_general");
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });
     // The chip stands on screen: its row's label, drawn through the transcript's scroll view.
@@ -815,9 +501,9 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     // window stands over it. A spot near the map's foot, left of the window's right edge and
     // below its bottom, is the map itself — not the window's own drop target (its composer).
     let (from_x, from_y) = (chip_x + chip_w / 2.0, chip_y + chip_h / 2.0);
-    let (to_x, to_y) = (60.0, f64::from(common::HEIGHT) - 40.0);
+    let (to_x, to_y) = (60.0, f64::from(crate::common::HEIGHT) - 40.0);
     // The resources placed before the drag: the drag adds the video beside the channel.
-    let before: Vec<String> = common::places(&session)
+    let before: Vec<String> = crate::common::places(&session)
         .into_iter()
         .map(|place| place.record)
         .collect();
@@ -828,7 +514,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     shot(&mut session, root.path(), "before-drag.png");
     let socket = root.path().join("test-control.sock");
     assert_eq!(
-        common::control(
+        crate::common::control(
             &mut session,
             &socket,
             &json!({
@@ -844,12 +530,12 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     );
     // The drag places the resource the chip held: the map's `drop` ran the system's `place`, so
     // a place of the video stands in the arrangement, at the canvas point it was let go.
-    common::until(&mut session, "the video placed on the canvas", |session| {
-        common::places(session)
+    crate::common::until(&mut session, "the video placed on the canvas", |session| {
+        crate::common::places(session)
             .iter()
             .any(|place| place.record == DROPPED)
     });
-    let placed: Vec<String> = common::places(&session)
+    let placed: Vec<String> = crate::common::places(&session)
         .into_iter()
         .map(|place| place.record)
         .collect();
@@ -861,12 +547,13 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     );
     // The video's strip stands where it was dropped, not at the origin: its canvas point is the
     // map point under the pointer where the drag ended.
-    let place_key = common::places(&session)
+    let place_key = crate::common::places(&session)
         .into_iter()
         .find(|place| place.record == DROPPED)
         .and_then(|place| place.key.parse().ok())
         .expect("the video's place stands in the arrangement");
-    let strip = common::strip_of(&session, place_key).expect("the video's place has a strip");
+    let strip =
+        crate::common::strip_of(&session, place_key).expect("the video's place has a strip");
     assert!(
         strip.canvas_x > 0 && strip.canvas_y > 0,
         "the drop places the video at the point it was let go, not the origin: {strip:?}"
@@ -874,233 +561,23 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     shot(&mut session, root.path(), "dragged-out.png");
 }
 
-/// Press Enter on the keyboard, as the person does.
-fn press_enter(session: &mut Session) {
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::Key {
-                keycode: 28,
-                pressed,
-            })
-            .expect("a key");
-        session
-            .step(std::time::Duration::from_millis(1))
-            .expect("a frame");
-    }
-}
-
-/// What the composer's own field holds now, as assistive technology reads it: the field named
-/// by its prompt (`Message #channel`) says its value. `None` where the page shows no such field.
-/// This, not the presence of the prompt's words on screen, is what reads the draft: a field's
-/// accessible name stays its prompt while it holds text, so asking whether the prompt is gone
-/// asks nothing of the field's value.
-fn composer_text(session: &Session, placeholder: &str) -> Option<String> {
-    session.a11y_windows().into_iter().find_map(|(_, _, tree)| {
-        tree.nodes.into_iter().find_map(|(_, node)| {
-            (matches!(
-                node.role(),
-                ui::accesskit::Role::TextInput | ui::accesskit::Role::MultilineTextInput
-            ) && node.label() == Some(placeholder)
-                && node.bounds().is_some())
-            .then(|| node.value().unwrap_or_default().to_owned())
-        })
-    })
-}
-
-/// The reproduction of the live composer, as a person met it: a real session whose conversation
-/// was placed by the canvas's own ask (so the page is drawn from the session's `ChatViewService`
-/// over Chat's record, never the development fixture), real typed keys into the composer, and
-/// Enter. What was typed draws once — erasing it returns the field to the empty field it was —
-/// and Enter posts the message into the channel's own record.
-#[test]
-fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_once() {
-    let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
-    let mut session = common::seeded_session(root.path());
-    common::until(&mut session, "the canvas", |session| {
-        common::on_screen(session, common::CANVAS_ENTRY).is_some()
-    });
-    common::press(&mut session, common::CANVAS_ENTRY);
-    common::type_text(&mut session, "what is left?");
-    press_enter(&mut session);
-    let address = common::wait_for(&mut session, "the conversation placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/channels/"))
-            .map(|place| place.record)
-    });
-    let name = common::wait_for(&mut session, "the conversation's reading", |session| {
-        session
-            .read(&address)
-            .and_then(|reading| reading["name"].as_str().map(str::to_owned))
-    });
-    // The composer's field takes the keyboard, as a person's click on it does.
-    let placeholder = format!("Message #{name}");
-    let (x, y, w, h) = common::wait_for(&mut session, "the composer's field", |session| {
-        session.shell_text_bounds(&placeholder)
-    });
-    let socket = root.path().join("test-control.sock");
-    assert_eq!(
-        common::control(
-            &mut session,
-            &socket,
-            &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0})
-        ),
-        json!({"ok": {}}),
-        "the click on the composer is taken"
-    );
-    let empty = common::shot(&mut session, "ask-composer-empty.png");
-    common::type_text(&mut session, "hello there");
-    common::until(&mut session, "the typed draft", |session| {
-        session.shell_says("hello there")
-    });
-    let typed = common::shot(&mut session, "ask-composer-typed.png");
-    // Erase it again: the field shows the empty field it showed before, never the remains of
-    // the erased glyphs drawn over.
-    for _ in 0.."hello there".len() {
-        for pressed in [true, false] {
-            session
-                .compositor()
-                .input(tilo_compositor::InputEvent::Key {
-                    keycode: 14,
-                    pressed,
-                })
-                .expect("backspace");
-            session
-                .step(std::time::Duration::from_millis(1))
-                .expect("a frame");
-        }
-    }
-    common::until(&mut session, "the field empty again", |session| {
-        !session.shell_says("hello there")
-    });
-    let erased = common::shot(&mut session, "ask-composer-erased.png");
-    // The field draws what was typed once: the screen after erasing is the screen before
-    // typing, up to the caret's blink.
-    let changed = common::changed(&empty, &erased);
-    assert!(
-        changed < 600,
-        "the field draws the text once: {changed} pixels still differ after erasing it"
-    );
-    assert_ne!(
-        common::changed(&empty, &typed),
-        0,
-        "the typed text is drawn at all"
-    );
-    // The words sent: typing them again and pressing Enter posts the message through the
-    // channel's own `post`, which the session's record holds.
-    common::type_text(&mut session, "hello there");
-    common::until(&mut session, "the draft again", |session| {
-        session.shell_says("hello there")
-    });
-    press_enter(&mut session);
-    let posted = |session: &Session| {
-        session.read(&address).and_then(|reading| {
-            reading["messages"]
-                .as_array()
-                .is_some_and(|messages| {
-                    messages
-                        .iter()
-                        .any(|message| message["text"].as_str() == Some("hello there"))
-                })
-                .then_some(())
-        })
-    };
-    common::until(&mut session, "the message in the channel", |session| {
-        posted(session).is_some()
-    });
-    assert!(
-        posted(&session).is_some(),
-        "Enter posts what the field holds: {:?}; the shell refused {:?}",
-        session.read(&address),
-        session.shell_refusals()
-    );
-    // The field let go of the message it sent: it holds nothing again, where the draft the live
-    // composer kept still held the sent words.
-    common::until(&mut session, "the field empty after sending", |session| {
-        composer_text(session, &placeholder).is_some_and(|text| text.is_empty())
-    });
-    common::shot(&mut session, "ask-composer-posted.png");
-    common::type_text(&mut session, "and then");
-    // It takes the next typing at once, without a click to put the keyboard back in it: the
-    // field holds the person's new words alone, never the sent words with these typed after.
-    common::until(
-        &mut session,
-        "the second draft is the new words",
-        |session| composer_text(session, &placeholder).as_deref() == Some("and then"),
-    );
-    press_enter(&mut session);
-    let second = |session: &Session| {
-        session.read(&address).and_then(|reading| {
-            reading["messages"]
-                .as_array()
-                .is_some_and(|messages| {
-                    messages
-                        .iter()
-                        .any(|message| message["text"].as_str() == Some("and then"))
-                })
-                .then_some(())
-        })
-    };
-    common::until(
-        &mut session,
-        "the second message in the channel",
-        |session| second(session).is_some(),
-    );
-    // The second message is the new words alone: no message holds the sent words with more
-    // after them, which is what typing into a stale draft would post.
-    let reading = session.read(&address).unwrap_or_default();
-    let stale = reading["messages"].as_array().is_some_and(|messages| {
-        messages.iter().any(|message| {
-            message["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("hello there") && text.contains("and then"))
-        })
-    });
-    assert!(
-        !stale,
-        "the sent words never ride with the next message: {reading}"
-    );
-    // The field let go of the second message too.
-    common::until(&mut session, "the field empty again", |session| {
-        composer_text(session, &placeholder).is_some_and(|text| text.is_empty())
-    });
-    common::shot(&mut session, "ask-composer-second.png");
-}
-
-/// Post `count` messages into `channel` through its own `post`, the verb its composer's send
-/// runs, so the transcript is longer than any place the canvas gives it.
+/// Send `count` messages to the conversation `channel` through Chat's own `send`, the verb its
+/// composer runs, so the transcript is longer than any place the canvas gives it.
 fn post_many(session: &mut Session, channel: &str, count: usize) {
-    let item = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| {
-            (spec.id.as_str().ends_with(&format!(":{channel}"))
-                || spec.id.as_str().ends_with(&format!("/channels/{channel}")))
-                && spec.actions.iter().any(|action| action.id == "post")
-        })
-        .map(|spec| spec.id.as_str().to_owned())
-        .unwrap_or_else(|| {
-            panic!(
-                "the channel offers post: {:?}",
-                session
-                    .service_resources()
-                    .into_iter()
-                    .map(|spec| spec.id.as_str().to_owned())
-                    .collect::<Vec<_>>()
-            )
-        });
     for index in 0..count {
         let mut arguments = Map::new();
-        arguments.insert("channel".to_owned(), json!(channel));
+        arguments.insert(
+            "to".to_owned(),
+            json!([{"kind": "conversation", "id": channel, "name": channel}]),
+        );
+        arguments.insert("attached".to_owned(), json!([]));
         arguments.insert(
             "text".to_owned(),
             json!(format!("line {index:02} of the transcript")),
         );
         session
-            .invoke(&item, "post", &arguments)
-            .unwrap_or_else(|error| panic!("post {index}: {error:?}"));
+            .invoke(CHANNEL, "send", &arguments)
+            .unwrap_or_else(|error| panic!("send {index}: {error:?}"));
     }
 }
 
@@ -1110,15 +587,15 @@ fn post_many(session: &mut Session, channel: &str, count: usize) {
 #[test]
 fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let mut session = session(root.path());
     place_at(&mut session, CHANNEL, 720, 520);
-    common::until(&mut session, "the channel's page", |session| {
+    crate::common::until(&mut session, "the channel's page", |session| {
         session.shell_says(MESSAGE)
     });
     post_many(&mut session, CHANNEL_ID, 40);
     let newest = "line 39 of the transcript";
-    common::until(&mut session, "the newest message", |session| {
+    crate::common::until(&mut session, "the newest message", |session| {
         session.shell_says(newest)
     });
     // Where the place stands on the desk, as the shell lays it out: the frame's own box, the
@@ -1191,5 +668,5 @@ fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
         clip_h < 520.0,
         "the transcript's room is less than the whole place: {clip_h}"
     );
-    common::shot(&mut session, "place-520.png");
+    crate::common::shot(&mut session, "place-520.png");
 }

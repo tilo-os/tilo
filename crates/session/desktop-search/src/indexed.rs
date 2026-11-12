@@ -36,6 +36,45 @@ const MAX_HITS: usize = 256;
 /// without scrolling.
 const MAX_RECIPIENTS: usize = 12;
 
+/// How well a recipient answers what was typed into a box, best last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Standing {
+    /// The text matched something else it says.
+    Text,
+    /// A conversation the text matched.
+    Conversation,
+    /// A word of its name starts with what was typed.
+    WordPrefix,
+    /// Its name starts with what was typed.
+    Prefix,
+    /// It is called what was typed.
+    Exact,
+}
+
+impl Standing {
+    fn of(needle: &str, recipient: &ui::floating_surface::Recipient) -> Self {
+        let needle = needle.to_lowercase();
+        let name = recipient.name.to_lowercase();
+        if needle.is_empty() {
+            return Self::Text;
+        }
+        if name == needle {
+            Self::Exact
+        } else if name.starts_with(&needle) {
+            Self::Prefix
+        } else if name
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word.starts_with(&needle))
+        {
+            Self::WordPrefix
+        } else if recipient.kind == ui::floating_surface::RecipientKind::Conversation {
+            Self::Conversation
+        } else {
+            Self::Text
+        }
+    }
+}
+
 /// The conversation a `chat.workspace/channels/<id>` row keeps.
 fn conversation_id(resource: &str) -> Option<&str> {
     let id = resource.rsplit_once('/')?.1;
@@ -272,10 +311,16 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
 }
 
 /// What running `entry` of `slot` invokes: the entry's own action, else
-/// the app's `open` at the entry's resource.
+/// the app's `open` at the entry's resource. An `open` of another resource
+/// (the record holding the entry's item) is told the entry's resource as
+/// the item to show, which no window of the app may show yet.
 #[must_use]
 pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
     match &entry.action {
+        Some(action) if action.action == OPEN_ACTION && action.resource != entry.resource => {
+            InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
+                .with_argument(OPEN_ANCHOR, entry.resource.clone())
+        }
         Some(action) => {
             InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
         }
@@ -291,10 +336,13 @@ pub struct IndexedContent {
     /// held by one thread.
     snapshot: Mutex<Option<Arc<Snapshot>>>,
     /// An app's name as the person knows it.
-    app_name: Box<dyn Fn(&str) -> String + Send + Sync>,
+    app_name: Arc<dyn Fn(&str) -> String + Send + Sync>,
     /// The person searching, by their id: a row of what they keep says
     /// "you" rather than their name.
     person: String,
+    /// The one app whose entries this source is over, when it is a window's
+    /// search: what that app holds, and nothing of another's.
+    app: Option<String>,
 }
 
 impl IndexedContent {
@@ -308,8 +356,35 @@ impl IndexedContent {
         Self {
             index,
             snapshot: Mutex::new(None),
-            app_name: Box::new(app_name),
+            app_name: Arc::new(app_name),
             person: person.into(),
+            app: None,
+        }
+    }
+
+    /// This source over what `app` alone published: what a window's search
+    /// finds in the app it shows, whether or not the app is running.
+    #[must_use]
+    pub fn for_app(&self, app: &str) -> Self {
+        Self {
+            index: Arc::clone(&self.index),
+            snapshot: Mutex::new(None),
+            app_name: Arc::clone(&self.app_name),
+            person: self.person.clone(),
+            app: Some(app.to_owned()),
+        }
+    }
+
+    /// What this source searches: every app's entries, or the one app's.
+    fn contents(&self) -> Contents {
+        let contents = self.index.contents();
+        let Some(app) = self.app.as_deref() else {
+            return contents;
+        };
+        let mine = |indexed: &&IndexedEntry| indexed.slot.app == app;
+        Contents {
+            visible: contents.visible.iter().filter(mine).cloned().collect(),
+            locked: contents.locked.iter().filter(mine).cloned().collect(),
         }
     }
 
@@ -329,7 +404,7 @@ impl IndexedContent {
                 // Read the generation before the contents: a change landing
                 // between them leaves this snapshot stale, never stamped
                 // current.
-                let snapshot = Arc::new(Snapshot::new(generation, self.index.contents()));
+                let snapshot = Arc::new(Snapshot::new(generation, self.contents()));
                 *slot = Some(Arc::clone(&snapshot));
                 snapshot
             }
@@ -546,7 +621,8 @@ impl IndexedContent {
     fn unlock_row(&self, app: &str, needle: &str, score: i32) -> Hit {
         let name = (self.app_name)(app);
         Hit {
-            row: None,
+            // The row says what was typed back, in quotes: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -604,10 +680,11 @@ impl IndexedContent {
 
     /// The agents, people and conversations `needle` names, as a box that
     /// sends a message lists whom it could go to: found by the same index the
-    /// palette reads, the app's own ranking first and, among equals, what it
-    /// says of when — the most recent at the top. An empty `needle` lists
-    /// what the workspace holds, the most recent first, which is what a box
-    /// opens on before anything is typed.
+    /// palette reads. What is called exactly what was typed comes first, then
+    /// what a name starts with it, then the conversations it matches, the
+    /// most recent first, and then the rest by the index's own ranking. An
+    /// empty `needle` lists what the workspace holds, the most recent first,
+    /// which is what a box opens on before anything is typed.
     #[must_use]
     pub fn recipients(&self, needle: &str) -> Vec<ui::floating_surface::Recipient> {
         let snapshot = self.current();
@@ -632,21 +709,32 @@ impl IndexedContent {
                 })
                 .collect()
         };
-        let mut found: Vec<(i32, i64, ui::floating_surface::Recipient)> = matches
+        let mut found: Vec<(Standing, i32, i64, ui::floating_surface::Recipient)> = matches
             .into_iter()
             .filter_map(|(score, indexed)| {
                 let recipient = self.recipient(indexed)?;
                 let when = indexed.entry.when.unwrap_or(i64::MIN);
-                Some((score, when, recipient))
+                let standing = Standing::of(needle, &recipient);
+                // Among conversations the most recent leads, whatever the text scored.
+                let score = if standing == Standing::Conversation {
+                    0
+                } else {
+                    score
+                };
+                Some((standing, score, when, recipient))
             })
             .collect();
-        // The best match first, and among what matches as well the most recent
-        // comes first; the sort is stable, so the app's own order settles the
-        // rest.
-        found.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
+        // The sort is stable, so the app's own order settles what is equal.
+        found.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then(right.1.cmp(&left.1))
+                .then(right.2.cmp(&left.2))
+        });
         let mut seen: HashSet<(ui::floating_surface::RecipientKind, String)> = HashSet::new();
         let mut out: Vec<ui::floating_surface::Recipient> = Vec::new();
-        for (_, _, recipient) in found {
+        for (_, _, _, recipient) in found {
             if seen.insert((recipient.kind, recipient.id.clone())) {
                 out.push(recipient);
             }
@@ -771,7 +859,7 @@ impl Source for IndexedContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::search::index_publication::{IndexState, Publisher};
+    use ui::search::index_publication::{IndexAction, IndexState, Publisher};
 
     fn note(key: &str, title: &str, secret: bool) -> IndexEntry {
         IndexEntry {
@@ -811,6 +899,60 @@ mod tests {
                 )
                 .expect("the index takes the delta");
         }
+    }
+
+    /// A window's search is over the one app it shows: what that app published, never another's.
+    #[test]
+    fn a_window_reads_only_its_own_apps_entries() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![note("c_voice", "voice", false)],
+        );
+        publish(
+            &index,
+            "so.tilo.mail",
+            None,
+            vec![note("inbox", "Inbox", false)],
+        );
+        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+        let window = content.for_app("so.tilo.chat");
+        assert_eq!(window.query("voice").len(), 1);
+        assert!(
+            window.query("inbox").is_empty(),
+            "another app's entry is not the window's"
+        );
+        assert_eq!(
+            content.query("inbox").len(),
+            1,
+            "the whole index still finds it"
+        );
+    }
+
+    /// An item's entry names the `open` of the record holding it, which every window showing
+    /// anything of the record publishes, and the hit tells that `open` the item: one no window
+    /// shows still opens.
+    #[test]
+    fn a_hit_on_an_item_asks_its_record_to_open_it() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut task = note("tl:tasks:doc/t1", "Book the ferry", false);
+        task.action = Some(IndexAction {
+            resource: "tl:tasks:doc".into(),
+            action: OPEN_ACTION.into(),
+        });
+        publish(&index, "tasks", None, vec![task]);
+        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+        let hits = content.query("ferry");
+        let Target::Invoke(target) = &hits[0].target else {
+            panic!("an entry runs its record's open");
+        };
+        assert_eq!(
+            target.address,
+            tilo_actions::ActionAddress::new("tl:tasks:doc", OPEN_ACTION)
+        );
+        assert_eq!(target.arguments[OPEN_ANCHOR], "tl:tasks:doc/t1");
     }
 
     #[test]
@@ -989,7 +1131,7 @@ mod tests {
         publish(content.index(), "so.tilo.chat", None, vec![kept]);
         let hits = other.query("ada");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Agent · kept by Sam"));
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by Sam"));
     }
 
     #[test]
@@ -1126,6 +1268,66 @@ mod tests {
         );
     }
 
+    /// Of a workspace's 55 agents, the one called what was typed leads, then
+    /// those whose name starts with it, then those with a word that does; a
+    /// conversation that matches some other way comes before an agent that
+    /// does, the most recent first.
+    #[test]
+    fn a_box_finds_an_agent_by_name_among_many() {
+        use ui::floating_surface::{Recipient, RecipientKind};
+
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut entries = Vec::new();
+        let mut agent = |id: &str, name: &str, when: i64| {
+            let mut entry = shaped(
+                note(&format!("chat.agent/agents/{id}"), name, false),
+                IndexKind::Agent,
+                vec![person(name, &format!("agent:{id}"), "", true)],
+            );
+            entry.when = Some(when);
+            entries.push(entry);
+        };
+        for number in 0..52 {
+            agent(
+                &format!("a_{number}"),
+                &format!("Helper {number}"),
+                100 + i64::from(number),
+            );
+        }
+        agent("a_weekly", "Weekly digest", 1);
+        agent("a_digester", "Digester", 2);
+        agent("a_digest", "Digest", 3);
+        publish(&index, "so.tilo.chat", None, entries);
+        let content = IndexedContent::new(index, str::to_owned, "u_me");
+
+        let ids = |found: Vec<Recipient>| -> Vec<String> {
+            found.into_iter().map(|recipient| recipient.id).collect()
+        };
+        assert_eq!(
+            ids(content.recipients("Digest"))[..3],
+            ["a_digest", "a_digester", "a_weekly"]
+        );
+        assert_eq!(
+            ids(content.recipients("helper 7"))
+                .first()
+                .map(String::as_str),
+            Some("a_7")
+        );
+        assert_eq!(ids(content.recipients("helper 4"))[0], "a_4");
+
+        let conversation = |name: &str| Recipient::found(RecipientKind::Conversation, "c", name);
+        let named = |name: &str| Recipient::found(RecipientKind::Agent, "a", name);
+        assert!(
+            Standing::of("ada", &conversation("Design crit"))
+                > Standing::of("ada", &named("Reviewer"))
+        );
+        assert!(
+            Standing::of("ada", &named("Ada's helper"))
+                > Standing::of("ada", &conversation("Crit"))
+        );
+        assert!(Standing::of("ada", &named("Ada")) > Standing::of("ada", &named("Adam")));
+    }
+
     #[test]
     fn a_message_says_who_said_it_where_and_when() {
         let index = Arc::new(AppContentIndex::in_memory());
@@ -1184,7 +1386,7 @@ mod tests {
             .expect("the message is found by what it says");
         assert_eq!(
             hit.subtitle.as_deref(),
-            Some(format!("Aria in Ada's design crit · {}", ui::format::relative(3600)).as_str())
+            Some(format!("Aria in Ada's design crit, {}", ui::format::relative(3600)).as_str())
         );
         assert!(
             hit.title.starts_with('\u{2026}'),

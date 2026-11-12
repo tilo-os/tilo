@@ -41,6 +41,7 @@ use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::i18n::ArgValue;
 use ui::time::Instant;
 
 use ui::ColorCompat;
@@ -82,6 +83,8 @@ use crate::model::{
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
+use crate::resource::CATALOG;
+mod semantics;
 mod window_bar;
 
 use crate::paint;
@@ -318,6 +321,19 @@ enum SettingsTab {
     Shortcuts,
 }
 
+impl SettingsTab {
+    /// The catalogue message naming this tab, painted on its strip and read
+    /// as its accessible name.
+    fn message_id(self) -> &'static str {
+        match self {
+            SettingsTab::Fonts => "ebook-tab-fonts",
+            SettingsTab::Colours => "ebook-tab-schemes",
+            SettingsTab::Library => "ebook-tab-library",
+            SettingsTab::Shortcuts => "ebook-tab-shortcuts",
+        }
+    }
+}
+
 /// Reader commands whose single-character bindings each person can tailor.
 /// Navigation keys (arrows/PageUp/PageDown) always remain available,
 /// so changing a binding can never strand a keyboard reader.
@@ -349,14 +365,14 @@ impl ReaderShortcut {
         }
     }
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::PreviousPage => "Previous page",
-            Self::NextPage => "Next page",
-            Self::Bookmark => "Bookmark page",
-            Self::Highlight => "Highlight selection",
-            Self::AddNote => "Add note",
-        }
+    fn label(self) -> String {
+        CATALOG.t(match self {
+            Self::PreviousPage => "ebook-action-previous-page",
+            Self::NextPage => "ebook-action-next-page",
+            Self::Bookmark => "ebook-bookmark-page",
+            Self::Highlight => "ebook-highlight-selection",
+            Self::AddNote => "ebook-add-note-button",
+        })
     }
 
     const fn default_key(self) -> &'static str {
@@ -1140,8 +1156,12 @@ pub struct BooksApp {
     shot_drawers: Option<(bool, bool)>,
     shelf_focus_visible: bool,
     /// A book dropped anywhere on the window opens like one chosen; one
-    /// dragged over it lights the shelf's add tile.
+    /// dragged over it lights the shelf's add tile. Only a device with a
+    /// pointer can drag one in, so a phone is never told to.
     file_open: ui::widget::FileOpenSurface,
+    /// How the person reaches the window, as the host reports it: what the
+    /// drop hint and the touch-sized targets read.
+    interaction: ui::interaction::InteractionEnvironment,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
@@ -1349,7 +1369,10 @@ impl BooksApp {
             renaming: None,
             number_controls: NumberControls::default(),
             color_picker: SchemeColorSheet::default(),
-            font_dropdown: HostedDropdown::new("books.settings.default-font", "Default font"),
+            font_dropdown: HostedDropdown::new(
+                "books.settings.default-font",
+                &crate::resource::CATALOG.t("ebook-settings-default-font"),
+            ),
             modal_actions: Vec::new(),
             modal_close: Rect::ZERO,
             library_prefs: crate::model::LibraryPrefs::default(),
@@ -1381,6 +1404,7 @@ impl BooksApp {
             shot_drawers: None,
             shelf_focus_visible: false,
             file_open: ui::widget::FileOpenSurface::default(),
+            interaction: ui::interaction::InteractionEnvironment::default(),
             layout: None,
             layouts: chapter_layouts::ChapterLayouts::default(),
             flow_complete: false,
@@ -2856,7 +2880,10 @@ impl BooksApp {
             let new_id = Self::fresh_id("scheme", &ids);
             let mut dup = src.clone();
             dup.id.clone_from(&new_id);
-            dup.name = format!("{} copy", src.name);
+            dup.name = CATALOG.t_args(
+                "ebook-scheme-copy",
+                &[("scheme", ArgValue::Text(src.title()))],
+            );
             dup.builtin = false;
             dup.enabled = true;
             let pos = sc
@@ -2929,7 +2956,7 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.name.clone())
+            .map(ColorScheme::title)
             .unwrap_or_default();
         let mut field = EditableLabel::new(&name).with_text_role(TextRole::Body);
         field.begin_edit();
@@ -3005,7 +3032,7 @@ impl BooksApp {
     fn on_begin_rename_font(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let entry = self.fonts.iter().find(|e| e.id == id);
-        let name = entry.map(|e| e.name.clone()).unwrap_or_default();
+        let name = entry.map(FontEntry::title).unwrap_or_default();
         // Render the rename field in the font's own face, so the name
         // is typeset in the typeface it selects while you edit it.
         let fam = entry.map_or(FontChoice::SansSerif, |e| font_choice(&e.kind));
@@ -3041,7 +3068,14 @@ impl BooksApp {
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
+                let name = CATALOG.t_args(
+                    "ebook-scheme-new",
+                    &[(
+                        "number",
+                        ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX))),
+                    )],
+                );
+                let scheme = ColorScheme::from_bg(&new_id, &name, edit.rgb);
                 self.edit(
                     doc,
                     Ebook::paths().schemes.insert_as(
@@ -3144,7 +3178,7 @@ impl BooksApp {
             .or_else(|| self.fonts.first())
             .cloned()
             .or_else(|| default_fonts().first().cloned())
-            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
+            .unwrap_or_else(|| FontEntry::builtin("default", FontKind::Default, 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -4110,321 +4144,6 @@ impl BooksApp {
 
     /// Stable identity for a painted affordance. Model identities are used in
     /// preference to display positions so an AT-held reference remains valid
-    /// when the shelf is sorted or annotations are reordered.
-    fn semantic_target(&self, action: &Action) -> Option<String> {
-        let target = match action {
-            Action::OpenBook(index) => format!("book.open:{}", self.shelf_book(*index)?.id),
-            Action::ShareToWorkspace(id) => format!("book.share:{id}"),
-            Action::RemoveFromLibrary(id) => format!("book.remove:{id}"),
-            Action::Back => "reader.back".into(),
-            Action::PrevPage => "reader.previous-page".into(),
-            Action::NextPage => "reader.next-page".into(),
-            Action::SeekProgress => "reader.progress".into(),
-            Action::GotoChapter(index) => format!("reader.chapter:{index}"),
-            Action::ToggleToc => "reader.contents".into(),
-            Action::ToggleNotes => "reader.annotations".into(),
-            Action::ToggleTypePopover => "reader.typography".into(),
-            Action::ToggleBookmark => "reader.bookmark".into(),
-            Action::FontInc => "reader.font-size.increment".into(),
-            Action::FontDec => "reader.font-size.decrement".into(),
-            Action::SpacingInc => "reader.line-spacing.increment".into(),
-            Action::SpacingDec => "reader.line-spacing.decrement".into(),
-            Action::CycleFont => "reader.font.next".into(),
-            Action::SetFont(id) => format!("reader.font:{id}"),
-            Action::SetReadTheme(theme) => format!("reader.theme:{}", theme.as_str()),
-            Action::SetMode(mode) => format!("reader.mode:{}", mode.as_str()),
-            Action::SetComposition(style) => format!("reader.composition:{}", style.as_str()),
-            Action::SetColor(color) => format!("reader.highlight:{color:?}"),
-            Action::AddNote => "reader.add-note".into(),
-            Action::CopySelection => "reader.copy-selection".into(),
-            Action::JumpTo(id) => format!("annotation.reveal:{id}"),
-            Action::Delete(id) => format!("annotation.delete:{id}"),
-            Action::EditNote(id) => format!("annotation.edit:{id}"),
-            Action::OpenComments(id) => format!("highlight.comments:{id}"),
-            Action::CloseComments => "highlight.comments.close".into(),
-            Action::DeleteHighlight(id) => format!("highlight.delete:{id}"),
-            Action::AddComment(id) => format!("highlight.comment.add:{id}"),
-            Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
-            Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
-            Action::OpenViaPortal => "library.open".into(),
-            Action::ToggleWatchFolder(path) => {
-                format!("library.watch:{}", ui::a11y::hash_key(path))
-            }
-            Action::ToggleKeepCatalogues => "library.keep-catalogues".into(),
-            Action::OpenSettings => "settings.open".into(),
-            Action::CloseSettings => "settings.close".into(),
-            Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
-            Action::BeginShortcutCapture(shortcut) => {
-                format!("settings.shortcut:{}", shortcut.id())
-            }
-            Action::SetScheme(id) => format!("settings.scheme.select:{id}"),
-            Action::ToggleSchemeEnabled(id) => format!("settings.scheme.enabled:{id}"),
-            Action::DuplicateScheme(id) => format!("settings.scheme.duplicate:{id}"),
-            Action::DeleteScheme(id) => format!("settings.scheme.delete:{id}"),
-            Action::EditScheme(id) => format!("settings.scheme.edit:{id}"),
-            Action::CloseSchemeEditor => "settings.scheme-editor.close".into(),
-            Action::NewSchemeViaPicker => "settings.scheme.new".into(),
-            Action::PickSchemeColor(id, slot) => format!("settings.scheme.color:{id}:{slot}"),
-            Action::BeginRenameScheme(id) => format!("settings.scheme.rename:{id}"),
-            Action::ToggleFontShown(id) => format!("settings.font.shown:{id}"),
-            Action::RemoveFont(id) => format!("settings.font.remove:{id}"),
-            Action::OpenFontPicker => "settings.font.add".into(),
-            Action::CloseFontPicker => "settings.font-picker.close".into(),
-            Action::AddSystemFont(family) => {
-                format!("settings.font.add:{}", ui::a11y::hash_key(family))
-            }
-            Action::BeginRenameFont(id) => format!("settings.font.rename:{id}"),
-            Action::OpenHit(anchor) => format!("search.open:{anchor}"),
-            Action::GetBook(id) => format!("search.get:{id}"),
-            Action::RetryRemote(source) => format!("search.retry:{}", ui::a11y::hash_key(source)),
-            Action::CloseSearch => "search.back".into(),
-            Action::DismissOverlay
-            | Action::Swallow
-            | Action::SetQuery(_)
-            | Action::OpenFacet(_) => return None,
-        };
-        Some(format!("books.{target}"))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the exhaustive action-to-accessible-label mapping is intentionally co-located"
-    )]
-    fn semantic_label(&self, action: &Action) -> String {
-        match action {
-            Action::OpenBook(index) => self
-                .shelf_book(*index)
-                .map_or_else(|| "Open book".into(), |book| format!("Open {}", book.title)),
-            Action::ShareToWorkspace(id) => {
-                self.library.iter().find(|book| book.id == *id).map_or_else(
-                    || "Share book with workspace".into(),
-                    |book| format!("Share {} with workspace", book.title),
-                )
-            }
-            Action::RemoveFromLibrary(id) => {
-                self.library.iter().find(|book| book.id == *id).map_or_else(
-                    || "Remove book from library".into(),
-                    |book| format!("Remove {} from library", book.title),
-                )
-            }
-            Action::Back | Action::CloseSettings => "Back to library".into(),
-            Action::PrevPage => "Previous page".into(),
-            Action::NextPage => "Next page".into(),
-            Action::SeekProgress => {
-                format!(
-                    "Reading progress: {}",
-                    progress_label(self.reading_progress)
-                )
-            }
-            Action::GotoChapter(index) => self
-                .open_book()
-                .and_then(|book| book.chapters.get(*index))
-                .map_or_else(
-                    || format!("Go to chapter {}", index + 1),
-                    |c| c.title.clone(),
-                ),
-            Action::ToggleToc => "Contents".into(),
-            Action::ToggleNotes => "Annotations".into(),
-            Action::ToggleTypePopover => "Reading appearance".into(),
-            Action::ToggleBookmark => "Bookmark this page".into(),
-            Action::FontInc => "Increase text size".into(),
-            Action::FontDec => "Decrease text size".into(),
-            Action::SpacingInc => "Increase line spacing".into(),
-            Action::SpacingDec => "Decrease line spacing".into(),
-            Action::CycleFont => "Use next typeface".into(),
-            Action::SetFont(id) => self
-                .fonts
-                .iter()
-                .find(|font| font.id == *id)
-                .map_or_else(|| id.clone(), |font| font.name.clone()),
-            Action::SetReadTheme(theme) => format!("{} reading theme", theme.label()),
-            Action::SetMode(mode) => format!("{} layout", mode.label()),
-            Action::SetComposition(style) => format!("{} text", style.label()),
-            Action::SetColor(color) => format!("Highlight {color:?}").to_lowercase(),
-            Action::AddNote => "Add note".into(),
-            Action::CopySelection => "Copy selected text".into(),
-            Action::JumpTo(id) => self.annotation_label(*id, "Reveal annotation"),
-            Action::Delete(id) => self.annotation_label(*id, "Delete annotation"),
-            Action::EditNote(id) => self.annotation_label(*id, "Edit note"),
-            Action::OpenComments(_) => "Open highlight comments".into(),
-            Action::CloseComments => "Close comments".into(),
-            Action::DeleteHighlight(_) => "Delete highlight".into(),
-            Action::AddComment(_) => "Add comment".into(),
-            Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
-            Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
-            Action::OpenViaPortal => "Open book".into(),
-            Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
-            Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
-            Action::OpenSettings => "Book settings".into(),
-            Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
-            Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
-            Action::SetSettingsTab(SettingsTab::Library) => "Library folders".into(),
-            Action::SetSettingsTab(SettingsTab::Shortcuts) => "Keyboard shortcuts".into(),
-            Action::BeginShortcutCapture(shortcut) => {
-                if self.shortcut_capture == Some(*shortcut) {
-                    self.shortcut_capture_error.clone().map_or_else(
-                        || format!("Press a key for {}; Escape cancels", shortcut.label()),
-                        |error| format!("{}: {error}", shortcut.label()),
-                    )
-                } else {
-                    format!(
-                        "Change {} shortcut, currently {}",
-                        shortcut.label(),
-                        self.reader_keys
-                            .shortcut(shortcut.id(), shortcut.default_key())
-                    )
-                }
-            }
-            Action::SetScheme(id) => self.scheme_name(id),
-            Action::ToggleSchemeEnabled(id) => format!("Show {} in reader", self.scheme_name(id)),
-            Action::DuplicateScheme(id) => format!("Duplicate {}", self.scheme_name(id)),
-            Action::DeleteScheme(id) => format!("Delete {}", self.scheme_name(id)),
-            Action::EditScheme(id) => format!("Edit {}", self.scheme_name(id)),
-            Action::CloseSchemeEditor => "Done editing theme".into(),
-            Action::NewSchemeViaPicker => "New colour theme".into(),
-            Action::PickSchemeColor(id, slot) => format!(
-                "Edit {} {} colour",
-                self.scheme_name(id),
-                ["page", "text", "accent"]
-                    .get(*slot)
-                    .copied()
-                    .unwrap_or("custom")
-            ),
-            Action::BeginRenameScheme(id) => format!("Rename {}", self.scheme_name(id)),
-            Action::ToggleFontShown(id) => format!("Show {} in reader", self.font_name(id)),
-            Action::RemoveFont(id) => format!("Remove {}", self.font_name(id)),
-            Action::OpenFontPicker => "Add font".into(),
-            Action::CloseFontPicker => "Close font picker".into(),
-            Action::AddSystemFont(family) => format!("Add {family}"),
-            Action::BeginRenameFont(id) => format!("Rename {}", self.font_name(id)),
-            Action::OpenHit(anchor) => self
-                .query
-                .label_of(anchor)
-                .map_or_else(|| "Open result".into(), str::to_owned),
-            Action::GetBook(id) => self
-                .query
-                .label_of(&format!("gutenberg:{id}"))
-                .map_or_else(|| "Get book".into(), str::to_owned),
-            Action::RetryRemote(_) => ui::i18n::I18nManager::lookup_plain("arriving-retry"),
-            Action::CloseSearch => "Back".into(),
-            Action::DismissOverlay
-            | Action::Swallow
-            | Action::SetQuery(_)
-            | Action::OpenFacet(_) => String::new(),
-        }
-    }
-
-    /// Refresh the hover description from the topmost live hit. The reader
-    /// draws several icon-only affordances on a narrow viewport, and a hit can
-    /// also be covered by a modal; using the final hit stack means the tooltip
-    /// always names the action that would actually receive a click.
-    fn refresh_hover_tooltip(&mut self) {
-        self.hover_tooltip = self
-            .hits
-            .iter()
-            .rev()
-            .find(|hit| hit.rect.contains(self.cursor))
-            .map(|hit| self.semantic_label(&hit.action))
-            .filter(|label| !label.is_empty());
-    }
-
-    fn annotation_label(&self, id: Uuid, fallback: &str) -> String {
-        self.all_annotations
-            .iter()
-            .find(|annotation| annotation.id == id)
-            .map_or_else(
-                || fallback.into(),
-                |annotation| {
-                    let note = annotation.note.clone();
-                    let text = if note.trim().is_empty() {
-                        annotation.excerpt.trim()
-                    } else {
-                        note.trim()
-                    };
-                    if text.is_empty() {
-                        fallback.into()
-                    } else {
-                        format!("{fallback}: {text}")
-                    }
-                },
-            )
-    }
-
-    fn font_name(&self, id: &str) -> String {
-        self.fonts
-            .iter()
-            .find(|font| font.id == id)
-            .map_or_else(|| id.to_string(), |font| font.name.clone())
-    }
-
-    fn scheme_name(&self, id: &str) -> String {
-        self.schemes
-            .iter()
-            .find(|scheme| scheme.id == id)
-            .map_or_else(|| id.to_string(), |scheme| scheme.name.clone())
-    }
-
-    fn semantic_role_state(&self, action: &Action) -> (Role, AccessState) {
-        let focused = self
-            .semantic_target(action)
-            .is_some_and(|target| self.semantic_focus.as_deref() == Some(&target));
-        let base = AccessState::new().focusable(true).focused(focused);
-        match action {
-            Action::SeekProgress => (Role::Slider, base),
-            Action::ToggleToc => (Role::ToggleButton, base.checked(self.toc_open())),
-            Action::ToggleNotes => (Role::ToggleButton, base.checked(self.notes_open())),
-            Action::ToggleTypePopover => (
-                Role::ToggleButton,
-                base.checked(self.reading_settings.is_open()),
-            ),
-            Action::ToggleBookmark => (Role::ToggleButton, base.checked(self.page_bookmarked())),
-            Action::SetSettingsTab(tab) => {
-                (Role::RadioButton, base.checked(self.settings_tab == *tab))
-            }
-            Action::SetReadTheme(theme) => (
-                Role::RadioButton,
-                base.checked(self.settings.theme == *theme && self.settings.scheme_id.is_empty()),
-            ),
-            Action::SetMode(mode) => (Role::RadioButton, base.checked(self.settings.mode == *mode)),
-            Action::SetComposition(style) => (
-                Role::RadioButton,
-                base.checked(self.settings.composition == *style),
-            ),
-            Action::SetFont(id) => (
-                Role::RadioButton,
-                base.checked(self.settings.font_id == *id),
-            ),
-            Action::SetScheme(id) => (
-                Role::RadioButton,
-                base.checked(self.settings.scheme_id == *id),
-            ),
-            Action::ToggleFontShown(id) => (
-                Role::Switch,
-                base.checked(
-                    self.fonts
-                        .iter()
-                        .find(|font| font.id == *id)
-                        .is_some_and(|f| f.shown),
-                ),
-            ),
-            Action::ToggleSchemeEnabled(id) => (
-                Role::Switch,
-                base.checked(
-                    self.schemes
-                        .iter()
-                        .find(|scheme| scheme.id == *id)
-                        .is_some_and(|s| s.enabled),
-                ),
-            ),
-            Action::ToggleWatchFolder(path) => (
-                Role::Checkbox,
-                base.checked(self.watched_folders.contains(path)),
-            ),
-            Action::ToggleKeepCatalogues => (Role::Switch, base.checked(self.keeps_catalogues())),
-            _ => (Role::Button, base),
-        }
-    }
-
     fn page_bookmarked(&self) -> bool {
         self.annotations.iter().any(|annotation| {
             annotation.kind == AnnoKind::Bookmark
@@ -4480,7 +4199,7 @@ impl BooksApp {
             .collect();
         let document = AccessNode::new(Role::Document)
             .with_name(chapter.title.clone())
-            .with_description("Current reading page")
+            .with_description(crate::resource::CATALOG.t("ebook-a11y-reading-page"))
             .with_state(AccessState::new().read_only(true))
             .with_children(children);
         Some(match page_bounds {
@@ -4544,7 +4263,10 @@ impl BooksApp {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("book");
-            let text = format!("Opening {name}");
+            let text = CATALOG.t_args(
+                "ebook-opening",
+                &[("name", ArgValue::Text(name.to_owned()))],
+            );
             loading
                 .card
                 .publish(|()| ToolbarNotice::new(text, ToastKind::Info));
@@ -4559,7 +4281,7 @@ impl BooksApp {
                 notice.action(ui::window_toolbar::ToolbarAction::new(
                     STORE_RETRY_ACTION,
                     "rotate-cw",
-                    "Try again",
+                    CATALOG.t("ebook-try-again"),
                 ))
             } else {
                 notice
@@ -4983,8 +4705,18 @@ impl Widget for BooksApp {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.hover_tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.hover_tooltip.as_deref().map(Into::into)
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
     }
 
     #[allow(
@@ -5031,9 +4763,7 @@ impl Widget for BooksApp {
                         "{}%",
                         (self.reading_progress * 100.0).round() as u8
                     ))
-                    .with_description(
-                        "Drag or use left and right arrow keys to move through the book",
-                    )
+                    .with_description(crate::resource::CATALOG.t("ebook-a11y-progress-hint"))
                 } else {
                     node
                 })
@@ -5051,8 +4781,14 @@ impl Widget for BooksApp {
             self.comment_overlay
                 .accessibility_nodes(&self.annotations, self.semantic_focus.as_deref())
         } else if self.reading_settings.is_open() {
+            let appearance = Appearance {
+                settings: &self.settings,
+                fonts: &self.fonts,
+                default_font_id: &self.default_font_id,
+                schemes: &self.schemes,
+            };
             self.reading_settings
-                .accessibility_nodes(&self.settings, self.semantic_focus.as_deref())
+                .accessibility_nodes(&appearance, self.semantic_focus.as_deref())
         } else {
             Vec::new()
         };
@@ -5074,7 +4810,7 @@ impl Widget for BooksApp {
                     RenameTarget::Scheme(id) => format!("books.rename.scheme:{id}"),
                 };
                 controls.push(
-                    node.with_name("Name")
+                    node.with_name(crate::resource::CATALOG.t("ebook-field-name"))
                         .with_bounds(rename.field.get_rect())
                         .with_action_target(target),
                 );
@@ -5082,13 +4818,22 @@ impl Widget for BooksApp {
         }
 
         let (name, description) = match self.view {
-            View::Library => ("Books library", "Browse and open books"),
-            View::Reader => ("Book reader", "Read and annotate the current book"),
-            View::Settings => (
-                "Book settings",
-                "Manage reading fonts, colours, and library folders",
+            View::Library => (
+                CATALOG.t("ebook-view-library"),
+                CATALOG.t("ebook-view-library-detail"),
             ),
-            View::Search => ("Search books", "Results in your books and the store"),
+            View::Reader => (
+                CATALOG.t("ebook-view-reader"),
+                CATALOG.t("ebook-view-reader-detail"),
+            ),
+            View::Settings => (
+                CATALOG.t("ebook-view-settings"),
+                CATALOG.t("ebook-view-settings-detail"),
+            ),
+            View::Search => (
+                CATALOG.t("ebook-view-search"),
+                CATALOG.t("ebook-view-search-detail"),
+            ),
         };
         let mut children = Vec::new();
         if !has_modal && let Some(document) = self.reading_document_node() {
@@ -5096,16 +4841,23 @@ impl Widget for BooksApp {
         }
         if !has_modal && self.view == View::Reader {
             if self.toc_open() {
-                children.push(AccessNode::new(Role::StaticText).with_name(format!(
-                    "Contents: chapter {} of {}. Scroll this list to browse every chapter.",
-                    self.chapter + 1,
-                    self.num_chapters()
+                children.push(AccessNode::new(Role::StaticText).with_name(CATALOG.t_args(
+                    "ebook-a11y-contents",
+                    &[
+                        ("chapter", ArgValue::Text((self.chapter + 1).to_string())),
+                        ("chapters", ArgValue::Text(self.num_chapters().to_string())),
+                    ],
                 )));
             }
             if self.notes_open() {
-                children.push(AccessNode::new(Role::StaticText).with_name(format!(
-                    "Annotations: {} total. Scroll this list to browse every annotation.",
-                    self.annotations.len()
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
+                )]
+                let number = self.annotations.len() as f64;
+                children.push(AccessNode::new(Role::StaticText).with_name(CATALOG.t_args(
+                    "ebook-a11y-annotations",
+                    &[("annotations", ArgValue::Number(number))],
                 )));
             }
         }
@@ -6227,9 +5979,9 @@ impl BooksApp {
                     self.shortcut_capture = None;
                     self.shortcut_capture_error = None;
                 } else if crate::reader_keys::reserved_reader_key(character.as_str()) {
-                    self.shortcut_capture_error = Some(format!(
-                        "{} is reserved for a built-in reader command. Choose another key.",
-                        key_legend(character.as_str())
+                    self.shortcut_capture_error = Some(CATALOG.t_args(
+                        "ebook-key-reserved",
+                        &[("key", ArgValue::Text(key_legend(character.as_str())))],
                     ));
                 } else {
                     self.shortcut_capture_error =
@@ -6850,15 +6602,12 @@ impl BooksApp {
             ctx.transform,
             &body,
         );
-        let count = match lib.len() {
-            1 => "1 book".to_string(),
-            n => format!("{n} books"),
-        };
+        let count = crate::resource::books_on_the_shelf(lib.len());
         let title_y = body.y0 + gutter - self.shelf_scroll;
         let title_bottom = Self::draw_page_title(
             ctx,
             Point::new(body.x0 + gutter, title_y),
-            "Library",
+            &CATALOG.t("ebook-tab-library"),
             Some(&count),
         );
         let grid_top = title_bottom + gutter;
@@ -6994,7 +6743,7 @@ impl BooksApp {
     fn draw_add_book_tile(&mut self, ctx: &mut PaintCtx<'_>, tile: Rect, body: Rect) {
         DropZoneFace::new("Add a book")
             .icon(Icon::Plus)
-            .message("Drop an EPUB here or choose one")
+            .message(&crate::resource::CATALOG.t("ebook-drop-epub"))
             .drag_over(self.file_open.is_hovering())
             .paint(ctx, tile, 0.0);
         let hit = tile.intersect(body);
@@ -7020,7 +6769,8 @@ impl BooksApp {
         };
         if let Some(action) = self
             .file_open
-            .paint(ctx, body, &content, self.cursor, false)
+            .paint(ctx, body, &content, self.cursor, false, self.interaction)
+            .action
         {
             self.push_hit(action, Action::OpenViaPortal);
         }
@@ -7364,17 +7114,14 @@ impl BooksApp {
         // Reading-settings floats above everything, anchored under the Aa
         // slot in the window's bar, and owns its own modal hit stack.
         let appearance_anchor = self.appearance_anchor(ctx.theme);
-        self.reading_settings.draw(
-            ctx,
-            self.rect,
-            appearance_anchor,
-            &Appearance {
-                settings: &self.settings,
-                fonts: &self.fonts,
-                default_font_id: &self.default_font_id,
-                schemes: &self.schemes,
-            },
-        );
+        let appearance = Appearance {
+            settings: &self.settings,
+            fonts: &self.fonts,
+            default_font_id: &self.default_font_id,
+            schemes: &self.schemes,
+        };
+        self.reading_settings
+            .draw(ctx, self.rect, appearance_anchor, &appearance);
 
         self.library = lib;
     }
@@ -8452,7 +8199,7 @@ impl BooksApp {
         self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
         let title_x = toggle.x1 + f64::from(spacing.rhythm.related);
         ctx.text_role_in_band(
-            "Contents",
+            &CATALOG.t("ebook-action-contents"),
             TextRole::Heading,
             theme.text_primary,
             title_x,
@@ -8548,27 +8295,28 @@ impl BooksApp {
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
         if has_sel {
             let height = ControlSize::Small.height(theme);
-            let width = button_width(ctx, "Add note", Some(Icon::Plus), ControlSize::Small);
+            let add_note = CATALOG.t("ebook-add-note-button");
+            let width = button_width(ctx, &add_note, Some(Icon::Plus), ControlSize::Small);
             let rect = Rect::new(x0, y, x0 + width, y + height);
             self.button(
                 ctx,
-                ButtonFace::new(rect, "Add note")
+                ButtonFace::new(rect, &add_note)
                     .icon(Icon::Plus)
                     .control_size(ControlSize::Small),
                 Action::AddNote,
             );
             y = rect.y1;
         } else {
-            let hint = "Select text in the book to highlight it or add a note.";
+            let hint = CATALOG.t("ebook-annotation-hint");
             let wrap = Some(ui::num::f32_of_f64((x1 - x0).max(1.0)));
             ctx.text_role(
-                hint,
+                &hint,
                 TextRole::Caption,
                 theme.text_dim,
                 Point::new(x0, y),
                 wrap,
             );
-            y += ctx.measure_role(hint, TextRole::Caption, wrap).height;
+            y += ctx.measure_role(&hint, TextRole::Caption, wrap).height;
         }
 
         let gap = f64::from(spacing.rhythm.sibling);
@@ -8643,12 +8391,9 @@ impl BooksApp {
             AnnoKind::Bookmark => ChipLead::None,
             _ => ChipLead::Dot(ReaderPalette::highlight_swatch(a.color)),
         };
-        ChipFace::new(layout.chip, a.kind.label()).lead(lead).paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-        );
+        ChipFace::new(layout.chip, &CATALOG.t(a.kind.message()))
+            .lead(lead)
+            .paint(ctx.scene, ctx.transform, ctx.text, theme);
         let caption = theme.text(TextRole::Caption);
         let locator = ctx.text.elide_to_width_style(
             &note.locator,
@@ -8690,8 +8435,12 @@ impl BooksApp {
         if layout.delete.intersect(list).height() > 0.0 {
             self.button(
                 ctx,
-                ButtonFace::icon_only(layout.delete, Icon::Trash2, "Delete annotation")
-                    .control_size(ControlSize::Small),
+                ButtonFace::icon_only(
+                    layout.delete,
+                    Icon::Trash2,
+                    &CATALOG.t("ebook-action-delete-annotation"),
+                )
+                .control_size(ControlSize::Small),
                 Action::Delete(a.id),
             );
         }
@@ -8702,7 +8451,7 @@ impl BooksApp {
 /// while it is being written), and where it is. The list sizes each card
 /// from the same measurement it paints.
 struct NoteCard {
-    kind: &'static str,
+    kind: String,
     /// The kind chip leads with the highlight's colour (not for bookmarks).
     dot: bool,
     excerpt: String,
@@ -8724,8 +8473,10 @@ struct NoteCardLayout {
 impl NoteCard {
     fn new(a: &Annotation, composing: Option<Uuid>) -> Self {
         let composing = composing == Some(a.id);
+        let chapter = f64::from(u32::try_from(a.chapter + 1).unwrap_or(u32::MAX));
+        let paragraph = f64::from(u32::try_from(a.block + 1).unwrap_or(u32::MAX));
         let excerpt = if a.excerpt.is_empty() {
-            "No passage".to_string()
+            CATALOG.t("ebook-no-passage")
         } else {
             format!("\u{201C}{}\u{201D}", a.excerpt)
         };
@@ -8735,11 +8486,17 @@ impl NoteCard {
             a.note.clone()
         };
         Self {
-            kind: a.kind.label(),
+            kind: CATALOG.t(a.kind.message()),
             dot: a.kind != AnnoKind::Bookmark,
             excerpt,
             text,
-            locator: format!("Chapter {}, paragraph {}", a.chapter + 1, a.block + 1),
+            locator: CATALOG.t_args(
+                "ebook-annotation-locator",
+                &[
+                    ("chapter", ui::i18n::ArgValue::Number(chapter)),
+                    ("paragraph", ui::i18n::ArgValue::Number(paragraph)),
+                ],
+            ),
             composing,
         }
     }
@@ -8758,7 +8515,7 @@ impl NoteCard {
         } else {
             ChipLead::None
         };
-        let chip_w = ChipFace::intrinsic_width(self.kind, lead, false, ctx.text, theme);
+        let chip_w = ChipFace::intrinsic_width(&self.kind, lead, false, ctx.text, theme);
         let chip_h = ChipFace::height(theme);
         let chip = Rect::new(
             body.x0,

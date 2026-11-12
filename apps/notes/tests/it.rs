@@ -65,6 +65,8 @@ mod responsive_drawer;
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
 mod scroll_stability;
+#[path = "sealed_pictures.rs"]
+mod sealed_pictures;
 #[path = "sidebar_actions.rs"]
 mod sidebar_actions;
 #[path = "sidebar_collab_growth.rs"]
@@ -109,6 +111,8 @@ mod canonical_views;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 
+#[path = "empty_desk_new_note.rs"]
+mod empty_desk_new_note;
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
 #[path = "note_context_menu.rs"]
@@ -117,6 +121,8 @@ mod note_context_menu;
 mod note_header;
 #[path = "note_reactions.rs"]
 mod note_reactions;
+#[path = "semantic_activation.rs"]
+mod semantic_activation;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
@@ -176,3 +182,8 @@ mod perf_interaction;
 
 #[path = "notion_import.rs"]
 mod notion_import;
+
+#[path = "desk_window_controls.rs"]
+mod desk_window_controls;
+#[path = "html_composition.rs"]
+mod html_composition;

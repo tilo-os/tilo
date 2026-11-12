@@ -72,6 +72,33 @@ pub fn load_root(
     Ok(Box::new(identity))
 }
 
+/// Sign a revocation of `device` with `root` and append it to the relay
+/// state's revocation log at `state_root`, where every start of the host reads
+/// it. Returns the entry as signed, and whether the log changed.
+///
+/// # Errors
+///
+/// Returns an error if the entry cannot be signed, or the log cannot be read
+/// or replaced.
+pub fn revoke_device(
+    state_root: &std::path::Path,
+    root: &ed25519_dalek::SigningKey,
+    device: [u8; 32],
+    reason: tilo_user_identity::RevocationReason,
+) -> anyhow::Result<(tilo_user_identity::RevocationEntry, bool)> {
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: device,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, root).context("sign the revocation")?;
+    let appended = crate::store::append_revocation(state_root, &entry)
+        .with_context(|| format!("append to {}", state_root.display()))?;
+    Ok((entry, appended))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

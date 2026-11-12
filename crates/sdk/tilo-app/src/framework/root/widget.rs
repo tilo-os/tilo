@@ -19,6 +19,7 @@ use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
 use ui_core::widget::capability::{Request, RequestMut};
 use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
+use ui_core::widget::decorator::Decorated;
 use ui_core::widget::empty_state::PaintedEmptyStates;
 use ui_core::widget::{AppKind, AppModel, AppWidget, Decorator, IconDescriptor, ModelPath, Widget};
 
@@ -192,6 +193,10 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn Decorated>() {
+            // The root stands for its view, which is no child of it: a control
+            // inventory walking widgets by their children asks for it here.
+            request.provide::<dyn Decorated>(self);
         } else if request.wants::<dyn ResourceOperations>() {
             request.provide::<dyn ResourceOperations>(self);
         } else {
@@ -206,6 +211,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn SearchSource>(self);
         } else if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
+        } else if request.wants::<dyn Decorated>() {
+            request.provide::<dyn Decorated>(self);
         } else if request.wants::<dyn ResourceOperations>() {
             request.provide::<dyn ResourceOperations>(self);
         } else {

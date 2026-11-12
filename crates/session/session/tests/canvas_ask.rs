@@ -3,21 +3,16 @@
 //!
 //! The canvas entry reads "Find something, or ask". A line that finds something
 //! places it, as it always did (`arrangement_placing.rs`). A line that is a
-//! question, or that names nothing, is not refused: the session posts it as the
-//! person into their ask conversation with the agent the workspace keeps, and
-//! that conversation stands where they typed, so the person sees what they asked
-//! in the place that asked it.
+//! question, or that names nothing, is the person's send to the agent they keep
+//! in the workspace: `session:send-to#send`, the one send a send-to box, an agent
+//! and a script run, so it lands in their conversation with the agent exactly as
+//! a box's message does, and Chat opens it.
 //!
-//! Every step here is the production path: the canvas entry's own
-//! `place-found` action on `shell:arrangement`, the session's Chat record opened
-//! through the same store every app of the workspace opens, and Chat's own
-//! `create-channel-with-id` and `post` on it. Nothing here writes Chat's state by
-//! hand; the record is read back from the store as a window would read it.
-//!
-//! What is stubbed: the agent itself. This file proves the ask reaches the
-//! conversation — the channel exists, it takes the kept agent as a participant,
-//! and it holds the person's message — which is exactly the turn
-//! `conversations.rs` derives and the broker delivers.
+//! Every step here is the production path: the canvas entry's own `place-found`
+//! action on `shell:arrangement`, typed and submitted with the keyboard, and the
+//! send as the session carries it out, read back from `session:send-to`'s own
+//! reading. Chat's process is not part of this session, so the message landing in
+//! the conversation is proven where Chat runs (the nested agent story).
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -25,68 +20,21 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use chat::Chat;
 use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{
-    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
+use crate::common::{
+    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until,
 };
-
-/// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and the one the session
-/// makes first when the workspace keeps none.
-const AGENT: &str = "assistant";
 
 /// Enter, the key that submits the canvas entry.
 const KEY_ENTER: u32 = 28;
-
-/// This computer as the person "Quinn Davis": a device of theirs, certified under the person's
-/// root key, kept in an identity root of the test's own — so the session seats them by their root
-/// key (64 hex characters, the id a real session's messages are authored by), not by a plain name.
-/// The kernel's own login name is what [`crate::common::PERSON`] cannot be here: the page must
-/// draw their display name, never the key.
-fn this_computer(env: &mut tilo_test_env::ScopedEnv, display_name: &str) -> tempfile::TempDir {
-    use tilo_user_identity::persist;
-
-    let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
-    let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
-    persist::write_device_key(&paths.device_privkey, &device).expect("this computer's device key");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "The laptop".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        issuer: None,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    persist::write_device_cert(&paths.device_cert, &cert).expect("this computer's certificate");
-    env.set("TILO_IDENTITY_ROOT", root.path());
-    // The name they go by, which the desktop shows them by everywhere: never their key.
-    ui::local_identity::install_source(Some(std::sync::Arc::new(
-        ui::local_identity::FixedIdentity(ui::local_identity::LocalIdentity {
-            group_public_key: cert.user_public_key,
-            display_name: display_name.to_owned(),
-            avatar_color: [40, 80, 120],
-        }),
-    )));
-    root
-}
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
@@ -95,7 +43,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(common::seeded_apps())],
+        services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -108,43 +56,12 @@ fn session(root: &std::path::Path) -> Session {
     session
 }
 
-/// The workspace in front, as its id.
-fn workspace(session: &Session) -> String {
-    session
-        .handle()
-        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
-        .expect("a workspace is in front")
-}
-
-/// Chat's record of the workspace in front, as this session holds it open: the same record the pass
-/// derives turns from, so a test reads it without opening a second writer on the store the session
-/// writes through.
-fn chat(session: &Session) -> Option<Chat> {
-    session.chat_of(&workspace(session))
-}
-
-/// The channels Chat's record holds, as `(id, participant keys)` .
-fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
-    chat.channels
-        .iter()
-        .map(|(id, channel)| {
-            (
-                id.as_str().to_owned(),
-                channel
-                    .participants
-                    .iter()
-                    .map(|key| key.0.clone())
-                    .collect(),
-            )
-        })
-        .collect()
-}
-
 /// Type `text` in the canvas entry and press Enter: the person asking, through the shell's own
 /// action.
 fn ask(session: &mut Session, text: &str) {
-    common::press(session, CANVAS_ENTRY);
-    common::type_text(session, text);
+    crate::common::press(session, CANVAS_ENTRY);
+    crate::common::type_text(session, text);
+    // Pressed and let go within a frame, as `type_text` types: held across one, Enter would repeat.
     for pressed in [true, false] {
         session
             .compositor()
@@ -153,991 +70,68 @@ fn ask(session: &mut Session, text: &str) {
                 pressed,
             })
             .expect("a key");
-        session.step(Duration::from_millis(1)).expect("a frame");
     }
+    session.step(Duration::from_millis(1)).expect("a frame");
 }
 
-/// What the person's ask made: the agent the workspace keeps, the message they asked on, the
-/// channel the answer lands in, and the reply Chat derives from the summons and the agent.
-struct Summons {
-    agent: String,
-    message: String,
-    channel: String,
-    reply: String,
-    item: String,
+/// The `n`th send the session carried out, as `session:send-to` reads, once it is there.
+fn sent(session: &mut Session, n: usize) -> serde_json::Value {
+    crate::common::wait_for(session, format!("send {n} to be carried out"), |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.get(n).cloned())
+    })
 }
 
-/// Ask `text` on the canvas and wait for the agent's turn: what the person's ask made, as the
-/// turn's reply and the item Chat publishes for the summons are addressed.
-fn asked(session: &mut Session, text: &str) -> Summons {
-    ask(session, text);
-    let workspace = workspace(session);
-    let runs = session.conversation_runs();
-    let turns = wait_for(session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        (!turns.is_empty()).then_some(turns)
-    });
-    let turn = &turns[0];
-    let (address, message) = turn
-        .issue
-        .rsplit_once("/messages/")
-        .expect("the issue names the conversation's message");
-    let channel = address.rsplit('/').next().unwrap_or_default().to_owned();
-    let agent = format!("agent:{}", turn.agent);
-    let reply = chat::record::reply_id(
-        &tilo_resource::Id::from_raw(message),
-        &format!("agent:{}", turn.agent),
-    );
-    Summons {
-        reply: reply.to_string(),
-        item: format!("chat.messages/messages/{message}"),
-        agent,
-        message: message.to_owned(),
-        channel,
-    }
-}
-
-/// The row the served page draws for `reply`, in the channel `channel`: the reply the agent's
-/// record made, read as the page reads it.
-fn reply_in_page(session: &Session, channel: &str, reply: &str) -> serde_json::Value {
-    let page = session
-        .read(&format!("chat.workspace/channels/{channel}"))
-        .unwrap_or_else(|| panic!("the session serves the channel {channel}"));
-    page["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages
-                .iter()
-                .find(|row| row["id"].as_str() == Some(reply))
-        })
-        .unwrap_or_else(|| panic!("the reply exists: {reply} in {page}"))
-        .clone()
-}
-
-/// A question typed into the canvas entry posts into the person's ask conversation with the agent
-/// the workspace keeps, and that conversation stands on the canvas where they typed.
+/// A question typed into the canvas entry is the person's send of those words to the workspace's
+/// agent: one where they keep none yet, named as the workspace names its agent. Nothing stands on
+/// the canvas for it — the conversation it lands in is Chat's to open.
 #[test]
-fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
+fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    let before: Vec<String> = chat(&session)
-        .map(|chat| channels(&chat).into_iter().map(|(id, _)| id).collect())
-        .unwrap_or_default();
+    let places = arrangement(&session).places.len();
 
     ask(&mut session, "what is on my task list?");
 
-    // A place stands that was not there, showing a channel of Chat's record: the
-    // ask conversation. The arrangement is read from the session's own desk,
-    // which is never a store read, so this wait never touches the store the
-    // session is writing through.
-    until(
-        &mut session,
-        "the ask conversation on the canvas",
-        |session| {
-            arrangement(session)
-                .places
-                .into_iter()
-                .any(|place| place.record.contains("/channels/"))
-        },
-    );
-    let placed = arrangement(&session)
-        .places
-        .into_iter()
-        .find(|place| place.record.contains("/channels/"))
-        .expect("a place shows a channel");
-    let channel = placed
-        .record
-        .rsplit('/')
-        .next()
-        .expect("the place shows a channel")
-        .to_owned();
-    assert!(
-        !before.contains(&channel),
-        "the conversation was not there before the ask: {before:?}"
-    );
-
-    // Chat's record holds it, with the agent a participant: the turn the broker
-    // delivers to that agent is the person's message in this channel.
-    let (_, participants) = channels(&chat(&session).expect("Chat's record"))
-        .into_iter()
-        .find(|(id, _)| *id == channel)
-        .expect("the channel is Chat's");
-    assert!(
-        participants.contains(&format!("agent:{AGENT}")),
-        "the agent takes part in the conversation it is asked in: {participants:?}"
-    );
-    assert!(
-        participants.contains(&format!("person:{PERSON}")),
-        "the person the conversation is with is a participant: {participants:?}"
-    );
-}
-
-/// The ask is the person's own arranging step, attributed to them.
-#[test]
-fn the_ask_is_the_persons_own_step() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-
-    let (who, verb) = wait_for(&mut session, "the arranging step", |session| {
-        session.arrangement().borrow_mut().last_step()
-    });
-    assert_eq!(who, PERSON, "the step is the person's own");
-    assert_eq!(verb, "place", "asking is one arranging step");
-}
-
-/// What the person asked gives the agent the workspace keeps a turn: the run the broker hands it,
-/// read from the same source the broker reads (shell.md §8.1). The turn is the person's message,
-/// with the agent's id and the conversation's address, so the agent answering is answering this ask.
-#[test]
-fn the_ask_gives_the_kept_agent_a_turn() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let workspace = workspace(&session);
-    let runs = session.conversation_runs();
-
-    let turns = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        (!turns.is_empty()).then_some(turns)
-    });
-    assert_eq!(turns.len(), 1, "one ask is one turn: {turns:?}");
-    let turn = &turns[0];
-    assert_eq!(turn.agent, AGENT, "the agent the ask made is the one");
+    let first = sent(&mut session, 0);
+    assert_eq!(first["text"], "what is on my task list?", "{first}");
+    let to = first["to"].as_array().expect("whom it went to");
+    assert_eq!(to.len(), 1, "one agent is asked: {first}");
     assert_eq!(
-        turn.instruction, "what is on my task list?",
-        "the turn is what the person asked"
+        to[0]["kind"], "new-agent",
+        "the person kept no agent yet: {first}"
     );
-    let (address, message) = turn
-        .issue
-        .rsplit_once("/messages/")
-        .expect("the issue names the conversation's message");
-    assert!(
-        address.starts_with("chat.workspace/channels/"),
-        "the turn is in the conversation Chat holds: {address}"
-    );
+    assert_eq!(to[0]["name"], "Assistant", "{first}");
     assert_eq!(
-        turn.turn.as_ref().map(|turn| turn.message.as_str()),
-        Some(message),
-        "the turn answers that message"
+        arrangement(&session).places.len(),
+        places,
+        "the ask stands no place of its own on the canvas"
     );
-    assert!(turn.active, "the person's message waits for its answer");
 }
 
-/// A second ask brings the conversation's place forward instead of standing a second place of it
-/// (`shell.md` §8.1).
+/// The agent the first ask made is the one every later ask goes to: the workspace's record names it
+/// as the person's, so a second question continues the same conversation rather than making a
+/// second agent.
 #[test]
-fn a_second_ask_brings_the_conversation_forward() {
+fn a_second_ask_goes_to_the_agent_the_first_made() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
-    let first = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    let count = arrangement(&session).places.len();
+    sent(&mut session, 0);
 
     ask(&mut session, "and what is due today?");
 
-    let places = arrangement(&session).places;
-    assert_eq!(
-        places.len(),
-        count,
-        "the second ask added no place: {places:?}"
-    );
+    let second = sent(&mut session, 1);
+    assert_eq!(second["text"], "and what is due today?", "{second}");
+    let to = &second["to"][0];
+    assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
+    assert_eq!(to["name"], "Assistant", "{second}");
     assert!(
-        places.iter().any(|place| place.key == first.key),
-        "the conversation's own place is the one it stands in"
-    );
-}
-
-/// An ask while the conversation is already the place in front: the message is posted, and asking
-/// is not refused because the place it belongs in is where it already stands (`shell.md` §8.1).
-///
-/// The first ask leaves its conversation as the place in front — the place it made is the strip's
-/// active tab, so bringing it forward is the activation that would refuse "that place is in front
-/// already". The second ask succeeds all the same: the turn is delivered, and the action that
-/// typed it is not answered with `nothing_to_place`.
-#[test]
-fn an_ask_in_front_already_is_posted_and_not_refused() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let first = wait_for(&mut session, "the conversation placed", |session| {
-        let place = arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))?;
-        let in_front = arrangement(session)
-            .strips
-            .iter()
-            .any(|strip| strip.key == place.strip && strip.active == place.key);
-        in_front.then_some(place)
-    });
-    let channel = first
-        .record
-        .rsplit('/')
-        .next()
-        .expect("the place shows a channel")
-        .to_owned();
-    let messages = |session: &Session| -> usize {
-        session
-            .read(&first.record)
-            .and_then(|reading| reading["messages"].as_array().map(Vec::len))
-            .unwrap_or_default()
-    };
-    let before = messages(&session);
-
-    // The second ask through the same action the canvas entry's typing runs: the ask is the
-    // person's, and the conversation it belongs in already stands in front.
-    let asked = "and what is due today?";
-    session
-        .invoke(
-            "shell:arrangement",
-            "place-found",
-            serde_json::json!({"text": asked, "x": 0, "y": 0})
-                .as_object()
-                .expect("arguments"),
-        )
-        .unwrap_or_else(|error| {
-            panic!("an ask whose conversation is in front already succeeds: {error:?}")
-        });
-
-    // The message was posted: the reading the place draws holds the second question.
-    let after = session
-        .read(&first.record)
-        .unwrap_or_else(|| panic!("the session serves the channel's reading: {}", first.record));
-    let texts: Vec<&str> = after["messages"]
-        .as_array()
-        .map(|messages| messages.iter().filter_map(|m| m["text"].as_str()).collect())
-        .unwrap_or_default();
-    assert!(
-        texts.contains(&asked),
-        "the ask in front already is posted: {texts:?}"
-    );
-    assert_eq!(
-        messages(&session),
-        before + 1,
-        "it adds the one message, in the conversation's one place: {texts:?}"
-    );
-    assert!(
-        channel_has_one_place(&session, &channel),
-        "the conversation keeps the place it stood in"
-    );
-}
-
-/// Whether the conversation `channel` stands in exactly one place of the desk.
-fn channel_has_one_place(session: &Session, channel: &str) -> bool {
-    arrangement(session)
-        .places
-        .into_iter()
-        .filter(|place| place.record.rsplit('/').next() == Some(channel))
-        .count()
-        == 1
-}
-
-/// The conversation the canvas places is usable in a real session, not only in a development one:
-/// the channel the ask made is published by the session's own `ChatViewService`, and its `post`
-/// verb — the one the page's composer runs — writes a message the reading the place draws then
-/// holds. No `dev-rust-views` fixture takes part: this is the path every person's session takes.
-#[test]
-fn the_conversations_page_posts_through_the_sessions_own_channel() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    // The channel the ask placed, as the session publishes it (`chat.workspace/channels/<id>`).
-    let address = place.record;
-    assert!(
-        address.starts_with("chat.workspace/channels/"),
-        "the place shows the conversation Chat holds: {address}"
-    );
-    // The service serves the channel's reading before anything is typed: the page a place draws
-    // is the ask conversation, holding the person's question.
-    let before = session
-        .read(&address)
-        .unwrap_or_else(|| panic!("the session serves the channel's reading: {address}"));
-    assert!(
-        before.to_string().contains("what is on my task list?"),
-        "the reading holds the person's question: {before}"
-    );
-    // Post through the page's own verb, as pressing its Send does: the channel's `post`, with the
-    // words the composer holds. The session's door routes it to the service that publishes it.
-    let mut arguments = serde_json::Map::new();
-    let channel = address
-        .trim_start_matches("chat.workspace/channels/")
-        .to_owned();
-    arguments.insert("channel".into(), serde_json::Value::String(channel));
-    arguments.insert(
-        "text".into(),
-        serde_json::Value::String("looks good".into()),
-    );
-    session
-        .invoke(&address, "post", &arguments)
-        .unwrap_or_else(|error| panic!("the channel's post runs: {error:?}"));
-    // The reading the place draws now holds the message the composer posted: a message of the
-    // reading, written by the person seated here, whose id was not there before. This is the
-    // thing the page's composer must get right — a message, attributed to the person, that a
-    // second read serves — not merely bytes somewhere in the reading.
-    let after = session
-        .read(&address)
-        .unwrap_or_else(|| panic!("the session still serves the channel's reading"));
-    let message_ids = |reading: &serde_json::Value| -> Vec<String> {
-        reading["messages"]
-            .as_array()
-            .map(|messages| {
-                messages
-                    .iter()
-                    .filter_map(|message| message["id"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let was = message_ids(&before);
-    let posted = after["messages"]
-        .as_array()
-        .and_then(|messages| {
-            messages.iter().find(|message| {
-                message["text"].as_str() == Some("looks good")
-                    && message["author"].as_str() == Some(PERSON)
-            })
-        })
-        .unwrap_or_else(|| {
-            panic!("the page holds the person's posted message: {after}");
-        });
-    let posted_id = posted["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the posted message has an id: {posted}"));
-    assert!(
-        !was.iter().any(|id| id == posted_id),
-        "the posted message is new since the reading before it: {posted_id} in {was:?}"
-    );
-}
-
-/// The ask places the conversation as the resource Chat publishes: its channel, shown through
-/// Chat's own default `page` view. A place that named no view would stand the app's window —
-/// a blank frame — instead of the conversation the person asked in (shell.md §8.1, "The view").
-#[test]
-fn the_ask_places_the_channels_page_not_the_apps_window() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    assert_eq!(
-        place.shown_as, "page",
-        "the place shows the channel's own page, drawn by Chat's view: {place:?}"
-    );
-    assert_eq!(
-        place.shows, "chat",
-        "the place is Chat's channel, never the app's window: {place:?}"
-    );
-}
-
-/// The place the ask makes draws Chat's own page, not an empty frame: the words the person
-/// typed stand in the shell's laid-out tree, drawn from the reading the session's own
-/// `ChatViewService` publishes (shell.md §8.1, "The view")./// typed stand in the shell's laid-out tree, drawn from the reading the session's own
-/// `ChatViewService` publishes (shell.md §8.1, "The view").
-///
-/// The arrangement's own fields are not enough to prove this — `shown_as` and `shows` may name
-/// the page while the runtime's `resource(p.record)` lookup finds no reading to draw it, and the
-/// frame then shows nothing (a `WindowWell`) behind its pin and close. A reading's key holds its
-/// id in one canonical form (the path's document and last item, `chat.workspace/<id>`); the place
-/// names it by the path the session publishes it at (`chat.workspace/channels/<id>`), and the
-/// lookup must find the same reading by either, as it does now. No development fixture takes
-/// part: this is the path every person's session takes.
-#[test]
-fn the_conversations_place_draws_the_page_from_the_sessions_own_service() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    until(&mut session, "the page's transcript", |session| {
-        session.shell_says("what is on my task list?")
-    });
-    assert!(
-        session.shell_says("what is on my task list?"),
-        "the place draws the conversation's page, holding what the person asked: {:?}; the \
-         shell says {:?}",
-        place.record,
-        session.accessible_labels()
-    );
-}
-
-/// A real session's ask conversation names its people by who they are, never by a key: the
-/// person who asked by their display name, the agent that answers by the name the workspace
-/// keeps for it. No development fixture takes part — this is the path every person's session
-/// takes, with the person seated by their root key's 64 hex characters, as a device is.
-#[test]
-fn the_conversations_page_names_its_people_never_by_a_key() {
-    let _settled = ui::motion::testing::settled();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    let _identity = this_computer(&mut env, "Quinn Davis");
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    let place = wait_for(&mut session, "the conversation placed", |session| {
-        arrangement(session)
-            .places
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    until(&mut session, "the page's transcript", |session| {
-        session.shell_says("what is on my task list?")
-    });
-    // The person who asked is named by their display name, the one this device shows them by
-    // everywhere (the same name the top bar's face wears): never by their routing key.
-    until(&mut session, "the person named", |session| {
-        session.shell_says("Quinn Davis")
-    });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label.contains("Quinn Davis")),
-        "the person's byline is their display name, never their key: {labels:?}; the place \
-         shows {:?}",
-        place.record
-    );
-    // No routing key reaches the page: a 64-character hex run is a person's root key, and none
-    // stands among the page's people. (The shell's own bar is read separately: this test is the
-    // conversation's page, and nothing else on the desk.)
-    let hex_run = |text: &str| {
-        text.split(|c: char| !c.is_ascii_hexdigit())
-            .any(|run| run.len() >= 32)
-    };
-    let reading = session
-        .read(&place.record)
-        .unwrap_or_else(|| panic!("the session serves {}", place.record));
-    let people = reading["people"].as_array().cloned().unwrap_or_default();
-    assert!(!people.is_empty(), "the page names its people: {reading}");
-    for person in &people {
-        let name = person["name"].as_str().unwrap_or_default();
-        let id = person["id"].as_str().unwrap_or_default();
-        assert!(
-            !name.trim().is_empty() && !hex_run(name) && name != id,
-            "a person is named, never shown their key: {person}"
-        );
-    }
-    // Every message's author is one of those named people: the byline never falls back to an id.
-    for message in reading["messages"].as_array().cloned().unwrap_or_default() {
-        let author = message["author"].as_str().unwrap_or_default();
-        assert!(
-            people
-                .iter()
-                .any(|person| person["id"].as_str() == Some(author)),
-            "every author is named: {message} in {reading}"
-        );
-    }
-    let person = people.iter().find(|person| person["name"] == "Quinn Davis");
-    assert!(
-        person.is_some(),
-        "the reading names the person who asked: {reading}"
-    );
-}
-
-/// The turn's reply is Chat's own verb offered from the moment the turn exists: the session's
-/// Chat service publishes the summons's message item with Chat's `record-work`, so the kept
-/// agent — whose tools are the broker's catalogue — is offered the address its answer goes to
-/// before any reply has been written.
-///
-/// This is the narrowest real seam the missing reply hangs on: with Chat's window closed no
-/// `chat.messages` item is published at all, so the agent's `record-work` on the turn's reply was
-/// never in its catalogue and the person's ask went unanswered (`conversation.rs`'s "the
-/// conversation publishes no `record-work` on the turn's reply"). Nothing here is a scripted
-/// model: the item is what the service publishes, and invoking it is Chat's own verb applied to
-/// Chat's own record, as the agent that answered.
-#[test]
-fn the_turn_reply_is_offered_chats_record_work_before_it_exists() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    let summons = asked(&mut session, "what is on my task list?");
-    // The summons's item, as the session's Chat service publishes it — the resource an agent
-    // names to record what it did with the message. Its `record-work` is Chat's own declaration
-    // (`ChatPart::RECORD_WORK`), its action type Chat's.
-    let offered = session
-        .service_resources()
-        .into_iter()
-        .find(|resource| resource.id.as_str() == summons.item)
-        .unwrap_or_else(|| panic!("the session publishes the summons's item {}", summons.item));
-    let record_work = offered
-        .actions
-        .iter()
-        .find(|action| action.id == "record-work")
-        .unwrap_or_else(|| {
-            let ids: Vec<&str> = offered
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            panic!("the item offers Chat's record-work, not {ids:?}")
-        });
-    assert!(
-        record_work
-            .params()
-            .iter()
-            .any(|param| param.name.as_ref() == "message" && param.required),
-        "the item's record-work takes the message whose work it records, as Chat's window's does"
-    );
-    assert!(
-        record_work.bound().is_empty(),
-        "it is unbound: the agent names the message, exactly as it does on any message's item"
-    );
-    // The answer the agent records lands on the reply Chat derives from the summons and the
-    // agent — the very address the turn's answer is — written as the agent, before the reply
-    // existed to be published. The step runs exactly as the session's own `DoorAsk::Step` runs a
-    // step no surface door publishes: through the services, as `agent:<id>`.
-    let mut arguments = serde_json::Map::new();
-    arguments.insert(
-        "work".into(),
-        serde_json::json!({"state": "doing", "did": "Reading the tasks"}),
-    );
-    arguments.insert(
-        "say".into(),
-        serde_json::json!("Looking at your task list now."),
-    );
-    session
-        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &arguments)
-        .unwrap_or_else(|error| panic!("Chat records the work: {error}"));
-    // The reading the page draws: Chat's own `#[view(default)]` over the channel, served by the
-    // session — the same reading a place of the conversation shows.
-    let page = session
-        .read(&format!("chat.workspace/channels/{}", summons.channel))
-        .unwrap_or_else(|| panic!("the session serves the channel {}", summons.channel));
-    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
-    assert_eq!(
-        reply_row["author"].as_str(),
-        Some(summons.agent.as_str()),
-        "the reply is the agent's"
-    );
-    assert_eq!(
-        reply_row["text"].as_str(),
-        Some("Looking at your task list now."),
-        "the reply says the agent's words"
-    );
-    // The page names the agent the workspace keeps by the name its keeper gave it, "Assistant",
-    // never the slug its actor works as ("assistant"): the two are the record's display name and
-    // its id, and the byline reads the first.
-    let people = page["people"].as_array().cloned().unwrap_or_default();
-    let named = people
-        .iter()
-        .find(|person| person["id"].as_str() == Some(summons.agent.as_str()))
-        .unwrap_or_else(|| panic!("the page names the agent {}: {page}", summons.agent));
-    assert_eq!(
-        named["name"].as_str(),
-        Some("Assistant"),
-        "the agent's byline is the name its keeper gave it, never its id: {named}"
-    );
-    // The turn is still going — the reply is `doing`, not finished — so the item keeps its
-    // `record-work`: the agent's next record (what it did, and then its words at the end) has the
-    // address it works from, exactly as the first did. An item that vanished with the reply's
-    // first record is why an ask whose plan took several steps went unanswered halfway.
-    let still_offered = session.service_resources().into_iter().any(|resource| {
-        resource.id.as_str() == summons.item
-            && resource
-                .actions
-                .iter()
-                .any(|action| action.id == "record-work")
-    });
-    assert!(
-        still_offered,
-        "the summons keeps its record-work while the turn is going: {}",
-        summons.item
-    );
-}
-
-/// A turn whose answer failed says so where it happened, and its Retry asks the agent again on
-/// the same message: the page shows the failure row with a working Retry, and running it makes
-/// the person's one question a turn again — no second message is posted.
-///
-/// Every step is the production path: Chat's own `record-work` writes the failed end as the
-/// agent, the page is Chat's own `#[view(default)]` served by the session, and the Retry is the
-/// channel's published `retry` verb — the one the row runs and the REPL calls. No model is
-/// started here (nothing is scripted either): this proves the conversation's side of the turn,
-/// which is what the row and its Retry are.
-///
-/// What the broker is handed matters as much as what the page draws: the retried turn is a run of
-/// its own (its epoch is the attempt the message moved to), because the broker names a run by its
-/// issue and its epoch and hands an agent a run it named before only once. A retried turn that
-/// read exactly like the failed one was handed to the agent never — the person pressed Retry and
-/// nothing answered. The agent's new answer then lands in the attempt's reply, and the failed try
-/// stays as what happened.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario end to end: the failure row, its Retry, and the new attempt it makes"
-)]
-fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    let summons = asked(&mut session, "what is on my task list?");
-    let workspace = workspace(&session);
-    let runs = session.conversation_runs();
-    // The turn the agent was handed first: the attempt that failed.
-    let failed_turn = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        turns.into_iter().find(|turn| {
-            turn.issue
-                .ends_with(&format!("/messages/{}", summons.message))
-        })
-    });
-    // The run ends without an answer: the provider failed, and its account is the reason.
-    let mut failed = serde_json::Map::new();
-    failed.insert(
-        "work".into(),
-        serde_json::json!({"state": "provider_failed", "why": "The model connection closed"}),
-    );
-    failed.insert(
-        "say".into(),
-        serde_json::json!("The model connection closed"),
-    );
-    session
-        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &failed)
-        .unwrap_or_else(|error| panic!("Chat records the failed turn: {error}"));
-    let channel_resource = format!("chat.workspace/channels/{}", summons.channel);
-    // The page the place draws: Chat's own reading of the channel, with the failure row the person
-    // sees and the Retry it offers.
-    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
-    assert_eq!(
-        reply_row["work"]["state"].as_str(),
-        Some("provider_failed"),
-        "the row says the turn failed: {reply_row}"
-    );
-    assert_eq!(
-        reply_row["retry"].as_bool(),
-        Some(true),
-        "the failed reply is the one a Retry asks again: {reply_row}"
-    );
-    assert_eq!(
-        reply_row["retry_summons"].as_str(),
-        Some(summons.message.as_str()),
-        "the Retry names the message the reply answered, never a new one: {reply_row}"
-    );
-    // The Retry is the channel's own verb, published as the page's Retry runs it.
-    let offers_retry = session.service_resources().into_iter().any(|resource| {
-        resource.id.as_str() == channel_resource
-            && resource.actions.iter().any(|action| action.id == "retry")
-    });
-    assert!(
-        offers_retry,
-        "the channel offers its retry: {channel_resource}"
-    );
-    let before = session.person_messages_in(&summons.channel);
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("channel".into(), serde_json::json!(summons.channel));
-    arguments.insert("reply".into(), serde_json::json!(summons.reply.as_str()));
-    arguments.insert("summons".into(), serde_json::json!(summons.message));
-    session
-        .invoke(&channel_resource, "retry", &arguments)
-        .unwrap_or_else(|error| panic!("the retry runs: {error:?}"));
-    // Nothing is posted: the person's words stay the one message they wrote.
-    assert_eq!(
-        session.person_messages_in(&summons.channel),
-        before,
-        "a retry asks again on the same message, never posting the question twice"
-    );
-    // The same message is a turn again, with the agent the conversation keeps — and a run of its
-    // own, not the failed run read again: its epoch is the attempt the message moved to. The
-    // broker names a run by its issue and its epoch and hands an agent a run it named before only
-    // once, so a retried turn that kept the failed run's epoch was handed to the agent never —
-    // the person pressed Retry and the agent heard nothing.
-    let again = wait_for(&mut session, "the turn again", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        turns.into_iter().find(|turn| {
-            turn.issue
-                .ends_with(&format!("/messages/{}", summons.message))
-                && turn.epoch > failed_turn.epoch
-        })
-    });
-    assert_eq!(
-        again.instruction, "what is on my task list?",
-        "the turn is the person's own question, asked again"
-    );
-    assert_eq!(
-        again.epoch, 2,
-        "the retried turn is the second attempt's run, not the failed run again"
-    );
-    assert_ne!(
-        again.epoch, failed_turn.epoch,
-        "the retried turn is a run of its own, so the agent is handed it"
-    );
-    // The agent answers the retried turn through Chat's own `record-work` — the verb it invokes
-    // on the summons's item — and the answer lands in the attempt's reply, never in the one that
-    // failed.
-    let answered = chat::record::reply_id_at(
-        &tilo_resource::Id::from_raw(summons.message.as_str()),
-        &summons.agent,
-        u32::try_from(again.epoch - 1).expect("an attempt"),
-    );
-    assert_ne!(
-        answered.as_str(),
-        summons.reply.as_str(),
-        "the new answer is a reply of its own"
-    );
-    let mut took = serde_json::Map::new();
-    took.insert(
-        "work".into(),
-        serde_json::json!({"state": "provider_complete", "route": "model"}),
-    );
-    took.insert("say".into(), serde_json::json!("Your list is here."));
-    session
-        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &took)
-        .unwrap_or_else(|error| panic!("Chat records the new attempt: {error}"));
-    let answered_row = reply_in_page(&session, &summons.channel, answered.as_str());
-    assert_eq!(
-        answered_row["work"]["state"].as_str(),
-        Some("provider_complete"),
-        "the new attempt's reply carries what the agent recorded: {answered_row}"
-    );
-    assert_eq!(
-        answered_row["text"].as_str(),
-        Some("Your list is here."),
-        "and the agent's words: {answered_row}"
-    );
-    // The attempt that failed stands as what happened, offering no Retry: the question is in a
-    // later attempt now.
-    let failed_row = reply_in_page(&session, &summons.channel, &summons.reply);
-    assert_eq!(
-        failed_row["work"]["state"].as_str(),
-        Some("provider_failed"),
-        "the failed try is still in the transcript: {failed_row}"
-    );
-    assert_eq!(
-        failed_row["retry"].as_bool(),
-        Some(false),
-        "a reply already asked again offers no Retry: {failed_row}"
-    );
-}
-
-/// A served resource's own `open` is the system's `open`: it stands the resource beside the
-/// conversation of the turn that asked, attributed to the agent, and the record is not changed
-/// (`docs/designs/app-language/one-app-model.md` §3, "`open(r)` places r with its default view,
-/// beside where it was asked, for every app"; shell.md §8, "The canvas composes views; it opens
-/// nothing"). This is the `open` every tilolang resource publishes — the one an agent that read
-/// the catalogue kept invoking, and was refused — run as the turn's step.
-#[test]
-fn a_served_resources_open_stands_it_beside_the_conversation_that_asked() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    ask(&mut session, "what is on my task list?");
-    // The conversation the ask placed: the place a resource the turn opens stands beside.
-    let conversation = wait_for(&mut session, "the ask placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record.contains("/channels/"))
-    });
-    let workspace = workspace(&session);
-    let runs = session.conversation_runs();
-    let turns = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        (!turns.is_empty()).then_some(turns)
-    });
-    let agent = format!("agent:{}", turns[0].agent);
-    // A served tilolang resource the session publishes, with its own `open`: the notes app's
-    // root, which the record service keeps.
-    let resource = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.notes:root-"))
-        .map(|spec| spec.id.as_str().to_owned())
-        .expect("the notes app's root is published");
-    assert!(
-        !common::places(&session)
-            .iter()
-            .any(|place| place.record == resource),
-        "the resource is not shown before anyone opens it"
-    );
-    assert!(
-        session.service_resources().into_iter().any(|spec| {
-            spec.id.as_str() == resource && spec.actions.iter().any(|action| action.id == "open")
-        }),
-        "the resource publishes its own `open`"
-    );
-
-    // The agent invokes the resource's `open` as the turn's step, beside the conversation.
-    session
-        .invoke_service_step_beside_as(
-            &agent,
-            &resource,
-            "open",
-            &serde_json::Map::new(),
-            &conversation.record,
-        )
-        .unwrap_or_else(|error| panic!("the open runs: {error}"));
-
-    let placed = wait_for(&mut session, "the resource placed", |session| {
-        common::places(session)
-            .into_iter()
-            .find(|place| place.record == resource)
-    });
-    // It stands through its own primary view, as the system `open` does.
-    assert!(
-        !placed.shown_as.is_empty(),
-        "it stands through the app's own view: {placed:?}"
-    );
-    assert_eq!(
-        placed.shows, "so.tilo.lang.notes",
-        "it shows the app whose root it names: {placed:?}"
-    );
-    // Beside the conversation it was asked in, in the same workspace and at its own line, the
-    // place standing to the conversation's right — the free space nearest it — never off at the
-    // canvas' origin.
-    let strip_of = |place: &tilo_session::arrangement::PlaceReading, session: &Session| {
-        common::strip(session, common::number(&place.strip)).expect("the place has its strip")
-    };
-    let (placed_strip, asked_in) = (
-        strip_of(&placed, &session),
-        strip_of(&conversation, &session),
-    );
-    assert_eq!(
-        placed_strip.workspace, asked_in.workspace,
-        "it stands in the conversation's workspace"
-    );
-    assert_eq!(
-        placed_strip.canvas_y, asked_in.canvas_y,
-        "it stands at the conversation's line"
-    );
-    assert!(
-        placed_strip.canvas_x > asked_in.canvas_x,
-        "it stands beside the conversation, to its right: {placed_strip:?} against {asked_in:?}"
-    );
-    // And it is one arranging step of the agent's, not the record's change.
-    let (who, verb) = session
-        .arrangement()
-        .borrow_mut()
-        .last_step()
-        .expect("a step of the history");
-    assert_eq!(who, agent, "attributed to the agent that asked");
-    assert_eq!(verb, "place", "opening is one arranging step");
-}
-/// A failed turn's Retry, pressed where the page draws it, asks the agent again on the same
-/// message.
-///
-/// The row's Retry runs the channel's own `retry` through the view's event, which hands it the
-/// channel first, then the reply and the message it answered — the same order the composer's
-/// `post` names its channel in, because the channel's verb is published with its subject first.
-/// A Retry that left the channel out reached `ChatViewService::invoke` with its arguments shifted
-/// and found no open workspace holding the message, so pressing it started nothing while the
-/// same verb through the door answered: the row and the door disagreed about the verb's shape.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one scenario end to end: the failure row, the press on its Retry, and the new attempt"
-)]
-fn pressing_the_rows_retry_asks_the_agent_again_on_the_same_message() {
-    let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = session(root.path());
-    let summons = asked(&mut session, "what is on my task list?");
-    let workspace = workspace(&session);
-    let runs = session.conversation_runs();
-    let failed_turn = wait_for(&mut session, "the agent's turn", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        turns.into_iter().find(|turn| {
-            turn.issue
-                .ends_with(&format!("/messages/{}", summons.message))
-        })
-    });
-    // The run ends without an answer, as Chat's own `record-work` writes it.
-    let mut failed = serde_json::Map::new();
-    failed.insert(
-        "work".into(),
-        serde_json::json!({"state": "provider_failed", "why": "The model connection closed"}),
-    );
-    failed.insert(
-        "say".into(),
-        serde_json::json!("The model connection closed"),
-    );
-    session
-        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &failed)
-        .unwrap_or_else(|error| panic!("Chat records the failed turn: {error}"));
-    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
-    assert_eq!(
-        reply_row["retry"].as_bool(),
-        Some(true),
-        "the failed reply is the one a Retry asks again: {reply_row}"
-    );
-    // The row stands on the page where the ask placed it, and names its Retry: the press is on
-    // that button, as the person's pointer makes it.
-    until(&mut session, "the row's Retry", |session| {
-        on_screen(session, "Retry").is_some()
-    });
-    let before = session.person_messages_in(&summons.channel);
-    common::press(&mut session, "Retry");
-    // Nothing is posted: the person's words stay the one message they wrote.
-    assert_eq!(
-        session.person_messages_in(&summons.channel),
-        before,
-        "a retry asks again on the same message, never posting the question twice"
-    );
-    // The same message is a turn again, with a run of its own.
-    let again = wait_for(&mut session, "the turn again", |_session| {
-        let turns = runs.runs(&workspace).ok()?;
-        turns.into_iter().find(|turn| {
-            turn.issue
-                .ends_with(&format!("/messages/{}", summons.message))
-                && turn.epoch > failed_turn.epoch
-        })
-    });
-    assert_eq!(
-        again.instruction, "what is on my task list?",
-        "the person's own question, asked again"
-    );
-    assert_eq!(
-        again.epoch, 2,
-        "the retried turn is the second attempt's run, not the failed run again"
-    );
-    // The agent's answer lands in the attempt's own reply, written through Chat's own verb.
-    let answered = chat::record::reply_id_at(
-        &tilo_resource::Id::from_raw(summons.message.as_str()),
-        &summons.agent,
-        u32::try_from(again.epoch - 1).expect("an attempt"),
-    );
-    let mut took = serde_json::Map::new();
-    took.insert(
-        "work".into(),
-        serde_json::json!({"state": "provider_complete", "route": "model"}),
-    );
-    took.insert("say".into(), serde_json::json!("Your list is here."));
-    session
-        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &took)
-        .unwrap_or_else(|error| panic!("Chat records the new attempt: {error}"));
-    let answered_row = reply_in_page(&session, &summons.channel, answered.as_str());
-    assert_eq!(
-        answered_row["text"].as_str(),
-        Some("Your list is here."),
-        "the agent's words land in the attempt's own reply: {answered_row}"
-    );
-    // The failed try stands as history, offering no Retry.
-    let failed_row = reply_in_page(&session, &summons.channel, &summons.reply);
-    assert_eq!(
-        failed_row["retry"].as_bool(),
-        Some(false),
-        "a reply already asked again offers no Retry: {failed_row}"
+        to["id"].as_str().is_some_and(|id| !id.is_empty()),
+        "named by its id: {second}"
     );
 }

@@ -1394,8 +1394,9 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
     load_from_path(PathBuf::from(path_str))
 }
 
-/// The public fields of the identity [`load`] would return. A record named
-/// by [`IDENTITY_ENV_VAR`] is read without contacting its secret provider,
+/// The public fields of the person's identity: the launcher's broker or the
+/// identity service ([`tilo_identity_client::load_metadata`]), else a record
+/// named by [`IDENTITY_ENV_VAR`], read without contacting its secret provider,
 /// so a caller that only shows who this is never waits on (or prompts for)
 /// the system secret store.
 ///
@@ -1403,51 +1404,16 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
 ///
 /// As [`load`].
 pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
-    if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
-        && std::env::var_os(broker::BROKER_ENV_VAR).is_none()
-    {
-        let path = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
-        if path.is_empty() {
-            return Err(NotAvailable::ServiceFdMissing);
+    match tilo_identity_client::load_metadata() {
+        Err(NotAvailable::ServiceFdMissing) => {
+            let path = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
+            if path.is_empty() {
+                return Err(NotAvailable::ServiceFdMissing);
+            }
+            load_metadata_from_path(std::path::Path::new(&path))
         }
-        return load_metadata_from_path(std::path::Path::new(&path));
+        bound => bound,
     }
-    let identity = load()?;
-    Ok(IdentityMetadata {
-        profile_photo: identity.profile_photo().cloned(),
-        display_name: identity.display_name().to_owned(),
-        avatar_color: identity.avatar_color(),
-        group_public_key: identity.group_public_key(),
-        threshold: identity.threshold(),
-        total_shares: identity.total_shares(),
-        share_index: identity.share_index(),
-        single_device: identity.is_single_device(),
-    })
-}
-
-/// Public metadata from the actually inherited broker only. This never falls
-/// back to an environment/config record path or unlocks a local signing share.
-pub fn load_bound_metadata() -> Result<IdentityMetadata, NotAvailable> {
-    if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
-        && std::env::var_os(broker::BROKER_ENV_VAR).is_none()
-    {
-        return Err(NotAvailable::ServiceFdMissing);
-    }
-    let identity = if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
-        load_from_service(fd)?
-    } else {
-        broker::connect_from_env()?
-    };
-    Ok(IdentityMetadata {
-        profile_photo: identity.profile_photo().cloned(),
-        display_name: identity.display_name().to_owned(),
-        avatar_color: identity.avatar_color(),
-        group_public_key: identity.group_public_key(),
-        threshold: identity.threshold(),
-        total_shares: identity.total_shares(),
-        share_index: identity.share_index(),
-        single_device: identity.is_single_device(),
-    })
 }
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
@@ -1864,18 +1830,6 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
-
-    #[test]
-    fn bound_presentation_refuses_environment_record_without_a_broker() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_SVC_IDENTITY_FD")
-            .remove(broker::BROKER_ENV_VAR);
-        env.set(IDENTITY_ENV_VAR, "/must-not-be-read/identity.json");
-        assert!(matches!(
-            load_bound_metadata(),
-            Err(NotAvailable::ServiceFdMissing)
-        ));
-    }
 
     #[test]
     fn public_profile_edits_preserve_signer_and_provider_custody() {

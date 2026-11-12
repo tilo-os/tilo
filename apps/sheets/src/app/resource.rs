@@ -137,7 +137,7 @@ impl SheetsApp {
     /// field holds a name, reads as that name.
     pub(crate) fn author_name(&self, author: &str) -> String {
         if author.is_empty() {
-            return "Someone".to_owned();
+            return crate::resource::CATALOG.t("sheets-comment-someone");
         }
         if let Some(name) = self
             .people
@@ -153,13 +153,11 @@ impl SheetsApp {
                 .as_ref()
                 .is_some_and(|people| people.is_me(author));
         if me {
-            return ui::local_identity::bound()
-                .map(|identity| identity.display_name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "You".to_owned());
+            return ui::local_identity::own_name()
+                .unwrap_or_else(|| crate::resource::CATALOG.t("sheets-comment-you"));
         }
         if opaque_participant_id(author) {
-            "Someone".to_owned()
+            crate::resource::CATALOG.t("sheets-comment-someone")
         } else {
             author.to_owned()
         }

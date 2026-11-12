@@ -682,7 +682,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
         &mut notebook,
         Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
             page: page.clone(),
-            bytes: png.clone(),
+            bytes: Bytes::to_keep(png.clone()),
             alt: None,
         }),
     )
@@ -690,7 +690,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
     let digest = blake3::hash(&png).to_hex().to_string();
     let state = notebook.state().unwrap();
     assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
-    let snapshot = image_snapshot(&state.images, |_| None);
+    let snapshot = image_snapshot(&state.images, &tilo_content::ContentStore::memory());
     assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
     assert!(
         texts(&notebook, &page)
@@ -704,7 +704,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
             &mut notebook,
             Notebook::PLACE_IMAGE.with(notebook::PlaceImage {
                 page,
-                bytes: b"not a picture".to_vec(),
+                bytes: Bytes::to_keep(b"not a picture".to_vec()),
                 alt: None,
             }),
         )

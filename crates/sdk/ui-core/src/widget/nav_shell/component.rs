@@ -23,6 +23,10 @@ pub struct NavShellProps {
     pub overview_count: Option<i64>,
     /// The sidebar's title: what the places are of, the app's root.
     pub sidebar_title: Option<String>,
+    /// The sidebar's own controls, in its header: the action that makes the thing the sidebar
+    /// lists (a "+"), where the thing a person adds then stands.
+    #[component(slot)]
+    pub sidebar_actions: Vec<Element>,
     /// Whether the content's Back goes back now (a drill-down the app keeps).
     pub can_go_back: bool,
     /// The places of the app: a navigation list.
@@ -34,6 +38,9 @@ pub struct NavShellProps {
     /// What the window is for.
     #[component(slot(default))]
     pub content: Option<Element>,
+    /// The window has nothing at all to list: what stands in `content` is the window's one empty
+    /// state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).
+    pub nothing_listed: bool,
     /// Details of what the content shows, beside it.
     #[component(slot)]
     pub inspector: Option<Element>,
@@ -49,6 +56,12 @@ pub struct NavShellProps {
     /// The content's Back was pressed.
     #[component(event)]
     pub back: Event,
+    /// The window's search holds this text now: the frame narrows what it lists to
+    /// it, the way a place chosen in its sidebar narrows it. Empty when the search
+    /// closed. A view that declares it says what the window's search writes; one
+    /// that does not is searched in place by its document, or not at all.
+    #[component(event(value = String))]
+    pub search: Event,
 }
 
 impl PropType for ContentKind {
@@ -115,15 +128,21 @@ impl Described for NavShell {
             overview_title,
             overview_count,
             sidebar_title,
+            sidebar_actions,
             can_go_back,
             sidebar,
             overview,
             content,
+            nothing_listed,
             inspector,
             actions,
             overview_actions,
             pane,
             back,
+            // The host fires the search's event itself, at the frame the view declared it on
+            // ([`crate::widget::Queryable`] over the window's model): the shell paints
+            // nothing of its own for it.
+            search: _,
         } = props;
         let mut shell = Self::new().with_id(key).content_kind(content_kind);
         if let Some(sidebar) = sidebar {
@@ -133,7 +152,13 @@ impl Described for NavShell {
             shell = shell.overview(overview);
         }
         if let Some(content) = content {
-            shell = shell.content(content);
+            if nothing_listed {
+                // Nothing at all to list: the window shows the state alone, with its own bar, and
+                // the columns come back when the view lists something again.
+                shell = shell.nothing_listed(content);
+            } else {
+                shell = shell.content(content);
+            }
         } else {
             // Nothing stands beside the overview: it lists for the whole window until the window
             // after the root's brings something to show.
@@ -142,8 +167,8 @@ impl Described for NavShell {
         if let Some(inspector) = inspector {
             shell = shell.inspector(inspector);
         }
-        if let Some(title) = sidebar_title {
-            shell = shell.sidebar_header(title, Vec::new());
+        if sidebar_title.is_some() || !sidebar_actions.is_empty() {
+            shell = shell.sidebar_header(sidebar_title.unwrap_or_default(), sidebar_actions);
         }
         if overview_title.is_some() || !overview_actions.is_empty() {
             shell = shell.overview_header(overview_title.unwrap_or_default(), overview_actions);
@@ -170,9 +195,13 @@ impl Described for NavShell {
     }
 
     /// Titles, counts and whether Back goes back change in place; the columns and header
-    /// actions change through their slots. Another kind of content builds the shell again.
+    /// actions change through their slots. Another kind of content builds the shell again, and so
+    /// does the window coming to hold nothing at all to list or something again.
     fn set_props(&mut self, props: NavShellProps) -> bool {
         if self.inputs.borrow().kind != props.content_kind {
+            return false;
+        }
+        if self.nothing_listed_shown() != props.nothing_listed {
             return false;
         }
         let back_given = !props.back.is_none();
@@ -207,6 +236,7 @@ impl Described for NavShell {
         let header = match slot {
             "actions" => Column::Content,
             "overview_actions" => Column::Overview,
+            "sidebar_actions" => Column::Sidebar,
             _ => return None,
         };
         let staged = matches!(self.pending.actions.get(header.index()), Some(Some(_)));

@@ -276,16 +276,7 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
     DEFINITION.get_or_init(|| definition(action_probe_factory))
 }
-pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
-    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        tilo_ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    tilo_ui::application::ComponentRunnerInputs {
-        theme: tilo_ui::Theme::dark(),
-        text_renderer: tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
-    }
-}
+pub use tilo_ui::headless::fixture_runner_inputs as runner_inputs;
 pub fn runner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)

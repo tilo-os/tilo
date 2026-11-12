@@ -1,6 +1,6 @@
-//! The agent surface: five tools an AI collaborator can drive any app with.
+//! The agent surface: the tools an AI collaborator can drive any app with.
 //!
-//! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find` and `tilo_status` address
+//! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link` and `tilo_status` address
 //! everything by **path**: `notes/Todo/body#append-paragraph` is the app
 //! (`notes`), the resource by its title, kind or key (`Todo`, `body`) and the
 //! action after `#`. `browser@4711/page#read-page` names one window of an
@@ -28,10 +28,25 @@ use tilo_actions::remote::Found;
 use tilo_actions::{ActionDescriptor, OperationKind};
 use tilo_lock::MutexRecover as _;
 
+#[path = "mcp_answer.rs"]
+mod answer;
 #[path = "mcp_agent_find.rs"]
 mod find;
+#[path = "mcp_agent_link.rs"]
+mod link;
+#[path = "mcp_agent_record.rs"]
+mod record;
+#[path = "mcp_render.rs"]
+mod render;
 #[path = "mcp_tilo.rs"]
 mod tilo;
+#[path = "mcp_watch.rs"]
+pub(super) mod watch;
+use answer::{action_row, action_rows, answer_of, text_result};
+use render::{
+    action_line, action_page, block_line, parse_read_cursor, read_answer, render_value,
+    restart_pause, strip_blank,
+};
 use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
 /// (shell.md §8.1): what the door's `person_line` hands on.
@@ -94,28 +109,35 @@ fn tools() -> Vec<Value> {
     [
         (
             "tilo_ls",
-            "List apps, then what is in them. No path: the apps. `notes`: that app's resources and actions. `notes/Todo`: a note's children and actions. `notes/Todo#rename`: one action's parameters. A path is app[@window]/resource names (a title, kind or key, any case), stable across restarts; an action follows `#`. kind narrows to resources or actions; limit and cursor page.",
+            "List what is in the workspace. No path: the apps. `notes`: an app's resources and actions; `notes/Todo`: a note's children and actions; `notes/Todo#rename`: an action's parameters. A path is app[@window]/resource names (title, kind or key, any case), stable across restarts. kind: resources or actions; limit and cursor page.",
             json!({"path":string,"kind":{"enum":["resources","actions"]},"limit":integer,"cursor":string}),
             json!([]),
             read.clone(),
         ),
         (
             "tilo_read",
-            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`; a document's `{#c01e}`); block actions take the id alone: `c01e`. A long read ends with a cursor line; pass it back as cursor for the rest.",
-            json!({"path":string,"cursor":string,"max_chars":integer}),
+            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in the id (`^c01e`) block actions take; a long read ends with a cursor to pass back. `notes`: what the app publishes. `record:<app>:<id>`: the record as JSON with its revision; after: a revision to wait past; parts: join its chain (Chat's messages: `record:so.tilo.chat:<id>` of a `chain:<id>` row of `tilo_ls chat`)",
+            json!({"path":string,"cursor":string,"max_chars":integer,"parts":{"type":"boolean"},"after":string}),
             json!(["path"]),
             read.clone(),
         ),
         (
             "tilo_do",
-            "Run an action, get its result: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`. Several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result, or `failed: why`; running past wait_ms (default 5000): `pending <id>` for tilo_status. Same invocation_id never runs twice.",
+            "Run an action: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`; several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result or `failed: why`; past wait_ms (default 5000), `pending <id>` for tilo_status. An invocation_id never runs twice.",
             json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
             json!([]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
         ),
         (
+            "tilo_link",
+            "A link a person opens to see what a path names (`notes/Todo`); only workspace members can open it. mode: app or desktop.",
+            json!({"path":string,"mode":{"enum":["app","desktop"]}}),
+            json!(["path"]),
+            read.clone(),
+        ),
+        (
             "tilo_find",
-            "Search the workspace by words, best first, as the desktop's palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit, a path `tilo_ls` and `tilo_do` take, `path#action` for an action.",
+            "Search the workspace by words, best first, as the palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit: a path for tilo_ls and tilo_do, `path#action` for an action.",
             json!({"query":string,"app":string,"limit":integer}),
             json!(["query"]),
             read,
@@ -126,6 +148,13 @@ fn tools() -> Vec<Value> {
             json!({"program":string,"confirm":{"type":"boolean"}}),
             json!(["program"]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
+        ),
+        (
+            "tilo_watch",
+            "What changed since cursor: a resource's changes (`path`), runs starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
+            json!({"cursor":string,"path":string,"wait_ms":integer}),
+            json!([]),
+            json!({"readOnlyHint":true,"openWorldHint":false}),
         ),
         (
             "tilo_status",
@@ -167,6 +196,11 @@ struct ReadArgs {
     path: String,
     cursor: Option<String>,
     max_chars: Option<usize>,
+    /// A record read (`record:<app>:<id>`) joins the record's chain of parts.
+    #[serde(default)]
+    parts: bool,
+    /// A record read waits for the next write past this revision.
+    after: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -207,14 +241,39 @@ struct AgentStatusArgs {
 /// What an agent tool answers: the text and whether it reports a failure.
 /// How running one action by its path went.
 enum Done {
-    /// The app was not running and was started: what is in it now.
-    Launched(Reply),
-    /// The action ran: the host's answer, and the action at its resolved path.
+    /// The app was not running and was started: what is in it now, and the
+    /// workspace's answer that started it.
+    Launched { value: Value, reply: Reply },
+    /// The action ran: the host's answer, the action at its resolved path,
+    /// and the app it ran in.
     Invoked {
         value: Value,
         path: String,
         descriptor: Box<ActionDescriptor>,
+        app: String,
+        /// Where it ran: the record whose link a change answers.
+        provider: String,
+        /// The nearest resource holding the one it ran on (or that one) that offers the history
+        /// `undo` of its record, where what it changed is taken back.
+        history: Option<String>,
     },
+}
+
+impl Done {
+    /// The action `descriptor` ran on what `at` names, at `path`, answering `value`.
+    fn invoked(value: Value, path: String, descriptor: ActionDescriptor, at: &Resolved) -> Self {
+        let (app, provider) = (at.app_id.clone(), at.provider.clone());
+        let descriptor = Box::new(descriptor);
+        let history = at.history();
+        Self::Invoked {
+            value,
+            path,
+            descriptor,
+            app,
+            provider,
+            history,
+        }
+    }
 }
 
 pub(super) struct Reply {
@@ -239,25 +298,6 @@ impl Reply {
             failed: true,
             structured: None,
         }
-    }
-}
-
-/// The MCP result of an agent tool: its text alone, or the structured copy
-/// the caller asked for (a program's structured read, [`ResourceRead`]) as
-/// JSON, which is the text then: a second rendering would be read twice.
-pub(super) fn text_result(result: Result<Reply, String>) -> Value {
-    match result {
-        Ok(Reply {
-            structured: Some(structured),
-            failed,
-            ..
-        }) => json!({
-            "content":[{"type":"text","text":structured.to_string()}],
-            "structuredContent":structured,
-            "isError":failed
-        }),
-        Ok(reply) => json!({"content":[{"type":"text","text":reply.text}],"isError":reply.failed}),
-        Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
 }
 
@@ -686,7 +726,7 @@ fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
 
 /// The action that reads a resource, among those its directory level offers:
 /// the one declared to read its document, else one named `read`, else a view
-/// whose action starts with `read` (`read-messages` next to `read`).
+/// whose action starts with `read` (`read-settings` next to `read`).
 fn reads_action(actions: &[ActionDescriptor]) -> Option<ActionDescriptor> {
     actions
         .iter()
@@ -801,248 +841,6 @@ fn read_cursor(answered: usize, app_cursor: Option<&str>) -> String {
         Some(app_cursor) => format!("{READ_CURSOR}{answered}+{app_cursor}"),
         None => format!("{READ_CURSOR}{answered}"),
     }
-}
-
-/// A cursor [`read_cursor`] issued, taken apart: the characters already
-/// answered and the app's cursor for the page they are in. `None` for a
-/// cursor of the app's own.
-fn parse_read_cursor(cursor: &str) -> Option<(usize, Option<String>)> {
-    let rest = cursor.strip_prefix(READ_CURSOR)?;
-    let (answered, app_cursor) = match rest.split_once('+') {
-        Some((answered, app_cursor)) => (
-            answered,
-            Some(app_cursor.to_owned()).filter(|cursor| !cursor.is_empty()),
-        ),
-        None => (rest, None),
-    };
-    Some((answered.parse().ok()?, app_cursor))
-}
-
-/// Drop the first `answered` characters of `text`, and the line break the
-/// cut before them stopped at. How many characters went.
-fn skip_answered(text: &mut String, answered: usize) -> usize {
-    if answered == 0 {
-        return 0;
-    }
-    let mut end = text
-        .char_indices()
-        .nth(answered)
-        .map_or(text.len(), |(at, _)| at);
-    let mut skipped = text.get(..end).map_or(0, |head| head.chars().count());
-    if text.get(end..).is_some_and(|rest| rest.starts_with('\n')) {
-        end = end.saturating_add(1);
-        skipped = skipped.saturating_add(1);
-    }
-    text.replace_range(..end, "");
-    skipped
-}
-
-/// What a read of `output` answers: its text from character `already` on,
-/// cut at `max_chars` with the cursor for the rest, else ending in the app's
-/// cursor for its next page (`app_cursor`) when it gave one.
-fn read_answer(
-    read: &ResourceRead,
-    already: usize,
-    app_cursor: Option<&str>,
-    max_chars: Option<usize>,
-) -> String {
-    let mut text = read.render();
-    let skipped = skip_answered(&mut text, already);
-    let limit = max_chars.unwrap_or(READ_CHARS).clamp(200, 200_000);
-    let cut = cut_at_line(&mut text, limit);
-    if let Some(left) = cut {
-        let cursor = read_cursor(skipped.saturating_add(text.chars().count()), app_cursor);
-        let _ = write!(text, "\n… {left} more characters: cursor \"{cursor}\"");
-    }
-    if let Some(cursor) = read.cursor.as_ref().filter(|_| cut.is_none()) {
-        let _ = write!(text, "\n… more: cursor \"{cursor}\"");
-    }
-    if text.is_empty() {
-        text.push_str("(empty)");
-    }
-    text
-}
-
-/// How long to wait before a directory level's `read`th read (0 the first)
-/// while it keeps changing: the first change is read past at once, then from
-/// 5 ms, twice as long each time, up to [`RESTART_PAUSE_MAX`].
-fn restart_pause(read: u32) -> std::time::Duration {
-    let Some(doublings) = read.checked_sub(2) else {
-        return std::time::Duration::ZERO;
-    };
-    std::time::Duration::from_millis(5)
-        .checked_mul(1_u32.checked_shl(doublings).unwrap_or(u32::MAX))
-        .map_or(RESTART_PAUSE_MAX, |pause| pause.min(RESTART_PAUSE_MAX))
-}
-
-fn first_sentence(text: &str) -> String {
-    let text = text.trim();
-    let sentence = text
-        .split_once(". ")
-        .map_or(text, |(first, _)| first)
-        .trim_end_matches('.');
-    if sentence.chars().count() <= DESCRIPTION_CHARS {
-        sentence.to_owned()
-    } else {
-        let head: String = sentence.chars().take(DESCRIPTION_CHARS).collect();
-        format!("{}…", head.trim_end())
-    }
-}
-
-fn short(text: &str, chars: usize) -> String {
-    if text.chars().count() <= chars {
-        return text.to_owned();
-    }
-    let head: String = text.chars().take(chars).collect();
-    format!("{}…", head.trim_end())
-}
-
-/// `(p, q?, kind:a|b)`, from the action's parameters.
-fn params_line(action: &ActionDescriptor) -> String {
-    if action.params.is_empty() {
-        return String::new();
-    }
-    let params = action
-        .params
-        .iter()
-        .map(page::param)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("({params})")
-}
-
-fn risk_note(action: &ActionDescriptor) -> String {
-    match page::risk_note(&action.contract) {
-        Some(note) => format!(" [{note}]"),
-        None => String::new(),
-    }
-}
-
-/// One action in a listing, as a program calls it (`session.show_overview()  Show the
-/// overview`), or as the door's own tools take it (`#rename(value)  Rename note`) where no
-/// program can.
-fn action_line(action: &ActionDescriptor, called: Option<&str>) -> String {
-    let mut line = called.map_or_else(
-        || format!("#{}{}", action.address.action, params_line(action)),
-        str::to_owned,
-    );
-    let label = action.action_label.trim();
-    if !label.is_empty() && !label.eq_ignore_ascii_case(&action.address.action.replace('-', " ")) {
-        let _ = write!(line, "  {}", short(label, LABEL_CHARS));
-    }
-    line.push_str(&risk_note(action));
-    line
-}
-
-/// The whole of one action: what it does and what it takes, and how a program calls it.
-fn action_page(path: &str, action: &ActionDescriptor, called: Option<&str>) -> String {
-    let mut page = format!("{path}#{}", action.address.action);
-    if let Some(call) = called {
-        let _ = write!(page, "\n{call}");
-    }
-    let label = action.action_label.trim();
-    if !label.is_empty() {
-        let _ = write!(page, "  {label}");
-    }
-    page.push_str(&risk_note(action));
-    if let Some(description) = action
-        .description
-        .as_deref()
-        .filter(|text| !text.is_empty())
-    {
-        let _ = write!(page, "\n{}", first_sentence(description));
-    }
-    if action.params.is_empty() {
-        page.push_str("\nno parameters");
-    }
-    for param in &action.params {
-        let _ = write!(page, "\n  {}", page::param(param));
-        let description = param.description.trim();
-        if !description.is_empty() && !description.eq_ignore_ascii_case(param.name.as_ref()) {
-            let _ = write!(page, " — {}", first_sentence(description));
-        }
-    }
-    page
-}
-
-/// Whether `value` is empty of meaning: null, an empty string, array or
-/// object.
-fn is_blank(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::String(text) => text.is_empty(),
-        Value::Array(items) => items.is_empty(),
-        Value::Object(fields) => fields.is_empty(),
-        _ => false,
-    }
-}
-
-/// `value` as compact JSON, without the nulls and empty containers that say
-/// nothing.
-fn strip_blank(value: &Value) -> Value {
-    match value {
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(key, item)| (key.clone(), strip_blank(item)))
-                .filter(|(_, item)| !is_blank(item))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(strip_blank).collect()),
-        other => other.clone(),
-    }
-}
-
-/// One block of a document as a markdown line ending in its `{#id}`.
-fn block_line(block: &Value) -> Option<String> {
-    let text = block
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let id = block.get("id").and_then(Value::as_str)?;
-    let kind = block.get("kind");
-    let level = |name: &str| {
-        kind.and_then(|kind| kind.get(name))
-            .and_then(Value::as_u64)
-            .map(|level| usize::try_from(level).unwrap_or(0).min(12))
-    };
-    let indent = |level: usize| "  ".repeat(level);
-    let line = if let Some(heading) = level("heading") {
-        format!("{} {text} ^{id}", "#".repeat(heading.clamp(1, 6)))
-    } else if let Some(depth) = level("bullet") {
-        format!("{}- {text} ^{id}", indent(depth))
-    } else if let Some(depth) = level("numbered") {
-        format!("{}1. {text} ^{id}", indent(depth))
-    } else if let Some(depth) = level("checklist") {
-        let done = kind
-            .and_then(|kind| kind.get("done"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        format!(
-            "{}- [{}] {text} ^{id}",
-            indent(depth),
-            if done { 'x' } else { ' ' }
-        )
-    } else if kind.is_some_and(|kind| kind.get("code").is_some()) {
-        let language = kind
-            .and_then(|kind| kind.get("code"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        format!("```{language} ^{id}\n{text}\n```")
-    } else {
-        match kind.and_then(Value::as_str) {
-            Some("quote") => format!("> {text} ^{id}"),
-            Some("divider") => format!("--- ^{id}"),
-            _ => format!("{text} ^{id}"),
-        }
-    };
-    Some(line)
-}
-
-/// What an app's read or an action's output is, as the least text that says
-/// it ([`ResourceRead::render`]).
-fn render_value(value: &Value) -> String {
-    ResourceRead::of(value).render()
 }
 
 /// A resource as a read answers it, typed: what a program takes from
@@ -1243,6 +1041,34 @@ fn outcome(value: &Value) -> Reply {
             format!("failed: {code}: {message}")
         }
         "cancelled" => "cancelled".to_owned(),
+        "item" | "progress" => {
+            let id = value
+                .get("invocation_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut text = format!("pending {id}: still running");
+            // A run in a shell says what it printed so far as it prints it.
+            if let Some(tail) = value
+                .pointer("/update/value/tail")
+                .and_then(Value::as_str)
+                .filter(|tail| !tail.trim().is_empty())
+            {
+                let total = value
+                    .pointer("/update/value/total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let _ = write!(
+                    text,
+                    "; its output so far ({total} bytes), newest last:\n{}",
+                    tail.trim_end()
+                );
+            }
+            let _ = write!(
+                text,
+                "\ntilo_status {{invocation_id}} says how it went; {{\"cancel\": true}} stops it"
+            );
+            text
+        }
         _ => {
             let id = value
                 .get("invocation_id")
@@ -1298,6 +1124,25 @@ struct InstalledApp {
     opens: bool,
 }
 
+impl InstalledApp {
+    /// The app as naming it answers: its newest window `window` while it
+    /// runs, else the app to open.
+    fn named(&self, window: Option<String>) -> AppRef {
+        let app_id = self.app_id.clone();
+        match window {
+            Some(provider) => AppRef::Running {
+                app_id,
+                provider,
+                pinned: false,
+            },
+            None => AppRef::Installed {
+                app_id,
+                opens: self.opens,
+            },
+        }
+    }
+}
+
 /// A directory read once per call.
 type Levels = HashMap<String, Level>;
 
@@ -1321,6 +1166,20 @@ struct Resolved {
     levels: Levels,
     /// The directory revision the target was found at.
     revision: String,
+}
+
+impl Resolved {
+    /// Where a change of the target is taken back: its record's own history, on the nearest
+    /// resource that holds the target (or the target itself) and offers `undo`.
+    fn history(&self) -> Option<String> {
+        let offers = |node: &&Node| {
+            node.actions
+                .iter()
+                .any(|action| action.address.action == "undo")
+        };
+        let nearest = self.node.iter().chain(self.chain.iter().rev()).find(offers);
+        nearest.map(|node| node.id.clone())
+    }
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -1492,6 +1351,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // activity) answer for app ids no app installs: the app itself,
         // when it is installed, is what its name opens.
         let installed = self.installed().await;
+        // The name the listing shows an app by (`Files`) is that app.
+        if let Some(app) = installed
+            .as_ref()
+            .ok()
+            .and_then(|apps| listed_as(apps, name))
+        {
+            return Ok(app.named(newest(&app.app_id, true)));
+        }
         let services = ids_where(false);
         let service = page::app_named(name, &services).ok().filter(|app_id| {
             installed
@@ -1531,25 +1398,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // guessed (`host` for the Browser, `so.tilo.browser`) is the
             // likeliest cause, so the running apps are named as they are to
             // be addressed.
-            Err(_) => Err(format!(
-                "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
-                running
-                    .iter()
-                    .find_map(|(_, app)| app["app_id"].as_str())
-                    .unwrap_or("<app_id>"),
-                list_or_none(&app_names(
-                    &running
-                        .iter()
-                        .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
-                        .collect::<Vec<_>>()
-                )),
-                list_or_none(&app_names(
-                    &installed
-                        .iter()
-                        .map(|app| app.app_id.clone())
-                        .collect::<Vec<_>>()
-                )),
-            )),
+            Err(_) => Err(no_app_named(name, &running, &installed)),
         }
     }
 
@@ -2042,47 +1891,32 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// The ids of the apps `name` names among those `running` and `installed`:
-/// its whole id or the name `tilo_ls` lists it by, any case. An error naming
-/// the apps there are when it names none, so a search narrowed to an app
-/// that is not there does not answer that nothing matches. `unread` is why
-/// the installed apps could not be read, when they could not: an app that
-/// is not running may then be installed, and the error says why the agent
-/// cannot know rather than that there is no such app.
-fn searched_apps(
-    name: &str,
-    running: &[String],
-    installed: &[InstalledApp],
-    unread: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let known = running
+/// Why `name` names no app: how a running app is addressed, and the apps
+/// running and installed.
+fn no_app_named(name: &str, running: &[(String, Value)], installed: &[InstalledApp]) -> String {
+    let running_ids = running
         .iter()
-        .chain(installed.iter().map(|app| &app.app_id));
-    let mut meant: Vec<String> = Vec::new();
-    let mut all: Vec<String> = Vec::new();
-    for app_id in known {
-        all.push(app_id.clone());
-        let short = app_names(std::slice::from_ref(app_id)).join("");
-        if (app_id.eq_ignore_ascii_case(name) || short.eq_ignore_ascii_case(name))
-            && !meant.contains(app_id)
-        {
-            meant.push(app_id.clone());
-        }
-    }
-    if !meant.is_empty() {
-        return Ok(meant);
-    }
-    if let Some(reason) = unread {
-        return Err(format!(
-            "no running app is named {name}, and the installed apps could not be read: {reason}"
-        ));
-    }
-    let listed = app_names(&all);
-    Err(if listed.is_empty() {
-        format!("no app {name}: no app is running or installed")
-    } else {
-        format!("no app {name}; the apps: {}", list_names(&listed))
-    })
+        .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let installed_ids = installed
+        .iter()
+        .map(|app| app.app_id.clone())
+        .collect::<Vec<_>>();
+    format!(
+        "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
+        running_ids.first().map_or("<app_id>", String::as_str),
+        list_or_none(&app_names(&running_ids)),
+        list_or_none(&app_names(&installed_ids)),
+    )
+}
+
+/// The one installed app the listing shows by the name `name` (`Files` for
+/// `file-explorer`), any case.
+fn listed_as<'a>(installed: &'a [InstalledApp], name: &str) -> Option<&'a InstalledApp> {
+    let mut named = installed
+        .iter()
+        .filter(|app| app.label.eq_ignore_ascii_case(name));
+    named.next().filter(|_| named.next().is_none())
 }
 
 fn app_names(ids: &[String]) -> Vec<String> {
@@ -2103,32 +1937,42 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     pub(super) async fn agent_call(&self, name: &str, args: Value, structured: bool) -> Value {
         let result = match name {
             "tilo_ls" => match parse(args) {
-                Ok(args) => self.agent_ls(args).await,
+                Ok(args) => self.agent_ls(args, structured).await,
                 Err(error) => Err(error),
             },
             "tilo_read" => match parse(args) {
-                Ok(args) => self.agent_read(args, structured).await,
+                Ok(args) => Box::pin(self.agent_read(args, structured)).await,
                 Err(error) => Err(error),
             },
             "tilo_do" => match parse(args) {
-                Ok(args) => self.agent_do(args).await,
+                Ok(args) => self.agent_do(args, structured).await,
+                Err(error) => Err(error),
+            },
+            "tilo_link" => match parse(args) {
+                Ok(args) => self.agent_link(args, structured).await,
                 Err(error) => Err(error),
             },
             "tilo_find" => match parse(args) {
-                Ok(args) => self.agent_find(args).await,
+                Ok(args) => self.agent_find(args, structured).await,
                 Err(error) => Err(error),
             },
             "tilo_status" => match parse(args) {
-                Ok(args) => self.agent_status(&args).await,
+                Ok(args) => self.agent_status(&args, structured).await,
                 Err(error) => Err(error),
             },
             "tilo" => match parse(args) {
-                Ok(args) => Box::pin(self.agent_tilo(args)).await,
+                Ok(args) => Box::pin(self.agent_tilo(args, structured)).await,
+                Err(error) => Err(error),
+            },
+            "tilo_watch" => match parse(args) {
+                Ok(args) => self.agent_watch(args).await,
                 Err(error) => Err(error),
             },
             _ => Err("Unknown tool".to_owned()),
         };
-        text_result(result)
+        // A program may have run steps before the one refused: running it
+        // again would run them twice.
+        text_result(result, structured, name != "tilo")
     }
 
     /// Note the record a call resolved `in`: the one its provider names when
@@ -2148,7 +1992,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         });
     }
 
-    async fn agent_ls(&self, args: LsArgs) -> Result<Reply, String> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one listing, its text lines and its typed rows in the order it writes them"
+    )]
+    async fn agent_ls(&self, args: LsArgs, structured: bool) -> Result<Reply, String> {
         let offset = match args.cursor.as_deref() {
             None | Some("") => 0,
             Some(cursor) => cursor
@@ -2164,7 +2012,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let path = args.path.as_deref().map(str::trim).unwrap_or_default();
         if path.is_empty() {
-            return self.list_apps(offset, limit).await;
+            return self.list_apps(offset, limit, structured).await;
         }
         let parsed = parse_path(path)?;
         // How a program writes what this lists: the listing is the one a program reads, and a
@@ -2178,9 +2026,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
-            return Ok(Reply::ok(action_page(&named_at, &found, called(&found))));
+            let mut reply = Reply::ok(action_page(&named_at, &found, called(&found)));
+            if structured {
+                reply.structured = Some(json!({
+                    "path": named_at,
+                    "kind": resolved
+                        .node
+                        .as_ref()
+                        .map_or(resolved.app_id.as_str(), |node| {
+                            forms.kind(&node.kind).unwrap_or(&node.kind)
+                        }),
+                    "actions": [action_row(&found)],
+                    "rows": [],
+                }));
+            }
+            return Ok(reply);
         }
         let mut lines: Vec<String> = Vec::new();
+        let mut rows: Vec<Value> = Vec::new();
         if want_resources {
             let mut named: Vec<Node> = resolved.children.clone();
             named.extend(resolved.node.clone());
@@ -2202,6 +2065,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 if !child.actions.is_empty() {
                     let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
+                let name = child.name(&named);
+                rows.push(json!({
+                    "path": format!("{}/{name}", resolved.path),
+                    "name": name,
+                    "label": child.label,
+                    "kind": forms.kind(&child.kind).unwrap_or(&child.kind),
+                    "has_children": child.container,
+                    "actions": action_rows(&child.actions),
+                }));
                 lines.push(line);
             }
         }
@@ -2226,24 +2098,51 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             text.push_str(&line);
         }
         let end = offset.saturating_add(limit);
-        if end < total {
+        let next = (end < total).then(|| end.to_string());
+        if let Some(next) = &next {
             let _ = write!(
                 text,
-                "\n… {} more: cursor \"{end}\"",
+                "\n… {} more: cursor \"{next}\"",
                 total.saturating_sub(end)
             );
         } else if total == 0 {
             text.push_str("\n(nothing here)");
         }
-        Ok(Reply::ok(text))
+        let mut reply = Reply::ok(text);
+        if structured {
+            let kind = resolved
+                .node
+                .as_ref()
+                .map_or(resolved.app_id.as_str(), |node| {
+                    forms.kind(&node.kind).unwrap_or(&node.kind)
+                })
+                .to_owned();
+            let mut answer = json!({
+                "path": resolved.path,
+                "kind": kind,
+                "actions": action_rows(&resolved.actions),
+                "rows": rows,
+            });
+            if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
+                fields.insert("next_cursor".into(), json!(next));
+            }
+            reply.structured = Some(answer);
+        }
+        Ok(reply)
     }
 
     /// The apps: running ones first, then the installed ones to open. An
     /// installed list that could not be read is said, with why: read as
     /// empty it would tell the agent there are no apps.
-    async fn list_apps(&self, offset: usize, limit: usize) -> Result<Reply, String> {
+    async fn list_apps(
+        &self,
+        offset: usize,
+        limit: usize,
+        structured: bool,
+    ) -> Result<Reply, String> {
         let (_, running) = self.providers().await?;
         let mut lines: Vec<String> = Vec::new();
+        let mut rows: Vec<Value> = Vec::new();
         let mut running_ids: Vec<String> = Vec::new();
         for (_, app) in &running {
             let Some(app_id) = app["app_id"].as_str() else {
@@ -2269,11 +2168,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     || tilo_actions::remote::is_record_provider(provider))
                     && app["app_id"].as_str() == Some(app_id)
             });
-            lines.push(format!(
-                "{}  {label}  {}",
-                app_names(std::slice::from_ref(app_id)).join(""),
-                if windowed { "running" } else { "service" }
-            ));
+            let name = app_names(std::slice::from_ref(app_id)).join("");
+            let state = if windowed { "running" } else { "service" };
+            lines.push(format!("{name}  {label}  {state}"));
+            rows.push(json!({
+                "path": name,
+                "name": name,
+                "label": label,
+                "kind": "app",
+                "state": state,
+                "has_children": true,
+                "actions": [],
+            }));
         }
         let mut unopened = false;
         for app in &installed {
@@ -2284,11 +2190,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     unopened = true;
                     "installed, not yours to open"
                 };
-                lines.push(format!(
-                    "{}  {}  {state}",
-                    app_names(std::slice::from_ref(&app.app_id)).join(""),
-                    app.label
-                ));
+                let name = app_names(std::slice::from_ref(&app.app_id)).join("");
+                lines.push(format!("{name}  {}  {state}", app.label));
+                rows.push(json!({
+                    "path": name,
+                    "name": name,
+                    "label": app.label,
+                    "kind": "app",
+                    "state": state,
+                    "has_children": true,
+                    "actions": [],
+                }));
             }
         }
         let total = lines.len();
@@ -2298,10 +2210,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             text.push_str(&line);
         }
         let end = offset.saturating_add(limit);
-        if end < total {
+        let next = (end < total).then(|| end.to_string());
+        if let Some(next) = &next {
             let _ = write!(
                 text,
-                "\n… {} more: cursor \"{end}\"",
+                "\n… {} more: cursor \"{next}\"",
                 total.saturating_sub(end)
             );
         }
@@ -2313,10 +2226,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if unopened {
             text.push_str("\nthe person decides which apps an agent may open in this workspace");
         }
-        Ok(Reply::ok(text))
+        let mut reply = Reply::ok(text);
+        if structured {
+            let mut answer = json!({"path":"apps","kind":"apps","actions":[],"rows":rows});
+            if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
+                fields.insert("next_cursor".into(), json!(next));
+            }
+            reply.structured = Some(answer);
+        }
+        Ok(reply)
     }
 
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, String> {
+        if let Some((app, record)) = tilo_actions::remote::record_parts(&args.path) {
+            // Boxed: the wait it holds is no part of every agent call's future.
+            return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
+        }
         let parsed = parse_path(&args.path)?;
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
@@ -2326,6 +2251,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             (Err(note), _) => return Ok(Reply::ok(note)),
         };
         self.acted_in(&resolved);
+        // A typed read of an app, with no resource named, answers what the app publishes: the
+        // surface its resources and actions are declared in, which a generated SDK's types are
+        // read from (`tilo sdk gen -w`).
+        if structured
+            && resolved.node.is_none()
+            && let Some(surface) = ui::app_surface::bytes_of(&resolved.app_id)
+        {
+            let mut reply = Reply::ok(String::new());
+            reply.structured = Some(json!({
+                "path": resolved.path,
+                "kind": "app",
+                "app": resolved.app_id,
+                "surface": String::from_utf8_lossy(surface),
+            }));
+            return Ok(reply);
+        }
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
@@ -2432,25 +2373,48 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(None)
     }
 
-    async fn agent_do(&self, args: DoArgs) -> Result<Reply, String> {
+    async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, String> {
         let wait_ms = args.wait_ms;
+        // A typed caller follows an invocation that waits for the person by
+        // its id, so the call names one even when the caller did not: the same
+        // id asks the same invocation again, and never runs it twice.
+        let invocation_id = match (structured, args.invocation_id) {
+            (true, None) => Some(tilo_actions::InvocationId::new().0.to_string()),
+            (_, invocation_id) => invocation_id,
+        };
         match (args.path, args.calls) {
             (Some(path), None) => {
-                let _running = self.hold_invocation(args.invocation_id.as_deref()).await;
-                Box::pin(self.do_one(&path, args.args, args.invocation_id, wait_ms)).await
+                let _running = self.hold_invocation(invocation_id.as_deref()).await;
+                Box::pin(self.do_one(&path, args.args, invocation_id, wait_ms, structured)).await
             }
             (None, Some(calls)) => {
                 if calls.is_empty() || calls.len() > MAX_CALLS {
                     return Err(format!("calls must hold 1 to {MAX_CALLS} steps"));
                 }
-                let _running = self.hold_invocation(args.invocation_id.as_deref()).await;
+                let _running = self.hold_invocation(invocation_id.as_deref()).await;
                 let total = calls.len();
                 let mut text = String::new();
+                let mut steps: Vec<Value> = Vec::new();
                 for (index, step) in calls.into_iter().enumerate() {
-                    let invocation = batch_invocation(args.invocation_id.as_deref(), index)?;
-                    let reply = Box::pin(self.do_one(&step.path, step.args, invocation, wait_ms))
-                        .await
-                        .unwrap_or_else(|error| Reply::failed(format!("failed: {error}")));
+                    let invocation = batch_invocation(invocation_id.as_deref(), index)?;
+                    let step_id = invocation.clone();
+                    let reply = Box::pin(
+                        self.do_one(&step.path, step.args, invocation, wait_ms, structured),
+                    )
+                    .await
+                    .unwrap_or_else(|error| Reply::failed(format!("failed: {error}")));
+                    let mut typed = reply.structured.clone().unwrap_or_else(
+                        || json!({"status": if reply.failed {"failed"} else {"ok"}}),
+                    );
+                    if let (Some(fields), Some(id)) = (typed.as_object_mut(), step_id.as_ref()) {
+                        fields
+                            .entry("invocation_id")
+                            .or_insert_with(|| json!(id.as_str()));
+                    }
+                    if let Some(fields) = typed.as_object_mut() {
+                        fields.insert("path".into(), json!(step.path));
+                    }
+                    steps.push(typed);
                     let _ = write!(
                         text,
                         "{}[{}] {}: {}",
@@ -2465,10 +2429,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             "\nstopped at {} of {total}; earlier steps stay applied",
                             index.saturating_add(1)
                         );
-                        return Ok(Reply::failed(text));
+                        let mut reply = Reply::failed(text);
+                        if structured {
+                            reply.structured = Some(json!({
+                                "status": "failed",
+                                "stopped_at": index,
+                                "links": link::step_links(&steps),
+                                "steps": steps,
+                            }));
+                        }
+                        return Ok(reply);
                     }
                 }
-                Ok(Reply::ok(text))
+                let mut reply = Reply::ok(text);
+                if structured {
+                    // Every record the steps changed, each once: what a
+                    // person is handed to review them.
+                    let links = link::step_links(&steps);
+                    reply.structured = Some(json!({"status":"ok","steps":steps,"links":links}));
+                }
+                Ok(reply)
             }
             _ => Err("name a path (with #action) or calls".into()),
         }
@@ -2481,17 +2461,110 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
+        structured: bool,
     ) -> Result<Reply, String> {
-        match Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await? {
-            Done::Launched(reply) => Ok(reply),
+        let asked = invocation.clone();
+        if let Some(id) = asked.as_deref() {
+            self.watch_run_started(id, path);
+        }
+        let answer = Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await;
+        let answer = match answer {
+            Err(message)
+                if structured
+                    && path.contains('#')
+                    && super::confirm::needs_the_person(&message) =>
+            {
+                // The person is being asked; the typed caller is told so rather
+                // than left waiting, and the same id answers it once they do.
+                let id = asked.as_deref().unwrap_or_default();
+                let mut reply = Reply::ok(message);
+                reply.failed = false;
+                reply.structured = Some(json!({
+                    "status": "pending",
+                    "invocation_id": id,
+                    "path": path,
+                    "ask": {"invocation_id": id},
+                }));
+                return Ok(reply);
+            }
+            answer => answer?,
+        };
+        match answer {
+            Done::Launched { value, mut reply } => {
+                if let Some(id) = asked.as_deref() {
+                    self.watch_run_ended(
+                        id,
+                        value
+                            .pointer("/update/state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("failed"),
+                    );
+                }
+                let link = self.opened_link(&value).await;
+                let typed = structured.then(|| answer_of(&value));
+                reply.structured = link::linked(&mut reply, typed, link);
+                Ok(reply)
+            }
             Done::Invoked {
                 value,
                 path,
                 descriptor,
+                app,
+                provider,
+                history,
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
                     let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor, None));
+                }
+                if let Some(id) = asked.as_deref() {
+                    self.watch_run_ended(
+                        id,
+                        value
+                            .pointer("/update/state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("failed"),
+                    );
+                }
+                let link = self
+                    .invoked_link(asked.as_deref(), &value, &provider, &descriptor)
+                    .await;
+                link::tell(&mut reply, link.as_deref());
+                if structured {
+                    let mut typed = answer_of(&value);
+                    link::put(&mut typed, link);
+                    if let Some(fields) = typed.as_object_mut() {
+                        // The path this call ran, as a caller writes one.
+                        fields.insert(
+                            "path".into(),
+                            json!(format!("{path}#{}", descriptor.address.action)),
+                        );
+                        // What the action takes, beside why running it did not
+                        // work: the same page the text appends.
+                        if reply.failed {
+                            fields.insert("action".into(), action_row(&descriptor));
+                            if let Some(error) =
+                                fields.get_mut("error").and_then(Value::as_object_mut)
+                            {
+                                error.insert(
+                                    "next_steps".into(),
+                                    json!([format!("tilo_ls {path} lists its parameters")]),
+                                );
+                            }
+                        }
+                    }
+                    reply.structured = Some(typed);
+                }
+                // A call naming the run it is a step of makes that run's step:
+                // `undo task` takes it back in every app it changed, as it
+                // takes back a program's.
+                if !reply.failed
+                    && descriptor.contract.kind != tilo_actions::ActionKind::Read
+                    && let Some((gesture, label)) = Self::grouped_run()
+                {
+                    self.programs
+                        .lock_recover()
+                        .note_run(gesture, &label, &app, history);
                 }
                 Ok(reply)
             }
@@ -2513,14 +2586,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             AppRef::Installed { opens: false, .. } => {
                 Err(Self::not_running_note(&parsed.app, false))
             }
-            AppRef::Installed { .. }
-                if action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-                    || !parsed.segments.is_empty() =>
-            {
+            AppRef::Installed { .. } if starts_app(action) || !parsed.segments.is_empty() => {
                 Ok(None)
             }
             AppRef::Installed { app_id, .. } => {
-                let provider = self.opened_provider(&app_id, wait_ms).await?;
+                let provider = self.started_provider(&app_id, wait_ms).await?;
                 Ok(Some((app_id, provider, true)))
             }
             AppRef::Running {
@@ -2550,10 +2620,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
                 return Err(format!("{} started while it was asked to", parsed.app));
             };
-            return self
+            let (value, reply) = self
                 .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                .await
-                .map(Done::Launched);
+                .await?;
+            return Ok(Done::Launched { value, reply });
         };
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
@@ -2596,31 +2666,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
         }
         self.acted_in(&resolved);
-        let (named_at, descriptor) =
-            if let Some(descriptor) = self.action_named(&resolved, &action).await? {
-                (resolved.path.clone(), descriptor)
-            } else {
-                // Not one of the target's actions by its id: what the target
-                // offers decides (a label, the start of an id), as listing it
-                // shows. A path naming the app alone means the app's own
-                // actions and those it publishes on its resources.
-                if let Some(node) = resolved.node.clone() {
-                    let mut levels = std::mem::take(&mut resolved.levels);
-                    let here = self
-                        .level(&resolved.provider, &node.id, &mut levels)
-                        .await?;
-                    resolved.actions = if here.own.is_empty() {
-                        node.actions.clone()
-                    } else {
-                        here.own
-                    };
+        let (named_at, descriptor) = if let Some(descriptor) =
+            self.action_named(&resolved, &action).await?
+        {
+            (resolved.path.clone(), descriptor)
+        } else {
+            // Not one of the target's actions by its id: what the target
+            // offers decides (a label, the start of an id), as listing it
+            // shows. A path naming the app alone means the app's own
+            // actions and those it publishes on its resources.
+            if let Some(node) = resolved.node.clone() {
+                let mut levels = std::mem::take(&mut resolved.levels);
+                let here = self
+                    .level(&resolved.provider, &node.id, &mut levels)
+                    .await?;
+                resolved.actions = if here.own.is_empty() {
+                    node.actions.clone()
+                } else {
+                    here.own
+                };
+            }
+            // `notes#open` is what the listing of a stopped app says to
+            // call; once the app runs, it answers what is in it.
+            let opens = parsed.segments.is_empty() && arguments.is_empty();
+            match self.pick_action_in(&action, &resolved).await {
+                Ok(found) => found,
+                Err(_) if opens && starts_app(&action) => {
+                    return Ok(self.running(&resolved.app_id).await);
                 }
-                let (named_at, descriptor) = self
-                    .pick_action_in(&action, &resolved)
-                    .await
-                    .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?;
-                (named_at, descriptor)
-            };
+                Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
+            }
+        };
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: resolved.provider.clone(),
@@ -2635,11 +2711,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
-        Ok(Done::Invoked {
-            value,
-            path: named_at,
-            descriptor: Box::new(descriptor),
-        })
+        Ok(Done::invoked(value, named_at, descriptor, &resolved))
     }
 
     /// The action `name` means in what `resolved` names, with the path to
@@ -2731,7 +2803,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .find(|found| found.address.resource == node.id && found.address.action == action))
     }
 
-    /// `notes#open`: start an installed app, then say what is in it.
+    /// `notes#open` (or `notes#start`, without a window): start an installed app, then say
+    /// what is in it.
     async fn launch(
         &self,
         parsed: &ParsedPath,
@@ -2740,40 +2813,60 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
-    ) -> Result<Reply, String> {
-        if !parsed.segments.is_empty() || action != tilo_actions::remote::APPLICATION_OPEN_ACTION {
+    ) -> Result<(Value, Reply), String> {
+        if !parsed.segments.is_empty() || !starts_app(action) {
             return Err(Self::not_running_note(&parsed.app, true));
         }
         let value = self
-            .open_in_workspace(app_id, arguments, invocation, wait_ms)
+            .app_in_workspace(app_id, action, arguments, invocation, wait_ms)
             .await?;
-        let mut reply = outcome(&value);
-        if reply.failed {
-            return Ok(reply);
+        if outcome(&value).failed {
+            let reply = outcome(&value);
+            return Ok((value, reply));
         }
+        let reply = self.opened_reply(app_id, &value).await;
+        Ok((value, reply))
+    }
+
+    /// `open` of `app_id`, which runs already: it is there, and what is in it.
+    async fn running(&self, app_id: &str) -> Done {
+        let value = json!({"update": {"state": "succeeded", "output": {}}});
+        let reply = self.opened_reply(app_id, &value).await;
+        Done::Launched { value, reply }
+    }
+
+    /// What starting `app_id` answers once it runs: that it does, and what
+    /// is in it.
+    async fn opened_reply(&self, app_id: &str, value: &Value) -> Reply {
+        let mut reply = outcome(value);
         let name = app_names(&[app_id.to_owned()]).join("");
         reply.text = format!("ok: {name} is running");
         if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
             let _ = write!(reply.text, "\nnot opened: {error}");
         }
         if let Ok(listing) = self
-            .agent_ls(LsArgs {
-                path: Some(name),
-                ..LsArgs::default()
-            })
+            .agent_ls(
+                LsArgs {
+                    path: Some(name),
+                    ..LsArgs::default()
+                },
+                false,
+            )
             .await
         {
             reply.text.push('\n');
             reply.text.push_str(&listing.text);
         }
-        Ok(reply)
+        reply
     }
 
-    /// The workspace's `open` of the app `app_id`, with `arguments` for the files it opens
-    /// there: the workspace's answer, which names the instance it started at [`super::OPENED_PEER`].
-    async fn open_in_workspace(
+    /// The workspace's `action` (its `open` or its `start`) of the app `app_id`, with
+    /// `arguments` for the files it opens there: the workspace's answer, which names the
+    /// instance it started at [`super::OPENED_PEER`].
+    async fn app_in_workspace(
         &self,
         app_id: &str,
+        action: &str,
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
@@ -2789,7 +2882,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "{}{app_id}",
                 tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
             ),
-            action: tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+            action: action.to_owned(),
             arguments,
             invocation_id: invocation,
             wait_ms,
@@ -2798,8 +2891,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The provider of a running instance of the installed app `app_id`, starting the app in
-    /// the workspace when none runs yet: where an invocation of the app's own door goes.
-    async fn opened_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
+    /// the workspace when none runs yet, without a window: where an invocation of the app's own
+    /// door goes. The step shows nothing, so nothing is opened for it.
+    async fn started_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
         match self.app_ref(app_id).await? {
             AppRef::Running { provider, .. } => Ok(provider),
             AppRef::Installed { app_id, opens } => {
@@ -2807,40 +2901,40 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     return Err(Self::may_not_open(&app_id));
                 }
                 let value = self
-                    .open_in_workspace(&app_id, serde_json::Map::new(), None, wait_ms)
+                    .app_in_workspace(
+                        &app_id,
+                        tilo_actions::remote::APPLICATION_START_ACTION,
+                        serde_json::Map::new(),
+                        None,
+                        wait_ms,
+                    )
                     .await?;
                 if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-                    return Err(format!("{app_id} did not open: {}", outcome(&value).text));
+                    return Err(format!("{app_id} did not start: {}", outcome(&value).text));
                 }
-                if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
-                    return Err(format!("{app_id} did not open: {error}"));
-                }
-                // The instance the workspace started, as it names it; a workspace naming none
-                // lets the caller find it among the running ones.
-                if let Some(peer) = value.pointer(super::OPENED_PEER).and_then(Value::as_u64) {
-                    return Ok(peer.to_string());
-                }
-                // A host serving the workspace's records names the record it
-                // opened the app on.
-                if let Some(provider) = value
-                    .pointer("/update/output/value/provider")
-                    .and_then(Value::as_str)
-                    .filter(|provider| tilo_actions::remote::is_record_provider(provider))
-                {
-                    return Ok(provider.to_owned());
-                }
-                let (_, running) = self.providers().await?;
-                running
-                    .iter()
-                    .rev()
-                    .find(|(_, instance)| instance["app_id"].as_str() == Some(app_id.as_str()))
-                    .map(|(peer, _)| peer.clone())
-                    .ok_or_else(|| format!("{app_id} opened, but no instance of it runs"))
+                // The instance the workspace started, as it names it; a host serving the
+                // workspace's records names the record it started the app on.
+                value
+                    .pointer(super::OPENED_PEER)
+                    .and_then(Value::as_u64)
+                    .map(|peer| peer.to_string())
+                    .or_else(|| {
+                        value
+                            .pointer("/update/output/value/provider")
+                            .and_then(Value::as_str)
+                            .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| format!("{app_id} started, but named no instance of it"))
             }
         }
     }
 
-    async fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
+    async fn agent_status(
+        &self,
+        args: &AgentStatusArgs,
+        structured: bool,
+    ) -> Result<Reply, String> {
         let invocation = invocation_id(&args.invocation_id)?;
         if args.cancel {
             self.host()
@@ -2849,9 +2943,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .ok_or("the host dropped the request")?
                 .map_err(|error| error.to_string())?;
         }
-        let value = self.status(invocation)?;
-        Ok(outcome(&value))
+        let value = self.status(invocation).await?;
+        let mut reply = outcome(&value);
+        let link = self.changed_link_of(&args.invocation_id, &value).await;
+        let typed = structured.then(|| answer_of(&value));
+        reply.structured = link::linked(&mut reply, typed, link);
+        Ok(reply)
     }
+}
+
+/// Whether `action`, named on an app itself, starts it: `open` shows it in a window, `start`
+/// runs it without one.
+fn starts_app(action: &str) -> bool {
+    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        || action == tilo_actions::remote::APPLICATION_START_ACTION
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which

@@ -1,13 +1,16 @@
 /**
  * `connectPeer` → `CertifiedPeer`: the page as a certified Tilo peer of the
- * user's host, reached at its HTTPS origin (PR 541's carriers, served by the
- * host itself):
+ * user's host. Before it holds a certificate the page asks the host's HTTPS
+ * origin only what it cannot ask a session: the host's certificate and
+ * address, joining a workspace, and a member's approval of their own
+ * device. Everything after goes over one iroh session to the host, through
+ * the packet relay the host names (a page holds no UDP socket), the same
+ * session a native device holds (`tilo-session-client` in wasm):
  *
- * - durable documents over HTTPS: signed commits from a persisted outbox,
- *   acknowledged in host order, received by long-poll from a host cursor,
- *   replayed after every reconnect (`tilo-browser-peer` in wasm);
- * - device certification over HTTPS: the page shows the pairing code while
- *   a root-holding device of the user approves;
+ * - durable documents: signed commits from a persisted outbox, acknowledged
+ *   in host order, replayed after every reconnect;
+ * - device certification: the page shows the pairing code while a
+ *   root-holding device of the user approves;
  * - the live plane (`peer.live`): this page as one member device of the
  *   workspace beside every other, its presence, pointers, previews and shell
  *   on the same session link they use. Never authority;
@@ -21,20 +24,18 @@
  * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
-import {createActions} from './actions.mjs';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
-import {createAgents} from './agents.mjs';
-import {openChannelVault} from './channel-vault.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
-import {memberText, objectText} from './json-text.mjs';
+import {memberText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {idbStorage, openDeviceCustody, rememberBrowserDevice} from './device-custody.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
+import {siteHost, STALE_SITE_HOST, staleSiteHost, staleSiteHostReport} from './site-host.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -45,6 +46,9 @@ export {
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** The workspace's shared desktop record (`tilo_desktop_model::ownership`). */
+const DESKTOP_APP = 'so.tilo.browser-desktop';
+const DESKTOP_RECORD = 'desktop';
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
  * person's name, whether it only watches) added, edited as text: certificate
@@ -140,12 +144,6 @@ const hostNamespace = (hostCert, slot) => {
 };
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
-/** Whether a stored `{cert}` expires within a day (a page holding the root
- * then certifies itself anew). */
-function expiresWithinADay(stored) {
-  const expires = JSON.parse(stored)?.cert?.expires_at_ns;
-  return typeof expires === 'number' && expires / 1e6 < Date.now() + 86_400_000;
-}
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
 /** Rejoining the live plane: the first wait and the longest, exponential
@@ -196,12 +194,32 @@ const recordKey = record => `${record.app}\u0000${record.record}`;
 const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
 
+/** `InvokeArgument` for a JavaScript value: nothing, a prompted text, or a typed object. */
+function invokeArgument(argument) {
+  if (argument === undefined || argument === null || argument === 'None') return 'None';
+  if (typeof argument === 'string') return {Text: argument};
+  if (typeof argument === 'object' && (argument.Text !== undefined || argument.Json !== undefined)) return argument;
+  if (typeof argument === 'object' && !Array.isArray(argument)) return {Json: argument};
+  throw new TypeError('an action argument is a string or an object');
+}
+
+/** The person's answer to an action that asks first, as the host takes it. */
+function wireConfirmation(confirmation) {
+  if (!confirmation) return undefined;
+  if (confirmation.kind === 'phrase') return {Phrase: String(confirmation.phrase ?? '')};
+  return 'Confirmed';
+}
+
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 /** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
 /** `post(path, body)` over `fetch` to the host origin: https, or loopback
- * http for local review (no certificate exception needed). */
+ * http for local review (no certificate exception needed). The request names
+ * no content type: the host reads every body as the bytes it is, and a
+ * cross-origin POST with only the browser's own headers goes without the
+ * CORS preflight, which cost a page entering through another origin's door a
+ * round trip before each request it made of the host. */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
   const secure = base.protocol === 'https:' || isLoopbackHttp(base);
@@ -211,10 +229,10 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
   return async (path, body) => {
     const response = await fetcher(new URL(path, base).href, {
       method: 'POST',
-      headers: {'content-type': 'application/octet-stream'},
       body, credentials: 'omit', cache: 'no-store', redirect: 'error',
     });
-    return {status: response.status, body: new Uint8Array(await response.arrayBuffer())};
+    return {status: response.status, retryAfter: response.headers?.get?.('retry-after') ?? undefined,
+      body: new Uint8Array(await response.arrayBuffer())};
   };
 }
 
@@ -222,14 +240,13 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
  * The live layer of one workspace: this page's presence on the workspace's
  * board, and the members' ephemeral previews.
  *
- * The board is the peer's (`peer.sayPresence`, `peer.presenceDue`,
- * `peer.presenceMembers`): it keeps what this page says of itself — its face,
- * its pointer, its wave, who it follows — and says what changed on one
- * schedule, the rate and the repeats and the keepalives every device's
- * presence keeps; it merges what the members say into each of them. This
- * layer hands it each change, arms one timer for the next thing it owes, and
- * reads back who is here. The mount draws them, through the same path a
- * native desktop does.
+ * The board is the session's, run here through the peer (`peer.sayPresence`,
+ * `peer.presenceDue`, `peer.presenceMembers`): it keeps what this page says
+ * of itself — its face, its pointer, its wave, who it follows — and says what
+ * changed on the one schedule every device's presence keeps; it merges what
+ * the members say into each of them. This layer hands it each change, arms
+ * one timer for the next thing it owes, and reads back who is here. The mount
+ * draws them, through the same path a native desktop does.
  */
 export function createLiveLayer(peer, runtime, workspace, {
   participant, ready = Promise.resolve(),
@@ -290,7 +307,7 @@ export function createLiveLayer(peer, runtime, workspace, {
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (participant) value.participant = {kind: 'person', activity: null, ...participant};
+    if (participant) value.participant = {kind: 'person', profile_ms: 0, ...participant};
     say();
     setState('live');
   }
@@ -367,9 +384,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.device         device namespace of `profile`
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
- * @param options.vaultStorage   `{get, put}` for the profile's wrapped channel
- *                               vault (`channel-vault.mjs`); defaults to the
- *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
  *                               defaults to the page host's (`desktop`'s)
@@ -425,10 +439,10 @@ export async function withCustody(custody, connecting, signal) {
 
 async function connect({
   origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
-  profile, device, displayName = '', vaultStorage,
+  profile, device, displayName = '',
   fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  workspaceName,
+  workspaceName, hostInfo: answered, entering,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
@@ -459,18 +473,26 @@ async function connect({
     storage = await surface.openProfileStorage(profile, device);
     store ??= profileStore(runtime, profile, device);
   }
-  // Seals the channel state the runtime keeps in the profile's storage.
-  const vaultOf = () => openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()});
+  // Seals the channel state the runtime keeps in the profile's storage, from
+  // the platform secret store, as the session's own MLS vault keeps its key.
+  const vaultOf = () => runtime.channelVault(`page:${profile}/${device}:${userPublicKey}`);
   let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
-  const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
+  /** How this device comes back to the host answering as `hostCert` (JSON
+   * text), with what it `kept` and what an entry just `admitted` it under. */
+  const reconnecting = (kept, admitted, hostCert) =>
+    runtime.reconnectCertificate(kept ?? undefined, admitted ?? undefined, hostCert, Boolean(identity));
   // The colour this person's presence names, the runtime's for who they are
   // (their user root): the same one a native desktop draws them in. A
   // desktop settles everyone here over the whole workspace instead, so people
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
-  let host = JSON.parse(await runtime.hostInfo(post));
+  // Who the host is and where it is dialled: as the page's own site names
+  // it, handed on by the entry that took it (`enterOnSession`), else asked
+  // of the host here.
+  const named = siteHost(origin)?.info;
+  let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
@@ -483,16 +505,15 @@ async function connect({
   let ready;
   const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
   resetReady();
-  let agents;
   let actions;
   let voice;
   let disposed = false;
   let drawName = null;
-  // What the person says they are doing, in their own words: their
-  // presence carries it as their participant's activity.
-  let activity = null;
+  // When the person last changed their profile, as this page knows it: their
+  // presence says it, so everyone here fetches it again when it moves.
+  let profileMs = 0;
   const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
-    label: (displayName || label).slice(0, 32), color: ownColor(), activity}});
+    label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
@@ -500,13 +521,30 @@ async function connect({
     publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
-  // The session's remote-action events are taken once per change and read
-  // by every consumer: agents' and the workspace's actions share the path.
-  let remoteEvents = '[]';
-  const remote = {
-    sendRemoteAction: (...args) => peer.sendRemoteAction(...args),
-    takeRemoteActionEvents: () => remoteEvents,
+  // A session dialling the host as the site named it, which it has not
+  // reached yet, asks the host who it is once it fails or takes long: a host
+  // set up again since answers as another, and the page stops there with the
+  // site's deployment to fix (`site-host.mjs`) rather than wait on a host
+  // nobody answers as, or go on with one the site does not name.
+  let reached = host !== named;
+  let checking = null;
+  let stale = null;
+  const checkSiteHost = () => {
+    if (reached || checking || stale || disposed) return;
+    checking = runtime.hostInfo(post).then(text => {
+      if (reached || disposed || !staleSiteHost(host, JSON.parse(text))) return;
+      const report = staleSiteHostReport(origin);
+      console.error(report);
+      // The site's door logs what a page did not catch (`reportErrors` in entry-page.mjs).
+      globalThis.reportError?.(new Error(report));
+      stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
+      publish();
+    }, () => {
+      // Not reached either: the session's own failure says so, and the next one asks again.
+      checking = null;
+    });
   };
+  let siteHostCheck;
   // Desktop surfaces mounted through this peer, by surface id: their failures
   // are reported into SessionHealth and recovered through `recover`.
   const surfaces = new Map();
@@ -515,6 +553,19 @@ async function connect({
   const publish = () => {
     if (!peer) return;
     snapshot = JSON.parse(peer.snapshot());
+    if (!reached) {
+      const transport = snapshot.health?.transport?.phase;
+      if (transport === 'connected') {
+        reached = true;
+        clearTimeout(siteHostCheck);
+      } else if (stale) {
+        snapshot = {...snapshot, phase: 'failed', error: stale.message, errorCode: stale.code};
+      } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
+        checkSiteHost();
+      }
+    }
+    // Once in, a session started again (a recovery) is a member's and enters no more.
+    if (snapshot.entry?.outcome === 'admitted') entering = undefined;
     if (snapshot.phase === 'ready') admitted();
     if (live) {
       // The session's next frame carries both: the durable changes this page
@@ -523,10 +574,6 @@ async function connect({
       live.pump(JSON.parse(peer.takeLiveEvents()));
     }
     voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
-    remoteEvents = peer.takeRemoteActionEvents();
-    agents?.pump();
-    actions?.pump();
-    remoteEvents = '[]';
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
     for (const listener of [...statusListeners]) {
@@ -658,22 +705,22 @@ async function connect({
     }
     const admitted = deviceCertificate;
     deviceCertificate = undefined;
-    const answering = admitted ? JSON.parse(admitted).hostCert : host.hostCert;
-    if (existing && !sameHost(JSON.parse(existing).hostCert, answering)) {
-      // What this browser kept was certified by, and its record is pinned
-      // to, another host than the one answering at this origin now (it was
-      // set up again). Kept state is never handed to it, nor renewed for it.
-      // Only a device that host has just admitted (an invitation redeemed,
-      // its door, a pairing) goes on, in a namespace of its own.
-      if (!admitted) throw new AdmissionError('host-changed', HOST_CHANGED);
-      await adoptHost(answering);
-      existing = undefined;
+    // The one rule every device keeps as it comes back (`reconnectCertificate`
+    // in wasm): what this browser kept is never handed to another host than
+    // the one it was certified by, and only a device that host has just
+    // admitted (an invitation redeemed, its door, a pairing) goes on there,
+    // in a namespace of its own.
+    switch (reconnecting(existing, admitted, JSON.stringify((admitted && JSON.parse(admitted).hostCert) ?? host.hostCert))) {
+      case 'host-changed': throw new AdmissionError('host-changed', HOST_CHANGED);
+      case 'adopt-host':
+        await adoptHost(JSON.parse(admitted).hostCert);
+        // Falls through: the admitted certificate is kept in the new namespace.
+      case 'admitted':
+        await store.put(CERTIFICATE, admitted);
+        return admitted;
+      case 'kept': return existing;
+      default: break;
     }
-    if (admitted) {
-      await store.put(CERTIFICATE, admitted);
-      return admitted;
-    }
-    if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
       : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
@@ -686,7 +733,7 @@ async function connect({
     // Kept as text: the peer starts from the exact certificate, whose
     // nanosecond timestamps a JavaScript number would round.
     const certified = await certificate();
-    if (!sameHost(JSON.parse(certified).hostCert, host.hostCert)) {
+    if (reconnecting(certified, undefined, JSON.stringify(host.hostCert)) === 'host-changed') {
       // Certified by another host than the one answering at this origin
       // now: that host would refuse the session, and the state kept for the
       // other one is never handed to it.
@@ -700,6 +747,9 @@ async function connect({
         // certificate, so the host refuses those keys from the moment each
         // entry names on.
         revocations: identity?.revocations?.length ? identity.revocations : undefined,
+        // The workspace this device enters through its door as its session opens, until
+        // the host admitted it.
+        entering,
       }),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
@@ -707,26 +757,25 @@ async function connect({
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       channelVault,
     );
+    // Settings lists this browser's tabs' device keys as one entry.
+    if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
+    if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {
       // A workspace of the person's own its host does not govern yet is placed
       // there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, workspace, {ready, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
         }});
       }
-      agents?.dispose();
       actions?.dispose();
       const hostDevice = hexKey(host.hostCert?.device_public_key);
       // The host bridges this page into a call, so its frames carry the
       // host's device and it is the page's own voice there.
       voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, ...voiceOptions});
-      agents = hostDevice ? createAgents({peer: remote, runtime, workspace, live, userPublicKey, hostDevice}) : undefined;
-      actions = hostDevice
-        ? createActions({peer: remote, workspace, hostDevice, device: custodyKeyHex(), userPublicKey, store})
-        : undefined;
+      actions = hostDevice ? createActions() : undefined;
     }
     publish();
   }
@@ -751,6 +800,164 @@ async function connect({
     };
   }
   const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
+
+  // The page's actions: the workspace's host lists and runs them, asked through the
+  // session this page holds with it (`actionMessage` in wasm) — the same door the page's
+  // own Rust asks, so nothing here speaks the frames. A ticket follows one invocation: the
+  // host's receipt, then what became of it.
+  function createActions() {
+    const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
+    const entries = new Map();
+    let correlation = 0;
+    class ActionsError extends Error {
+      constructor(code, message) { super(message); this.name = 'ActionsError'; this.code = code; }
+    }
+    /** The host's refusal `error`, as it travels, read as every caller reads it
+     * (`hostRefusal` in wasm): its code, its words, and its typed refusal where
+     * it gave one. */
+    const failure = error => {
+      const refused = JSON.parse(runtime.hostRefusal(JSON.stringify(error)));
+      return Object.assign(new ActionsError(refused.code, refused.message), {refusal: refused.refusal ?? null});
+    };
+
+    /** Ask the workspace's host `message` (a `RemoteActionMessage`) and answer what it said. */
+    async function ask(message) {
+      try {
+        return JSON.parse(await peer.actionMessage(workspace, userPublicKey, JSON.stringify(message)));
+      } catch (error) {
+        throw new ActionsError('unavailable', String(error?.message ?? error));
+      }
+    }
+
+    /** The state an `InvocationUpdate` says, as a ticket reports it. */
+    function stateOf(update) {
+      const [variant, body] = Object.entries(update ?? {})[0] ?? [];
+      if (!variant) return null;
+      switch (variant) {
+        case 'Accepted': return {state: 'accepted'};
+        case 'Progress': return {state: 'progress', sequence: String(body.sequence), phase: body.phase,
+          completed: body.completed ?? null, total: body.total ?? null, message: body.message ?? null};
+        case 'Item': return {state: 'item', sequence: String(body.sequence), value: body.value};
+        case 'Succeeded': return {state: 'succeeded', output: {value: body.output?.value, resources: body.output?.resources ?? []}};
+        case 'Failed': return {state: 'failed', error: body.error};
+        case 'Cancelled': return {state: 'cancelled', message: body.message ?? null};
+        default: return null;
+      }
+    }
+
+    /** The state a receipt says. */
+    function receiptState(status) {
+      if (status === 'Accepted') return {state: 'accepted'};
+      if (status?.Completed) return {state: 'succeeded', output: {value: status.Completed.output?.value, resources: status.Completed.output?.resources ?? []}};
+      if (status?.Failed) return {state: 'failed', error: status.Failed.error};
+      if (status?.Cancelled) return {state: 'cancelled', message: status.Cancelled.message ?? null};
+      return null;
+    }
+
+    function keep(id, state, extra = {}) {
+      const held = entries.get(id) ?? {invocation: id};
+      const entry = {...held, ...extra, ...(state ?? {}), invocation: id, update: state ?? held.update ?? null};
+      entry.terminal = TERMINAL.has(entry.state);
+      entry.updatedAt = Date.now();
+      entries.set(id, entry);
+      return entry;
+    }
+
+    function send(entry) {
+      const message = {Invoke: {
+        invocation: entry.invocation,
+        target: entry.target,
+        argument: entry.argument,
+        ...(entry.confirmation ? {confirmation: entry.confirmation} : {}),
+      }};
+      return ask(message).then(answer => {
+        const receipt = answer.Receipt;
+        if (!receipt) {
+          const state = keep(entry.invocation, {state: 'unknown', reason: 'unanswered'});
+          throw Object.assign(new ActionsError('unavailable', 'the host did not answer'), {entry: state});
+        }
+        if (receipt.status?.Rejected) {
+          const error = failure(receipt.status.Rejected.error);
+          keep(entry.invocation, {state: 'failed', error: {code: error.code, message: error.message}},
+            {reason: error.code});
+          throw Object.assign(error, {entry: entries.get(entry.invocation)});
+        }
+        return keep(entry.invocation, receiptState(receipt.status));
+      }, error => {
+        // The outcome is unknown: the host may have run it. Keep the id so a
+        // retry observes the original instead of running it again.
+        keep(entry.invocation, {state: 'unknown', reason: error.code ?? 'unknown'});
+        throw error;
+      });
+    }
+
+    function ticket(entry, done) {
+      return {
+        id: entry.invocation,
+        get entry() { return entries.get(entry.invocation); },
+        done,
+        status: () => status(entry.invocation),
+        cancel: () => cancel(entry.invocation),
+      };
+    }
+
+    /** List what the host offers; `query` is a `CatalogueQuery` (`{provider, needle, …}`). */
+    async function catalogue(query = {}) {
+      correlation += 1;
+      const answer = await ask({CatalogueRequest: {correlation, query: {max_results: 200, ...query}}});
+      const result = answer.CatalogueResponse?.result;
+      if (result?.Ok) return result.Ok;
+      if (!result?.Err) throw new ActionsError('unavailable', 'the host did not answer');
+      throw failure(result.Err);
+    }
+
+    /** Run one action; `target` is `{provider, address: {resource, action}}` from a catalogue row. */
+    function invoke(target, argument, {confirmation = null, invocation, label} = {}) {
+      const resource = target?.address?.resource;
+      const recordsOwn = resource === '' && String(target?.provider).startsWith('record:');
+      if (!target?.provider || !(resource || recordsOwn) || !target?.address?.action) {
+        throw new TypeError('target is {provider, address: {resource, action}} copied from a catalogue row');
+      }
+      const id = invocation ?? globalThis.crypto.randomUUID();
+      const existing = entries.get(id);
+      if (existing) return ticket(existing, existing.terminal ? Promise.resolve(existing) : send(existing));
+      const entry = keep(id, {state: 'unknown'}, {
+        target: {provider: target.provider, address: {resource: target.address.resource, action: target.address.action}},
+        argument: invokeArgument(argument), confirmation: wireConfirmation(confirmation), label: label ?? null,
+      });
+      return ticket(entry, send(entry));
+    }
+
+    async function status(id) {
+      const held = entries.get(id);
+      if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
+      const answer = await ask({Observe: {invocation: id}});
+      const update = answer.Update?.state?.update;
+      if (update) return keep(id, stateOf(update));
+      // The host never admitted it (lost on the way, or refused and forgotten): send it again
+      // under the same id.
+      if (held.state === 'unknown') return send(held).catch(() => entries.get(id));
+      return entries.get(id);
+    }
+
+    async function cancel(id) {
+      const held = entries.get(id);
+      if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
+      if (held.terminal) return held;
+      const result = (await ask({Cancel: {invocation: id}})).CancelResponse?.result;
+      if (result && !('Ok' in result)) throw failure(result.Err);
+      keep(id, null, {cancellationRequested: true});
+      return status(id);
+    }
+
+    return {
+      catalogue,
+      invoke,
+      status,
+      cancel,
+      dispose() { entries.clear(); },
+    };
+  }
 
   try {
     await start();
@@ -784,13 +991,13 @@ async function connect({
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
+    clearTimeout(siteHostCheck);
     // Abort and explicit close can overlap. Every caller joins the same
     // settlement, installed before teardown can call back into dispose.
     (async () => {
       for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
       for (const entry of [...surfaces.values()]) dropSurface(entry);
       unsubscribeStorage?.();
-      agents?.dispose();
       actions?.dispose();
       voice?.dispose();
       stopLive();
@@ -814,6 +1021,7 @@ async function connect({
       return peer.preAdmit(identity, JSON.stringify(options));
     },
     list: () => rooms('list', {workspace}),
+    mayInvite: () => rooms('mayInvite', {workspace}),
     waitList: () => rooms('waitList', {workspace}),
     unlist: requestId => rooms('unlist', {workspace, requestId}),
     mailInvite: (requestId, link) => rooms('mailInvite', {workspace, requestId, link: String(link)}),
@@ -851,6 +1059,22 @@ async function connect({
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
+    /** Answer what this person's agents on the host ask them, as the root
+     * custody `root` the page holds, over this session (`agent-questions.mjs`). */
+    answerAgentQuestions: root => peer.answerAgentQuestions(root),
+    /** This person's new devices waiting at the host, paired with the root
+     * the page holds over this session (`PairingHost`: `pending`, `answer`). */
+    pairing: () => peer.pairing(),
+    /** The person's own workspace on this host, with this very device in it
+     * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
+     * time, answered again after, another for each `name`; the one called
+     * `room` (a UUID) when named, made under that name for a person who has
+     * none yet. `entered(id)` says this browser is in that workspace already,
+     * so it is not redeemed again. Resolves to the workspace's listing
+     * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
+     * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
+    enterOwnWorkspace: async ({name = null, room = null, entered = () => false} = {}) => JSON.parse(
+      await peer.enterOwnWorkspace(name, room, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
@@ -870,40 +1094,32 @@ async function connect({
     /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
     /** Why this page cannot join the workspace's live plane at all, in the
-     * words shown in the members' place (`here.mjs`), or `null` while it can
-     * (or did): a browser without WebTransport, which has no fallback. */
+     * words shown in the members' place, or `null` while it can
+     * (or did): a plane that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
-    /** The workspace's agents (`agents.mjs`), or `undefined` without a workspace. */
-    get agents() { return agents; },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
     },
-    /** Say what this person is doing in their own words (`null` clears
-     * it): everyone here reads it on their presence, before anything
-     * the host words for them. */
-    setStatus(text) {
-      const said = typeof text === 'string' && text.trim() ? text.trim() : null;
-      if (said === activity) return;
-      activity = said;
+    /** The person's profile was kept (or read) as of `at` (Unix ms): their
+     * presence says so, and everyone here fetches it again. */
+    setProfileChanged(at) {
+      const stamp = Number(at) || 0;
+      if (stamp <= profileMs) return;
+      profileMs = stamp;
       publishParticipant();
     },
-    /** Post this person's name, the window they focus (tab id, hex, or
-     * null) and their own recent steps (`[{id, action, resource, app,
-     * at_ms}]`, titles only) to the host; resolves to who is here:
-     * `[{device, user, label, window, status, recent, sources, generated,
-     * updated_ms}]`. */
-    async here(window, actions = []) {
-      if (!workspace || !peer) return [];
-      const lines = JSON.parse(await peer.here(workspace, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
-      // Someone else here already goes by this person's drawn name: they
-      // take another, so the workspace and what it is bridged with tell them apart.
-      const redrawn = drawName?.(displayName, lines);
+    /** The people here as their live presence names them (`[{user,
+     * label}]`): someone else already going by this person's drawn name
+     * makes them take another, so the workspace and what it is bridged with
+     * tell them apart. */
+    membersSeen(people) {
+      if (!workspace || !Array.isArray(people)) return;
+      const redrawn = drawName?.(displayName, people);
       if (redrawn && redrawn !== displayName) rename(redrawn);
-      return lines;
     },
     /** Who draws this person's name again when it collides in the workspace:
-     * `(current, lines) => name | null`, or `null` once they chose one. */
+     * `(current, people) => name | null`, or `null` once they chose one. */
     setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
     /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
      * `{endpoint, session}` while the host serves one over the current
@@ -917,10 +1133,12 @@ async function connect({
     get actions() { return actions; },
     /** Bind feedback before mounting the desktop. The destination only selects
      * an existing text channel: Rust obtains identity and current capabilities
-     * from the authenticated owner. This creates no membership or grant. */
+     * from the authenticated owner. This creates no membership or grant.
+     * Whether the channel's chat exists is the owner's to say, in the
+     * admission it answers with: a workspace that sends its records when
+     * they are opened sends this page no chat until someone opens Chat. */
     async configureFeedback(destination) {
       if (!workspace || destination?.room !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
-      await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
       if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
       peer.configureFeedback(JSON.stringify(destination));
       await untilSnapshot(() => {
@@ -969,8 +1187,6 @@ async function connect({
     },
     /** The workspace's calls (`voice-peer.mjs`), or `undefined` without a workspace. */
     get voice() { return voice; },
-    /** `actions` in the frozen `actionsV1` contract. */
-    get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id; },
     /** The desktop mount (`host.mjs`) in this peer's profile and workspace.
@@ -1007,24 +1223,47 @@ async function connect({
       return mount;
     },
     /** Resolves once the host admitted the workspace (`phase === 'ready'`);
-     * rejects when it refused this device. */
-    whenReady({signal, timeoutMs = 30_000} = {}) {
+     * rejects when it refused this device. With `shown`, resolves as soon
+     * as this page holds the workspace's shared desktop record: the host
+     * replays it ahead of the workspace's other records, and the desktop
+     * shows from it while the rest arrives. A workspace whose desktop record
+     * has not reached the page yet still waits for the whole replay, so a
+     * desktop never starts a record of its own beside the workspace's.
+     *
+     * A host that says nothing for `timeoutMs` has not answered. One that
+     * is still getting the page there (the session moving on to admitting,
+     * another of the workspace's records arriving) is waited for, up to
+     * `capMs` in all: a busy host replaying a workspace to a slow device
+     * takes longer than a silent one is given, and is no unreachable host. */
+    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
+        let done = false;
+        let progress = null;
+        const began = Date.now();
         const finish = (error, value) => {
+          done = true;
           clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
           signal?.removeEventListener('abort', abort);
           if (error) reject(error); else resolve(value);
         };
         const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        // Not a refusal: the host has not answered yet.
+        const timedOut = () => finish(new DOMException('Workspace admission timed out', 'TimeoutError'));
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
+          else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+          if (done) return;
+          // Each step the host takes gives it `timeoutMs` more, within `capMs`.
+          const now = `${current.phase}:${JSON.parse(peer?.workspaceRecords?.() ?? '[]').length}`;
+          if (now === progress) return;
+          progress = now;
+          clearTimeout(timer);
+          timer = setTimeout(timedOut, Math.max(0, Math.min(timeoutMs, began + capMs - Date.now())));
         };
         if (signal?.aborted) { abort(); return; }
-        // Not a refusal: the host has not answered yet.
-        timer = setTimeout(() => finish(new DOMException('Workspace admission timed out', 'TimeoutError')), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
@@ -1086,9 +1325,9 @@ async function connect({
         // record is pinned to the one before, so the page loads again and
         // joins the new host as the same person (`joinViaHost`), with the
         // kept certificate left as it is.
-        const answering = JSON.parse(await runtime.hostInfo(post));
+        const answering = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(post));
         const kept = await store.get(CERTIFICATE);
-        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) {
+        if (reconnecting(kept, undefined, JSON.stringify(answering.hostCert)) === 'host-changed') {
           if (!globalThis.location) throw new AdmissionError('host-changed', HOST_CHANGED);
           globalThis.location.reload();
           return {operationId: 'reauthenticate'};
@@ -1114,12 +1353,6 @@ async function connect({
 /** What a person is told when the host at an origin is no longer the one
  * this browser's kept state belongs to. */
 export const HOST_CHANGED = 'This workspace was reset since this browser last opened it. Reload the page to join it again.';
-/** Whether two host certificates name the same host (its person and device),
- * as the peer's saved record pins it; unknown when either is missing. */
-const sameHost = (kept, current) => !kept || !current
-  || (hexKey(kept.user_public_key) === hexKey(current.user_public_key)
-    && hexKey(kept.device_public_key) === hexKey(current.device_public_key));
-
 /** What a person is told when the host will not honour an invitation. */
 export const UNUSABLE_INVITATION = 'This invitation can’t be used: it was used already, expired or was withdrawn. Ask whoever sent it for a new one.';
 /** What a person is told when the host refuses to admit them with one. */
@@ -1173,15 +1406,14 @@ export async function openInvitation(site, secret, {runtime} = {}) {
  * Become a new device of the person `userPublicKey` (hex) at the host at
  * `origin`, with no root on this page: the host relays the request, this
  * page shows `onPairingCode(code)`, and one of the person's devices that
- * holds their root approves it. Then, with `admission` (resolving to the
- * host's `{invitation, admissionToken, origin?}` for the person), the
- * device joins that workspace as a device of theirs; without, it connects
- * to `workspace`. Takes `connectPeer`'s other options; the device key is
+ * holds their root approves it. Then, with `door` (a workspace's door, its
+ * base URL), the device goes through it into that workspace as a device of
+ * theirs; without, it connects to `workspace`. Takes `connectPeer`'s other options; the device key is
  * `custody`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
 export async function pairDevice(options) {
-  const {origin, userPublicKey, label = 'Browser', admission, signal} = options;
+  const {origin, userPublicKey, label = 'Browser', door, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.custody`, of `profile`) stays the
@@ -1190,20 +1422,18 @@ export async function pairDevice(options) {
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
-    const info = JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
+    const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
     const certified = await runtime.certifyDevice(userPublicKey, label,
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
       JSON.stringify(info.address));
     const common = {...options, identity: undefined, label, profile, custody: own, runtime};
-    if (!admission) return connect({...common, deviceCertificate: certified});
-    const offer = await admission();
-    return join({...common, origin: offer.origin ?? origin, invitation: offer.invitation, admissionToken: offer.admissionToken, certified});
+    if (!door) return connect({...common, deviceCertificate: certified});
+    return join({...common, origin, door, certified});
   };
   return options.custody ? pairing() : withCustody(own, pairing, signal);
 }
 
-const JOIN_REQUESTS = 'tilo-join-requests';
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
 /**
@@ -1211,12 +1441,10 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * `origin`, as `identity` (default the current one): this page's device for
  * that host is certified by the person's own root, and the invitation is the
  * approval of whoever made it, so the host admits at once. Resolves to the
- * `CertifiedPeer` in the workspace; rejects when the host refuses. A door
- * that answers `waiting` anyway (a build of its own) is polled every
- * `pollMs` (`onProgress({phase: 'waiting'})`), and a page that reloads while
- * waiting asks again under the same request. With `admissionToken` (the
- * one-time token of an owner's pre-admission for this invitation) the host
- * admits the page at once too.
+ * `CertifiedPeer` in the workspace; rejects when the host refuses. With
+ * `admissionToken` (the one-time token of an owner's pre-admission for this
+ * invitation) the host admits the page at once too. The entry itself is the
+ * shared one every device takes, on the session itself (`invitationEntry` in wasm).
  */
 export async function joinWorkspace(options) {
   const identity = options.identity ?? currentIdentity();
@@ -1228,15 +1456,13 @@ export async function joinWorkspace(options) {
 }
 
 /**
- * The certificate (`{cert, hostCert}` JSON) this profile's device already
- * holds from the host answering at `post`, as the person `identity`, or
- * `null`. A workspace keeps the certificate of every device it admitted, also
- * once its person left (removed, or pruned after an absence), and admits
- * that device again only under the same certificate: a device that holds
- * one asks under it rather than certify itself anew. Read from `store`, else
- * from the namespace the profile keeps its peer in now.
+ * The certificate (`{cert, hostCert}` JSON text) this profile's device kept
+ * from an earlier entry, or `null`: read from `store`, else from the namespace
+ * the profile keeps its peer in now. Whether it still serves to enter with
+ * (this very key, this person, the same host, not ending soon) is the shared
+ * entry's to decide (`invitationEntry`, `doorEntry`).
  */
-async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage, custody, identity, host}) {
+async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage}) {
   let opened;
   try {
     if (!store) {
@@ -1246,15 +1472,7 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
       opened = await surface.openProfileStorage(profile, device);
       store = profileStore(runtime, profile, device);
     }
-    const kept = await store.get(CERTIFICATE);
-    const cert = kept ? JSON.parse(kept)?.cert : undefined;
-    const keptHost = kept ? JSON.parse(kept)?.hostCert : undefined;
-    const ours = cert && hexKey(cert.device_public_key) === hexKey(custody.publicKey)
-      && hexKey(cert.user_public_key) === identity.userPublicKey;
-    // Only one this host certified and pinned: a host set up again is
-    // never handed what was kept for the one before it.
-    const here = keptHost && host?.hostCert && sameHost(keptHost, host.hostCert);
-    return ours && here && !expiresWithinADay(kept) ? kept : null;
+    return (await store.get(CERTIFICATE)) ?? null;
   } catch (error) {
     console.warn('join: the device\'s certificate could not be read', error);
     return null;
@@ -1263,69 +1481,144 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
   }
 }
 
+/** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
+const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
+
+/** How long a page waits for its host's answer to the entry its session asked for: the host
+ * holds an entry for at most 30 seconds (`ENTERING_DEADLINE`), and a connection takes some. */
+const ENTRY_TIMEOUT_MS = 45_000;
+/** How long a session dialling the host its site named may go without reaching it before it
+ * asks the host who it is (`site-host.mjs`): an entry reaches it in about a second. */
+const SITE_HOST_CHECK_MS = 8_000;
+
+/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the door
+ * asked for in seconds, and, when a workspace's door turned the person away, the door's own
+ * answer (`door`: whether it keeps a wait list, and where its contact is). */
+function hostRefusal(code, message, retryAfter = null, door = null) {
+  const error = new Error(message);
+  error.name = 'HostRefusal';
+  error.code = code;
+  if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
+  if (door) error.door = door;
+  return error;
+}
+
+/** The workspace `door` (its base URL, `…/directory/<workspace>/`) lets people into. */
+function doorWorkspace(door) {
+  const segments = new URL(door).pathname.split('/').filter(Boolean);
+  const at = segments.lastIndexOf('directory');
+  return at >= 0 ? segments[at + 1] ?? null : null;
+}
+
+/** The host's answer to the entry `peer`'s session asked for, from its status (`entry`):
+ * resolves once the workspace admitted it, rejects with the refusal. */
+function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let stop = () => {};
+    const timer = setTimeout(() => finish(hostRefusal('unanswered', 'The workspace’s host did not answer in time.')), timeoutMs);
+    function finish(error, value) {
+      clearTimeout(timer);
+      stop();
+      if (error) reject(error); else resolve(value);
+    }
+    const check = snapshot => {
+      const entry = snapshot?.entry;
+      if (entry?.outcome === 'admitted') finish(undefined, entry);
+      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs, entry.door ?? null));
+      else if (snapshot?.phase === 'failed') finish(hostRefusal(snapshot.errorCode ?? 'refused', snapshot.error ?? 'The host refused this device.'));
+    };
+    stop = peer.onStatus(check);
+    check(peer.getSnapshot());
+  });
+}
+
+/** Enter `workspace` on the session itself, through its door or with an invitation (`entry`,
+ * given the host's certificate as text, makes the entry: `doorEntry` or `invitationEntry` in
+ * wasm). Who the host is the page's own site says (`site-host.mjs`), else the host itself; the
+ * shared entry chooses the certificate (the one this very key holds from this host, else one the
+ * root makes now), and the session asks to enter as it opens: the door and the admission ride the
+ * session's own first message, so a page its site told of the host asks it nothing over HTTPS,
+ * and its first requests follow right behind. */
+async function enterOnSession({
+  origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, custody,
+  profile, fetcher, connectOptions,
+}) {
+  const named = siteHost(origin);
+  let hostText = named?.text;
+  let entered;
+  try {
+    hostText ??= await runtime.hostInfo(httpsPost(origin, fetcher));
+    entered = await entry(memberText(hostText, 'hostCert'));
+  } catch (error) {
+    if (DOOR_CODES.has(error?.code)) throw error;
+    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
+  }
+  const entering = JSON.parse(memberText(entered, 'entering'));
+  const peer = await connect({
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: workspace ?? entering.workspace,
+    label, displayName, custody, runtime, signal,
+    profile: connectOptions.store ? undefined : profile,
+    // As text: the certificate's nanosecond timestamps exceed what a JavaScript number holds
+    // exactly (json-text.mjs).
+    fetch: fetcher, deviceCertificate: memberText(entered, 'certificate'),
+    hostInfo: named?.info ?? JSON.parse(hostText),
+    entering,
+  });
+  try {
+    const answered = await entryAnswered(peer);
+    onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});
+    return peer;
+  } catch (error) {
+    await peer.dispose?.().catch(() => {});
+    // The site names the host as it was before it was set up again: the site's to fix.
+    if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_HOST);
+    // A door's own refusal (its code, and the wait it asked for) is the caller's to show:
+    // `workspaces.mjs` reads it. The workspace refusing the device the door let in is a refusal
+    // of what this browser brings, which the caller answers by coming again as a new device.
+    if (DOOR_CODES.has(error?.code)) throw error;
+    console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
+  }
+}
+
 async function join({
-  origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
-  admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
+  origin, invitation, door, identity, displayName = '', label = 'Browser', signal, onProgress,
+  admissionToken, runtime, custody, profile, fetch: fetcher, certified, ...connectOptions
 }) {
   // A device certified elsewhere (`certified`, a paired device) asks as
   // itself; any other asks as the person whose root the page holds.
   if (!certified) identity ??= currentIdentity();
   if (!identity && !certified) throw new IdentityError('locked', 'Unlock the identity first');
-  if (!origin || !invitation) throw new TypeError('origin and invitation are required');
+  if (!origin || !(invitation || door)) throw new TypeError('origin and an invitation or a door are required');
   runtime ??= await pageRuntime(connectOptions.desktop);
   const person = identity ?? {userPublicKey: hexOf(JSON.parse(certified).cert.user_public_key)};
   profile ??= identityProfile(person, origin);
   custody ??= await openDeviceCustody({profile, storage: idbStorage()});
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
-  const post = httpsPost(origin, fetcher);
-  const bytes = invitationBytes(invitation);
-  // The request id is public: it lets a reloaded page resume its request.
-  const key = `${profile}:${hexOf(bytes.slice(-32))}`;
-  const saved = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
-  const requestId = saved[key] ?? hexOf(crypto.getRandomValues(new Uint8Array(32)));
-  saved[key] = requestId;
-  storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(saved));
-  const forget = () => {
-    const current = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
-    delete current[key];
-    storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(current));
-  };
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
-  const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const hostText = await runtime.hostInfo(post);
-  const host = JSON.parse(hostText);
-  const kept = certified ? null : await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
-    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
-  const held = certified ?? kept;
-  const askedText = held
-    ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
-    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token);
-  const asked = JSON.parse(askedText);
-  let reply = asked.reply;
-  const device = hexOf(asked.cert.device_public_key);
-  while (reply.kind === 'waiting') {
-    onProgress?.({phase: 'waiting'});
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, pollMs);
-      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
+  const held = certified ?? await keptDeviceCertificate({runtime, profile, slot: custody.slot, store: connectOptions.store,
+    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces});
+  // The shared entry chooses the certificate (the one this very key holds
+  // from this host, else one the root makes now) and has the workspace admit
+  // this device under it.
+  const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
+    ...(admissionToken ? {admissionToken} : {})});
+  const common = {
+    origin, identity, person, label, displayName, signal, onProgress, runtime, custody, profile, fetcher, connectOptions,
+  };
+  if (door) {
+    const workspace = doorWorkspace(door);
+    if (!workspace) throw new TypeError('the door names no workspace');
+    return enterOnSession({
+      ...common, workspace,
+      entry: hostCert => runtime.doorEntry(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),
     });
-    reply = JSON.parse(await runtime.joinStatus(post, requestId, device));
   }
-  if (reply.kind !== 'admitted') {
-    forget();
-    if (reply.kind === 'declined') throw new AdmissionError('refused', 'The workspace owner declined your request to join');
-    console.warn('join refused:', reply.reason ?? reply.kind);
-    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: reply.reason ?? reply.kind});
-  }
-  forget();
-  onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
-  return connect({
-    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: reply.room, label, displayName, custody, runtime, signal,
-    profile: connectOptions.store ? undefined : profile,
-    // Certificates go on as the text they were kept or written as: their
-    // nanosecond timestamps exceed what a JavaScript number holds exactly
-    // (json-text.mjs).
-    fetch: fetcher, deviceCertificate: kept ?? objectText({cert: memberText(askedText, 'cert'), hostCert: memberText(hostText, 'hostCert')}),
+  return enterOnSession({
+    ...common, workspace: null,
+    entry: hostCert => runtime.invitationEntry(hostCert, invitationBytes(invitation), custodyForWasm,
+      identity ?? undefined, accepting),
   });
 }

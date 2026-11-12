@@ -179,20 +179,22 @@ pub fn verify_event<T: Serialize>(
 
 /// Sign a `SignedOp` in place via [`SignedOp::signing_bytes`], which
 /// omits the signature field — calling this twice on the same op is
-/// harmless, the second call reproduces the first.
+/// harmless, the second call reproduces the first. `signer` answers at once
+/// ([`crate::signer::sign_now`]).
 ///
 /// # Errors
 ///
-/// Returns [`CanonicalError`] if canonicalising `op`'s signing bytes fails.
+/// Canonicalising `op`'s signing bytes failed, or `signer` did not sign.
 pub fn sign_op(
     op: &mut SignedOp,
-    secret_key: &ed25519_dalek::SigningKey,
-) -> Result<(), CanonicalError> {
+    signer: &dyn crate::signer::DeviceSigner,
+) -> Result<(), crate::signer::SignError> {
     #[cfg(debug_assertions)]
     assert_claimed(op);
-    let bytes = op.signing_bytes()?;
-    let sig = secret_key.sign(&bytes);
-    op.signature = Signature(sig.to_bytes());
+    let bytes = op
+        .signing_bytes()
+        .map_err(|error| crate::signer::SignError(error.to_string()))?;
+    op.signature = Signature(crate::signer::sign_now(signer, bytes)?);
     Ok(())
 }
 

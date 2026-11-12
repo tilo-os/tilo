@@ -38,6 +38,8 @@ fn make_window_group() -> WindowGroup {
                 app_kind: Some(AppKind::Editor),
                 icon: None,
                 attention: false,
+                named: false,
+                app_name: None,
             },
             TileContent::Stub {
                 kind: AppKind::Editor,
@@ -51,6 +53,8 @@ fn make_window_group() -> WindowGroup {
                 app_kind: Some(AppKind::Files),
                 icon: None,
                 attention: false,
+                named: false,
+                app_name: None,
             },
             TileContent::Stub {
                 kind: AppKind::Files,
@@ -64,6 +68,8 @@ fn make_window_group() -> WindowGroup {
                 app_kind: Some(AppKind::Terminal),
                 icon: None,
                 attention: false,
+                named: false,
+                app_name: None,
             },
             TileContent::Stub {
                 kind: AppKind::Terminal,

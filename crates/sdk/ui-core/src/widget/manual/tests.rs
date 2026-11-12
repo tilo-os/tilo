@@ -834,3 +834,90 @@ fn retained_resize_reallocates_a_filling_region_both_ways() {
         assert_eq!(snapshot.root.children[0].rect[2], f64::from(expected));
     }
 }
+
+/// The rows a region places cost a solve each time they are measured, and a
+/// solve measures every row: a window that keeps its region is the difference
+/// between a frame that costs its rows and one that costs nothing.
+#[test]
+fn a_region_is_solved_again_only_when_what_it_read_changed() {
+    use crate::profiling::layout_counts;
+
+    fn rows_region(rows: usize) -> (Manual, ManualInvalidation) {
+        let mut region = Manual::new(|ctx| {
+            let mut y = 0.0;
+            for index in 0..ctx.len() {
+                let row = ctx.measure(
+                    index,
+                    Size {
+                        width: MeasureConstraint::Intrinsic,
+                        height: MeasureConstraint::Intrinsic,
+                    },
+                )?;
+                let height = f64::from(row.size.height);
+                ctx.place(
+                    index,
+                    Rect::new(0.0, y, f64::from(row.size.width), y + height),
+                )?;
+                y += height;
+            }
+            Ok(Size {
+                width: ctx.available().width,
+                #[allow(clippy::cast_possible_truncation, reason = "rows of text")]
+                height: y as f32,
+            })
+        });
+        for index in 0..rows {
+            region = region.child(Box::new(Text::new(format!("row {index}").as_str())));
+        }
+        let invalidation = region.invalidation();
+        (region, invalidation)
+    }
+
+    let mut one_row = Vec::new();
+    for rows in [4_usize, 200] {
+        let (region, invalidation) = rows_region(rows);
+        let mut harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 800));
+        let first = layout_counts::take();
+        assert!(
+            first.regions >= 1,
+            "the first frame solves the region ({first:?})"
+        );
+        // Nothing asks to be measured again: the frame lays nothing out.
+        harness.relayout_at((400, 800)).unwrap();
+        let still = layout_counts::take();
+        assert_eq!(still.solves, 0, "a still frame solves no tree ({still:?})");
+        assert_eq!(
+            still.regions, 0,
+            "a still frame runs no region's policy ({still:?})"
+        );
+        // A taller window lays the tree out again without moving the region's
+        // allocation: its solve stands.
+        harness.relayout_at((400, 900)).unwrap();
+        let taller = layout_counts::take();
+        assert!(
+            taller.solves >= 1,
+            "a taller window lays the tree out again ({taller:?})"
+        );
+        assert_eq!(
+            taller.regions, 0,
+            "the region reads the allocation it solved for, so its answer stands ({taller:?})"
+        );
+        // One row changed: its region is solved again, once.
+        invalidation.invalidate();
+        harness.relayout_at((400, 900)).unwrap();
+        let changed = layout_counts::take();
+        assert_eq!(
+            changed.regions, 1,
+            "one changed row solves the region once ({rows} rows, {changed:?})"
+        );
+        one_row.push(changed.regions);
+        assert!(
+            harness.inspection().root.children.len() == rows,
+            "place({rows} rows)"
+        );
+    }
+    assert_eq!(
+        one_row[0], one_row[1],
+        "a row's change costs the region the same whether it holds 4 rows or 200: {one_row:?}"
+    );
+}

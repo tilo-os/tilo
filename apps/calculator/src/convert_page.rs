@@ -11,6 +11,7 @@
 //! conversion a press does.
 
 use ui::TextRole;
+use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -22,6 +23,8 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::convert::{self, Dimension, Unit};
 use crate::draw::{self, Align};
+use crate::resource::CATALOG;
+use ui::widget::DrawChild;
 
 /// What a press on the conversion page asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,8 +111,8 @@ impl ConvertPage {
             from,
             to,
             field: TextInput::local()
-                .with_placeholder("Amount")
-                .with_accessible_name("Amount to convert")
+                .with_placeholder(crate::resource::CATALOG.t("calculator-amount"))
+                .with_accessible_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
                 .with_id("calculator.amount"),
             copied: None,
             area: Rect::ZERO,
@@ -358,9 +361,9 @@ impl ConvertPage {
             for label in convert::DIMENSIONS
                 .iter()
                 .map(|dimension| dimension.label())
-                .chain(std::iter::once("Currency"))
+                .chain(std::iter::once(CATALOG.t("calculator-currency")))
             {
-                let face = ButtonFace::new(Rect::ZERO, label)
+                let face = ButtonFace::new(Rect::ZERO, &label)
                     .control_size(ControlSize::Small)
                     .role(ButtonRole::Secondary);
                 widths.push(face.intrinsic_width(text, theme));
@@ -456,7 +459,8 @@ impl ConvertPage {
         let m = self.m;
         // The quantity chips.
         for (dimension, rect) in &self.chips {
-            let face = ButtonFace::new(*rect, dimension.label())
+            let label = dimension.label();
+            let face = ButtonFace::new(*rect, &label)
                 .control_size(ControlSize::Small)
                 .role(ButtonRole::Secondary)
                 .toggled(*dimension == self.dimension);
@@ -465,7 +469,8 @@ impl ConvertPage {
         // Money: the one quantity that needs a rate, and the page says so
         // where the units would be rather than converting with numbers it
         // would have had to invent.
-        let currency = ButtonFace::new(self.currency_chip, "Currency")
+        let currency_label = CATALOG.t("calculator-currency");
+        let currency = ButtonFace::new(self.currency_chip, &currency_label)
             .control_size(ControlSize::Small)
             .role(ButtonRole::Secondary)
             .toggled(self.currency);
@@ -505,7 +510,8 @@ impl ConvertPage {
             .icon(ui::icons::Icon::ArrowUpDown);
         Button::paint(scene, transform, text, theme, &swap);
 
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
 
         // The answer, in the display's own numerals, with the copy target on
         // its end.
@@ -627,7 +633,7 @@ impl crate::app::CalculatorApp {
         let page = self.convert_page();
         let mut children = Vec::new();
         let mut amount = AccessNode::new(Role::TextInput)
-            .with_name("Amount to convert")
+            .with_name(crate::resource::CATALOG.t("calculator-amount-to-convert"))
             .with_value(page.amount().to_owned())
             .with_action_target(ConvertPage::semantic_target(&ConvertAction::Focus))
             .with_state(AccessState::new().focusable(true));
@@ -656,7 +662,7 @@ impl crate::app::CalculatorApp {
             .chain(std::iter::once({
                 let target = ConvertAction::Currency;
                 let mut node = AccessNode::new(Role::RadioButton)
-                    .with_name("Currency")
+                    .with_name(crate::resource::CATALOG.t("calculator-currency"))
                     .with_action_target(ConvertPage::semantic_target(&target))
                     .with_state(AccessState::new().focusable(true).checked(page.currency));
                 if let Some(bounds) = page.control_rect(&target) {
@@ -667,7 +673,7 @@ impl crate::app::CalculatorApp {
             .collect();
         children.push(
             AccessNode::new(Role::Group)
-                .with_name("Quantity")
+                .with_name(crate::resource::CATALOG.t("calculator-quantity"))
                 .with_hashed_key("calculator.convert.quantities")
                 .with_children(quantities),
         );
@@ -678,7 +684,10 @@ impl crate::app::CalculatorApp {
         ] {
             let mut node = AccessNode::new(Role::Button)
                 .with_name(format!("{name} unit: {}", unit.name))
-                .with_description(format!("Change {} to the next unit", unit.symbol))
+                .with_description(CATALOG.t_args(
+                    "calculator-next-unit",
+                    &[("unit", ArgValue::Text(unit.symbol.to_owned()))],
+                ))
                 .with_action_target(ConvertPage::semantic_target(&step))
                 .with_state(AccessState::new().focusable(true));
             if let Some(bounds) = page.control_rect(&step) {
@@ -711,8 +720,8 @@ impl crate::app::CalculatorApp {
                 .with_hashed_key("calculator.convert.result"),
         );
         AccessNode::new(Role::Group)
-            .with_name("Unit conversion")
-            .with_description("Convert an amount from one unit to another, offline.")
+            .with_name(crate::resource::CATALOG.t("calculator-unit-conversion"))
+            .with_description(crate::resource::CATALOG.t("calculator-unit-conversion-description"))
             .with_hashed_key("calculator.convert")
             .with_children(children)
     }

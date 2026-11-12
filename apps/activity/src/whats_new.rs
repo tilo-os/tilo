@@ -11,7 +11,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{DisclosureRow, DisclosureState, ListRow, Section};
 
-use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -93,32 +93,26 @@ fn narrative_section(narrative: &str) -> Element {
 fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
     let target = resume.target.clone();
     let open = provider.clone();
-    let context = trf(
-        "activity-resume-context",
-        &[
-            (
-                "app",
-                resume
-                    .app
-                    .clone()
-                    .or_else(|| resume.target.app_label.clone())
-                    .unwrap_or_default()
-                    .into(),
-            ),
-            ("when", ago(resume.at_ms).into()),
-        ],
-    );
+    // The app the place is in and when the person was last there are two
+    // facts, each on a line of its own under the place's name: beside the
+    // name, the time squeezed it to "…" on a phone.
+    let app = resume
+        .app
+        .clone()
+        .or_else(|| resume.target.app_label.clone())
+        .filter(|app| !app.is_empty());
+    let mut row =
+        ListRow::new("activity-resume", resume.target.label.clone()).secondary(ago(resume.at_ms));
+    if let Some(app) = app {
+        row = row.subtitle(app);
+    }
+    let row = row.trailing(Box::new(
+        Button::new("activity-resume-open", "activity-resume-button")
+            .on_view(move || open.ask(wire::OPEN, &target)),
+    ));
     Box::new(Section::titled(
         tr("activity-resume-heading"),
-        vec![Box::new(
-            ListRow::new("activity-resume", resume.target.label.clone())
-                .subtitle(context)
-                .avatar(resume.author.name.clone(), resume.author.identity.clone())
-                .trailing(Box::new(
-                    Button::new("activity-resume-open", "activity-resume-button")
-                        .on_view(move || open.ask(wire::OPEN, &target)),
-                )),
-        )],
+        vec![Box::new(ui::author_face(row, &resume.author))],
     ))
 }
 
@@ -178,11 +172,7 @@ fn brief_card(
     let state = DisclosureState::new();
     state.set_open(opened.with(|open| open.as_deref() == Some(key.as_str())));
     let remembered = opened.clone();
-    let authors: Vec<&str> = brief
-        .authors
-        .iter()
-        .map(|author| author.name.as_str())
-        .collect();
+    let authors: Vec<String> = brief.authors.iter().map(ui::wire_author_line).collect();
     let name = key.clone();
     let mut row = DisclosureRow::new(&brief.title, brief_body(index, brief))
         .with_id(key)
@@ -232,15 +222,13 @@ fn brief_body(index: usize, brief: &wire::Brief) -> Element {
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Tight);
     for (at, action) in brief.actions.iter().enumerate() {
-        column = column.push(Box::new(
-            ListRow::new(
-                format!("activity-brief-{index}-action-{at}"),
-                action.summary.clone(),
-            )
-            .secondary(action.author.name.clone())
-            .meta(ago(action.at_ms))
-            .avatar(action.author.name.clone(), action.author.identity.clone()),
-        ));
+        let row = ListRow::new(
+            format!("activity-brief-{index}-action-{at}"),
+            action.summary.clone(),
+        )
+        .secondary(ui::wire_author_line(&action.author))
+        .meta(ago(action.at_ms));
+        column = column.push(Box::new(ui::author_face(row, &action.author)));
     }
     Box::new(column)
 }

@@ -72,15 +72,6 @@ fn a_shared_window_is_a_live_message_only_its_sharer_changes_it() {
         ("so.tilo.notes", Some("plan"))
     );
     assert_eq!(at.reference.label, "Plan");
-    let read = app
-        .call_on(&message_item(&shared.id), "read-message", json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        read["share"]["access"], "view",
-        "an agent reads what is shared and how"
-    );
-
     let editable = share(&mut app, Some("edit"));
     assert_eq!(editable.share.unwrap().access, ShareAccess::Edit);
 

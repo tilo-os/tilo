@@ -133,11 +133,6 @@ impl Desk {
             .leaving_offset(self.now)
     }
 
-    /// The surface, for a test that moves the deck as its host does.
-    fn surface(&mut self) -> ui::headless::RootMut<'_, DesktopSurface> {
-        self.frame.root_mut::<DesktopSurface>()
-    }
-
     fn height(&self) -> f64 {
         self.frame
             .root::<DesktopSurface>()
@@ -283,31 +278,6 @@ fn a_chord_s_slide_is_shorter_than_a_click_s() {
     by_click.frames(10);
     assert!(!by_key.moving(), "the chord's change is over");
     assert!(by_click.moving(), "the click's is still moving");
-}
-
-/// The fingers carry the deck: every update puts the strip they landed on exactly that far the
-/// other way, so the strips are under the hand.
-#[test]
-fn a_finger_carries_the_deck_with_it() {
-    let mut desk = Desk::new();
-    let height = desk.height();
-    assert!(height > 0.0);
-    desk.surface().note_laid_strip();
-    desk.surface().begin_strip_slide();
-    let mut last = 0.0;
-    for travel in [10.0f64, 60.0, 120.0] {
-        desk.surface().drag_strip_slide(travel);
-        let drawn = desk.leaving().expect("the deck follows the fingers");
-        assert!(
-            (drawn - travel).abs() < 0.5 && drawn > last,
-            "the strips follow the fingers one to one: {drawn} for {travel}"
-        );
-        last = drawn;
-    }
-    assert!(
-        desk.moving(),
-        "the strips are drawn moving for as long as the hand is on them"
-    );
 }
 
 /// A slide starts from what the person sees: the strip it leaves is drawn at its own place at

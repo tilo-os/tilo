@@ -708,8 +708,7 @@ fn places_only(path: &[Prop]) -> bool {
 
 /// The person the change `change` names as the one who made it, when its message names one.
 fn maker_of(change: &Change) -> Option<String> {
-    let context = tilo_actions::ActionContext::from_change_message(change.message()?)?;
-    context.invoker.map(|invoker| invoker.actor)
+    crate::index::reflect::maker_of(change)
 }
 
 #[derive(Default)]

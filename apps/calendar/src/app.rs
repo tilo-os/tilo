@@ -77,12 +77,6 @@ pub(crate) use store::{Ask, window};
 
 use editor::{Choices, FormRects};
 
-/// Placeholder shown in the empty title field of a new event.
-const TITLE_PLACEHOLDER: &str = "New event";
-/// Placeholder shown in the empty notes editor of an event (dim hint text that
-/// disappears the moment the user types — never seeded as real body text).
-const NOTES_PLACEHOLDER: &str = "Add notes";
-
 /// First-run onboarding shown centered over an empty calendar (no events):
 /// a friendly headline + hint instead of a blank grid.
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
@@ -165,9 +159,38 @@ enum Action {
     DiscardDraft(Id),
     /// Delete a task (and its subtasks) from the model + CRDT.
     DeleteTask(Id),
+    /// Move the occurrence drawn on a day to another day of the month grid,
+    /// keeping its time of day and its length: what a drag from one day to
+    /// another means.
+    MoveEventToDay {
+        id: Id,
+        /// The day the occurrence is drawn on, which a repeating event's
+        /// override is keyed by.
+        original: NaiveDate,
+        day: NaiveDate,
+    },
     /// Absorb a click without acting on it — the modal card's own backing, so a
     /// press on the card padding doesn't fall through to the dismiss scrim.
     Noop,
+}
+
+/// How far a press on a month chip travels before it is a drag of the event
+/// rather than a click on it: the slop a press's hand wobbles within, the
+/// same every control on every display allows.
+const CHIP_DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
+
+/// An event's chip pressed in the month grid: which event, where the press
+/// landed, the day it is drawn on, and — once the pointer has moved far
+/// enough — the day it would be dropped on.
+#[derive(Clone, Debug)]
+struct ChipDrag {
+    id: Id,
+    from: Point,
+    original: NaiveDate,
+    /// Whether the pointer travelled far enough for this to be a drag.
+    moved: bool,
+    /// The day cell the pointer is over now.
+    over: Option<NaiveDate>,
 }
 
 /// The two keyboard-focusable text fields in the form. Tab cycles between them
@@ -210,6 +233,16 @@ struct RemindersBasis {
     hour: i64,
 }
 
+/// The calendar window.
+///
+/// The widgets that carry bulk — the notes editor, the editor's text fields
+/// and dropdowns, the quick add and the sidebar's task list — sit behind
+/// [`Box`]. A window is made by value: `build` fills a literal, and every
+/// constructor on the way out (`new`, `new_detached`, `new_demo`) hands the
+/// whole thing on. Measured by value, those widgets would make a window a
+/// fifth of a megabyte, so one construction would spend most of a stack on
+/// copies of it. Behind boxes a window is a handful of kilobytes, and making
+/// one costs what its widgets' own construction costs.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
@@ -246,16 +279,16 @@ pub struct CalendarApp {
     /// Where those choices are kept, following the person across devices.
     display_setting: Option<ui::framework::Setting<crate::display::CalendarDisplay>>,
 
-    notes_editor: NotesEditor,
+    notes_editor: Box<NotesEditor>,
     bound: Option<Sel>,
     seeded: bool,
 
     // --- event form (live only while an Event detail is open) -----------
     /// Editable title field (local text, mirrored into the event on change).
-    title_input: TextInput,
+    title_input: Box<TextInput>,
     /// Editable location field.
-    location_input: TextInput,
-    invite_input: TextInput,
+    location_input: Box<TextInput>,
+    invite_input: Box<TextInput>,
     /// Which event the form widgets are currently seeded from — so a new
     /// selection reseeds the inputs and edits land on the right event.
     form_event: Option<Id>,
@@ -267,7 +300,7 @@ pub struct CalendarApp {
     task_due_picker: DatePicker,
     /// The editor's dropdowns (calendar, repeat, alert, time zone, colour;
     /// a task's priority and project).
-    choices: Choices,
+    choices: Box<Choices>,
     /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
     /// The modal sheet the editor is presented in, laid out against the
@@ -275,7 +308,7 @@ pub struct CalendarApp {
     modal: Option<ModalLayout>,
     /// The one-line quick add, and this window's keys, as cards over the
     /// calendar.
-    quick_add: sheets::QuickAdd,
+    quick_add: Box<sheets::QuickAdd>,
     shortcuts: sheets::ShortcutSheet,
     /// Height of the notes editor's content at its last layout, so the sheet
     /// grows with the notes.
@@ -283,7 +316,7 @@ pub struct CalendarApp {
     /// The sidebar's overflow menu (export, import).
     /// "Only this event / All future events", asked after a drag on an
     /// occurrence of a repeating event.
-    repeat_scope_menu: Popover,
+    repeat_scope_menu: Box<Popover>,
     /// The drag that question is about, until it is answered or dismissed.
     pending_repeat: Option<repeat_scope::PendingRepeatChange>,
     /// Opens the platform search scoped to contacts when the Guests field
@@ -364,6 +397,10 @@ pub struct CalendarApp {
     /// any event field or adds notes. Back/Escape may discard *only* this exact
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
+    /// An event's chip pressed in the month grid and not yet let go: moved far
+    /// enough to be a drag, it moves the event to the day it is dropped on;
+    /// let go where it was pressed, it opens the event as a click always did.
+    chip_drag: Option<ChipDrag>,
     dirty: bool,
     /// What the view painted, this frame and as the last presented frame
     /// showed it: the frame damages the view's box only when it painted
@@ -385,7 +422,7 @@ pub struct CalendarApp {
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
     /// The Tasks screen: the selected list in full, with its entry field.
-    tasks: TasksView,
+    tasks: Box<TasksView>,
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -441,7 +478,7 @@ impl CalendarApp {
     pub(crate) fn new_detached() -> Self {
         let mut app = Self::build();
         let dispatcher = ui::framework::Dispatcher::detached("so.tilo.calendar", "test-author");
-        app.notes_editor = Self::new_notes_editor(None, Some(&dispatcher));
+        app.notes_editor = Box::new(Self::new_notes_editor(None, Some(&dispatcher)));
         app.dispatcher = Some(dispatcher);
         app
     }
@@ -485,32 +522,25 @@ impl CalendarApp {
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
             display_setting: None,
-            notes_editor: Self::new_notes_editor(None, None),
+            notes_editor: Box::new(Self::new_notes_editor(None, None)),
             bound: None,
             seeded: false,
-            title_input: TextInput::local()
-                .with_placeholder(TITLE_PLACEHOLDER)
-                .with_text_role(ui::tokens::TextRole::Heading)
-                .with_id("event_title"),
-            location_input: TextInput::local()
-                .with_placeholder("Add location")
-                .with_id("event_location"),
+            title_input: title_field(),
+            location_input: location_field(),
             invite_input: invite_input(&contacts_requested),
             form_event: None,
             event_popovers: EventPopovers::new(today),
             task_popover: None,
             task_due_picker: DatePicker::new(today)
                 .with_today(today)
-                .with_accessible_name("Task due date"),
-            choices: Choices::new(),
+                .with_accessible_name(crate::resource::t("calendar-a11y-choose-task-due")),
+            choices: Box::new(Choices::new()),
             form: FormRects::default(),
             modal: None,
-            quick_add: sheets::QuickAdd::new(),
+            quick_add: Box::new(sheets::QuickAdd::new()),
             shortcuts: sheets::ShortcutSheet::new(),
             notes_content_h: 0.0,
-            repeat_scope_menu: Popover::new()
-                .with_items(repeat_scope::choices())
-                .with_label(repeat_scope::label()),
+            repeat_scope_menu: repeat_scope_menu(),
             pending_repeat: None,
             places: ui::widget::NavFeed::new(),
             month: ui::widget::DateFeed::new(),
@@ -542,12 +572,13 @@ impl CalendarApp {
             status: status::Status::default(),
             status_actions: status::StatusActions::default(),
             fresh_draft: None,
+            chip_drag: None,
             dirty: true,
             own: ui::own_paint::OwnPaint::default(),
             faces: ui::widget::FaceMotions::default(),
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
-            tasks: TasksView::new(),
+            tasks: Box::new(TasksView::new()),
             sync_rx: None,
             store: std::rc::Rc::new(std::cell::RefCell::new(store)),
             live: None,
@@ -579,7 +610,8 @@ impl CalendarApp {
         self.today = today;
         self.anchor = today;
         self.event_popovers = EventPopovers::new(today);
-        self.task_due_picker = DatePicker::new(today).with_accessible_name("Task due date");
+        self.task_due_picker = DatePicker::new(today)
+            .with_accessible_name(crate::resource::t("calendar-a11y-choose-task-due"));
         self.dirty = true;
     }
 
@@ -595,7 +627,7 @@ impl CalendarApp {
         accounts: Option<AccountStore>,
         sample: bool,
     ) {
-        self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
+        *self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
         self.dispatcher = Some(dispatcher);
         if let Some(accounts) = accounts {
             self.configured = accounts;
@@ -675,7 +707,7 @@ impl CalendarApp {
                 self.quick_add.open();
                 self.quick_add
                     .input_mut()
-                    .set_text("Lunch with Sam friday 1pm");
+                    .set_text(&crate::resource::t("calendar-quick-example"));
             }
             "shortcuts" => self.shortcuts.set_open(true),
             "task_detail" => self.shots_show_task_detail(),
@@ -1222,7 +1254,8 @@ impl CalendarApp {
         if let (Some(calendar), Some(id)) = (calendar, id) {
             field.attach(crate::resource::notes_dispatcher(calendar, id));
         }
-        RichTextSurface::field(field).with_placeholder(NOTES_PLACEHOLDER)
+        RichTextSurface::field(field)
+            .with_placeholder(&crate::resource::t("calendar-notes-placeholder"))
     }
 
     // --- CRDT plumbing ---------------------------------------------------
@@ -1254,7 +1287,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = Self::new_notes_editor(None, self.dispatcher.as_ref());
+                    *self.notes_editor = Self::new_notes_editor(None, self.dispatcher.as_ref());
                     self.bound = None;
                 }
                 return;
@@ -1266,7 +1299,7 @@ impl CalendarApp {
         // Every action that creates an event or a task starts its notes.
         let (Sel::Event(id) | Sel::Task(id)) = sel;
         if crate::resource::notes_path(id).object(doc).is_some() {
-            self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
+            *self.notes_editor = Self::new_notes_editor(Some(sel), self.dispatcher.as_ref());
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -1769,6 +1802,50 @@ impl CalendarApp {
         };
         self.spawn_event(ev, doc);
         self.dirty = true;
+    }
+
+    /// Move the occurrence drawn on `original` to `day`, keeping the local
+    /// time of day and the length it shows: a chip dragged from one day of
+    /// the month grid to another. The write is the same published reschedule
+    /// the timeline's drag makes, so History undoes it in one step.
+    fn move_event_to_day(
+        &mut self,
+        id: Id,
+        original: NaiveDate,
+        day: NaiveDate,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        if day == original {
+            return;
+        }
+        let Some(before) = self.model.event(id).cloned() else {
+            return;
+        };
+        let (start, end) = crate::shown::wall_interval(&before, original);
+        if !before.all_day {
+            // A timed event keeps its time of day, which the timeline's own
+            // move already knows how to place on another day.
+            let minutes = i64::from(start.time().hour()) * 60 + i64::from(start.time().minute());
+            self.move_event(id, original, (day, minutes), doc);
+            return;
+        }
+        // An all-day event is whole days on the viewer's clock: its span moves
+        // by however many days the chip was dragged over.
+        let days = (day - original).num_days();
+        let (start, end) = (start + Duration::days(days), end + Duration::days(days));
+        if self
+            .try_submit(
+                doc,
+                Calendar::RESCHEDULE.with((crate::model::key(id), start, end)),
+            )
+            .is_ok()
+            && let Some(event) = self.model.event_mut(id)
+        {
+            event.start = start;
+            event.end = end;
+            event.end_later_fold = false;
+            self.dirty = true;
+        }
     }
 
     /// Reschedule an occurrence to a new day and start on the viewer's clock,
@@ -2822,7 +2899,7 @@ impl CalendarApp {
                     })
             };
             if overlaps {
-                conflicts.push(candidate.display_title().to_string());
+                conflicts.push(candidate.display_title());
             }
         }
         conflicts.sort_unstable();
@@ -2941,6 +3018,9 @@ impl CalendarApp {
                 self.status.dismiss();
             }
             Action::DeleteTask(id) => self.delete_task(id, doc),
+            Action::MoveEventToDay { id, original, day } => {
+                self.move_event_to_day(id, original, day, doc);
+            }
             Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -2969,25 +3049,25 @@ impl CalendarApp {
             ),
             Action::Today => (
                 "calendar.today".into(),
-                "Go to today".into(),
+                crate::resource::t("calendar-a11y-today"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Prev => (
                 "calendar.previous".into(),
-                "Previous period".into(),
+                crate::resource::t("calendar-a11y-previous"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Next => (
                 "calendar.next".into(),
-                "Next period".into(),
+                crate::resource::t("calendar-a11y-next"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::NewEvent => (
                 "calendar.new-event".into(),
-                "New event".into(),
+                crate::resource::t("calendar-a11y-new-event"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3005,7 +3085,7 @@ impl CalendarApp {
             ),
             Action::NewTask => (
                 "calendar.new-task".into(),
-                "New task".into(),
+                crate::resource::t("calendar-a11y-new-task"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3031,13 +3111,17 @@ impl CalendarApp {
                         self.model
                             .projects
                             .iter()
-                            .find(|project| project.id == *id)
-                            .map_or_else(|| "project".to_string(), |project| project.name.clone()),
+                            .find(|project| project.id == *id)?
+                            .name
+                            .clone(),
                     ),
                 };
                 (
                     target,
-                    format!("Show tasks in {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-show-tasks-in",
+                        &[("list", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::RadioButton,
                     AccessState::new()
                         .focusable(true)
@@ -3046,7 +3130,7 @@ impl CalendarApp {
             }
             Action::CloseList => (
                 "calendar.list:close".into(),
-                "Close task list".into(),
+                crate::resource::t("calendar-close-list"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3054,16 +3138,16 @@ impl CalendarApp {
                 let calendar = self
                     .accounts
                     .all_calendars()
-                    .find_map(|(_, calendar)| (calendar.id == *id).then_some(calendar));
-                let (name, current_visible) = calendar.map_or_else(
-                    || ("calendar".to_string(), false),
-                    |calendar| (calendar.name.clone(), calendar.visible),
-                );
+                    .find(|(_, calendar)| calendar.id == *id)?
+                    .1;
                 (
                     format!("{}:visibility", crate::actions::calendar_resource_id(id)),
-                    format!("Show calendar {name}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-show-calendar",
+                        &[("calendar", ui::i18n::ArgValue::from(calendar.name.clone()))],
+                    ),
                     Role::Checkbox,
-                    AccessState::new().focusable(true).checked(current_visible),
+                    AccessState::new().focusable(true).checked(calendar.visible),
                 )
             }
             Action::ToggleAccountCollapsed(id) => {
@@ -3071,21 +3155,25 @@ impl CalendarApp {
                     .accounts
                     .accounts
                     .iter()
-                    .find(|account| account.id == *id);
-                let (name, expanded) = account.map_or_else(
-                    || ("calendar account".to_string(), false),
-                    |account| (account.label().to_string(), !account.collapsed),
-                );
+                    .find(|account| account.id == *id)?;
                 (
                     format!("calendar.account:{id}:expanded"),
-                    format!("{name} calendars"),
+                    crate::resource::t_args(
+                        "calendar-a11y-account-calendars",
+                        &[(
+                            "account",
+                            ui::i18n::ArgValue::from(account.label().to_string()),
+                        )],
+                    ),
                     Role::Button,
-                    AccessState::new().focusable(true).expanded(expanded),
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(!account.collapsed),
                 )
             }
             Action::CloseDetail => (
                 "calendar.back".into(),
-                "Done".into(),
+                crate::resource::t("calendar-done"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3096,51 +3184,54 @@ impl CalendarApp {
                     .text()
                     .is_some_and(|status| status == crate::resource::t("calendar-sync-failed"))
                 {
-                    "Retry calendar synchronization".into()
+                    crate::resource::t("calendar-a11y-retry-sync")
                 } else {
-                    "Sync calendars".into()
+                    crate::resource::t("calendar-a11y-sync")
                 },
                 Role::Button,
                 AccessState::new().focusable(true).disabled(self.syncing()),
             ),
             Action::Export => (
                 "calendar.export".into(),
-                "Export calendar".into(),
+                crate::resource::t("calendar-a11y-export"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::Import => (
                 "calendar.import".into(),
-                "Import calendar".into(),
+                crate::resource::t("calendar-a11y-import"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::PickDate(day) | Action::OpenDay(day) => (
                 format!("calendar.date:{day}:open"),
-                format!("Open {}", date::fmt_day_long(*day)),
+                crate::resource::t_args(
+                    "calendar-a11y-open-day",
+                    &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(*day)))],
+                ),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenEvent(id) => {
-                let label = self.model.event(*id).map_or_else(
-                    || "event".to_string(),
-                    |event| event.display_title().to_string(),
-                );
+                let label = self.model.event(*id)?.display_title();
                 (
                     format!("{}:open", crate::actions::event_resource_id(*id)),
-                    format!("Open event {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-open-event",
+                        &[("title", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::Button,
                     AccessState::new().focusable(true),
                 )
             }
             Action::OpenTask(id) => {
-                let label = self
-                    .model
-                    .task(*id)
-                    .map_or_else(|| "task".to_string(), |task| task.title.clone());
+                let label = self.model.task(*id)?.title.clone();
                 (
                     format!("{}:open", crate::actions::task_resource_id(*id)),
-                    format!("Open task {label}"),
+                    crate::resource::t_args(
+                        "calendar-a11y-open-task",
+                        &[("title", ui::i18n::ArgValue::from(label))],
+                    ),
                     Role::Button,
                     AccessState::new().focusable(true),
                 )
@@ -3152,24 +3243,26 @@ impl CalendarApp {
                     _ => None,
                 };
                 let id = id?;
-                let task = self.model.task(id);
-                let (label, done) = task.map_or_else(
-                    || ("task".to_string(), false),
-                    |task| (task.title.clone(), task.done),
-                );
+                let task = self.model.task(id)?;
                 (
                     format!("{}:toggle", crate::actions::task_resource_id(id)),
-                    format!(
-                        "Mark task {label} {}",
-                        if done { "incomplete" } else { "complete" }
+                    crate::resource::t_args(
+                        "calendar-a11y-toggle-task",
+                        &[
+                            ("title", ui::i18n::ArgValue::from(task.title.clone())),
+                            (
+                                "done",
+                                ui::i18n::ArgValue::from(if task.done { "true" } else { "false" }),
+                            ),
+                        ],
                     ),
                     Role::Checkbox,
-                    AccessState::new().focusable(true).checked(done),
+                    AccessState::new().focusable(true).checked(task.done),
                 )
             }
             Action::DeleteEvent(id) => (
                 format!("{}:delete", crate::actions::event_resource_id(*id)),
-                "Delete event".into(),
+                crate::resource::t("calendar-a11y-delete-event"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3184,19 +3277,28 @@ impl CalendarApp {
             ),
             Action::DiscardDraft(id) => (
                 format!("{}:discard", crate::actions::event_resource_id(*id)),
-                "Discard new event".into(),
+                crate::resource::t("calendar-a11y-discard-draft"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::DeleteTask(id) => (
                 format!("{}:delete", crate::actions::task_resource_id(*id)),
-                "Delete task".into(),
+                crate::resource::t("calendar-a11y-delete-task"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::MoveEventToDay { id, day, .. } => (
+                format!("calendar.event:move-to:{id}:{day}"),
+                crate::resource::t_args(
+                    "calendar-a11y-move-event-to",
+                    &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(*day)))],
+                ),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::ToggleAllDay => (
                 "calendar.event:all-day".into(),
-                "All-day event".into(),
+                crate::resource::t("calendar-a11y-all-day"),
                 Role::Switch,
                 AccessState::new().focusable(true).checked(matches!(
                     self.selection,
@@ -3205,64 +3307,64 @@ impl CalendarApp {
             ),
             Action::FocusField(FormField::Title) => (
                 "calendar.event:title".into(),
-                "Edit event title".into(),
+                crate::resource::t("calendar-a11y-event-title"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::FocusField(FormField::Location) => (
                 "calendar.event:location".into(),
-                "Edit event location".into(),
+                crate::resource::t("calendar-a11y-event-location"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::FocusField(FormField::Invite) => (
                 "calendar.event:invite".into(),
-                "Invite attendee by email".into(),
+                crate::resource::t("calendar-a11y-event-invite"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::StartDate) => (
                 "calendar.event:start-date".into(),
-                "Choose event start date".into(),
+                crate::resource::t("calendar-a11y-start-date"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::EndDate) => (
                 "calendar.event:end-date".into(),
-                "Choose event end date".into(),
+                crate::resource::t("calendar-a11y-end-date"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::StartTime) => (
                 "calendar.event:start-time".into(),
-                "Choose event start time".into(),
+                crate::resource::t("calendar-a11y-start-time"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenPopover(FormPopover::EndTime) => (
                 "calendar.event:end-time".into(),
-                "Choose event end time".into(),
+                crate::resource::t("calendar-a11y-end-time"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::OpenTaskPopover(TaskPopover::Due) => (
                 "calendar.task.due".into(),
-                "Choose task due date".into(),
+                crate::resource::t("calendar-a11y-choose-task-due"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::DismissTaskPopover => (
                 "calendar.task.picker.dismiss".into(),
-                "Dismiss task picker".into(),
+                crate::resource::t("calendar-a11y-dismiss-picker"),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
             Action::ShiftTaskDueMonth(delta) => (
                 format!("calendar.task.due.month:{delta}"),
                 if *delta < 0 {
-                    "Previous due-date month".into()
+                    crate::resource::t("calendar-a11y-due-previous-month")
                 } else {
-                    "Next due-date month".into()
+                    crate::resource::t("calendar-a11y-due-next-month")
                 },
                 Role::Button,
                 AccessState::new().focusable(true),
@@ -3273,8 +3375,13 @@ impl CalendarApp {
                     due.map_or_else(|| "none".into(), |day| day.to_string())
                 ),
                 due.map_or_else(
-                    || "Clear task due date".into(),
-                    |day| format!("Set task due date to {}", date::fmt_day_long(day)),
+                    || crate::resource::t("calendar-a11y-clear-due"),
+                    |day| {
+                        crate::resource::t_args(
+                            "calendar-a11y-set-due",
+                            &[("day", ui::i18n::ArgValue::Text(date::fmt_day_long(day)))],
+                        )
+                    },
                 ),
                 Role::RadioButton,
                 AccessState::new().focusable(true).checked(
@@ -3649,20 +3756,26 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
+        // The editor is the top transient surface, and Escape dismisses it
+        // whatever field inside it holds the keyboard — the same rule the
+        // toolkit's dialogs and the calendar's own cards follow, so a sheet
+        // never answers the first Escape by only leaving its field.
+        if self.detail_open {
+            self.blur_editor();
+            self.discard_pristine_draft(state);
+            self.detail_open = false;
+            self.selection = None;
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        // A field outside any sheet (the sidebar's new-task line) gives up the
+        // keyboard first: nothing there is a surface to put away.
         if field_focused || notes_focused {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             self.tasks.set_entry_focus(false);
-            self.notes_editor.set_focus(false);
-            *handled = true;
-            self.dirty = true;
-            return true;
-        }
-        if self.detail_open {
-            self.discard_pristine_draft(state);
-            self.detail_open = false;
-            self.selection = None;
             self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;
@@ -3848,11 +3961,101 @@ impl CalendarApp {
             self.invite_input.set_focus(false);
             self.tasks.set_entry_focus(false);
             self.notes_editor.set_focus(false);
+            // An event's chip in the month grid is held rather than acted on at
+            // once: let go where it was pressed it opens the event, and dragged
+            // to another day it moves there.
+            if let Action::OpenEvent(id) = a
+                && let Some(day) = self.month_day_at(p)
+            {
+                self.chip_drag = Some(ChipDrag {
+                    id,
+                    from: p,
+                    original: day,
+                    moved: false,
+                    over: None,
+                });
+                *input.handled = true;
+                self.dirty = true;
+                return true;
+            }
             self.apply_action(a, &mut input.state);
             *input.handled = true;
             return true;
         }
         false
+    }
+
+    /// Follow a chip held in the month grid: a move far enough to be a drag
+    /// marks the day it is over, and the release either moves the event there
+    /// or opens it where it was pressed. Whether the event was this drag's.
+    fn handle_chip_drag(&mut self, event: &WindowEvent, state: &mut ui::widget::Edits<'_>) -> bool {
+        if self.chip_drag.is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let day = self.month_day_at(self.last_mouse);
+                let Some(drag) = self.chip_drag.as_mut() else {
+                    return false;
+                };
+                let (dx, dy) = (
+                    self.last_mouse.x - drag.from.x,
+                    self.last_mouse.y - drag.from.y,
+                );
+                if !drag.moved && dx.hypot(dy) < CHIP_DRAG_SLOP {
+                    return false;
+                }
+                drag.moved = true;
+                drag.over = day;
+                self.dirty = true;
+                true
+            }
+            // The window lost the pointer with the button still down: nothing
+            // is being dragged any more, and the next press starts afresh.
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                self.chip_drag = None;
+                self.dirty = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(drag) = self.chip_drag.take() else {
+                    return false;
+                };
+                self.apply_action(
+                    match (drag.moved, drag.over) {
+                        (true, Some(day)) => Action::MoveEventToDay {
+                            id: drag.id,
+                            original: drag.original,
+                            day,
+                        },
+                        // Let go where it was pressed, or off the grid: a click.
+                        _ => Action::OpenEvent(drag.id),
+                    },
+                    state,
+                );
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The day of the month grid whose cell holds `p`, while the month shows.
+    fn month_day_at(&self, p: Point) -> Option<NaiveDate> {
+        if self.view != View::Month {
+            return None;
+        }
+        self.hits
+            .iter()
+            .rev()
+            .find_map(|(rect, action)| match action {
+                Action::PickDate(day) if rect.contains(p) => Some(*day),
+                _ => None,
+            })
     }
 
     /// Forward typing (and other events) to a focused form text field so
@@ -4096,7 +4299,7 @@ impl Widget for CalendarApp {
         if self.repeat_scope_menu.is_open() {
             self.repeat_scope_menu.set_viewport(self.rect);
             Widget::draw_overlay(
-                &mut self.repeat_scope_menu,
+                &mut *self.repeat_scope_menu,
                 scene,
                 transform,
                 text_renderer,
@@ -4123,6 +4326,13 @@ impl Widget for CalendarApp {
         if let WindowEvent::Touch(touch) = event
             && self.swipe(touch, ctx)
         {
+            return;
+        }
+
+        // An event's chip held in the month grid takes the pointer until it is
+        // let go: dragging it moves the event to the day it is dropped on.
+        if self.handle_chip_drag(event, &mut ctx.state) {
+            *ctx.handled = true;
             return;
         }
 
@@ -4263,7 +4473,7 @@ impl Widget for CalendarApp {
     /// The notes editor is laid out for the detail pane's notes, also while
     /// the calendar paints over it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        visitor(&self.notes_editor);
+        visitor(&*self.notes_editor);
         true
     }
 
@@ -4296,14 +4506,14 @@ impl Widget for CalendarApp {
             })
             .collect();
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Calendar")
+            .with_name(crate::resource::t("calendar-title"))
             .with_bounds(self.rect)
             .with_children(controls);
         root.children.extend(self.task_list_access_nodes());
         if self.syncing() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Synchronizing calendars")
+                    .with_name(crate::resource::t("calendar-a11y-syncing"))
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
@@ -4317,7 +4527,7 @@ impl Widget for CalendarApp {
         if self.detail_open && matches!(self.selection, Some(Sel::Event(_))) {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Event editor. Changes save automatically."),
+                    .with_name(crate::resource::t("calendar-a11y-editor")),
             );
             if let Some(conflict) = self.local_schedule_conflict_summary() {
                 root.children
@@ -4486,6 +4696,7 @@ impl CalendarApp {
                     let days = self.timeline_days();
                     let events = self.timeline_render_events(&days);
                     let now = self.now();
+                    let untitled = crate::model::untitled_event();
                     let model = TimelineRenderModel {
                         days: &days,
                         events: &events,
@@ -4494,7 +4705,7 @@ impl CalendarApp {
                             self.today,
                             i64::from(now.hour()) * 60 + i64::from(now.minute()),
                         )),
-                        untitled: TITLE_PLACEHOLDER,
+                        untitled: &untitled,
                     };
                     hits.extend(
                         self.timeline
@@ -4723,16 +4934,47 @@ impl CalendarApp {
 
 /// The Guests field: an address typed in, or its Contacts button, which
 /// sets `requested` for the next frame to open the picker.
-fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> TextInput {
+fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput> {
     let requested = std::rc::Rc::clone(requested);
-    TextInput::local()
-        .with_placeholder("Invite by email")
-        .with_id("event_invite")
-        .with_trailing_accessory(
-            ui::icons::Icon::Users,
-            &crate::resource::t("calendar-contact-attendees"),
-            ui::widget::AccessoryAction::Run(Box::new(move || requested.set(true))),
-        )
+    Box::new(
+        TextInput::local()
+            .with_placeholder(crate::resource::t("calendar-invite-placeholder"))
+            .with_id("event_invite")
+            .with_trailing_accessory(
+                ui::icons::Icon::Users,
+                &crate::resource::t("calendar-contact-attendees"),
+                ui::widget::AccessoryAction::Run(Box::new(move || requested.set(true))),
+            ),
+    )
+}
+
+/// The event form's title field.
+fn title_field() -> Box<TextInput> {
+    Box::new(
+        TextInput::local()
+            .with_placeholder(crate::model::untitled_event())
+            .with_text_role(ui::tokens::TextRole::Heading)
+            .with_id("event_title"),
+    )
+}
+
+/// The event form's location field.
+fn location_field() -> Box<TextInput> {
+    Box::new(
+        TextInput::local()
+            .with_placeholder(crate::resource::t("calendar-location-placeholder"))
+            .with_id("event_location"),
+    )
+}
+
+/// The question a dragged occurrence of a repeating event asks: this event
+/// alone, or this one and those after it.
+fn repeat_scope_menu() -> Box<Popover> {
+    Box::new(
+        Popover::new()
+            .with_items(repeat_scope::choices())
+            .with_label(repeat_scope::label()),
+    )
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.

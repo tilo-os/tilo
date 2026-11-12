@@ -8,7 +8,7 @@
 //! view builds its own nodes from it.
 
 use super::{
-    ExportedChildren, HostedByIndex, HostedIn, HostedWidget, exported_children, hosted_in,
+    ExportedChildren, HostedByIndex, HostedHere, HostedWidget, exported_children, hosted_in,
 };
 use crate::a11y::AccessNode;
 use crate::widget::Widget;
@@ -35,7 +35,9 @@ pub(crate) trait A11yVisitor: Sized {
     type SyntheticPending;
 
     /// `slot` is the widget's parent and its index there when the parent
-    /// walks it as its own child ([`Widget::accessibility_child_description`]).
+    /// walks it as its own child ([`Widget::accessibility_child_name`],
+    /// [`Widget::accessibility_child_description`]), also through a wrapper
+    /// that exports no node of its own and holds only this child.
     fn open(
         &mut self,
         w: &dyn Widget,
@@ -76,6 +78,28 @@ pub(crate) trait A11yVisitor: Sized {
     );
 }
 
+/// The words a parent holds for the child at `index` of its
+/// [`children`](Widget::children) ([`Widget::accessibility_child_name`],
+/// [`Widget::accessibility_child_description`]), said of `access`: its name
+/// where the child has none of its own (or only found one, the value it
+/// shows), its description where the child describes nothing. Every view of
+/// the tree resolves a child the same way, so what a screen reader hears is
+/// what an agent reads and what the audit certifies.
+pub(crate) fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widget, usize)>) {
+    let Some((parent, index)) = slot else {
+        return;
+    };
+    if access.name.is_none() || access.name_found {
+        if let Some(name) = parent.accessibility_child_name(*index) {
+            access.name = Some(name);
+            access.name_found = false;
+        }
+    }
+    if access.description.is_none() {
+        access.description = parent.accessibility_child_description(*index);
+    }
+}
+
 /// Walk `w` and everything under it into `parent`.
 pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     v: &mut V,
@@ -89,8 +113,14 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
     match v.open(w, slot, parent) {
         Visit::Skip => {}
         Visit::Collapse => {
-            for child in w.children() {
-                walk::<BOUND, V>(v, child, None, parent);
+            let children = w.children();
+            // A widget with no node of its own that holds one child stands
+            // for that child (a container around a row's slider): the words
+            // its parent holds for it are the child's, and reach the child
+            // through it rather than stopping at a wrapper nobody hears.
+            let slot = (children.len() == 1).then_some(slot).flatten();
+            for child in children {
+                walk::<BOUND, V>(v, child, slot, parent);
             }
         }
         Visit::Node(pending, mut scope) => {
@@ -118,22 +148,61 @@ pub(crate) fn walk_synthetic<const BOUND: bool, V: A11yVisitor>(
     parent: &mut V::Scope,
 ) {
     let (pending, mut scope) = v.open_synthetic(owner, path, node, parent);
-    match hosted_in(hosted) {
-        HostedIn::Nested(mut nested) => {
-            for (index, child) in node.children.iter().enumerate() {
-                path.push(index);
-                let hosted = nested.remove(&index).unwrap_or_default();
-                walk_synthetic::<BOUND, V>(v, owner, path, child, hosted, &mut scope);
-                path.pop();
-            }
-        }
-        HostedIn::Direct(direct) => {
-            for child in direct {
-                walk::<BOUND, V>(v, child, None, &mut scope);
-            }
+    let HostedHere { direct, mut nested } = hosted_in(hosted);
+    for (index, child) in node.children.iter().enumerate() {
+        path.push(index);
+        let hosted = nested.remove(&index).unwrap_or_default();
+        walk_synthetic::<BOUND, V>(v, owner, path, child, hosted, &mut scope);
+        path.pop();
+    }
+    // A widget whose own node is the synthetic one this walks
+    // ([`HostedWidget::as_node`]) has its children attach here, after what
+    // the node says of itself.
+    for hosted in direct {
+        if hosted.as_node {
+            walk_children::<BOUND, V>(v, hosted.widget, &mut scope);
+        } else {
+            walk::<BOUND, V>(v, hosted.widget, None, &mut scope);
         }
     }
     v.close_synthetic(owner, path, node, pending, scope, parent);
+}
+
+/// Walk the children of `w` into `parent`, `w`'s own node left out: it is the synthetic node
+/// they hang under ([`HostedWidget::as_node`]). The node it states is reached through whatever
+/// boxes it wraps itself in — a slot, a box, a toolbar floating over it add no node of their own
+/// — and stands in none of them twice.
+fn walk_children<const BOUND: bool, V: A11yVisitor>(
+    v: &mut V,
+    w: &dyn Widget,
+    parent: &mut V::Scope,
+) {
+    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+        return;
+    };
+    let mut stated = crate::a11y::stated_node(w);
+    if let Some(node) = &mut stated {
+        node.children.clear();
+    }
+    walk_below::<BOUND, V>(v, w, stated.as_ref(), parent);
+}
+
+/// Walk the children of `w` too, but a child stating `stated` folds into `w`: its own children
+/// are walked where it stands.
+fn walk_below<const BOUND: bool, V: A11yVisitor>(
+    v: &mut V,
+    w: &dyn Widget,
+    stated: Option<&AccessNode>,
+    parent: &mut V::Scope,
+) {
+    for (index, child) in w.children().into_iter().enumerate() {
+        let folds = stated.is_some_and(|node| child.accessibility_root().as_ref() == Some(node));
+        if folds {
+            walk_below::<BOUND, V>(v, child, stated, parent);
+        } else {
+            walk::<BOUND, V>(v, child, Some((w, index)), parent);
+        }
+    }
 }
 
 /// Walk `owner`'s synthetic `children`, in order, with the widgets `hosted`

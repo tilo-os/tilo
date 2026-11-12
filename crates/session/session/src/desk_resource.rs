@@ -1,8 +1,8 @@
 //! This device's desk as a resource of the session's: the time in the person's style, who they
 //! are, their notifications, the workspaces on this device and the strip in front, and the
 //! tasks running for them. A shell's views read it (as `session.desk` resources,
-//! `tilo_surface_host::shell_part`), and so does a script or an agent, through the door, by
-//! the same address: one reading for every reader.
+//! [`tilo_session_core::shell`]), and so does a script or an agent, through the door, by the same
+//! address: one reading for every reader.
 
 use std::rc::Rc;
 
@@ -10,17 +10,17 @@ use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
-use tilo_surface_host::shell_part::DESK_RESOURCE;
-use tilo_surface_host::{DeskReading, shell_part};
+use tilo_session_core::shell::DESK_RESOURCE;
+use tilo_session_core::shell::{self, DeskReading};
 
-use crate::i18n::t;
+use crate::desk_windows::{reaching, windows};
 use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
@@ -75,14 +75,14 @@ pub(crate) enum DeskEffect {
         workspace: String,
     },
     /// Answer the question waiting on the person's avatar
-    #[effect(row, label = "Answer")]
+    #[effect(row, label = "session-desk-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
-    #[effect(row, label = "Ask me later")]
+    #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
-    #[effect(row, label = "Open")]
+    #[effect(row, label = "session-desk-open")]
     OpenTrayItem { key: String },
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
@@ -142,7 +142,7 @@ pub(crate) enum DeskEffect {
     },
     /// End the agent `agent`'s work here: the connection the person admitted closes and its
     /// presence leaves the bar
-    #[effect(label = "Stop")]
+    #[effect(label = "session-desk-stop-agent")]
     StopAgent {
         #[param("The agent, by the key its presence names it")]
         agent: String,
@@ -287,7 +287,16 @@ impl Surfaces {
     pub(crate) fn beside_up(&self) -> bool {
         tilo_desktop::overlays::Slot::ALL
             .into_iter()
+            .filter(|slot| !self.drawn_by_the_shell(*slot))
             .any(|slot| slot.stands_beside() && self.panel.is_open(slot))
+    }
+
+    /// Whether the shell's own view draws `slot` instead of the desk, so what the desk keeps in
+    /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
+    /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
+    /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
+    fn drawn_by_the_shell(&self, slot: tilo_desktop::overlays::Slot) -> bool {
+        self.shell && slot == tilo_desktop::overlays::Slot::Search
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
@@ -327,10 +336,10 @@ impl Surfaces {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Styles {
     pub(crate) revision: u64,
-    pub(crate) list: Vec<shell_part::DeskStyleReading>,
-    /// The store's fingerprint the list was read at: a store that reads the same is not read
-    /// again.
-    pub(crate) fingerprint: Option<String>,
+    pub(crate) list: Vec<shell::DeskStyleReading>,
+    /// The store's registry the list was read at: a store that reads the same is not read again,
+    /// and what the log says of it is said only when it changes.
+    pub(crate) registry: Option<crate::desk_styles::Registry>,
 }
 
 /// The desk as the session reads it. See the module docs.
@@ -407,314 +416,6 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
     }
 }
 
-/// What a window with no title is called.
-fn untitled() -> String {
-    tilo_desktop_surface::i18n::t("window-switcher-untitled")
-}
-
-/// Where a tab stands on the desk while its window is read.
-#[derive(Clone, Copy)]
-struct Standing<'a> {
-    workspace: &'a Workspace,
-    strip: &'a Strip,
-    group: &'a WindowGroup,
-    /// The share of its strip's width the window keeps.
-    share: f64,
-    /// Where it stands in the picture of its workspace.
-    place: i64,
-    /// Its place among its group's tabs: `0` for the tab in front.
-    tab_index: i64,
-    focused: bool,
-}
-
-/// One window's reading: what it shows, where it stands and what may be pictured of it.
-/// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
-/// instead of its picture (`withheld`), and one that is not this device's window shows neither
-/// (`none`).
-fn window_reading(
-    tab: &Tab,
-    at: Standing<'_>,
-    handle: &DesktopHandle,
-) -> shell_part::WindowReading {
-    use tilo_desktop_model::TileContent;
-    let app = match &tab.tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
-        TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
-            label.clone()
-        }
-    };
-    let title = tab.title.trim();
-    // What the window's well shows instead of a picture: its app's own glyph, so two apps' windows
-    // never look alike.
-    let icon = ui::icons::app_glyph(&app, None).name().to_owned();
-    let preview = match &tab.tile {
-        TileContent::Foreign { .. } if handle.withholds(&app) => "withheld",
-        TileContent::Foreign { .. } => "live",
-        _ => "none",
-    };
-    // A window of another of the person's devices runs there, and one of a peer's on theirs:
-    // neither may be pictured here yet, so each says which device it is on.
-    let (local, device, device_name) = match &tab.tile {
-        TileContent::HostedWindow {
-            host, host_label, ..
-        } => (false, host.clone(), host_label.clone()),
-        TileContent::PeerWindow { .. } => (false, String::new(), String::new()),
-        _ => (true, String::new(), String::new()),
-    };
-    shell_part::WindowReading {
-        key: tab.id.to_string(),
-        title: if title.is_empty() {
-            untitled()
-        } else {
-            title.to_owned()
-        },
-        // The app as people know it, never the id: a window is named by what it shows, and its
-        // `app_title` is a person's own name for the window, not its app's name.
-        origin_app: crate::app_names::app_name(&app),
-        app_key: app,
-        icon,
-        strip: at.strip.name.trim().to_owned(),
-        strip_key: at.strip.id.0.to_string(),
-        workspace: at.workspace.name.clone(),
-        workspace_key: at.workspace.slot.0.to_string(),
-        group_key: at.group.id.to_string(),
-        tab_index: at.tab_index,
-        share: at.share,
-        local,
-        device,
-        device_name,
-        place: at.place,
-        recency: 0,
-        focused: at.focused,
-        preview: preview.to_owned(),
-        // Its app is the compositor's to judge: the window it holds there is the one the pings went
-        // to.
-        not_responding: match &tab.tile {
-            TileContent::Foreign { surface_id, .. } => handle.is_unresponsive(*surface_id),
-            _ => false,
-        },
-    }
-}
-
-/// The windows the desk shows: every workspace's, the one in front first, each strip top to bottom
-/// and each group leading to trailing, the tab in front of a group first and the tabs behind it in
-/// their order. Each window says where it stands (`place`), the workspace, strip and group it is
-/// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
-/// where the window stands.
-fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::WindowReading> {
-    let Some(front) = tree.active_workspace() else {
-        return Vec::new();
-    };
-    let active_strip = tree
-        .active_strip
-        .get(&front.slot)
-        .copied()
-        .or_else(|| front.strips.first().map(|strip| strip.id));
-    // The tabs the focus history remembers, most recent first.
-    let history: Vec<u64> = front
-        .strips
-        .iter()
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.focus_history.iter().rev().copied())
-        .collect();
-    let mut workspaces: Vec<&_> = tree.workspaces.iter().collect();
-    workspaces.sort_by_key(|workspace| workspace.slot != front.slot);
-    let mut readings = Vec::new();
-    let mut focused_tab = None;
-    for workspace in workspaces {
-        let in_front = workspace.slot == front.slot;
-        let mut place = 0_i64;
-        for strip in &workspace.strips {
-            let active_group = if in_front {
-                tree.active_group_for(strip.id)
-                    .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
-                    .or_else(|| strip.window_groups.first().map(|group| group.id))
-            } else {
-                None
-            };
-            for group in &strip.window_groups {
-                // The width the window keeps on the desk: a strip's groups split its width between
-                // them, so the pictures of a strip keep the desk's proportions.
-                let share = group.width.fraction();
-                let leading = group
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.id == group.active_tab)
-                    .unwrap_or(0);
-                let mut behind = 0_i64;
-                for (index, tab) in group.tabs.iter().enumerate() {
-                    let tab_index = if index == leading {
-                        0
-                    } else {
-                        behind = behind.saturating_add(1);
-                        behind
-                    };
-                    let focused = in_front
-                        && Some(strip.id) == active_strip
-                        && Some(group.id) == active_group
-                        && tab.id == group.active_tab;
-                    if focused {
-                        focused_tab = Some(tab.id);
-                    }
-                    place = place.saturating_add(1);
-                    readings.push(window_reading(
-                        tab,
-                        Standing {
-                            workspace,
-                            strip,
-                            group,
-                            share,
-                            place,
-                            tab_index,
-                            focused,
-                        },
-                        handle,
-                    ));
-                }
-            }
-        }
-    }
-    let rank = |key: &str| -> i64 {
-        // ignored-failure: a key that is no tab number sorts after every tab
-        let tab: u64 = key.parse().unwrap_or(u64::MAX);
-        if Some(tab) == focused_tab {
-            return 0;
-        }
-        history
-            .iter()
-            .position(|at| *at == tab)
-            .map_or(i64::MAX / 2, |at| {
-                i64::try_from(at).unwrap_or(0).saturating_add(1)
-            })
-    };
-    for (at, reading) in readings.iter_mut().enumerate() {
-        reading.recency = rank(&reading.key)
-            .saturating_mul(1024)
-            .saturating_add(i64::try_from(at).unwrap_or(0));
-    }
-    readings.sort_by_key(|reading| reading.recency);
-    // What is left of the rank is the order the walk takes: where each window stands in it, so a
-    // view shows the page the walk has reached without knowing how the order was made.
-    for (at, reading) in readings.iter_mut().enumerate() {
-        reading.recency = i64::try_from(at).unwrap_or(i64::MAX).saturating_add(1);
-    }
-    readings
-}
-
-/// The windows the switcher's walk crosses, as their places in `windows`, with the place in them
-/// of the window in front: every window of the workspace in front, or the ones the app the front
-/// window shows has. The walk, the mark the reading carries and the commit all count from this one
-/// list.
-fn walked(
-    windows: &[shell_part::WindowReading],
-    scope: crate::overlays::SwitcherScope,
-) -> (Vec<usize>, Option<usize>) {
-    use crate::overlays::SwitcherScope;
-    let front = windows.iter().position(|window| window.focused);
-    let here = front.and_then(|front| windows.get(front));
-    let workspace = here.map(|window| window.workspace_key.clone());
-    let application = here.map(|window| window.app_key.clone());
-    // The walk crosses the workspace in front alone: a window of another workspace is read and
-    // searched, but Alt+Tab never takes the person out of the workspace they are in.
-    let here = |window: &shell_part::WindowReading| {
-        workspace
-            .as_ref()
-            .is_none_or(|workspace| &window.workspace_key == workspace)
-    };
-    let walked: Vec<usize> = match (scope, application) {
-        (SwitcherScope::App, Some(application)) => windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| window.app_key == application && here(window))
-            .map(|(at, _)| at)
-            .collect(),
-        _ => windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| here(window))
-            .map(|(at, _)| at)
-            .collect(),
-    };
-    let front = front.and_then(|front| walked.iter().position(|at| *at == front));
-    (walked, front)
-}
-
-/// The window the walk has reached, of `windows`: its place among them, where it stands to be
-/// lifted and where Alt let go lands. `None` while no walk is up.
-fn reaching(
-    overlays: &crate::overlays::Overlays,
-    windows: &[shell_part::WindowReading],
-) -> Option<usize> {
-    let (walked, front) = walked(windows, overlays.scope());
-    overlays
-        .reached(walked.len(), front)
-        .and_then(|at| walked.get(at).copied())
-}
-
-/// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
-fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
-    use tilo_desktop_model::TileContent;
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .filter_map(|tab| match &tab.tile {
-            TileContent::Foreign { surface_id, .. } => Some((tab.id, *surface_id)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// What the switcher's panel shows while the walk is up: the windows it crosses, in its order,
-/// and the one it has reached. `None` when no walk is up.
-pub(crate) fn switcher_view(
-    handle: &DesktopHandle,
-    overlays: &crate::overlays::Overlays,
-    sizes: &std::collections::HashMap<u64, (u32, u32)>,
-) -> Option<tilo_desktop::window_switcher::SwitcherView> {
-    let (windows, reached, surfaces) = handle.read(|tree| {
-        let windows = windows(tree, handle);
-        let reached = reaching(overlays, &windows);
-        (windows, reached, window_surfaces(tree))
-    });
-    let reached = reached?;
-    let (walked, _) = walked(&windows, overlays.scope());
-    let selected = walked.iter().position(|at| *at == reached)?;
-    let cards = walked
-        .iter()
-        .filter_map(|at| windows.get(*at))
-        .map(|window| {
-            // A window whose app holds secrets from the desk, or one this device does not run,
-            // has no picture: its card shows the app's own face. A key that is no tab is such
-            // a window, and so is one whose host pictures nothing.
-            // ignored-failure: a window that is no tab has no client to picture
-            let client = window
-                .key
-                .parse::<u64>()
-                .ok()
-                .and_then(|tab| surfaces.get(&tab).copied());
-            let window_id = (window.preview == "live").then_some(client).flatten();
-            tilo_desktop::window_switcher::SwitcherCard {
-                window: window_id,
-                // The shape of the window's own pixels, as the compositor lays it out: the card
-                // takes it, so the picture fills the card.
-                size: client.and_then(|client| sizes.get(&client).copied()),
-                title: window.title.clone(),
-                app_key: window.app_key.clone(),
-            }
-        })
-        .collect();
-    Some(tilo_desktop::window_switcher::SwitcherView {
-        cards,
-        selected,
-        app_scope: overlays.scope() == crate::overlays::SwitcherScope::App,
-    })
-}
-
 impl Desk {
     /// What the reading is made from, without making it: the tree's revision, the minute,
     /// what the notifications say and who is here. The reading changes only when this does.
@@ -767,8 +468,13 @@ impl Desk {
         &self,
         tree: &DesktopTree,
         now: std::time::Instant,
-    ) -> Vec<shell_part::WindowReading> {
+    ) -> Vec<shell::WindowReading> {
         let mut windows = windows(tree, &self.handle);
+        // The app as people know it, never the id: a window is named by what it shows, and its
+        // `app_title` is a person's own name for the window, not its app's name.
+        for window in &mut windows {
+            window.origin_app = crate::app_names::app_name(&window.app_key);
+        }
         if self.surfaces.overlays.revealed(now)
             && let Some(at) = reaching(&self.surfaces.overlays, &windows)
         {
@@ -785,28 +491,27 @@ impl Desk {
         let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &self.notes.records(), &|_: &str| None)
-                    .into_iter()
-                    .map(|person| shell_part::PersonReading {
-                        key: person.id,
-                        name: person.label,
-                    })
-                    .collect()
+                sync.people(tree, &self.notes, &|app: &str| {
+                    Some(crate::app_names::app_name(app))
+                })
+                .into_iter()
+                .map(|person| shell::PersonReading {
+                    key: person.id,
+                    name: person.label,
+                })
+                .collect()
             })
         });
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
             clock: ui::clock::time_of_day(&now),
             timer: self.timer(),
-            ask: self
-                .handle
-                .personal_ask()
-                .map(|ask| shell_part::AskReading {
-                    question: ask.title,
-                    detail: ask.body,
-                    answer: ask.action.title,
-                    open: ask.open,
-                }),
+            ask: self.handle.personal_ask().map(|ask| shell::AskReading {
+                question: ask.title,
+                detail: ask.body,
+                answer: ask.action.title,
+                open: ask.open,
+            }),
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
             quiet: self.signals.quiet(),
@@ -818,7 +523,7 @@ impl Desk {
             workspaces: tree
                 .workspaces
                 .iter()
-                .map(|workspace| shell_part::WorkspaceReading {
+                .map(|workspace| shell::WorkspaceReading {
                     key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
                     current: workspace.slot == tree.active,
@@ -840,7 +545,7 @@ impl Desk {
             rooms: tree
                 .workspaces
                 .iter()
-                .map(|workspace| shell_part::RoomReading {
+                .map(|workspace| shell::RoomReading {
                     key: workspace.slot.0.to_string(),
                     name: workspace.name.clone(),
                     current: workspace.slot == tree.active,
@@ -863,14 +568,14 @@ impl Desk {
 
     /// The floating timer as the web shell reads it: Clocks' summary while it floats over the
     /// windows.
-    fn timer(&self) -> Option<shell_part::TimerReading> {
+    fn timer(&self) -> Option<shell::TimerReading> {
         let published = self.activities.published(crate::chrome::CLOCKS_APP)?;
         if !published.overlay {
             return None;
         }
         let summary = published.summary?;
         let countdown = summary.countdown.unwrap_or_default();
-        Some(shell_part::TimerReading {
+        Some(shell::TimerReading {
             activity_id: (!summary.id.is_empty()).then(|| summary.id.clone()),
             label: summary.title.clone(),
             remaining_secs: u64::try_from(countdown).unwrap_or_default(),
@@ -902,11 +607,11 @@ impl Desk {
 
     /// The running applications' tray items, in the order they registered: each's key, the app's
     /// own words for it, and whether choosing it opens a menu rather than its window.
-    fn tray_items(&self) -> Vec<shell_part::TrayReading> {
+    fn tray_items(&self) -> Vec<shell::TrayReading> {
         self.tray.as_ref().map_or_else(Vec::new, |tray| {
             tray.snapshot()
                 .into_iter()
-                .map(|item| shell_part::TrayReading {
+                .map(|item| shell::TrayReading {
                     key: item.key,
                     title: if item.title.trim().is_empty() {
                         item.id
@@ -922,13 +627,13 @@ impl Desk {
 
 /// The notices the centre keeps, newest first, as the desk's reading names them: the banners still
 /// up and the ones retired into the centre.
-fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_part::NoticeReading> {
+fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell::NoticeReading> {
     let log = notices.log();
     log.active()
         .iter()
         .chain(log.history().iter())
         .rev()
-        .map(|notification| shell_part::NoticeReading {
+        .map(|notification| shell::NoticeReading {
             key: notification.id.to_string(),
             title: notification.title.clone(),
             body: notification.body.clone(),
@@ -947,7 +652,7 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
 /// Each action a notice offers, as its sender named it.
 fn notice_actions(
     notices: &tilo_desktop_surface::DesktopNotifications,
-) -> Vec<shell_part::NoticeActionReading> {
+) -> Vec<shell::NoticeActionReading> {
     let log = notices.log();
     log.active()
         .iter()
@@ -957,7 +662,7 @@ fn notice_actions(
             notification
                 .actions
                 .iter()
-                .map(|(key, label)| shell_part::NoticeActionReading {
+                .map(|(key, label)| shell::NoticeActionReading {
                     notice: notification.id.to_string(),
                     key: key.clone(),
                     label: label.clone(),
@@ -978,59 +683,6 @@ fn strip_in_front(tree: &DesktopTree) -> String {
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first());
     active.map_or_else(String::new, |strip| strip.name.trim().to_owned())
-}
-
-impl Desk {
-    /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
-    /// counts from the window in front, over the windows its scope crosses, wrapping.
-    fn commit_switcher(&self) {
-        let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let reached = reaching(&self.surfaces.overlays, &windows).and_then(|at| windows.get(at));
-        // ignored-failure: a reached window whose key is no tab focuses nothing
-        if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
-            self.handle.focus_tab(tab);
-        }
-        self.surfaces.overlays.forget_walk();
-        self.surfaces.overlays.show(crate::overlays::Overlay::Rest);
-    }
-
-    /// Open the switcher on the window before the one in front, or walk it `steps` windows on. A
-    /// walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with one
-    /// window open does what it always has, which is nothing.
-    fn walk_switcher(&self, scope: Option<&str>, steps: i64) {
-        let scope = scope
-            .and_then(crate::overlays::SwitcherScope::named)
-            .unwrap_or_default();
-        // Opening the walk is one window on, as Alt+Tab goes to the window before the one in front
-        // whichever way its press names.
-        let steps = if steps == 0 { 1 } else { steps };
-        if !self.surfaces.overlays.is_up() {
-            let windows = self.handle.read(|tree| windows(tree, &self.handle));
-            let (walked, _) = walked(&windows, scope);
-            if walked.len() < 2 {
-                return;
-            }
-        }
-        self.surfaces.overlays.walk(Some(scope.name()), steps);
-    }
-
-    /// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
-    /// End and a card under the pointer choose by place, without crossing the ones between.
-    fn select_switcher(&self, at: i64) {
-        if !self.surfaces.overlays.is_up() {
-            return;
-        }
-        let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-        let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
-        let at = if at < 0 {
-            count.saturating_add(at)
-        } else {
-            at.min(count.saturating_sub(1))
-        };
-        let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
-        self.surfaces.overlays.select(at.saturating_sub(front));
-    }
 }
 
 impl Desk {
@@ -1126,36 +778,45 @@ impl Desk {
             (name, _) => name,
         };
         // The link names this device, which answers whoever redeems it: a session taking part in no
-        // transport has no address to name.
+        // transport has no address to name, and one that has says where it is reached through its
+        // relay, so the link works from behind any network ([`crate::sync::Client::invitation_addr`]).
         let endpoint = self
             .sync
             .as_ref()
-            .map(|sync| sync.endpoint_addr())
+            .map(|sync| sync.invitation_addr())
             .ok_or_else(|| {
                 DoorError::Failed(
                     "this session takes part in no transport, so no link can name it".to_owned(),
                 )
             })?;
-        let issued = engine
-            .issue_invitation(
-                &room.to_string(),
-                role,
-                invitee_name,
-                recipient,
-                expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
-                &endpoint,
-                std::time::SystemTime::now(),
-            )
-            .map_err(DoorError::Failed)?;
-        Ok(Started::Done(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({
-                "invite": issued.invite,
-                "link": issued.link,
-                "role": role_name(issued.role),
-                "expires_at_ns": issued.expires_at_ns,
-            })),
-            resources: Vec::new(),
-        }))
+        // The link is signed by this device's signer, which may answer only later: the asker hears
+        // it once signed, and the loop goes on meanwhile.
+        let engine = std::sync::Arc::clone(engine);
+        let room = room.to_string();
+        let expires_in = expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS);
+        Ok(Started::Later(crate::landing::off_loop(async move {
+            let issued = engine
+                .issue_invitation(
+                    &room,
+                    role,
+                    invitee_name,
+                    recipient,
+                    expires_in,
+                    &endpoint,
+                    std::time::SystemTime::now(),
+                )
+                .await
+                .map_err(DoorError::Failed)?;
+            Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "invite": issued.invite,
+                    "link": issued.link,
+                    "role": role_name(issued.role),
+                    "expires_at_ns": issued.expires_at_ns,
+                })),
+                resources: Vec::new(),
+            })
+        })))
     }
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
@@ -1184,9 +845,9 @@ impl Desk {
     }
 
     /// This device's engine: invitations are its record's, and a session without one has none.
-    fn engine(&self) -> Result<&crate::engine::Engine, DoorError> {
+    fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, DoorError> {
         self.engine
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| DoorError::Failed("this session holds no workspace's record".to_owned()))
     }
 }
@@ -1299,20 +960,7 @@ impl Desk {
 /// The desk's resource, named `label`: what it publishes, and what the session's package describes
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
-    let mut resource = offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label));
-    // The desk answers in the person's language: the question on their avatar, the tray item, and
-    // stopping an agent.
-    for spec in &mut resource.actions {
-        let label = match spec.id.as_str() {
-            "answer-ask" => t("session-desk-answer-ask"),
-            "put-off-ask" => t("session-desk-ask-later"),
-            "open-tray-item" => t("session-desk-open"),
-            "stop-agent" => t("session-desk-stop-agent"),
-            _ => continue,
-        };
-        spec.type_mut().label = label;
-    }
-    resource
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
 }
 
 impl Service for Desk {
@@ -1373,15 +1021,20 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            self.walk_switcher(scope.as_deref(), steps.unwrap_or(1));
+            crate::desk_windows::walk_switcher(
+                &self.handle,
+                &self.surfaces.overlays,
+                scope.as_deref(),
+                steps.unwrap_or(1),
+            );
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::SelectSwitcher { at } = &effect {
-            self.select_switcher(*at);
+            crate::desk_windows::select_switcher(&self.handle, &self.surfaces.overlays, *at);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
-            self.commit_switcher();
+            crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::ActOnNotice { notice, action } = &effect {

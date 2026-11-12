@@ -66,17 +66,23 @@ broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-
 test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:tilo-test-env"]
 # Hyphenation patterns (hypher) are not linked into text layout: the program
 # fetches their code the first time text hyphenates and hands it over
-# (`defer_hyphenation`, `install_hyphenation`); until then text breaks only
+# (`HYPHENATION`); until then text breaks only
 # between words. The browser desktop uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
 # The image decoders (`image`: PNG, JPEG, WebP) a web page's images and an
 # `ImageStore`'s pictures need are not linked: the program fetches their code
 # the first time something decodes and hands it over
-# (`image_decoders::defer_image_decoders`, `install_image_decoders`); until
+# (`image_decoders::IMAGE_DECODERS`); until
 # then images are left out. The browser desktop uses this to keep them out of
 # its start module.
 lazy-image-decode = []
+# A theme's surface shader (the WGSL front end and the interpreter that
+# draws it) is not linked: the program fetches its code the first time a
+# theme states a shader (`part_paint::SURFACE_SHADER`); until then such
+# parts draw their fallback. The browser desktop uses this to keep it out of
+# its start module.
+lazy-surface-shader = []
 # The emoji catalogue (names and keywords in every language, about half a
 # megabyte) is not linked into the toolkit's own code paths: the program
 # fetches it the first time a picker, reaction or `:name:` asks and hands it
@@ -200,11 +206,15 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
-# tilolang's own lexer colours its programs (`code_editor::tilolang`).
-tilolang = { version = "0.1.0", path = "../../lang/tilolang" }
+# tilolang's own lexer colours its programs (`code_editor::tilolang`): the language
+# without its compiler, which stays out of the SDK.
+tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# Dates, clocks and numbers as the person set them, without the toolkit, so a host
+# that has no toolkit answers the same as a window (tilo-formats).
+tilo-formats = { version = "0.1.0", path = "../tilo-formats" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 tilo-paths.workspace = true

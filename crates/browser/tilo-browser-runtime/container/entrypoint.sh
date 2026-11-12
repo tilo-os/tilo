@@ -15,6 +15,16 @@
 #                       host does not list. A workspace a relay lists has its
 #                       door at
 #                       https://<host>/peer/v1/directory/<workspace>/.
+#   TILO_WEB_HOME_HOST_INFO  who that host is and where it is dialled, the one
+#                       line of JSON `tilo-relay page-host https://<host>`
+#                       prints, required with a host: the page dials the
+#                       host as this names it rather than ask the host first.
+#                       The site serves it with the page, so the page trusts
+#                       it as it trusts itself. It holds while the host keeps
+#                       its identity (its root and the device key in its
+#                       state) and the packet relay pages reach it through; a
+#                       host set up again answers as another, and the page
+#                       stops and says this needs setting again.
 # Tilo computers list the site's public workspaces from its directory: the
 # home host's own (https://<host>/directory) unless one is named:
 #   TILO_WEB_DIRECTORY  the directory's https:// address (unset: the home's)
@@ -26,10 +36,14 @@
 # preview, if any (an embed reports its state to that site alone):
 #   TILO_WEB_EMBEDDER   that site's https:// origin (unset: none)
 # Where the site's shelf of sealed invitations is answered (the Caddyfile):
-# the host and port of the relay serving this site, which keeps an invitation
-# under the handle its link names. Unset, a link still opens the page, and the
-# page has no shelf to leave an invitation on or take one from.
-#   TILO_WEB_SHELF      a relay's host:port, as Caddy reaches it (unset: none)
+# the relay serving this site, which keeps an invitation under the handle its
+# link names. It is the relay the home workspace is hosted on, the one
+# `entry.json` names, unless the deployment reaches it by another name or port
+# and names that. With no home workspace and nothing named, a link still opens
+# the page, and the page has no shelf to leave an invitation on or take one
+# from.
+#   TILO_WEB_SHELF      a relay's address as Caddy reaches it, e.g.
+#                       https://eu1.example (unset: the home host)
 # Where the tilo command's releases are kept, which the site serves at
 # /releases/<latest|vX.Y.Z>/<file> for its installer (the Caddyfile): the base
 # URL the release tooling (tools/ci/publish/cli-release.sh) publishes under,
@@ -37,16 +51,30 @@
 # machine's loopback for a mirror beside it.
 #   TILO_RELEASES_ORIGIN  (unset: the Tilo package registry,
 #                       https://code.tilo.so/api/packages/tilo/generic/tilo-cli)
+# Where this server's files are and where it listens: the image's own paths
+# and port, which a deployment leaves alone. A run of the same entrypoint
+# outside the image (os/containers/tilo-sh/stack.sh) names its own:
+#   TILO_WEB_SITE       the laid-out site (/srv/tilo-web)
+#   TILO_WEB_INSTALL    the directory holding install.sh (/srv/tilo-install)
+#   TILO_WEB_RUN        where entry.json is written (/tmp/tilo-web)
+#   TILO_WEB_CADDYFILE  the Caddyfile (/etc/caddy/Caddyfile)
+#   TILO_WEB_PORT       the port (8080), on every address unless
+#   TILO_WEB_BIND       names one
 set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
 feedback=${TILO_WEB_HOME_FEEDBACK:-}
 door=${TILO_WEB_HOME_DOOR:-}
-mkdir -p /tmp/tilo-web
+info=${TILO_WEB_HOME_HOST_INFO:-}
+export TILO_WEB_SITE="${TILO_WEB_SITE:-/srv/tilo-web}"
+export TILO_WEB_INSTALL="${TILO_WEB_INSTALL:-/srv/tilo-install}"
+export TILO_WEB_RUN="${TILO_WEB_RUN:-/tmp/tilo-web}"
+caddyfile=${TILO_WEB_CADDYFILE:-/etc/caddy/Caddyfile}
+mkdir -p "$TILO_WEB_RUN"
 fields=
 if [ -z "$host" ]; then
-  [ -z "$name$app$feedback$door" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK and TILO_WEB_HOME_DOOR need TILO_WEB_HOME_HOST" >&2; exit 2; }
+  [ -z "$name$app$feedback$door$info" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK, TILO_WEB_HOME_DOOR and TILO_WEB_HOME_HOST_INFO need TILO_WEB_HOME_HOST" >&2; exit 2; }
 else
   # Values land in JSON as they are: only characters that need no escaping.
   case "$host" in *[!a-z0-9.:-]*) echo "TILO_WEB_HOME_HOST must be a host name: $host" >&2; exit 2 ;; esac
@@ -59,11 +87,22 @@ else
     https://*) case "$door" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_HOME_DOOR must be a plain https:// address: $door" >&2; exit 2 ;; esac ;;
     *) echo "TILO_WEB_HOME_DOOR must be an https:// address: $door" >&2; exit 2 ;;
   esac
+  # One JSON object, written into entry.json as a string: only characters
+  # that need no escaping there but its quotes, which are escaped below. A
+  # backslash is refused on its own: the image's busybox sh lets one through
+  # a bracket expression.
+  case "$info" in
+    '') echo "TILO_WEB_HOME_HOST_INFO is required with a host: what \`tilo-relay page-host https://$host\` prints" >&2; exit 2 ;;
+    \{*\}) ;;
+    *) echo "TILO_WEB_HOME_HOST_INFO must be the JSON object \`tilo-relay page-host https://$host\` prints" >&2; exit 2 ;;
+  esac
+  case "$info" in *\\* | *[!]A-Za-z0-9' {}[":,._/+=-']*) echo "TILO_WEB_HOME_HOST_INFO must be the one line of JSON \`tilo-relay page-host https://$host\` prints" >&2; exit 2 ;; esac
+  quoted=$(printf '%s' "$info" | sed 's/"/\\"/g')
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""
   [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
   [ -z "$door" ] || front="$front,\"admission\":\"$door\""
-  fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s"}%s}' "$name" "$host" "$front")
+  fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s","info":"%s"}%s}' "$name" "$host" "$quoted" "$front")
 fi
 directory=${TILO_WEB_DIRECTORY:-}
 if [ -n "$directory" ]; then
@@ -110,11 +149,35 @@ esac
 case "$releases" in
   */ | *[!A-Za-z0-9._~:/%-]*) echo "TILO_RELEASES_ORIGIN must be a plain URL not ending in /: $releases" >&2; exit 2 ;;
 esac
+# An invitation's short link is the site's own — `/i/<handle>#<key>` opens the
+# page here, and the page's own request for the invitation is the relay's to
+# answer (the Caddyfile) — so the shelf is that relay: the one the home
+# workspace is hosted on, which `entry.json` names, unless the deployment
+# reaches it by another name or port and says so.
+shelf=${TILO_WEB_SHELF:-}
+if [ -z "$shelf" ] && [ -n "$host" ]; then
+  case "$host" in
+    localhost | localhost:* | 127.0.0.1 | 127.0.0.1:*) shelf="http://$host" ;;
+    *) shelf="https://$host" ;;
+  esac
+  export TILO_WEB_SHELF="$shelf"
+fi
+case "$shelf" in
+  '') ;;
+  https://*) ;;
+  http://localhost | http://localhost:* | http://127.0.0.1 | http://127.0.0.1:* | http://\[::1\]:*) ;;
+  *) echo "TILO_WEB_SHELF must be an https:// address, or http:// on this machine's loopback: $shelf" >&2; exit 2 ;;
+esac
+# An address Caddy proxies to, not a path on it: the request's own path is put
+# in front of what the relay serves.
+case "${shelf#*://}" in
+  */*) echo "TILO_WEB_SHELF names a host and port, not a path: $shelf" >&2; exit 2 ;;
+esac
 # Caddy proxies to a scheme and host, and puts the path in front of the request's.
 rest=${releases#*://}
 # Read by the Caddyfile.
 export TILO_RELEASES_UPSTREAM="${releases%%://*}://${rest%%/*}"
 export TILO_RELEASES_PATH="/${rest#*/}"
 export TILO_WEB_FRAME_ANCESTORS="$ancestors"
-printf '{%s}\n' "$fields" > /tmp/tilo-web/entry.json
-exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+printf '{%s}\n' "$fields" > "$TILO_WEB_RUN/entry.json"
+exec caddy run --config "$caddyfile" --adapter caddyfile

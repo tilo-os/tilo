@@ -415,10 +415,15 @@ impl MailEngine for StubEngine {
                     request_id,
                     kind,
                     context: "offline".into(),
-                    message: format!(
-                        "Cannot refresh {} for {} while IMAP is offline",
-                        folder.title(),
-                        account.email
+                    message: crate::i18n::t_args(
+                        "mail-refresh-offline",
+                        &[
+                            (
+                                "folder",
+                                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
+                            ),
+                            ("account", ui::i18n::ArgValue::Text(account.email)),
+                        ],
                     ),
                 });
             }
@@ -706,8 +711,10 @@ pub mod live {
             if let Some((session, answered)) = self.sessions.get_mut(&key)
                 && answered.elapsed() > IDLE_CHECK
             {
+                // The timer is made inside the wait: this worker thread is in no runtime's
+                // context, and a timer made outside one panics.
                 let alive = rt
-                    .block_on(tokio::time::timeout(NOOP_ANSWER, session.noop()))
+                    .block_on(async { tokio::time::timeout(NOOP_ANSWER, session.noop()).await })
                     .is_ok_and(|answer| answer.is_ok_and(|noop| noop.is_ok()));
                 if !alive {
                     self.sessions.remove(&key);
@@ -1225,6 +1232,10 @@ pub mod live {
             return Ok(());
         }
         session.select("INBOX").await.map_err(|e| e.to_string())?;
+        // What arrived while no watch held the inbox — between the last fetch and this
+        // connection, or while the watch was away — is fetched now: IDLE tells only what comes
+        // after it.
+        arrived();
         loop {
             let mut idle = session.idle();
             idle.init().await.map_err(|e| e.to_string())?;

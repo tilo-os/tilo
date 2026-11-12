@@ -48,7 +48,7 @@ impl VideoEditorApp {
                 // hearing nothing where the screen shows a word is being
                 // told a different story about the same row.
                 let name = if m.name.trim().is_empty() {
-                    "Marker".to_string()
+                    crate::resource::CATALOG.t("video-editor-marker")
                 } else {
                     m.name.clone()
                 };
@@ -287,9 +287,10 @@ impl VideoEditorApp {
     /// A clip's accessible name: the media it places, so the reader says
     /// "Interview" rather than a UUID the user has never seen.
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
-        self.project
-            .media(clip.media)
-            .map_or_else(|| "Missing media".into(), |m| m.name.clone())
+        self.project.media(clip.media).map_or_else(
+            || crate::resource::CATALOG.t("video-clip-missing-media"),
+            |m| m.name.clone(),
+        )
     }
 
     /// What a reader says about a clip beyond its name: where it sits, how long
@@ -359,9 +360,11 @@ impl VideoEditorApp {
         if rows.is_empty() {
             return VideoEditorApp::a11y_pane(
                 Pane::Bin,
-                vec![AccessNode::new(Role::StaticText)
-                    .with_name("No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.")
-                    .with_key(0)],
+                vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name(crate::resource::CATALOG.t("video-editor-a11y-bin-empty"))
+                        .with_key(0),
+                ],
             );
         }
         VideoEditorApp::a11y_pane(Pane::Bin, rows)
@@ -379,9 +382,9 @@ impl VideoEditorApp {
                 // shuttle counts: pressing it there stops the shuttle, so
                 // "Play" would name something the press does not do.
                 let name = if *action == TransportAction::PlayPause && self.is_moving() {
-                    "Pause"
+                    crate::resource::CATALOG.t("video-editor-pause")
                 } else {
-                    name
+                    (*name).to_owned()
                 };
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -413,7 +416,7 @@ impl VideoEditorApp {
         if let Some(rect) = self.go_to_clip_button(&self.regions()) {
             buttons.push(
                 AccessNode::new(Role::Button)
-                    .with_name(super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .with_name(crate::resource::CATALOG.t(super::go_to_clip::GO_TO_CLIP_LABEL))
                     .with_bounds(rect)
                     .with_key(ui::a11y::hash_key(&super::go_to_clip::GO_TO_CLIP_KEY))
                     .with_state(AccessState::new().focusable(true)),
@@ -500,11 +503,7 @@ impl VideoEditorApp {
             );
         }
         if tracks.is_empty() {
-            tracks.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name("Timeline is empty. Add media from the bin to start editing.")
-                    .with_key(0),
-            );
+            tracks.push(timeline_empty_node());
         }
         tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
@@ -521,9 +520,9 @@ impl VideoEditorApp {
                     Role::StaticText
                 })
                 .with_name(if clipped {
-                    "Go to the next place the mix clipped"
+                    crate::resource::CATALOG.t("video-editor-a11y-mix-clipped")
                 } else {
-                    "Mix level"
+                    crate::resource::CATALOG.t("video-editor-a11y-mix-level")
                 })
                 .with_value(words)
                 .with_key(ui::a11y::hash_key(&MIX_METER_KEY))
@@ -620,7 +619,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::AddMarker => {
                     let node = AccessNode::new(Role::Button)
-                        .with_name(ADD_MARKER_LABEL)
+                        .with_name(crate::resource::CATALOG.t(ADD_MARKER_LABEL))
                         .with_hashed_key(ADD_MARKER_KEY)
                         .with_state(AccessState::new().focusable(true).focused(focused));
                     if let Some((_, kids)) = current.as_mut() {
@@ -689,7 +688,7 @@ impl VideoEditorApp {
             // earlier on the timeline and pushing this one down the list.
             .with_hashed_key(m.id)
             .with_position(pos + 1, n)
-            .with_description("Activate to move the playhead here")
+            .with_description(crate::resource::CATALOG.t("video-editor-a11y-move-playhead"))
             .with_state(AccessState::new().focusable(true).focused(focused))
             .with_children(verbs)
     }
@@ -704,88 +703,8 @@ impl VideoEditorApp {
     /// group when it is one of a set, a plain button when it stands alone —
     /// and, either way, whether it is the one in force.
     pub(super) fn a11y_pick_node(&self, pk: PickField, focused: bool) -> AccessNode {
-        let (name, role, selected) = match pk {
-            PickField::Frame(i) => {
-                let Some((label, w, h)) = FRAME_PRESETS.get(i) else {
-                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
-                };
-                (
-                    // The dimensions, not only the shorthand: "9:16" alone
-                    // does not say what a reader is choosing.
-                    format!("{label}, {w} by {h}"),
-                    Role::RadioButton,
-                    *w == self.project.width && *h == self.project.height,
-                )
-            }
-            PickField::Rate(i) => {
-                let Some(rate) = RATE_PRESETS.get(i) else {
-                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
-                };
-                (
-                    format!("{} fps", rate_words(*rate)),
-                    Role::RadioButton,
-                    (rate - self.project.fps).abs() < 1e-6,
-                )
-            }
-            PickField::MatchFormat => (
-                self.format_source().map_or_else(
-                    || "Match media".to_string(),
-                    |m| format!("Match the shape of {}", m.name),
-                ),
-                Role::Button,
-                false,
-            ),
-            PickField::KeyEnable => {
-                let on = self.selected_clip().is_some_and(|c| c.key.enabled);
-                (
-                    // The name says what pressing it will do now, the way the
-                    // play button does — a switch whose name never changes
-                    // leaves a reader guessing which way it is.
-                    if on {
-                        "Switch chroma key off".to_string()
-                    } else {
-                        "Switch chroma key on".to_string()
-                    },
-                    Role::Checkbox,
-                    on,
-                )
-            }
-            PickField::MaskShape(shape) => (
-                format!("Mask shape {}", shape.label().to_lowercase()),
-                Role::RadioButton,
-                self.selected_clip().is_some_and(|c| c.mask.shape == shape),
-            ),
-            PickField::Transition(t) => (
-                format!("Transition {}", t.label().to_lowercase()),
-                Role::RadioButton,
-                self.selected_clip().is_some_and(|c| c.transition == t),
-            ),
-            PickField::Label(slot) => (
-                format!("Label colour {}", slot + 1),
-                Role::RadioButton,
-                self.selected_clip().is_some_and(|c| c.palette == slot),
-            ),
-            // A button, not a switch: the two directions are different
-            // operations on different sets of clips, and its name says which
-            // one pressing it will do — the same words the button carries.
-            PickField::LinkToggle => (
-                self.link_affordance().map_or_else(
-                    || "Link audio and video".to_string(),
-                    |o| o.label().to_string(),
-                ),
-                Role::Button,
-                false,
-            ),
-            // Named for the lane it puts back, because a reader standing on it
-            // has no fader in view to tell them which one that is.
-            PickField::MixReset => (
-                self.selected_track().map_or_else(
-                    || "Reset gain and pan".to_string(),
-                    |t| format!("Reset {} to 0.0 dB, centre", t.name),
-                ),
-                Role::Button,
-                false,
-            ),
+        let Some((name, role, selected)) = self.pick_semantics(pk) else {
+            return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
         };
         // `checked` is what accesskit turns into a radio's or a checkbox's
         // "toggled": `selected` alone reads as a highlighted list row, which
@@ -801,6 +720,125 @@ impl VideoEditorApp {
                 checked: checkable.then_some(selected),
                 ..Default::default()
             })
+    }
+
+    /// What a reader hears for one picker segment or switch, what it is, and
+    /// whether it is the one in force; `None` when the picker no longer offers
+    /// that choice.
+    fn pick_semantics(&self, pk: PickField) -> Option<(String, Role, bool)> {
+        let semantics = match pk {
+            PickField::Frame(_) | PickField::Rate(_) => self.preset_semantics(pk)?,
+            PickField::MatchFormat => (
+                self.format_source().map_or_else(
+                    || crate::resource::CATALOG.t("video-editor-a11y-match-media"),
+                    |m| {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-match",
+                            &[("effect", ui::i18n::ArgValue::Text(m.name.clone()))],
+                        )
+                    },
+                ),
+                Role::Button,
+                false,
+            ),
+            PickField::KeyEnable => {
+                let on = self.selected_clip().is_some_and(|c| c.key.enabled);
+                (
+                    // The name says what pressing it will do now, the way the
+                    // play button does — a switch whose name never changes
+                    // leaves a reader guessing which way it is.
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-a11y-chroma-key",
+                        &[(
+                            "on",
+                            ui::i18n::ArgValue::from(if on { "true" } else { "false" }),
+                        )],
+                    ),
+                    Role::Checkbox,
+                    on,
+                )
+            }
+            PickField::MaskShape(shape) => (
+                crate::resource::CATALOG.t_args(
+                    "video-editor-a11y-mask-shape",
+                    &[(
+                        "shape",
+                        ui::i18n::ArgValue::Text(shape.label().to_lowercase()),
+                    )],
+                ),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.mask.shape == shape),
+            ),
+            PickField::Transition(t) => (
+                crate::resource::CATALOG.t_args(
+                    "video-editor-transition-named",
+                    &[(
+                        "transition",
+                        ui::i18n::ArgValue::Text(t.label().to_lowercase()),
+                    )],
+                ),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.transition == t),
+            ),
+            PickField::Label(slot) => (
+                crate::resource::CATALOG.t_args(
+                    "video-editor-label-colour",
+                    &[("slot", ui::i18n::ArgValue::Text((slot + 1).to_string()))],
+                ),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.palette == slot),
+            ),
+            // A button, not a switch: the two directions are different
+            // operations on different sets of clips, and its name says which
+            // one pressing it will do — the same words the button carries.
+            PickField::LinkToggle => (
+                self.link_affordance().map_or_else(
+                    || crate::resource::CATALOG.t("video-editor-link-audio-video"),
+                    super::LinkAffordance::label,
+                ),
+                Role::Button,
+                false,
+            ),
+            // Named for the lane it puts back, because a reader standing on it
+            // has no fader in view to tell them which one that is.
+            PickField::MixReset => (
+                self.selected_track().map_or_else(
+                    || crate::resource::CATALOG.t("video-editor-reset-gain-pan"),
+                    |t| {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-reset-track",
+                            &[("track", ui::i18n::ArgValue::Text(t.name.clone()))],
+                        )
+                    },
+                ),
+                Role::Button,
+                false,
+            ),
+        };
+        Some(semantics)
+    }
+
+    /// What a reader hears of a frame or a rate, with a frame's dimensions
+    /// spelt out: "9:16" alone does not say what they are choosing.
+    fn preset_semantics(&self, pk: PickField) -> Option<(String, Role, bool)> {
+        let (name, selected) = match pk {
+            PickField::Frame(i) => {
+                let (label, w, h) = FRAME_PRESETS.get(i)?;
+                (
+                    format!("{label}, {w} by {h}"),
+                    *w == self.project.width && *h == self.project.height,
+                )
+            }
+            PickField::Rate(i) => {
+                let rate = RATE_PRESETS.get(i)?;
+                (
+                    format!("{} fps", rate_words(*rate)),
+                    (rate - self.project.fps).abs() < 1e-6,
+                )
+            }
+            _ => return None,
+        };
+        Some((name, Role::RadioButton, selected))
     }
 
     /// Run whatever a pick row does — the same call the pointer runs on that
@@ -1060,7 +1098,7 @@ impl VideoEditorApp {
             ExportStatus::Idle => None,
             ExportStatus::Rendering { progress } => Some(
                 AccessNode::new(Role::ProgressBar)
-                    .with_name("Export progress")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-progress"))
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
@@ -1070,7 +1108,7 @@ impl VideoEditorApp {
             // holds the whole path and the settings that produced it.
             ExportStatus::Done { path } => Some(
                 AccessNode::new(Role::Button)
-                    .with_name("Export finished")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-finished"))
                     .with_value(path.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
@@ -1080,7 +1118,7 @@ impl VideoEditorApp {
             // likely to act on the next thing believing a file exists.
             ExportStatus::Failed { reason } => Some(
                 AccessNode::new(Role::Button)
-                    .with_name("Export failed")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-failed"))
                     .with_value(reason.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Assertive)
@@ -1096,7 +1134,7 @@ impl VideoEditorApp {
             // figure rather than stating a confident wrong number — and a
             // reader must get that caveat too, not a tidier fiction.
             AccessNode::new(Role::StaticText)
-                .with_name("Output")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-output"))
                 .with_value(format!(
                     "{}, {}, {}",
                     self.export.resolution.label(),
@@ -1110,14 +1148,14 @@ impl VideoEditorApp {
         if self.export_running() {
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Cancel export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-cancel-export"))
                     .with_key(2)
                     .with_state(AccessState::new().focusable(true)),
             );
         } else {
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Start export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-start-export"))
                     .with_key(1)
                     .with_state(
                         AccessState::new()
@@ -1127,7 +1165,7 @@ impl VideoEditorApp {
             );
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Close export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-close-export"))
                     .with_key(2)
                     .with_state(AccessState::new().focusable(true)),
             );
@@ -1135,7 +1173,7 @@ impl VideoEditorApp {
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
                 AccessNode::new(Role::ProgressBar)
-                    .with_name("Export progress")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-progress"))
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(3)
                     // A render's progress changes with no focus movement, so it
@@ -1151,7 +1189,7 @@ impl VideoEditorApp {
             // reader.
             kids.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Export failure details")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-details"))
                     .with_value(reason.clone())
                     .with_key(ui::a11y::hash_key(&"export.failure-details"))
                     .with_live(ui::a11y::Politeness::Assertive),
@@ -1162,17 +1200,32 @@ impl VideoEditorApp {
             // reason is a wall.
             kids.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Why export cannot run")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-blocked"))
                     .with_value(reason)
                     .with_key(ui::a11y::hash_key(&"export.blocked"))
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
         AccessNode::new(Role::Dialog)
-            .with_name("Export video")
+            .with_name(crate::resource::CATALOG.t("video-editor-export-title"))
             .with_key(ui::a11y::hash_key(&"export"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
+    }
+}
+
+/// One row's keys as a reader hears them, spelled for this platform and the
+/// person's keyboard. Every key that runs the shortcut is named; alternatives
+/// are listed, never joined by a separator glyph.
+fn keys_as_read(keys: &[&str]) -> String {
+    let spelled: Vec<String> = keys
+        .iter()
+        .map(|template| ui::spell_shortcut(template))
+        .collect();
+    match spelled.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
     }
 }
 
@@ -1182,19 +1235,20 @@ impl VideoEditorApp {
     pub(super) fn a11y_help_sheet() -> AccessNode {
         let mut kids: Vec<AccessNode> = Vec::new();
         let mut key = 0u64;
-        for (group, rows) in SHORTCUTS {
+        for (group, rows) in crate::app::shortcuts() {
             kids.push(
                 AccessNode::new(Role::Heading { level: 2 })
                     .with_name(group)
                     .with_key(key),
             );
             key += 1;
-            for (combo, what) in rows {
+            for shortcut in rows {
                 kids.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name(*what)
-                        // Spelled for this platform, as the sheet paints it.
-                        .with_value(ui::spell_shortcut(combo))
+                        .with_name(shortcut.what)
+                        // Spelled for this platform, as the sheet paints it;
+                        // alternatives are a list, which a reader reads out.
+                        .with_value(keys_as_read(shortcut.keys))
                         .with_key(key),
                 );
                 key += 1;
@@ -1202,12 +1256,12 @@ impl VideoEditorApp {
         }
         kids.push(
             AccessNode::new(Role::Button)
-                .with_name("Close shortcuts")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-close-shortcuts"))
                 .with_key(key)
                 .with_state(AccessState::new().focusable(true)),
         );
         AccessNode::new(Role::Dialog)
-            .with_name("Keyboard shortcuts")
+            .with_name(crate::resource::CATALOG.t("video-editor-shortcuts-title"))
             .with_key(ui::a11y::hash_key(&"help"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
@@ -1974,4 +2028,12 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     } else {
         (i + 1).min(n - 1)
     }
+}
+
+/// What an empty timeline says, as the one node the pane carries.
+fn timeline_empty_node() -> AccessNode {
+    use ui::a11y::Role;
+    AccessNode::new(Role::StaticText)
+        .with_name(crate::resource::CATALOG.t("video-editor-a11y-timeline-empty"))
+        .with_key(0)
 }

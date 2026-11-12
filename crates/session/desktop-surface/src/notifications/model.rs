@@ -19,6 +19,17 @@ pub enum NotificationSeverity {
 }
 
 impl NotificationSeverity {
+    /// The tier a sender's `urgency` (`0` low, `1` normal, `2` critical) shows as: only critical
+    /// leads as an error.
+    #[must_use]
+    pub fn at_urgency(urgency: u8) -> Self {
+        if urgency >= 2 {
+            Self::Error
+        } else {
+            Self::Info
+        }
+    }
+
     pub fn color(self, theme: &Theme) -> vello::peniko::Color {
         match self {
             Self::Info => theme.tokens.colors.semantic.info,
@@ -48,7 +59,6 @@ pub enum NotificationIconKind {
     Generic,
     System,
     Workspace,
-    Network,
     Permission,
 }
 
@@ -59,7 +69,6 @@ impl NotificationIconKind {
             Self::Generic => None,
             Self::System => Some(ui::icons::Icon::Bell),
             Self::Workspace => Some(ui::icons::Icon::LayoutGrid),
-            Self::Network => Some(ui::icons::Icon::Wifi),
             Self::Permission => Some(ui::icons::Icon::Fingerprint),
         }
     }
@@ -153,21 +162,9 @@ pub const INLINE_REPLY: &str = "inline-reply";
 pub struct NotificationPerson {
     pub name: String,
     pub identity: String,
-}
-
-/// Why a notification is addressed to the person, rather than news they may read later. Only these
-/// may surface while the person types; everything else waits for them to pause.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Addressed {
-    /// Someone wrote to them or mentioned them: a communications app the launcher verified named
-    /// the person it is from.
-    Message,
-    /// Someone is calling them now.
-    IncomingCall,
-    /// Something they scheduled is due: a meeting about to start, an alarm.
-    Reminder,
-    /// Someone (a person or an agent) is waiting on their answer.
-    Ask,
+    /// Software, not a person: an agent leads with its own square face in its client's tint, as
+    /// it shows in the bar, who is here and its card, never a person's initials.
+    pub agent: bool,
 }
 
 /// A single notification. `id` is a process-unique token for the desktop's own bookkeeping;
@@ -184,55 +181,38 @@ pub struct Notification {
     pub body: String,
     pub icon_kind: NotificationIconKind,
     pub severity: NotificationSeverity,
-    /// When it arrived: what the centre's relative time reads.
     pub created_at: Instant,
-    /// How long the banner stays up, counted only while it is on screen and nobody holds it
-    /// ([`Self::dwell`]).
+    /// How long the banner stays up on screen, unheld ([`Self::dwell`]).
     pub dismiss_after: Duration,
-    /// How long the banner has been up for the person to read. Only the banner stack advances it,
-    /// through [`super::NotificationLog::present`]: a banner that waited for a pause in typing, or
-    /// did not fit on screen, has spent none of [`Self::dismiss_after`].
+    /// How long it has been up for the person to read; only the banner stack advances it
+    /// ([`super::NotificationLog::present`]), so a banner held back has spent none of its time.
     pub dwell: Dwell,
-    /// Set when a local application raised this notification through the host's notification
-    /// protocol. `None` for the desktop's own notices.
+    /// The sending app's id under the host's notification protocol; `None` for the desktop's own.
     pub sender_id: Option<u32>,
-    /// Present only for a notification mirrored from another certified device. Mirrored records
-    /// never carry a local sender id.
+    /// Present only for one mirrored from another certified device.
     pub remote_route: Option<RemoteNotificationRoute>,
     /// Only the host's durable scheduler can attach this route.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub scheduled_target: Option<ScheduledNotificationTarget>,
-    /// The person this notification is from, when it is from one (a message, a mention): the banner
-    /// leads with their avatar and keeps the app as its source line.
+    /// The person it is from (a message, a mention): the banner leads with their avatar.
     pub from: Option<NotificationPerson>,
-    /// Sending application's display name; rendered as a caption above the title when present.
+    /// The sending application's display name, above the title.
     pub app_name: Option<String>,
-    /// The sending application's own artwork, resolved from a launcher- verified app id (or a
-    /// lower-trust icon hint when there is none). The leading glyph is the fallback. Never
-    /// persisted.
+    /// The sending application's artwork, resolved from what proves it; the glyph is the fallback.
     pub app_image: Option<ui::icons::AppImage>,
-    /// Launcher-attributed id. Unlike a sender-supplied name, this is not controlled by the
-    /// notification sender and is the only key policy and grouping may use.
+    /// The launcher-attributed id: the only key policy and grouping may use.
     pub app_id: Option<String>,
-    /// Workspace the sending app belongs to, for attribution.
     pub source_workspace: Option<u64>,
-    /// `(action_key, action_label)` pairs; activating the banner invokes the default (or first)
-    /// action.
+    /// `(key, label)` pairs; activating the banner invokes the default, or the first.
     pub actions: Vec<(String, String)>,
-    /// Show this banner even under Do-Not-Disturb: quiet asks for calm, not to be kept uninformed
-    /// of the machine's own state. Only the desktop itself sets it; nothing an application sends
-    /// can.
-    pub bypass_dnd: bool,
-    /// Whether this notification contributes to the redacted lock-screen count. Content is never
-    /// rendered on the lock screen.
+    /// Whether it counts on the redacted lock screen; its content is never rendered there.
     pub show_on_lock_screen: bool,
     /// Hide body text in the live banner while retaining it in local history.
     pub show_preview: bool,
-    /// Set when the notification asks something of the person directly ([`Addressed`]); see
-    /// [`Self::addressed`] for the reading every gate uses.
-    pub addressed: Option<Addressed>,
-    /// About the whole machine rather than the work at hand (critical battery): shown on every
-    /// display, not only the one in use. Only the system sets it; an app's notification never does.
+    /// Someone is calling the person now: the banner rings and holds them, and the stack keeps it
+    /// up while it does.
+    pub rings: bool,
+    /// About the whole machine (critical battery): shown on every display. Only the system sets it.
     pub machine_wide: bool,
 }
 
@@ -258,35 +238,17 @@ impl Notification {
             app_id: None,
             source_workspace: None,
             actions: Vec::new(),
-            bypass_dnd: false,
             show_on_lock_screen: true,
             show_preview: true,
-            addressed: None,
+            rings: false,
             machine_wide: false,
         }
     }
 
-    /// Why this notification is addressed to the person, if it is: what the sender path established
-    /// ([`Self::addressed`] field), else what its shape says. An ask carries a "Not now" answer, an
-    /// alarm the person scheduled is due, and a banner led by a verified person is from them.
+    /// The notification rings: someone is calling the person now.
     #[must_use]
-    pub fn addressed(&self) -> Option<Addressed> {
-        if self.addressed.is_some() {
-            return self.addressed;
-        }
-        if self.actions.iter().any(|(key, _)| key == NOT_NOW_ACTION) {
-            return Some(Addressed::Ask);
-        }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-        if self.scheduled_target.is_some() {
-            return Some(Addressed::Reminder);
-        }
-        self.from.as_ref().map(|_| Addressed::Message)
-    }
-
-    #[must_use]
-    pub fn with_addressed(mut self, addressed: Addressed) -> Self {
-        self.addressed = Some(addressed);
+    pub fn ringing(mut self) -> Self {
+        self.rings = true;
         self
     }
 
@@ -311,6 +273,18 @@ impl Notification {
         self.from = Some(NotificationPerson {
             name: name.into(),
             identity: identity.into(),
+            agent: false,
+        });
+        self
+    }
+
+    /// From the agent `name` , whose stable `identity` is its publisher: its own face leads.
+    #[must_use]
+    pub fn with_agent_from(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.from = Some(NotificationPerson {
+            name: name.into(),
+            identity: identity.into(),
+            agent: true,
         });
         self
     }
@@ -338,6 +312,25 @@ impl Notification {
     #[must_use]
     pub fn with_icon_kind(mut self, kind: NotificationIconKind) -> Self {
         self.icon_kind = kind;
+        self
+    }
+
+    /// The notification as its sender states it: `urgency` (`0` low, `1` normal, `2` critical) picks
+    /// the tier and how long the banner stays, and `expires` is its own time on screen — `None` the
+    /// desktop's default, `Some(Duration::ZERO)` until the person takes it back, else that long. A
+    /// critical one stays until the person acts, as the specification asks.
+    #[must_use]
+    pub fn stated(mut self, urgency: u8, expires: Option<Duration>) -> Self {
+        self.severity = NotificationSeverity::at_urgency(urgency);
+        self.dismiss_after = if urgency >= 2 {
+            PERSISTENT_DISMISS
+        } else {
+            match expires {
+                None => DEFAULT_DISMISS_AFTER,
+                Some(after) if after.is_zero() => PERSISTENT_DISMISS,
+                Some(after) => after,
+            }
+        };
         self
     }
 

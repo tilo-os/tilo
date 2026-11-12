@@ -75,6 +75,17 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// Take WebTransport sessions, how pages reach this host, at this UDP
+    /// address instead of beside the HTTPS listener: for a deployment whose
+    /// HTTPS arrives through a proxy that carries no UDP.
+    #[arg(long = "link-listen", value_name = "ADDR", requires = "link_origin")]
+    pub link_listen: Option<SocketAddr>,
+    /// The `https://` origin pages open those sessions at; its name must
+    /// lead to `--link-listen` and be on the host's certificate. An origin
+    /// ending in `:0` takes the port the listener bound, which the host
+    /// publishes as the link pages dial.
+    #[arg(long = "link-origin", value_name = "ORIGIN", requires = "link_listen")]
+    pub link_origin: Option<String>,
     /// Run this host's own iroh packet relay at this address, and have its
     /// pages reach it through it: a page has no UDP socket, so it reaches a
     /// host only through a relay. Without it the host uses the public relays.
@@ -213,6 +224,9 @@ impl AgentArgs {
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
+            browsers: tilo_relay::hosted_browser::HostedBrowsers::from_env()
+                .map_err(anyhow::Error::msg)?
+                .map(std::sync::Arc::new),
         }))
     }
 }
@@ -316,6 +330,9 @@ pub async fn start_relay_lending(
     }
     #[cfg(feature = "agents")]
     if args.agents.room_records {
+        let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
+            .map_err(anyhow::Error::msg)?
+            .map(std::sync::Arc::new);
         let relay = tilo_relay::agents::start_serving_records(
             cfg,
             identity,
@@ -325,6 +342,7 @@ pub async fn start_relay_lending(
                 tilo_relay::agents::host_shells(state_root.join("shells"))
                     .map_err(anyhow::Error::msg)?,
             ),
+            browsers,
         )
         .await
         .context("start the relay serving its workspaces' records")?;
@@ -385,6 +403,13 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                     .join("fetch-proxy.prom"),
             ),
         }),
+        // The door's wait list is the room's own: whoever starts one sets it
+        // on the config it gives the listener.
+        door: None,
+        link: args
+            .link_listen
+            .zip(args.link_origin.clone())
+            .map(|(listen, origin)| tilo_relay::web::LinkListen { listen, origin }),
     }
 }
 
@@ -588,6 +613,37 @@ pub struct DevArgs {
     /// browsers stay certified across restarts. Delete it to start over.
     #[arg(long, value_name = "DIR")]
     pub state: Option<PathBuf>,
+}
+
+/// `page-host`: the host a site's page opens, as the site hands it over.
+#[derive(clap::Args)]
+pub struct PageHostArgs {
+    /// The host's origin, as pages reach it (`https://eu1.example`), or its
+    /// plain listener on this machine's loopback (`http://127.0.0.1:PORT`).
+    origin: String,
+}
+
+/// Print what a site hands its page about the host at `args.origin`, so the
+/// page dials that host without asking it first: the web entry's
+/// `TILO_WEB_HOME_HOST_INFO`, as one line of JSON. The host is asked as a
+/// page would ask it, and what changes with each start (the network
+/// addresses it answers at) is left out, so the line stays right for as long
+/// as the host keeps its identity and the packet relay pages reach it through.
+pub async fn page_host(args: PageHostArgs) -> anyhow::Result<()> {
+    let client = tilo_net::Client::builder()
+        .build()
+        .context("an HTTPS client")?;
+    let host = tilo_relay_client::https::Origin::new(&client, &args.origin);
+    let info = tilo_relay_client::https::host_info(&host)
+        .await
+        .with_context(|| format!("ask {} who it is", args.origin))?;
+    anyhow::ensure!(
+        info.address.is_some(),
+        "{} takes no device sessions: it names no endpoint to dial",
+        args.origin
+    );
+    println!("{}", serde_json::to_string(&info.for_site())?);
+    Ok(())
 }
 
 /// Three seeds: user root, host device, approver device.
@@ -1361,7 +1417,7 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start(
+        let relay = Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: tmp.path().join("relay"),
                 identity_root: tmp.path().join("identity"),
@@ -1373,6 +1429,7 @@ mod tests {
                 device_cert: host_cert,
                 revocations: RevocationList::new(),
             },
+            test_relay::relay_mode(),
         )
         .await
         .unwrap();
@@ -1533,7 +1590,7 @@ mod tests {
             DeviceCapabilities::primary(),
         )
         .unwrap();
-        let relay = Relay::start(
+        let relay = Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: tilo_relay_protocol::metrics::room_relay_root(state),
                 identity_root: state.join("identity"),
@@ -1545,6 +1602,7 @@ mod tests {
                 device_cert: host_cert,
                 revocations: RevocationList::new(),
             },
+            test_relay::relay_mode(),
         )
         .await
         .unwrap();

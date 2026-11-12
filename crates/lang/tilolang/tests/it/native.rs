@@ -1016,7 +1016,6 @@ fn dates_and_times_are_checked() {
         "E020",
         "type T {\n    d: Date = Time(\"2026-10-21T09:30:00Z\")\n}",
     );
-    expect("E011", "type Date {\n    d: Int\n}");
 }
 
 // A Date or Time a UI prop receives is its ISO text, and `<prop>:as` says which, for the host

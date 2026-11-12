@@ -10,6 +10,11 @@
 //! The door ([`TaskDoor`]) is the task's connection: in the session the program connection to
 //! the agent door (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
 //!
+//! **Packages that do not load.** A package the session cannot load here (a module that does not
+//! link, a description that does not read) leaves only its app unreachable: the session reports
+//! it once ([`TaskSession::could_not_load`], which the catalogue lists as `can't be reached:
+//! <why>`), and runs every other app as it would without it.
+//!
 //! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). A tilolang app's the
 //! session's host answers itself from the app's record as the door hands it over, read with the
 //! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
@@ -28,7 +33,7 @@
 //! away.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -88,6 +93,24 @@ pub enum Answered {
     Asks(String),
 }
 
+/// An installed app the task's session holds no package of, with why: a program that names it
+/// is told it can't be reached, and every other app is reached all the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unreachable {
+    /// The app's id, as its package declares it.
+    pub app: String,
+    /// Why its package did not load here.
+    pub reason: String,
+}
+
+impl Unreachable {
+    /// What a program naming the app is told: `can't be reached: <reason>`.
+    #[must_use]
+    pub fn said(&self) -> String {
+        format!("can't be reached: {}", self.reason)
+    }
+}
+
 /// The step a program made: what it invoked, or in a provisional run would have.
 #[derive(Clone, Debug, Default)]
 struct Steps {
@@ -118,6 +141,9 @@ pub struct TaskSession {
     reads: Rc<RefCell<Reads>>,
     /// Where the task reaches the workspace.
     door: Rc<dyn TaskDoor>,
+    /// The installed apps whose packages did not load here, each reported once: a program that
+    /// names one reads that it can't be reached, and every other app is reached.
+    unreachable: RefCell<Vec<Unreachable>>,
 }
 
 /// What a runtime of a task decides itself: nothing. Every change it makes goes to its
@@ -138,7 +164,9 @@ impl TaskSession {
     /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
     /// them. A program names and type-checks every app of them; a native one it names the record
     /// of, invokes and assigns fields of, and reads what it holds through the app
-    /// ([`crate::native::NativeReads`]), which `door` carries too.
+    /// ([`crate::native::NativeReads`]), which `door` carries too. A package that does not load
+    /// leaves only its app unreachable ([`Self::could_not_load`]): the session starts with every
+    /// other app, and the failure is reported once.
     pub fn new(
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,
@@ -160,32 +188,42 @@ impl TaskSession {
         let mut apps: HashMap<String, Meta> = HashMap::new();
         // Each app's loaded module, by the app: the id an action records as its authorship.
         let mut modules: HashMap<String, ModuleHash> = HashMap::new();
+        // The packages that did not load, by their app and why: each leaves its own app alone
+        // unreachable, and every other app is loaded as it would be without it.
+        let mut failed: Vec<Unreachable> = Vec::new();
         let _installed = schemas.enter();
         for bundle in bundles {
             for import in &bundle.imports {
-                let module = runtime
-                    .reload_package(&import.wasm, import.meta.clone())
-                    .map_err(|error| error.to_string())?;
-                modules.insert(import.meta.app.clone(), module);
-                import.meta.register_schemas();
-                if let Some(module) = modules.get(&import.meta.app) {
-                    crate::schema::register_package(&import.meta, module);
+                if let Err(reason) = load_module(
+                    &runtime,
+                    &mut modules,
+                    &mut apps,
+                    &import.wasm,
+                    import.meta.clone(),
+                ) {
+                    failed.push(Unreachable {
+                        app: import.meta.app.clone(),
+                        reason,
+                    });
                 }
-                apps.insert(import.meta.app.clone(), import.meta.clone());
             }
-            let module = runtime
-                .reload_package(&bundle.wasm, bundle.meta.clone())
-                .map_err(|error| error.to_string())?;
-            modules.insert(bundle.meta.app.clone(), module);
-            bundle.meta.register_schemas();
-            if let Some(module) = modules.get(&bundle.meta.app) {
-                crate::schema::register_package(&bundle.meta, module);
+            if let Err(reason) = load_module(
+                &runtime,
+                &mut modules,
+                &mut apps,
+                &bundle.wasm,
+                bundle.meta.clone(),
+            ) {
+                failed.push(Unreachable {
+                    app: bundle.meta.app.clone(),
+                    reason,
+                });
             }
-            apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
         // The native apps, after the ones with code: what each publishes, and not how it runs.
-        load_apps(&runtime, &mut apps, native.packages().cloned())?;
-        reads.borrow_mut().apps = apps.keys().cloned().collect();
+        load_apps(&runtime, &mut apps, native.packages().cloned(), &mut failed);
+        let loaded: HashSet<String> = apps.keys().cloned().collect();
+        reads.borrow_mut().apps = loaded.iter().cloned().collect();
         // The platform's packages, the session's own among them: no record holds their
         // resources, so they are read by no record read; their actions are invoked on the
         // resource the session publishes.
@@ -193,7 +231,7 @@ impl TaskSession {
         // resources are read without a record, and its actions run at the session's door.
         let platform = crate::platform_apps::platform_packages()?;
         let published: std::collections::HashSet<String> =
-            load_apps(&runtime, &mut apps, platform)?
+            load_apps(&runtime, &mut apps, platform, &mut failed)
                 .into_iter()
                 .collect();
         *packages.borrow_mut() = modules
@@ -215,14 +253,41 @@ impl TaskSession {
             asked.query(request.app(), &encoded)
         });
         runtime.set_clock(crate::host::system_time);
-        Ok(Self {
+        let session = Self {
             runtime,
             person: person.map(Principal::new),
             session: RefCell::new(Session::new()),
             steps,
             reads,
             door: Rc::clone(door),
-        })
+            unreachable: RefCell::new(Vec::new()),
+        };
+        // Each app no package loaded is reported: one that loaded from another package that
+        // carried it is reached, and says nothing. The report is what a program naming the app
+        // reads, and what the host's log holds, once.
+        for gone in failed {
+            if !loaded.contains(&gone.app) {
+                session.could_not_load(&gone.app, &gone.reason);
+            }
+        }
+        Ok(session)
+    }
+
+    /// Report an app whose package did not load, by the id its package declares and why: the
+    /// host reports an app whose payload did not read with it, and the session reports every
+    /// package of its own that did not load. A program naming the app reads that it can't be
+    /// reached ([`Self::catalogue`]), and the rest of the task runs as it would without it. An
+    /// app reported once is not reported again.
+    pub fn could_not_load(&self, app: &str, why: &str) {
+        let mut unreachable = self.unreachable.borrow_mut();
+        if unreachable.iter().any(|gone| gone.app == app) {
+            return;
+        }
+        tracing::warn!(app, why, "an installed app can't be reached");
+        unreachable.push(Unreachable {
+            app: app.to_owned(),
+            reason: why.to_owned(),
+        });
     }
 
     /// Every installed app the task's programs may name, by the name they name it with: its
@@ -294,6 +359,20 @@ impl TaskSession {
                     "on": on,
                     "at": at,
                 }));
+            }
+        }
+        // An installed app whose package did not load is listed too, by its name, with what a
+        // program naming it is told: the rest of the catalogue is read as it would be without it.
+        for gone in self.unreachable.borrow().iter() {
+            if gone.app == tilolang::HOST_APP {
+                continue;
+            }
+            let alias = tilolang::resolve::default_alias(&gone.app);
+            let app = apps
+                .entry(alias)
+                .or_insert_with(|| json!({"app": gone.app, "signatures": []}));
+            if let Some(fields) = app.as_object_mut() {
+                fields.insert("unreachable".to_owned(), json!(gone.said()));
             }
         }
         Json::Object(apps)
@@ -625,7 +704,7 @@ fn published_call(
             // A flag travels as the integer the guest boxed it as; the published action takes
             // it as the flag its parameter declares.
             Value::Int(n) if declared_flag(meta, action, name) => json!(*n != 0),
-            other => tilolang_runtime::value::to_json(other)
+            other => tilolang_runtime::value::to_argument(other)
                 .map_err(|error| format!("`{name}` does not send: {error}"))?,
         };
         arguments.insert(name.clone(), json);
@@ -881,27 +960,52 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Valu
     }
 }
 
+/// Load the package `wasm`, whose metadata is `meta`, into the session: its module, the schemas
+/// its metadata declares, and the app a program names it by. Its app fails the load as a whole,
+/// saying why.
+fn load_module(
+    runtime: &Runtime,
+    modules: &mut HashMap<String, ModuleHash>,
+    apps: &mut HashMap<String, Meta>,
+    wasm: &[u8],
+    meta: Meta,
+) -> Result<(), String> {
+    let module = runtime
+        .reload_package(wasm, meta.clone())
+        .map_err(|error| error.to_string())?;
+    meta.register_schemas();
+    crate::schema::register_package(&meta, &module);
+    modules.insert(meta.app.clone(), module);
+    apps.insert(meta.app.clone(), meta);
+    Ok(())
+}
+
 /// Load the packages of apps this runtime does not run ([`Runtime::load_foreign`]), passing over
 /// the ones an app here already has: what they publish, and not how they run. The apps it
-/// loaded.
+/// loaded; one that does not load is handed back in `failed` and leaves every other app reached.
 fn load_apps(
     runtime: &Runtime,
     apps: &mut HashMap<String, Meta>,
     metas: impl IntoIterator<Item = PackageMeta>,
-) -> Result<Vec<String>, String> {
+    failed: &mut Vec<Unreachable>,
+) -> Vec<String> {
     let mut loaded = Vec::new();
     for meta in metas {
         if apps.contains_key(&meta.app) {
             continue;
         }
-        runtime
-            .load_foreign(meta.clone())
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = runtime.load_foreign(meta.clone()) {
+            failed.push(Unreachable {
+                app: meta.app,
+                reason: error.to_string(),
+            });
+            continue;
+        }
         meta.register_schemas();
         loaded.push(meta.app.clone());
         apps.insert(meta.app.clone(), meta);
     }
-    Ok(loaded)
+    loaded
 }
 
 /// What the door read of resources, per program.

@@ -3,25 +3,36 @@
 
 One session (dist/dev/nested-session.sh, headless, lavapipe only) runs what a person's session
 runs: the shell with its broker and workspace host, the launcher and its sandboxes, the
-host, native Tasks and the agent runtime, and four tilolang apps built from apps/tl (Notes, Tasks,
-Mail, Chat) and installed as signed packages. Every check below drives it the way a person, the
-REPL or an agent does, and each one is there because a bug in that path was invisible to the
+host, native Tasks, Chat and the agent runtime, and four tilolang apps built from apps/tl (Notes,
+Tasks, Mail, Chat) and installed as signed packages. Every check below drives it the way a person,
+the REPL or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
+
+  audio    the session's sound is its own: one null output, no device of the machine's in its
+           graph, and the session manager answers (that output is the default sink).
+           Catches WirePlumber's audio monitor enumerating the machine's ALSA cards inside the
+           session: a card the host's PipeWire holds makes it retry without pause, spinning at
+           nearly half a core for as long as the session runs, and Settings then lists hardware
+           the session does not own.
 
   open     the four apps, opened at once onto the workspace's canvas, each present a first
            frame on the first try.
            Catches the broker, channel-key and workspace lock deadlock (fixed in b33cc45ace7):
            fails on 08636f201d9 (before the fix), where only one of the four apps presented a
            frame.
-  canvas   every window placed on the canvas is drawn on screen, inside the canvas's frame.
-           Catches windows opened on the canvas being placed off screen (no fix landed yet).
-           Where the windows land depends on the order the four concurrent opens arrive in: on
-           integration 70ba3301da0 this check failed in 3 of 6 runs (windows at y = -484 and
-           y = 788 on a 752 px high frame).
-  repl     through the session's door (`tilolang repl`): a note and a chat channel written,
-           `find` and `grep` return them, `tasks.add` makes a task the running Tasks instance
-           lists, and `undo` takes it back out of that instance; the open Tasks window draws
-           each, with nothing else waking it (a new frame of its window after each change).
+  canvas   every window the four apps opened stands on the canvas the arrangement publishes,
+           and the window in front is drawn inside the screen's frame.
+           Catches windows opened on the canvas being placed off screen (off the canvas, or
+           outside the frame the person sees). Where the windows land depends on the order the
+           four concurrent opens arrive in: on integration 70ba3301da0 this check failed in 3 of 6
+           runs (windows at y = -484 and y = 788 on a 752 px high frame).
+  repl     through the session's door (`tilolang repl`), on a session whose person named the
+           program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
+           reaches the four apps, reads the record the notes app's window shows, writes a note
+           there by the names the app declares (`notes.new_note(notes.notebook)`), and changes
+           the desk, whose published state says so.
+           Catches the door handing a task an installed tilolang app's surface instead of its
+           package: its actions were named by their stored ids and its root by nothing.
            Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
            fix every change answered "this desktop applies no task's changes at a record's
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
@@ -30,13 +41,19 @@ unit tests and found only by starting a session by hand:
            ("a document change carries no claim") and after which the workspace's readers miss the
            record: the check fails on any refused change, so it fails on integration
            70ba3301da0 until `open_stored` commits the Genesis (fix not landed yet).
-  ask      asking an agent makes its issue in the tracker, opens no window, and starts a task
-           agent, which asks the model. The model is TestOnlyFixedReplyModel below: a loopback
-           OpenAI-compatible endpoint inside this script that gives one fixed reply. It exists
-           for this test only; never point a live session at it.
-           Catches the ask addressing native Tasks' `tasks.tracker` while the windowless Tasks
-           publishes under its bound alias (`tilo-ui-bound:v1:...`), so the broker never found
-           it and the composer said "No reply yet": fails until that fix lands.
+  ask      handing an agent work from search sends the person's request to the agent they keep —
+           a new one when they keep none — through the session's one send
+           (`session:send-to#send`, the action a window's box, text typed on the canvas and an
+           agent all run): the desk's search is typed into with the request, and its row "Send to
+           …" is chosen. The session then starts that agent, it asks the model, and its answer
+           lands in the person's conversation with it, where Chat shows it. The model is
+           TestOnlyFixedReplyModel below: a loopback OpenAI-compatible endpoint inside this script
+           that gives one fixed reply. It exists for this test only; never point a live session at
+           it.
+           Catches a send that never reaches the agent's conversation (the request then lies
+           unanswered in Chat, as it did in a session with no Chat installed: "so.tilo.chat is
+           not installed here"), an agent the session never starts, and a turn whose steps are
+           refused: the model is never asked, and the check fails with what the session logged.
   restart  the session stopped and started again on the same state: the four windows come
            back, present frames, and hold what was written (the note in Notes, the channel in
            Chat).
@@ -54,12 +71,12 @@ Speed: one session serves every check; the restart and `dev` start it again. No 
 fixed time: each waits for the condition it needs (a listing answered with `--wait`, a frame
 presented, a line from the REPL), bounded by HANG_BOUND seconds, and fails with what it saw.
 
-Where it runs: on this machine, never on the remote builders. Tilo's sandboxes mount a fresh
-/proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
-session's build is the nested-session build of this tree: TILO_NESTED_SESSION_BUILD, else
-target/nested-session; --build makes it first (dist/dev/nested-session-build.sh, compiled on
-the arm builder). tools/ci/test-changed.sh runs it for changes to the shell, collaboration, the
-tilolang host or tilolang-tilo.
+Where it runs: a container on this machine, never on the remote builders. Tilo's sandboxes mount
+a fresh /proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
+session's build is the nested-session build of this tree (TILO_NESTED_APPS="agent tasks"): name
+another with TILO_NESTED_SESSION_BUILD, or let --build make it (dist/dev/nested-session-build.sh,
+through --remote-exec where this machine has no toolchain). Nothing runs it on a schedule: it takes
+a full build and a session of its own, so a person starts it.
 
 Usage:
   scripts/headless-examples/session-e2e.py [--build] [--out DIR] [--keep] [--only CHECK,...]
@@ -75,8 +92,10 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -88,35 +107,47 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 SESSION_SH = REPO / "dist/dev/nested-session.sh"
 sys.path.insert(0, str(HERE / "agent-tilolang"))
-from replay_model import TASK_MARK, OpenAiReplay, text_of  # noqa: E402
+from replay_model import OpenAiReplay  # noqa: E402
 
 # The tilolang apps, by their directory under apps/tl, and the native apps beside them: the
-# agent runtime and native Tasks, whose tracker holds the agents' tasks.
+# agent runtime that answers the person's asks, native Tasks, and Chat, which keeps the
+# conversations an agent works in and the agents a workspace keeps.
 TL_APPS = ["notes", "tasks", "mail", "chat"]
-NATIVE = "agent tasks"
-TRACKER_ISSUES = "tasks.tracker/issues/"
-# tilo_actions::BOUND_RESOURCE_PREFIX: an app instance's alias of its own resource ids.
-BOUND_RESOURCE_PREFIX = "tilo-ui-bound:v1:"
+NATIVE = "agent tasks chat"
+# The provider the session publishes its own actions under, the desk's among them
+# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the desk publishes, whose
+# `search` verb opens search on what was typed (tilo_desktop::desk_verbs::DESK_RESOURCE) and
+# whose rows are children of its open search (SEARCH_RESOURCE).
+SESSION_PROVIDER = "so.tilo.session"
+DESK_RESOURCE = "desktop:desk"
+SEARCH_RESOURCE = "desktop:search"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
-# What the person asks the agent, and the one reply the test-only model gives.
-REQUEST = "Tidy up the release tasks"
-FIXED_REPLY = "The release tasks are tidy. (This is the e2e test model's fixed reply.)"
+# The one output a nested session's sound has (tilo_media::audio::SESSION_SINK).
+SESSION_SINK = "tilo-sink"
+# What the person asks the agent, and the one reply the test-only model gives. The request is a
+# question, which an agent answers in its reply: a request for work in an application would have
+# to be carried out there, and this model only answers.
+REQUEST = "What is left for the release?"
+FIXED_REPLY = "Three tasks are left in the release. (This is the e2e test model's fixed reply.)"
 TEST_MODEL = "e2e-fixed-reply"
-# The task the test model's program adds: the change the asked agent makes in an app.
-ASKED_TASK = "Call Xaver about the launch video"
-# What the session logs as the task agent's process exits: a task agent ends with its run.
-AGENT_EXITED = "app-exit: package=so.tilo.agent "
-# What the agent logs when the issue refuses one of the run's own calls on it
-# (apps/agent/src/session/tracker.rs, session.rs, agent_loop.rs).
+# Chat's messages as the workspace's record holds them: what was said and in which
+# conversation (apps/chat/src/record.rs, `derived:messages`).
+CHAT_MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
+# The agent loop's own tool that finishes a turn with the answer its person reads
+# (apps/agent/src/tools.rs, `PLAN`).
+FINISH = "plan"
+# What the session and its apps log when the ask or the run's own steps are refused
+# (crates/session/session/src/send_to.rs, app_tabs.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
-    "the issue did not take the run's report",
-    "the issue's action was not invoked",
-    "the issue refused the turn's receipt",
-    "the issue refused the failed turn's receipt",
-    "native task stopped before completion",
-    "native task review report was refused",
+    "an app action was not delivered",
+    "a send did not land",
+    "a window's send was not taken",
+    "an agent did not start",
+    "refused a run that answers no turn",
+    "the conversation refused the run's report",
+    "the conversation's `record-work` refused its arguments",
 ]
 
 
@@ -155,9 +186,8 @@ def wait_for(what: str, check: Callable[[], Any], seen: Callable[[], Any] | None
 # --- the test-only model -------------------------------------------------------------------
 
 class TestOnlyFixedReplyModel:
-    """A loopback OpenAI-compatible endpoint for this test alone: the composer's `respond`
-    transform is told the request is work (titled as asked), and every turn of the task's own
-    loop gets FIXED_REPLY and no tool call. It records each task turn it was asked."""
+    """A loopback OpenAI-compatible endpoint for this test alone: every turn of the agent's loop
+    finishes with FIXED_REPLY, and each turn it was asked is kept."""
 
     def __init__(self) -> None:
         self.task_turns: list[list[dict[str, Any]]] = []
@@ -171,17 +201,14 @@ class TestOnlyFixedReplyModel:
         return self
 
     def respond(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not any(TASK_MARK in text_of(m.get("content")) for m in messages):
-            return [{"type": "text", "text": json.dumps({"result": {"work": REQUEST}})}]
         with self.lock:
             self.task_turns.append(messages)
-            first = not any(m.get("role") == "assistant" for m in messages)
-        # Its first turn adds a task through the `tilo` tool (apps/agent/src/programs.rs), the
-        # way a real model does what it is asked; once that answered, the fixed reply ends it.
-        if first:
-            return [{"type": "tool_use", "id": "toolu_e2e_add_task", "name": "tilo",
-                     "input": {"program": f'tasks.add(tasks.tasks, "{ASKED_TASK}")'}}]
-        return [{"type": "text", "text": FIXED_REPLY}]
+            turn = len(self.task_turns)
+        # The loop's finish tool: a turn that answers without an action is the person's reply. Its
+        # call id is the turn's, as a provider's is, so a later turn's call is not taken for one
+        # already consumed.
+        return [{"type": "tool_use", "id": f"toolu_e2e_finish_{turn}", "name": FINISH,
+                 "input": {"reply": FIXED_REPLY, "done": True}}]
 
     @property
     def port(self) -> int:
@@ -245,6 +272,10 @@ class Session:
         argv = self.script(["--ready", ready])
         for tapp in self.tapps if install else []:
             argv += ["--install-tapp", tapp]
+        # The person named the REPL's program as they started the session, as they would to use it
+        # where no sheet is answered: what `tilolang repl` on this session asks for, their decision
+        # made ahead of time (`--` ends the script's own options; the rest are the session's).
+        argv += ["--", "--admit-repl", str(self.bin("tilolang"))]
         env = {**os.environ, "TILO_NESTED_SESSION_BUILD": str(self.build),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info")}
         log = open(self.out / f"session-{tag}.log", "w")
@@ -311,13 +342,21 @@ class Session:
         return self.control_json("actions", "list", query, "--json", "--programmatic",
                                  "--wait").get("actions", [])
 
-    def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
+    def invoke(self, provider: str, ident: str, args: dict | None = None,
+               job: bool = False) -> dict:
+        """Invoke `provider`'s action `ident` and answer its settled receipt. `job` for an action
+        that takes the work and carries it out on the session's next pass: its receipt says
+        `accepted`, and the check proves what it did by the session's own state.
+
+        Asked once: a session holds an action until its identity names the person at its seat, so
+        an `unavailable` here is the session's own answer, not a moment to press the row again."""
         argv = ["actions", "invoke", provider, ident, "--wait=30000"]
         if args is not None:
             argv += ["--args-json", json.dumps(args)]
         answer = self.control_json(*argv)
         state = answer.get("receipt", {}).get("update", {}).get("state")
-        if state not in (None, "succeeded"):
+        done = (None, "succeeded", "accepted") if job else (None, "succeeded")
+        if state not in done:
             raise Failed(f"{provider} {ident} did not succeed: {json.dumps(answer)[:1500]}")
         return answer
 
@@ -325,7 +364,10 @@ class Session:
         return self.control_json("windows", "--json")
 
     def frames(self) -> list[dict]:
-        return self.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+        """The open windows that show one, each with where it stands (`rect`) and how many frames
+        its client drew (`frames`): a window showing the same thing keeps its count, so a rise
+        between two reads is a frame it drew."""
+        return [w for w in self.windows() if w.get("window") is not None]
 
     def provision(self, model: TestOnlyFixedReplyModel) -> None:
         """Give the session's person the test-only model as their provider, as Settings' "Add
@@ -337,53 +379,42 @@ class Session:
 # --- what the checks share ---------------------------------------------------------------
 
 def presented(session: Session) -> set[str]:
-    return {f["app_id"] for f in session.frames() if f.get("presented") and f.get("pixels_ready")}
+    """The apps whose window is drawn: mapped on an output, with a frame its client drew."""
+    return {f["app_id"] for f in session.frames() if f.get("rect") and f.get("frames", 0) > 0}
 
 
 def windows_by_app(session: Session) -> dict[str, dict]:
     return {w.get("app_id"): w for w in session.windows()}
 
 
-def read_content(session: Session, name: str) -> str | None:
-    """What the running instance of tilolang `name` holds, as its "Read the content" answers:
-    the workspace's records and, read one by one, each record of the app's own kinds. The
-    instance in the workspace in front answers it, from its own replica."""
-    action = wait_for(f"{name}'s 'Read the content'", lambda: next((
-        a for a in session.actions("Read the content")
-        if a.get("application") == app_id(name)
-        and a["id"].split("\x1f")[-2:] == [f"tl:{app_id(name)}", "read"]), None))
-    try:
-        listing = session.invoke("app-actions", action["id"])
-        value = listing.get("receipt", {}).get("update", {}).get("output", {}).get("value", {})
-        parts = [json.dumps(value)]
-        for record in value.get("records", []) if isinstance(value, dict) else []:
-            if record.get("kind", "").startswith(f"tl.{app_id(name)}."):
-                read = session.invoke("app-actions", action["id"], {"item": record["item"]})
-                parts.append(json.dumps(read.get("receipt", {}).get("update", {}).get("output", {})))
-    except Failed as error:
-        # A directory id names one revision of the app's directory; once the app changed, the
-        # action is listed again under the next one.
-        if "unknown_action" in str(error):
-            return None
-        raise
-    return "\n".join(parts)
+def said(session: Session, wait_ms: int = 0) -> list[dict]:
+    """Chat's messages as the workspace's record holds them, each by the words it says and the
+    conversation it is in: what a person reads in Chat, read through the record door as they
+    read it. Held until the record moves or `wait_ms` passed when one is given."""
+    answer = session.control_json("raw", json.dumps({
+        "op": "record_read", "app": "so.tilo.chat", "records": [CHAT_MESSAGES],
+        "wait_ms": wait_ms}))
+    messages: list[dict] = []
 
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("text"), str) and isinstance(value.get("channel"), str):
+                messages.append({"text": value["text"], "channel": value["channel"]})
+            for inner in value.values():
+                walk(inner)
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner)
 
-def window_frame(session: Session, name: str) -> int | None:
-    """The last frame the window of tilolang `name` presented, by its sequence number."""
-    return next((f["frame_seq"] for f in session.frames() if f.get("app_id") == app_id(name)), None)
-
-
-def holds(session: Session, name: str, text: str) -> bool | None:
-    """Whether the running instance of `name` holds `text`; None while its listing moves."""
-    content = read_content(session, name)
-    return None if content is None else text in content
+    walk(answer.get("answer") or {})
+    return messages
 
 
 class Repl:
     """`tilolang repl` on the session's door, one entry at a time. Off a terminal the REPL
     echoes each line it reads after its prompt (`tl> entry`), so an entry's answer is what it
-    prints between that echo and the echo of the empty line sent after it."""
+    prints between that echo and the echo of the empty line sent after it. Its banner comes after
+    the line saying what the door waits on (`asking to act as you: ...`)."""
 
     PROMPT = "tl> "
 
@@ -397,7 +428,7 @@ class Repl:
         self.transcript = ""
         self.pending = ""
         # The banner: the door it is on and the apps it reaches.
-        self.banner = self._read_until(lambda text: "\n" in text and text)
+        self.banner = self._read_until(lambda text: text if "apps: " in text else None)
 
     def _read_until(self, done: Callable[[str], Any]) -> Any:
         """Read the REPL's output until `done(text read so far)` answers; what it answered."""
@@ -450,15 +481,26 @@ class Repl:
 
 # --- the checks ----------------------------------------------------------------------------
 
-NOTE_TITLE = "Launch plan for Tide"
-CHANNEL = "Tide release"
-TASK_TITLE = "Write the Tide release notes"
+def check_audio(session: Session) -> dict:
+    """The session's sound is its own: one null output, none of the machine's devices."""
+    env = session.env()
+    props = [entry.get("info", {}).get("props", {}) for entry in json.loads(run(["pw-dump"], env=env))]
+    hardware = sorted({str(p.get("device.name") or p.get("node.name")) for p in props
+                       if p.get("device.api") in ("alsa", "bluez5")})
+    if hardware:
+        raise Failed(f"the session's sound enumerates the machine's hardware {hardware}: its "
+                     "WirePlumber must leave the audio and Bluetooth monitors off")
+    sinks = sorted(str(p.get("node.name")) for p in props if p.get("media.class") == "Audio/Sink")
+    if sinks != [SESSION_SINK]:
+        raise Failed(f"the session's outputs are {sinks}, not only its own {SESSION_SINK}")
+    default = run(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], env=env)
+    if SESSION_SINK not in default:
+        raise Failed(f"the session's output is not the default sink; wpctl says {default[-800:]}")
+    return {"sinks": sinks}
 
 
 def check_open(session: Session) -> dict:
-    """The four apps opened at once, onto the canvas, each with a first frame, first try."""
-    session.invoke("actions", "workspace.show-canvas")
-    wait_for("canvas shown", lambda: session.state_dump()["chrome"].get("canvas", {}).get("shown"))
+    """The four apps opened at once, onto the desktop, each with a first frame, first try."""
     answers: dict[str, Any] = {}
 
     def open_app(name: str) -> None:
@@ -484,135 +526,205 @@ def check_open(session: Session) -> dict:
             "windows": sorted(wanted)}
 
 
+def canvas_places(session: Session) -> dict[str, dict]:
+    """Where each window group of the desk stands on its workspace's canvas, by group: the
+    arrangement's own rows, as the desk publishes them (`arrangement.places` of each workspace,
+    a place being where its top-leading corner is and how wide and tall it stands there)."""
+    tree = session.state_dump().get("workspace_tree") or {}
+    places: dict[str, dict] = {}
+    for workspace in tree.get("workspaces") or []:
+        for group, place in (workspace.get("arrangement") or {}).get("places", {}).items():
+            places[str(group)] = place
+    return places
+
+
+def screen_frame(path: Path) -> tuple[int, int]:
+    """The size of the screen a snapshot of the session shows: a PNG states it in its header."""
+    header = path.read_bytes()[:24]
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        raise Failed(f"{path} is not a PNG of the screen")
+    return struct.unpack(">II", header[16:24])
+
+
 def check_canvas(session: Session) -> dict:
-    """Every window placed on the canvas is on screen: its screen rect inside the canvas's
-    frame, and its app's surface drawn there."""
-    canvas = session.state_dump()["chrome"]["canvas"]
-    fx, fy, fw, fh = canvas["frame"]
-    placed = canvas.get("windows", [])
-    groups = {w["group"]: w.get("app_id") for w in session.windows()}
-    off = []
-    for window in placed:
-        x, y, w, h = window["screen"]
-        if x < fx - 0.5 or y < fy - 0.5 or x + w > fx + fw + 0.5 or y + h > fy + fh + 0.5:
-            off.append({"app": groups.get(window["group"]), "screen": window["screen"]})
-    on_canvas = {groups.get(w["group"]) for w in placed}
-    missing = {app_id(n) for n in TL_APPS} - on_canvas
+    """Every window the four apps opened stands on the canvas the arrangement publishes, and the
+    window in front — the one the desk shows — is drawn inside the screen's frame.
+
+    Catches an opening placed off the canvas (where the person would go looking for it and find
+    nothing) and a desk that draws the window it points at off screen. Where windows land
+    depends on the order the four concurrent opens arrive in: on integration 70ba3301da0 the
+    shell drew them at y = -484 and y = 788 on a 752 px high frame."""
+    shot = session.out / "canvas.png"
+    session.control("snapshot", str(shot))
+    width, height = screen_frame(shot)
+    places = canvas_places(session)
+    windows = windows_by_app(session)
+    missing = []
+    on_canvas = {}
+    for name in TL_APPS:
+        row = windows.get(app_id(name)) or {}
+        place = places.get(str(row.get("group")))
+        if place is None:
+            missing.append({"app": app_id(name), "place": None, "row": row})
+            continue
+        if place["x"] < 0 or place["y"] < 0 or place["width"] <= 0 or place["height"] <= 0:
+            missing.append({"app": app_id(name), "place": place})
+            continue
+        on_canvas[app_id(name)] = place
     if missing:
-        raise Failed(f"not placed on the canvas: {sorted(missing)}; placed {placed}")
+        raise Failed(f"not placed on the canvas: {missing}")
+    # The window in front: the tab the active strip and group hold, which the desk draws.
+    front = [w for w in session.windows() if w.get("active") and w.get("window") is not None]
+    if not front:
+        raise Failed(f"no window is in front: {sorted(windows)}")
+    off = []
+    for window in front:
+        rect = window.get("rect")
+        if not rect or not window.get("frames"):
+            off.append({"app": window.get("app_id"), "drawn": None, "rect": rect})
+            continue
+        x, y, w, h = rect
+        if x < 0 or y < 0 or x + w > width + 0.5 or y + h > height + 0.5:
+            off.append({"app": window.get("app_id"), "screen": rect})
     if off:
-        raise Failed(f"placed off screen (the canvas's frame is {canvas['frame']}): {off}")
-    return {"frame": canvas["frame"], "placed": len(placed)}
+        raise Failed(f"the window in front is not drawn inside the {width}x{height} screen: "
+                     f"{off}; places {places}")
+    return {"frame": [0, 0, width, height], "placed": len(on_canvas),
+            "front": [w.get("app_id") for w in front]}
 
 
 def check_repl(session: Session, out: Path) -> dict:
-    """The door's REPL writes, finds, greps, adds a task the Tasks instance lists, and undoes."""
+    """The door's REPL reaches the four apps, reads one's record, and changes the desk the
+    session publishes, which the desk draws.
+
+    The record it reads is the notes app's notebook, and the actions it lists are the app's
+    own. It writes a note there by the names the app declares (`notes.new_note(notes.notebook)`,
+    as the app's own source says it), and reads it back. It changes the desk as it may:
+    `session.overview` flips a surface of the desk, read back from the state dump the desk
+    publishes."""
     repl = Repl(session, out)
     try:
+        # The REPL says what the door waits on before it is in: its admission is the person's,
+        # made on the sheet or ahead of time with `--admit-repl`, never answered by the REPL.
+        if "asking to act as you" not in repl.banner:
+            raise Failed(f"the REPL gave itself the door without asking: {repl.banner.strip()!r}")
         apps = re.search(r"apps: ([^(]*)", repl.banner)
         if not apps or not all(n in apps.group(1) for n in TL_APPS):
             raise Failed(f"the REPL does not reach the four apps: {repl.banner.strip()}")
-        repl("let n = notes.new_note(notes.notes)")
-        repl(f'notes.retitle(n, "{NOTE_TITLE}")')
-        repl(f'chat.new_channel(chat.channels, "{CHANNEL}")')
-        found = repl('find("launch plan")')
-        if NOTE_TITLE not in found:
-            raise Failed(f"find(\"launch plan\") did not return the note: {found!r}")
-        in_notes = repl("grep(/Tide/, in: notes)")
-        if NOTE_TITLE not in in_notes:
-            raise Failed(f"grep over Notes did not return the note: {in_notes!r}")
-        in_chat = repl("grep(/Tide/, in: chat)")
-        if CHANNEL not in in_chat:
-            raise Failed(f"grep over Chat did not return the channel: {in_chat!r}")
-        drawn = window_frame(session, "tasks")
-        added = repl(f'tasks.add(tasks.tasks, "{TASK_TITLE}")')
-        if "1 change in tasks" not in added:
-            raise Failed(f"tasks.add changed nothing: {added!r}")
-        wait_for("the new task in the Tasks instance", lambda: holds(session, "tasks", TASK_TITLE))
-        # The open Tasks window draws what its instance took in, with nothing else waking it.
-        drawn = wait_for("a frame of the Tasks window showing the new task",
-                         lambda: (window_frame(session, "tasks") or 0) > drawn and window_frame(session, "tasks"))
-        undone = repl("undo")
-        if "undone" not in undone:
-            raise Failed(f"undo took nothing back: {undone!r}")
-        wait_for("the task gone from the Tasks instance",
-                 lambda: holds(session, "tasks", TASK_TITLE) is False)
-        wait_for("a frame of the Tasks window without the undone task",
-                 lambda: (window_frame(session, "tasks") or 0) > drawn)
+        notebook = repl("ls notes")
+        if "notes.Notebook" not in notebook or "#read" not in notebook:
+            raise Failed(f"the notes app's record is not reachable: {notebook!r}")
+        # A note, written as the person by the names the notes app declares, and counted back
+        # in the notebook it went into.
+        def notes_held() -> int:
+            counted = repl("notes.notebook.notes.len()")
+            found = re.search(r"^\s*(\d+)\s*$", counted, re.M)
+            if not found:
+                raise Failed(f"the notebook's notes are not counted: {counted!r}")
+            return int(found.group(1))
+
+        before = notes_held()
+        written = repl("notes.new_note(notes.notebook)")
+        after = notes_held()
+        if after != before + 1:
+            raise Failed(f"notes.new_note(notes.notebook) wrote no note ({before} then {after}): "
+                         f"{written!r}")
+        desk = repl("ls session")
+        if "session" not in desk:
+            raise Failed(f"the session's own actions are not listed: {desk[:600]!r}")
+        # A change of the desk, as the person typing it: the overview's surface goes down and
+        # up again, and the desk's own published state says so each time.
+        def overview() -> bool:
+            return bool(session.state_dump()["chrome"]["overlays"]["overview"])
+
+        for wanted in (False, True):
+            answer = repl(f"session.overview(open: .some({str(wanted).lower()}))")
+            if "ok" not in answer:
+                raise Failed(f"session.overview(open: .some({str(wanted).lower()})) failed: {answer!r}")
+            wait_for(f"the overview {'up' if wanted else 'down'} in the desk's state",
+                     lambda: overview() == wanted)
         # The workspace admitted every change the apps and the REPL made: a change the sealed
         # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
         # with only this line to say so, and its record is missing wherever it is read.
         refused = [line[:400] for line in session.log_lines() if "change carries no claim" in line]
         if refused:
             raise Failed(f"the workspace refused {len(refused)} change(s) as carrying no claim: {refused[0]}")
-        return {"find": found.strip(), "grep_notes": in_notes.strip().splitlines()[0],
-                "grep_chat": in_chat.strip().splitlines()[0], "added": added.strip(), "undone": undone.strip()}
+        return {"asked": True, "notebook": notebook.strip().splitlines()[0],
+                "notes": [before, after], "overview": "down and up again"}
     finally:
         repl.close()
         (out / "repl-transcript.txt").write_text(repl.transcript)
 
 
-def logical_resource(resource: str) -> str:
-    """The app's own id of `resource`: an instance with no window (the windowless Tasks)
-    publishes its resources under its instance's alias, `BOUND_RESOURCE_PREFIX` and the id in
-    hex last, as `tilo_actions::selection::logical_resource_id` reads it."""
-    if not resource.startswith(BOUND_RESOURCE_PREFIX):
-        return resource
-    try:
-        return bytes.fromhex(resource.rsplit(":", 1)[-1]).decode()
-    except ValueError:
-        return resource
+def refusals(session: Session) -> list[str]:
+    """What the session and its apps logged as refusing the ask or a step of the run it made."""
+    return [line for line in session.log_lines() if any(r in line for r in RUN_REFUSALS)]
 
 
 def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
-    """Asking an agent makes the tracker issue, opens no window and starts a task agent."""
+    """Handing an agent work from search sends the person's request to the agent they keep (a new
+    one when they keep none) through the session's one send, and the agent the session starts
+    answers it: it asks the model, and its answer lands in the person's conversation with it, where
+    Chat shows it."""
     session.provision(model)
-    row = wait_for("ask row ready for a new agent", lambda: next((
-        a for a in session.actions(REQUEST)
-        if a.get("provider") == "ask-agent" and "Settings" not in (a.get("subtitle") or "")), None),
-        lambda: [a.get("subtitle") for a in session.actions(REQUEST) if a.get("provider") == "ask-agent"])
-    before = sorted((w.get("app_id"), w.get("tab")) for w in session.windows())
-    session.invoke(row["provider"], row["id"])
+    # What the person does: the desk's own search, with the request typed into it.
+    desk = wait_for("the desk's search", lambda: next((
+        a for a in session.actions("search")
+        if a.get("resource") == DESK_RESOURCE and a.get("operation") == "search"), None),
+        lambda: [{"resource": a.get("resource"), "operation": a.get("operation")}
+                 for a in session.actions("search")])
+    session.invoke(desk["provider"], desk["id"], {"query": REQUEST})
 
-    def issue() -> str | None:
-        """The issue's address: listed among the workspace's records under the request, or
-        named in what its task agent was told."""
-        listed = next((logical for a in session.actions(REQUEST)
-                       if (logical := logical_resource(a.get("resource") or ""))
-                       .startswith(TRACKER_ISSUES)), None)
-        if listed:
-            return listed
-        told = re.search(re.escape(TRACKER_ISSUES) + r"[\w-]+", json.dumps(model.task_turns))
-        return told.group(0) if told else None
+    def shown_rows() -> list[dict]:
+        """The rows the open search shows, in the desk's order."""
+        return session.control_json("raw", json.dumps({"op": "search_rows"}))["answer"]["rows"]
 
-    made = wait_for("tracker issue for the request", issue,
-                    lambda: f"model errors {model.errors}\n{session.log_tail()}")
-    wait_for("task agent asking the model", lambda: model.task_turns,
+    def agent_row() -> dict | None:
+        """The row handing what was typed to the person's agent, at the place the desk gives it
+        (`desk_verbs::search_row_id`)."""
+        for at, row in enumerate(shown_rows()):
+            title = row.get("title") or ""
+            if title.startswith("Send to ") and REQUEST in title:
+                return {"id": f"{SEARCH_RESOURCE}:row:{at}\u001fchoose-search-row",
+                        "title": title}
+        return None
+
+    row = wait_for("search's row handing the request to the person's agent", agent_row,
+                   lambda: [row.get("title") for row in shown_rows()])
+    # Chosen as a person chooses it: the row's own action, which runs the session's send.
+    session.invoke(SESSION_PROVIDER, row["id"], job=True)
+
+    def reached_the_agent() -> bool:
+        """Whether the agent was asked, failing at once with what the session refused."""
+        if refused := refusals(session):
+            raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
+        return bool(model.task_turns)
+
+    wait_for("the agent the ask made, asking the model", reached_the_agent,
              lambda: f"model errors {model.errors}\n{session.log_tail()}")
-    after = sorted((w.get("app_id"), w.get("tab")) for w in session.windows())
-    if after != before:
-        raise Failed(f"asking opened or closed windows: before {before}, after {after}")
-    # The agent's change landed: the task its program added is in the running Tasks.
-    wait_for("the task the agent added, in Tasks", lambda: holds(session, "tasks", ASKED_TASK),
-             lambda: f"model errors {model.errors}; turns {len(model.task_turns)}; the program "
-                     f"answered: {text_of(model.task_turns[-1][-1].get('content'))[:1500] if len(model.task_turns) > 1 else '-'}"
-                     f"\n{session.log_tail()}")
-    # The run holds and settles each turn's spend and reports its own end on the issue, and
-    # only then does its task agent exit. Catches the agent's spend arguments not matching
-    # Tasks' actions and its finish-run being refused as made for a task that had ended.
-    exited = wait_for("the task agent ending with its task",
-                      lambda: next((line for line in session.log_lines() if AGENT_EXITED in line), None),
-                      lambda: session.log_tail())
-    refused = [line for line in session.log_lines() if any(r in line for r in RUN_REFUSALS)]
-    if refused:
-        raise Failed("the run's own reports were refused:\n" + "\n".join(refused[:8]))
-    if not exited.rstrip().endswith("exit status: 0"):
-        raise Failed(f"the task agent did not end cleanly: {exited}")
-    return {"issue": made, "task_turns": len(model.task_turns)}
+
+    def answered() -> dict | None:
+        """The agent's answer, in the conversation the person's request is in: where a person
+        reads it."""
+        messages = said(session)
+        asked = next((m for m in messages if m["text"] == REQUEST), None)
+        if asked is None:
+            return None
+        return next((m for m in messages
+                     if m["channel"] == asked["channel"] and m["text"].strip() == FIXED_REPLY), None)
+
+    answer = wait_for("the agent's answer in the person's conversation with it", answered,
+                      lambda: f"turns {len(model.task_turns)}; the conversation holds "
+                              f"{[m['text'][:80] for m in said(session)]}\n{session.log_tail()}")
+    if refused := refusals(session):
+        raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
+    return {"send": row["id"], "turns": len(model.task_turns),
+            "answer": answer["text"][:120]}
 
 
 def check_restart(session: Session) -> dict:
-    """Started again on the same state: the four windows come back with frames and content."""
+    """Started again on the same state: the four windows come back, each with a frame and a place
+    on the canvas the arrangement publishes."""
     session.stop()
     began = time.monotonic()
     session.start(install=False)
@@ -620,9 +732,12 @@ def check_restart(session: Session) -> dict:
     wait_for("every window back with a frame", lambda: wanted <= presented(session),
              lambda: f"presented {sorted(presented(session))}; windows {sorted(windows_by_app(session))}\n"
                      f"{session.log_tail()}")
-    wait_for("the note back in Notes", lambda: holds(session, "notes", NOTE_TITLE))
-    wait_for("the channel back in Chat", lambda: holds(session, "chat", CHANNEL))
-    return {"seconds_to_content": round(time.monotonic() - began, 2)}
+    places = canvas_places(session)
+    unplaced = sorted(a for a in wanted
+                      if str((windows_by_app(session).get(a) or {}).get("group")) not in places)
+    if unplaced:
+        raise Failed(f"back without a place on the canvas: {unplaced}; places {places}")
+    return {"seconds_to_windows": round(time.monotonic() - began, 2)}
 
 
 # The tilolang apps `tilolang dev` installs into the running session, ones it has not had yet,
@@ -716,14 +831,19 @@ def check_dev(session: Session) -> dict:
 
 # --- the run -------------------------------------------------------------------------------
 
-CHECKS = ["open", "canvas", "repl", "ask", "restart", "dev"]
+CHECKS = ["audio", "open", "canvas", "repl", "ask", "restart", "dev"]
 
 
-def build_session(out: Path) -> Path:
-    """The nested-session build of this tree, compiled on the arm builder."""
+def build_session(out: Path, remote: str | None = None) -> Path:
+    """The nested-session build of this tree, compiled on the arm builder.
+
+    Through `remote` (a command prefix, e.g. a remote-exec wrapper), the build runs where
+    this machine cannot: a program that forwards the builder's environment, not this one's,
+    carries the app list in its own."""
     target = out / "nested-session"
-    subprocess.run(["bash", REPO / "dist/dev/nested-session-build.sh", target],
-                   cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
+    command = ["bash", str(REPO / "dist/dev/nested-session-build.sh"), str(target)]
+    argv = [*shlex.split(remote), "env", f"TILO_NESTED_APPS={NATIVE}", *command] if remote else command
+    subprocess.run(argv, cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
     return target
 
 
@@ -753,6 +873,9 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--build", action="store_true", help="build the nested session of this tree first")
+    parser.add_argument("--remote-exec", default=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"),
+                        help="command prefix the session's build runs through (default "
+                             "$TILO_NESTED_SESSION_BUILD_EXEC)")
     parser.add_argument("--out", type=Path, default=REPO / "target/session-e2e")
     parser.add_argument("--keep", action="store_true", help="leave the session running at the end")
     parser.add_argument("--only", help="comma list of checks to run (default: all, in order)")
@@ -762,9 +885,9 @@ def main() -> int:
     for stale in out.glob("*.log"):
         stale.unlink()
     began = time.monotonic()
-    build = build_session(out) if args.build else Path(
+    build = build_session(out, args.remote_exec) if args.build else Path(
         os.environ.get("TILO_NESTED_SESSION_BUILD", REPO / "target/nested-session")).resolve()
-    if not (build / "bin/shell").is_file():
+    if not (build / "bin/tilo-session").is_file():
         print(f"session-e2e: no nested-session build at {build} (pass --build, or set "
               "TILO_NESTED_SESSION_BUILD)", file=sys.stderr)
         return 2
@@ -783,6 +906,7 @@ def main() -> int:
         session.start(install=True)
         summary["start_seconds"] = round(time.monotonic() - began, 1)
         steps: dict[str, Callable[[], dict]] = {
+            "audio": lambda: check_audio(session),
             "open": lambda: check_open(session),
             "canvas": lambda: check_canvas(session),
             "repl": lambda: check_repl(session, out),

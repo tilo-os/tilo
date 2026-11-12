@@ -346,7 +346,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
 pub enum AppearanceEffect {
     /// Read the person's current selectors and schedule without resolving
     /// Automatic mode or changing the OS-controlled theme.
-    #[effect(view, returns, kind = "read", label = "Inspect appearance preferences")]
+    #[effect(view, returns, kind = "read")]
     InspectAppearance,
     /// Choose a picture and make it the wallpaper.
     #[effect(job)]
@@ -365,7 +365,12 @@ pub(crate) fn answer(
             let prefs = app.storage().settings::<AppearancePrefs>().get();
             serde_json::to_value(AppearanceInspection::from(&prefs))
                 .map(Effected::value)
-                .map_err(|error| format!("the appearance preferences could not be read: {error}"))
+                .map_err(|error| {
+                    crate::i18n::t_args(
+                        "appearance-inspect-failed",
+                        &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                    )
+                })
         }
         AppearanceEffect::ChooseWallpaper => choose_wallpaper(app, cx),
     }
@@ -425,7 +430,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAns
                 )),
                 Err(_) => Err(t_args(
                     "settings-appearance-unchanged",
-                    &[("error", "the portal went away".into())],
+                    &[("error", t("settings-error-portal-gone").into())],
                 )),
             }
         },
@@ -1079,8 +1084,9 @@ mod tests {
             .expect("the Appearance page expresses the look");
         assert_eq!(shown.base_theme.name, "Dark graphite");
         assert!(shown.reduce_motion);
+        let size = crate::testing::caption("settings-appearance-ui-scale");
         assert!(
-            app.harness().a11y_node_named("125%").is_some(),
+            crate::testing::shown_values(&mut app, &size).contains(&"125%".to_owned()),
             "the interface scale shows what the section holds"
         );
     }

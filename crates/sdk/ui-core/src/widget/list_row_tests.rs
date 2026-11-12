@@ -1993,3 +1993,120 @@ fn a_row_given_its_own_height_stands_at_it() {
         "a tree's row stands under the list's row of the same theme"
     );
 }
+
+/// A face is a leading mark like a glyph: it stands in the icon's slot, so a list whose rows lead
+/// with people and agents keeps one title edge, and the row is no taller for it.
+#[test]
+fn a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let rect = Rect::new(20.0, 0.0, 340.0, 52.0);
+    let colour = crate::presence::identity_colour("g1");
+    let face = crate::presence::Face::new("Claude Code", "g1", colour);
+    let with_face = ListRowFace::new("Claude Code").leading(RowLeading::Face(face));
+    let with_glyph = ListRowFace::new("Claude Code").leading(RowLeading::Icon(Icon::User));
+    let face_x = with_face.text_column(rect, &mut text, &theme);
+    let glyph_x = with_glyph.text_column(rect, &mut text, &theme);
+    assert!(
+        (face_x - glyph_x).abs() < 0.01,
+        "a face and a glyph lead in one slot: {face_x} and {glyph_x}"
+    );
+    assert!(
+        (face_x - (rect.x0 + mark_text_inset(&theme))).abs() < 0.01,
+        "the title starts past the content edge, the mark's slot and the gap: {face_x}"
+    );
+    assert!(
+        (with_face.height(&mut text, &theme) - with_glyph.height(&mut text, &theme)).abs() < 0.01,
+        "a face asks no more height than a glyph"
+    );
+    assert_eq!(
+        with_face.shape().leading,
+        RowLeadingShape::Mark,
+        "a face is a mark of icon size, not an avatar's column"
+    );
+}
+
+/// A control that wraps under its text fills the row, and stops filling only where it would stand
+/// beside the text again: its own width with the gap before it and the marks after it (here a
+/// disclosure chevron), as the row's wrap counts them. Reckoned without the marks, a width that
+/// wraps the control at its own size reads as one it would fit beside the text at, and the row
+/// fills and stops filling on every pass of the solve, never settling.
+#[test]
+fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
+    let row = || -> Element {
+        let row = ListRow::new("previous-tab", "Previous tab")
+            .disclosure()
+            .trailing(Box::new(crate::widget::Button::new(
+                "previous-tab-keys",
+                "Ctrl Shift Tab",
+            )));
+        Box::new(Column::new().with_no_padding().push(Box::new(row)))
+    };
+    let mut harness = FrameHarness::new(crate::State::new(), row(), (520, 300));
+    let narrowing = (160..=520).rev();
+    let widening = 160..=520;
+    for width in narrowing.chain(widening) {
+        harness
+            .resize((width, 300))
+            .unwrap_or_else(|error| panic!("at {width} px the row settles: {error:?}"));
+        let root = harness.inspection().root;
+        let row = find(&root, "ListRow").unwrap();
+        let control = rect_of(find(row, "Button").unwrap());
+        let row = rect_of(row);
+        let under = control.y0 > row.y0 + row.height() / 3.0;
+        assert!(
+            !under || control.width() > row.width() / 2.0,
+            "at {width} px a control under its text fills the row: {control:?} in {row:?}"
+        );
+    }
+}
+
+/// A row that explains itself says that explanation after its name, and does
+/// not also read it out as its value.
+#[test]
+fn a_described_rows_explanation_is_its_description_and_not_its_value() {
+    let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
+        .secondary("Show the visual alert each time bounce keys drops a press")
+        .description("Show the visual alert each time bounce keys drops a press");
+    let node = Widget::accessibility(&row).unwrap();
+    assert_eq!(node.name.as_deref(), Some("Flash when a key is ignored"));
+    assert_eq!(
+        node.description.as_deref(),
+        Some("Show the visual alert each time bounce keys drops a press")
+    );
+    assert_eq!(node.value, None, "the explanation is said once");
+
+    // Without a description the same line is what the row has to say.
+    let read = ListRow::new("path", "Home").secondary("/home/quinten");
+    let node = Widget::accessibility(&read).unwrap();
+    assert_eq!(node.value.as_deref(), Some("/home/quinten"));
+    assert_eq!(node.description, None);
+}
+
+/// A row holds the words for the control it carries: its caption names it,
+/// and its explanation describes it, one resolution point for every row.
+#[test]
+fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
+    let row = ListRow::new("sdr-brightness", "Brightness")
+        .subtitle("External display")
+        .secondary("How bright standard content is")
+        .description("How bright standard content is")
+        .trailing(Box::new(crate::widget::Toggle::new("sdr", "sdr")));
+    assert_eq!(
+        Widget::accessibility_child_name(&row, 1).as_deref(),
+        Some("Brightness")
+    );
+    // Said once: the explanation is the row's description and its second
+    // line, so a reader hears it once after the name.
+    assert_eq!(
+        Widget::accessibility_child_description(&row, 1).as_deref(),
+        Some("How bright standard content is, External display")
+    );
+    // The band's stand-in is not a control of the row's and takes no name.
+    assert_eq!(Widget::accessibility_child_name(&row, 0), None);
+
+    // A row without a control holds no words for one.
+    let plain = ListRow::new("path", "Home");
+    assert_eq!(Widget::accessibility_child_name(&plain, 1), None);
+    assert_eq!(Widget::accessibility_child_description(&plain, 1), None);
+}

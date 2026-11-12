@@ -594,7 +594,12 @@ impl Filtered {
                 }
                 continue;
             }
-            // Check the run up to and with the entry, then count the ones kept before it.
+            // Check the run up to and with the entry, then count the ones kept before it: an
+            // entry the item is not kept at has no place, which its own check says without
+            // reading the run before it.
+            if !(self.keep)(&id) {
+                continue;
+            }
             self.scan_to(at.saturating_add(1));
             let scanned = self.scanned.borrow();
             let Some(entry) = scanned.get(at) else {
@@ -606,6 +611,23 @@ impl Filtered {
             }
         }
         Some(best)
+    }
+
+    /// Whether it keeps the item `id`: the check of its own entries of the run, never the ones
+    /// before them. `None` when its checks cannot say which item an entry is
+    /// ([`Filtered::position_of`]).
+    fn keeps_item(&self, id: &str) -> Option<bool> {
+        let locate = self.locate.as_ref()?;
+        let entries = locate(id)?;
+        if entries.is_empty() {
+            return Some(false);
+        }
+        for (key, id) in entries {
+            if self.base.place(&key, &id).is_some() && (self.keep)(&id) {
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 }
 
@@ -633,6 +655,10 @@ impl PagedItems for Filtered {
 
     fn position(&self, id: &str) -> Option<Option<usize>> {
         self.position_of(id)
+    }
+
+    fn holds(&self, id: &str) -> Option<bool> {
+        self.keeps_item(id)
     }
 }
 
@@ -706,6 +732,20 @@ impl PagedItems for Partition {
             }
         }
         Some(None)
+    }
+
+    /// Whether any of its parts keeps the item: each answers from the item's own entries, so
+    /// none of them reads the entries before it.
+    fn holds(&self, id: &str) -> Option<bool> {
+        let mut say = Some(false);
+        for part in &self.parts {
+            match part.keeps_item(id) {
+                Some(true) => return Some(true),
+                Some(false) => {}
+                None => say = None,
+            }
+        }
+        say
     }
 }
 

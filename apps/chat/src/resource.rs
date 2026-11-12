@@ -43,26 +43,21 @@ impl Chat {
             .channels
             .iter()
             .filter(|(_, channel)| channel.is_channel())
-            .map(|(id, channel)| {
-                SearchEntry::new(channel.name.clone(), channel.topic.clone())
-                    .anchored(anchor("channels", id))
-                    .of_kind(IndexKind::Conversation)
-                    .with_icon(CONVERSATION_ICON)
-            });
-        // A conversation the record holds as an item: a group of people, or a
-        // person and an agent. What it is called is what its participants are
-        // called, until they name it; the row shows those participants beside
-        // it.
+            .map(|(id, channel)| conversation_entry(id, &channel.name, &channel.topic));
+        // A conversation the record holds as an item: a group of people, or a person and an
+        // agent. What it is called is its own name, which a kept one is made with, else what its
+        // participants are called; the row shows those participants beside it.
         let conversations = self
             .channels
             .iter()
             .filter(|(_, conversation)| !conversation.is_channel())
             .map(|(id, _)| {
-                SearchEntry::new(self.display_names(id, None), "")
-                    .anchored(anchor("channels", id))
-                    .of_kind(IndexKind::Conversation)
-                    .with_icon(CONVERSATION_ICON)
-                    .showing(self.participant_rows(id))
+                conversation_entry(
+                    id,
+                    &self.display_names(id, None, &crate::projection::AgentNames::new()),
+                    "",
+                )
+                .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
@@ -118,7 +113,7 @@ impl Chat {
     /// What the chat record holds, for a caller that reads it: with no item,
     /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or with `read-workspace`.
+    /// chain the window publishes, or through the record door.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -154,6 +149,16 @@ pub struct ChatShell;
 
 /// The glyph a conversation leads with when the row has no face of its own.
 const CONVERSATION_ICON: &str = "message-circle";
+
+/// The row that opens conversation `id`, as the window names it: its name and topic, among the
+/// record's conversations. The record's own search and the window's entries (a direct conversation
+/// the record keeps no row for) are one row, so a hit opens the conversation by one anchor.
+pub(crate) fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
+    SearchEntry::new(name.to_owned(), topic.to_owned())
+        .anchored(item_resource_id::<Chat>("channels", id))
+        .of_kind(IndexKind::Conversation)
+        .with_icon(CONVERSATION_ICON)
+}
 
 /// Every named scenario `--shots --scenario NAME` captures.
 #[cfg(feature = "samples")]
@@ -217,6 +222,10 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // What the person is writing and has not sent: their own record in
+        // the workspace, so a window that shows Chat and a device that only
+        // reads its records find the drafts alike.
+        records.person::<crate::drafts::ChatDrafts>();
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
@@ -256,7 +265,17 @@ impl ResourceApp for ChatShell {
         let drafts = cx.person::<crate::drafts::ChatDrafts>();
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
-            .with_drafts(drafts);
+            .with_drafts(drafts)
+            // The window's actions: its composer's send button is where Chat's
+            // `send` lands, the action an agent's send runs too.
+            .with_send_action(&cx.actions())
+            // The workspace's agents, as its own record of them names them: an agent is a
+            // collaborator, and its name reads from the same record in every app of the workspace.
+            .with_agents_record(
+                cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
+                    ui::tilo_workspace_agent::OWNER,
+                ),
+            );
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,
@@ -290,13 +309,19 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
+        // What the window lists that the record keeps no row for: a direct conversation a send
+        // opened, an agent's among them, named by what the workspace calls its agents. The
+        // sidebar lists the same conversations, so search and the sidebar never name one
+        // differently.
+        let unrecorded = Rc::clone(&chat);
         let window = cx.publishing(
             Publishes::new()
                 // The effects offered on the channels, categories, messages,
                 // reports and people the window shows: merged into the item
                 // resources the record publishes.
                 .live_rows(move || rows.borrow().published_rows())
-                .live_row(move |id| row.borrow().published_row(id)),
+                .live_row(move |id| row.borrow().published_row(id))
+                .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );
         Box::new(
@@ -674,11 +699,6 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
             app: None,
             did: Some("Add function".into()),
             about: Some("Revenue curve, preserving the current graph bounds".into()),
-            route: Some("model".into()),
-            why: Some(
-                "Calculator offers the requested graph operation and no bounds change is needed."
-                    .into(),
-            ),
             trace: vec![crate::record::StepUpdate {
                 id: "00000000-0000-4000-8000-000000000001".into(),
                 sequence: 0,
@@ -698,16 +718,13 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
 fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> EffectAnswer {
     match &effect {
         // A direct conversation is one of the chat's own: its id names the
-        // two people it is between, so opening, reading and sending all read
-        // and write the same record and the same parts as a channel's.
+        // two people it is between, so opening and sending read and write the
+        // same record and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
-            let (_, id) = chat
-                .borrow()
-                .direct_conversation(public_key, &cx.live().get())?;
             let state = cx.live().get();
-            let mut chat = chat.borrow_mut();
-            chat.open_conversation(&id, &state);
-            return Ok(chat.read_direct_answer(public_key, &id, &state));
+            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            chat.borrow_mut().open_conversation(&id, &state);
+            return Ok(ui::framework::Effected::done());
         }
         ChatEffect::OpenAgent { agent } => {
             let state = cx.live().get();
@@ -717,11 +734,22 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         }
         ChatEffect::SendDirectMessage { public_key, text } => {
             let state = cx.live().get();
+            name_sending_agent(cx, &state);
             let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
             if text.trim().is_empty() {
                 return Err(crate::i18n::t("chat-person-chat-empty"));
             }
-            chat.borrow().post_to_conversation(&id, text, Vec::new())?;
+            // Answered once the message is written: at once, or on a device back
+            // from away once the conversation it holds reached the app.
+            let reply = cx.reply();
+            let accepted = serde_json::json!({"peer": peer, "accepted": true});
+            chat.borrow()
+                .post_to_conversation_then(&id, text, move |posted| {
+                    reply.finish(posted.map(|()| tilo_actions::ActionOutput {
+                        value: Some(accepted),
+                        resources: Vec::new(),
+                    }));
+                });
             let mut chat = chat.borrow_mut();
             if chat.active_channel == id.as_str() {
                 let held = chat.held_messages();
@@ -729,55 +757,36 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 chat.scroll = 0.0;
                 chat.request_relayout();
             }
-            return Ok(ui::framework::Effected::value(
-                serde_json::json!({"peer": peer, "accepted": true}),
-            ));
+            return Ok(ui::framework::Effected::Pending);
         }
-        ChatEffect::Send { to, attached, text } => {
+        ChatEffect::Send {
+            to,
+            attached,
+            text,
+            parent,
+            body,
+            opens,
+        } => {
             let state = cx.live().get();
-            return chat
-                .borrow()
-                .send_from_box(to, attached.clone(), text, &state);
-        }
-        ChatEffect::ReadDirectConversation { public_key } => {
-            let state = cx.live().get();
-            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
-            return Ok(chat
-                .borrow_mut()
-                .read_direct_answer(public_key, &id, &state));
+            name_sending_agent(cx, &state);
+            return chat.borrow().send_message(
+                crate::direct::SendMessage {
+                    to,
+                    attached: attached.clone(),
+                    text,
+                    parent: parent.clone(),
+                    body: body.clone(),
+                    opens: opens.unwrap_or_default(),
+                },
+                &state,
+            );
         }
         _ => {}
-    }
-    if let ChatEffect::ReadMessages {
-        channel,
-        page_size,
-        cursor,
-    } = &effect
-    {
-        let chat = chat.borrow();
-        return crate::effects::read_messages(
-            &chat.held_messages(),
-            (channel, &|id| chat.display_name(id)),
-            *page_size,
-            cursor.as_deref(),
-        )
-        .map(ui::framework::Effected::value);
     }
     if let ChatEffect::ExportContent { channel, format } = &effect {
         return chat
             .borrow()
             .export_transcript(&cx.live().get(), channel, format.as_deref());
-    }
-    if let ChatEffect::ReadWorkspace { message, channel } = &effect {
-        let state = cx.live().get();
-        return Ok(ui::framework::Effected::value(
-            crate::effects::read_workspace(
-                &state,
-                &chat.borrow().held_messages(),
-                message.as_deref(),
-                channel.as_deref(),
-            ),
-        ));
     }
     if let Some(url) = crate::external::browser_destination(&effect)? {
         return Ok(cx.thread(
@@ -786,6 +795,29 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         ));
     }
     chat.borrow_mut().answer_effect(effect)
+}
+
+/// An agent sending here names itself in the chat by the name the device that admitted it gave
+/// it, so every member reads what it writes by that name.
+fn name_sending_agent(cx: &EffectCx<Chat>, state: &Chat) {
+    let Some(invoker) = ui::invocation_scope::current_invoker() else {
+        return;
+    };
+    let Some(name) = invoker
+        .name
+        .as_deref()
+        .filter(|_| invoker.kind == tilo_actions::ActorKind::Agent)
+        .and_then(ui::tilo_resource::NonBlank::parse)
+    else {
+        return;
+    };
+    if state.agent_names.get(&invoker.actor).map(String::as_str) == Some(name.as_str()) {
+        return;
+    }
+    cx.submit(Chat::NAME_AGENT.with(crate::record::chat::NameAgent {
+        participant: invoker.actor,
+        name,
+    }));
 }
 
 impl ChatApp {

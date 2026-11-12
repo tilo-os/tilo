@@ -78,12 +78,13 @@ impl Editor {
         let thread = self
             .thread_comment
             .clone()
-            .zip(self.comment_thread_height(width, tr, theme));
+            .zip(self.comment_thread_height(width, tr, theme, presence));
         self.review.draw_cards(
             &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             &placement,
             (&markers.comment_markers, &markers.change_markers),
             thread.as_ref().map(|(id, height)| (id.as_str(), *height)),
+            presence,
         );
         if let Some(slot) = self.review.expanded_slot() {
             self.draw_comment_thread(scene, transform, tr, theme, presence, slot);
@@ -108,11 +109,15 @@ impl Editor {
         Some(comment)
     }
 
-    /// The open thread's card: its comment's card, expanded in place.
-    fn thread_face(comment: &tilo_doc::snapshot::CommentView) -> CardFace<'_> {
+    /// The open thread's card: its comment's card, expanded in place, in the
+    /// colour presence paints its author.
+    fn thread_face<'a>(
+        comment: &'a tilo_doc::snapshot::CommentView,
+        presence: &PresenceCtx,
+    ) -> CardFace<'a> {
         CardFace::new()
             .title(&comment.author)
-            .leading_stripe(Tone::of_identity(&comment.author))
+            .leading_stripe(Tone::Presence(presence.hue_of(&comment.author)))
     }
 
     /// Lay out the open thread's card body from `top`, `x0..x1`: the
@@ -160,9 +165,10 @@ impl Editor {
         width: f64,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) -> Option<f64> {
         let comment = self.open_thread()?;
-        let face = Self::thread_face(&comment);
+        let face = Self::thread_face(&comment, presence);
         let body = face.body_rect(tr, theme, Rect::new(0.0, 0.0, width, 1.0e4));
         let content = self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
         Some(face.height_for_body(tr, theme, width, content))
@@ -185,7 +191,7 @@ impl Editor {
             return;
         };
         self.thread_panel = slot;
-        let face = Self::thread_face(&comment);
+        let face = Self::thread_face(&comment, presence);
         face.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             slot,

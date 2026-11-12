@@ -18,7 +18,7 @@ impl VideoEditorApp {
     /// The project's name, as the window bar's location says it.
     pub(super) fn project_label(&self) -> String {
         if self.project.name.trim().is_empty() {
-            "Untitled".to_string()
+            crate::resource::CATALOG.t("video-editor-untitled")
         } else {
             self.project.name.clone()
         }

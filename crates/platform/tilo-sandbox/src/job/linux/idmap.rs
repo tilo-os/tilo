@@ -187,13 +187,16 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
 }
 
 /// A detached copy of the mount tree at `path` (submounts included), with
-/// the translation of `userns`, private (nothing the job mounts beneath it
-/// reaches the host's tree).
+/// the translation of `userns` where one is given, private (nothing the job
+/// mounts beneath it reaches the host's tree). The caller opens it, so the
+/// job binds it without resolving `path` itself: it may not be able to reach
+/// it, as a block of host ids of its own can't enter a directory only its
+/// owner may.
 ///
 /// # Errors
 /// When the filesystem can't be idmapped (`EINVAL`), or the kernel is older
 /// than 5.12 (`ENOSYS`).
-pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
+pub fn tree(path: &Path, userns: Option<BorrowedFd<'_>>) -> io::Result<OwnedFd> {
     let c = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::other("a path with a NUL byte"))?;
     // SAFETY: a live C string; open_tree returns a new descriptor or -1.
@@ -212,9 +215,15 @@ pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
     // SAFETY: the kernel just returned this descriptor; nothing else owns it.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let attr = sys::MountAttr {
-        attr_set: sys::MOUNT_ATTR_IDMAP,
+        attr_set: if userns.is_some() {
+            sys::MOUNT_ATTR_IDMAP
+        } else {
+            0
+        },
         propagation: libc::MS_PRIVATE,
-        userns_fd: u64::try_from(userns.as_raw_fd()).unwrap_or_default(),
+        userns_fd: userns
+            .and_then(|userns| u64::try_from(userns.as_raw_fd()).ok())
+            .unwrap_or_default(),
         ..sys::MountAttr::default()
     };
     // SAFETY: a descriptor we own, an empty path, and a live structure of

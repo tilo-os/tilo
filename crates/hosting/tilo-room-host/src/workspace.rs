@@ -5,9 +5,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tilo_automerge::ApplyIncoming;
 
-use automerge::{AutoCommit, ChangeHash};
+use automerge::AutoCommit;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::store::{CommitRecord, WorkspaceStore};
@@ -150,7 +149,7 @@ pub struct WorkspaceRuntime {
     /// its checkpoint as one set of messages — one per channel (the workspace plus
     /// each record) — so the gate is per channel: a full bootstrap set passes
     /// once, and the next idle set, on the same channels, is withheld from a
-    /// device that already holds every delta — see `fanout_delta`.
+    /// device that already holds every delta ([`crate::peer`]'s live fan-out).
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
     /// The on-demand records each subscriber holds, by channel: those it
     /// opened, and the chain parts it was replayed or followed live while
@@ -163,6 +162,10 @@ pub struct WorkspaceRuntime {
     /// host still holds its stale connection; the order here says which of
     /// the two the device opened last, so the newer one takes the slot.
     subscribing: HashMap<[u8; 32], Vec<mpsc::WeakSender<Envelope>>>,
+    /// Devices admitted through the workspace's door that have not
+    /// subscribed yet, with what was committed for them alone meanwhile
+    /// (their channel Welcome), which their replay writes first.
+    pub(crate) arriving: crate::peer::Arriving,
     /// The presence mailbox of each subscriber whose connection takes its
     /// presence batched ([`crate::presence_mailbox`]). Set
     /// right after the subscription it belongs to and dropped with it; a
@@ -387,6 +390,7 @@ impl WorkspaceRuntime {
             checkpoint_served: HashMap::new(),
             held_records: HashMap::new(),
             subscribing: HashMap::new(),
+            arriving: crate::peer::Arriving::default(),
             presence_mailboxes: HashMap::new(),
             live_members: HashSet::new(),
             governor_tap: None,
@@ -625,6 +629,18 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
+    /// Stop listing `device` in this workspace ([`Self::admit_device`]'s
+    /// other half): a device the host started for the workspace and stopped.
+    pub fn forget_device(&mut self, device: &[u8; 32]) -> Result<(), crate::store::StoreError> {
+        if self.membership.contains(device) {
+            let mut devices = self.membership.devices.clone();
+            devices.retain(|listed| listed != device);
+            self.store.save_membership(&devices)?;
+            self.membership.set(devices);
+        }
+        Ok(())
+    }
+
     /// Add subscriber `device` to the live plane and tell the other live
     /// members. Returns the members already present. A device that is not
     /// subscribed cannot join.
@@ -716,6 +732,17 @@ impl WorkspaceRuntime {
     /// without an authenticated refusal. The subscriber is then unregistered
     /// so a follow-up write closes instead of emitting a second refusal.
     pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
+        self.refuse_live_members(removed, "workspace membership changed");
+    }
+
+    /// Tell every live device of the workspace it is no longer authorised,
+    /// and why, then unregister them: the workspace was deleted.
+    pub(crate) fn refuse_every_live_member(&mut self, reason: &str) {
+        let live: Vec<[u8; 32]> = self.subscribers.keys().copied().collect();
+        self.refuse_live_members(&live, reason);
+    }
+
+    fn refuse_live_members(&mut self, removed: &[[u8; 32]], reason: &str) {
         if removed.is_empty() {
             return;
         }
@@ -726,7 +753,7 @@ impl WorkspaceRuntime {
             };
             let _ = sub.tx.try_send(Envelope::NotAuthorised {
                 workspace_id,
-                reason: "workspace membership changed".into(),
+                reason: reason.into(),
             });
         }
         for device in removed {
@@ -736,225 +763,8 @@ impl WorkspaceRuntime {
         }
     }
 
-    /// Route a delta envelope to every subscriber that is NOT the
-    /// author, AND enqueue for offline members. Returns how many
-    /// live subscribers were fanned out to.
-    ///
-    /// What an attached host sent is not carried on to another attached
-    /// host, nor queued for one: two hosts serving one workspace would loop.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `envelope` can't be re-encoded for the
-    /// durable queue, or if persisting it (pending, checkpoint, or
-    /// retained tail) fails.
-    pub fn fanout_delta(
-        &mut self,
-        author: &[u8; 32],
-        envelope: &Envelope,
-        raw_delta_bytes: &[u8],
-        seq: u64,
-    ) -> Result<usize, crate::store::StoreError> {
-        use tokio::sync::mpsc::error::TrySendError;
-        // Shared retained coverage is the durable delivery obligation for
-        // every reconnect (including newly admitted devices). Commit before
-        // live publication, and never duplicate these payloads per member.
-        let raw = crate::transport::encode(envelope).map_err(|error| {
-            crate::store::StoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("encode: {error}"),
-            ))
-        })?;
-        let retained = if let Envelope::Delta {
-            workspace_id,
-            author_device_public_key,
-            delta,
-            ..
-        } = envelope
-        {
-            if workspace_id != &self.store.workspace_id() || author_device_public_key != author {
-                return Err(crate::store::StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "delta workspace or authenticated author mismatch",
-                )));
-            }
-            crate::coedit::retention_metadata(delta)
-        } else {
-            None
-        };
-        match &retained {
-            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
-                self.store.retain_checkpoint(channel, &raw)?;
-            }
-            Some((channel, crate::coedit::RetentionKind::Delta)) => {
-                self.store.retain_delta(channel, seq, &raw)?;
-            }
-            None => {}
-        }
-        // 1. Live fan-out. A FULL queue is backpressure, never a disconnect:
-        //    the durable delta spills to the slow subscriber's
-        //    store-and-forward queue below and the subscriber stays connected.
-        //    Only a CLOSED channel (the receiving task is gone) prunes the
-        //    subscriber. Dropping slow subscribers here caused the native host
-        //    to be disconnected mid-checkpoint, reconnect, receive the workspace's
-        //    retained baselines as a replay, republish, and storm.
-        // A retained checkpoint is a bootstrap/compaction artifact. A
-        // device that is connected and current holds every delta already, so
-        // the native's periodic (idle) full checkpoint — multi-megabyte, and a
-        // >100 ms frame for a browser that must rebuild its workspace doc — is fanned
-        // live to a device only while that device needs one: on subscribe (its
-        // retained replay may be stale) and after it asks again via presence
-        // (hello / SyncReq / rejected checkpoint). An attached host always
-        // receives it so it can carry the workspace; retention and queues stay.
-        let checkpoint_channel = match &retained {
-            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
-            _ => None,
-        };
-        let mut delivered = 0usize;
-        let mut dead: Vec<[u8; 32]> = Vec::new();
-        let mut backpressured: Vec<[u8; 32]> = Vec::new();
-        let mut satisfied: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in &self.subscribers {
-            if peer == author {
-                continue;
-            }
-            // A change an attached host sent is not carried on to another.
-            if self.attached(author) && self.attached(peer) {
-                continue;
-            }
-            let gated_checkpoint = checkpoint_channel.is_some() && !self.attached(author);
-            if let Some(channel) = checkpoint_channel
-                && !self.attached(peer)
-                && !self.needs_checkpoint(peer, &channel)
-            {
-                continue;
-            }
-            match sub.tx.try_send(envelope.clone()) {
-                Ok(()) => {
-                    delivered = delivered.saturating_add(1);
-                    if gated_checkpoint {
-                        satisfied.push(*peer);
-                    }
-                }
-                // A full queue leaves the need in place: the next checkpoint
-                // (or the pending spill below) still serves it.
-                Err(TrySendError::Full(_)) => backpressured.push(*peer),
-                Err(TrySendError::Closed(_)) => dead.push(*peer),
-            }
-        }
-        for d in dead {
-            self.remove_subscriber(&d);
-        }
-        if let Some(channel) = checkpoint_channel {
-            for d in satisfied {
-                self.mark_checkpoint_served(&d, channel);
-            }
-        }
-        // 2. Store-and-forward for offline members AND for live subscribers
-        //    the queue could not accept this instant. A member is any pubkey in
-        //    `membership` that is not the author and not currently draining
-        //    live; a backpressured subscriber is treated as briefly offline for
-        //    this one delta and reconciles it on its next reconnect or
-        //    anti-entropy, so no durable delta is lost to a slow consumer.
-        if retained.is_none() {
-            let queue_for: Vec<[u8; 32]> = self
-                .membership
-                .devices
-                .iter()
-                .filter(|member| **member != *author && !self.subscribers.contains_key(*member))
-                .chain(backpressured.iter())
-                .copied()
-                .collect();
-            for member in &queue_for {
-                self.store.enqueue_pending(member, seq, &raw)?;
-            }
-        }
-        // 3. Store-and-forward for offline attached hosts — reuses the
-        //    same `store.enqueue_pending` path keyed by device pubkey.
-        //    Suppressed when the origin is itself an attached host.
-        if retained.is_none() && !self.attached(author) {
-            for pr in &self.attached_hosts {
-                if pr == author {
-                    continue;
-                }
-                if self.subscribers.contains_key(pr) {
-                    continue;
-                }
-                self.store.enqueue_pending(pr, seq, &raw)?;
-            }
-        }
-        // 4. Materialize into the pinned doc so the host holds
-        //    authoritative current state (the source for anti-entropy
-        //    resync), not just per-peer queues. Runs AFTER fan-out +
-        //    store-and-forward so it can never alter those semantics;
-        //    best-effort and no-op when the workspace is unpinned or the
-        //    bytes are not a raw Automerge delta (a co-edit payload
-        //    wrapper, a non-CRDT test blob, …).
-        self.materialize(raw_delta_bytes);
-        Ok(delivered)
-    }
-
-    /// Apply an incoming raw Automerge delta into the pinned doc and
-    /// persist the updated snapshot, so the host materializes
-    /// authoritative current state rather than relying solely on the
-    /// per-peer pending queues. Returns `true` when the doc advanced.
-    ///
-    /// Best-effort and fully isolated from routing:
-    /// - runs only when the workspace is pinned (`doc.is_some()`);
-    /// - a delta that is not a raw Automerge incremental (e.g. a co-edit
-    ///   `CoeditPayload` wrapper, or a non-CRDT test payload) is applied
-    ///   to a throwaway clone first, so a decode failure leaves the live
-    ///   doc + snapshot untouched;
-    /// - a delta that adds nothing new writes no snapshot.
-    fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        if !is_automerge_chunk(delta_bytes) {
-            return false;
-        }
-        let Some(current) = self.doc.as_ref() else {
-            return false;
-        };
-        // Apply to a clone so a malformed / non-Automerge payload cannot
-        // half-apply and corrupt the authoritative doc.
-        let mut candidate = current.clone();
-        match candidate.load_incoming(delta_bytes) {
-            Ok(n) if n > 0 => {
-                let saved = candidate.save();
-                self.doc = Some(candidate);
-                // Persist; save_snapshot no-ops on an unpinned store, and
-                // a write failure must not break routing (already done).
-                let _ = self.store.save_snapshot(&saved);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// The host's current Automerge heads for this workspace, as wire
-    /// 32-byte hashes. Empty when the workspace is not materialized here
-    /// (unpinned) — a requester then receives the whole document.
-    pub fn current_heads(&mut self) -> Vec<[u8; 32]> {
-        match self.doc.as_mut() {
-            Some(doc) => doc.get_heads().into_iter().map(|h| h.0).collect(),
-            None => Vec::new(),
-        }
-    }
-
-    /// Anti-entropy: compute the changes a peer is missing — every
-    /// change in the host's materialized doc that is not a (transitive)
-    /// dependency of `have_heads`. Returns a concatenated series of
-    /// Automerge changes loadable via `load_incremental`. Empty when the
-    /// workspace is not materialized here, or the peer is already
-    /// converged.
-    pub fn changes_since(&mut self, have_heads: &[[u8; 32]]) -> Vec<u8> {
-        let Some(doc) = self.doc.as_mut() else {
-            return Vec::new();
-        };
-        let heads: Vec<ChangeHash> = have_heads.iter().copied().map(ChangeHash).collect();
-        doc.save_after(&heads)
-    }
-
-    /// Route a presence envelope (no persistence, drop-on-empty).
-    /// Same attached-host rule as `fanout_delta`. A subscriber whose
+    /// Route a presence envelope (no persistence, drop-on-empty). What an
+    /// attached host sent is not carried on to another. A subscriber whose
     /// connection has a presence mailbox gets it there; the payload is shared
     /// by every such subscriber, not copied.
     pub fn fanout_presence(&mut self, author: &[u8; 32], envelope: &Envelope) -> usize {
@@ -1105,45 +915,6 @@ mod tests {
         assert!(leaves_out(&[[1; 32]], &[]));
     }
 
-    /// An auto-bound workspace is pinned, and every delta a session sends is
-    /// a co-edit wrapper: routing one must not reach Automerge's parser,
-    /// which logs each chunk it rejects at error level.
-    #[test]
-    fn co_edit_payload_logs_no_automerge_error() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        struct Errors(Arc<AtomicUsize>);
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Errors {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                if *event.metadata().level() == tracing::Level::ERROR {
-                    self.0.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-        }
-
-        let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 57, true, Membership::default()).unwrap();
-        let payload = crate::coedit::CoeditPayload::Checkpoint {
-            channel: [3; 32],
-            body: b"opaque".to_vec(),
-        }
-        .encode()
-        .unwrap();
-        let errors = Arc::new(AtomicUsize::new(0));
-        let subscriber = tracing_subscriber::registry().with(Errors(Arc::clone(&errors)));
-        tracing::subscriber::with_default(subscriber, || {
-            rt.fanout_delta(&[6u8; 32], &env_delta(57, [6u8; 32]), &payload, 1)
-                .unwrap();
-        });
-        assert_eq!(errors.load(Ordering::SeqCst), 0);
-        assert!(rt.current_heads().is_empty());
-    }
-
     #[test]
     fn the_commit_ledger_is_durable_and_forgets_its_oldest_commits_first() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1183,271 +954,6 @@ mod tests {
         );
     }
 
-    fn env_delta(id: u64, author: [u8; 32]) -> Envelope {
-        Envelope::Delta {
-            workspace_id: id,
-            author_device_public_key: author,
-            authored_at_ns: 100,
-            delta: vec![1, 2, 3],
-            signature: [7u8; 64],
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn fanout_reaches_live_subscribers_and_queues_for_offline_ones() {
-        // Phase `fanout_excludes_author_and_enqueues_offline`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut membership = Membership::default();
-            membership.set(vec![[1u8; 32], [2u8; 32], [3u8; 32]]);
-            let mut rt = WorkspaceRuntime::open(tmp.path(), 42, false, membership).unwrap();
-            // Peer 2 is live; peer 1 (author) is live too but should be
-            // excluded; peer 3 is offline → gets store-and-forward.
-            let (tx1, _rx1) = mpsc::channel(8);
-            let (tx2, mut rx2) = mpsc::channel(8);
-            let (disconnect1, _disconnect_rx1) = mpsc::channel(1);
-            let (disconnect2, _disconnect_rx2) = mpsc::channel(1);
-            rt.add_subscriber(Subscriber {
-                device_public_key: [1u8; 32],
-                tx: tx1,
-                disconnect: disconnect1,
-            });
-            rt.add_subscriber(Subscriber {
-                device_public_key: [2u8; 32],
-                tx: tx2,
-                disconnect: disconnect2,
-            });
-            let env = env_delta(42, [1u8; 32]);
-            let delivered = rt.fanout_delta(&[1u8; 32], &env, b"1 2 3", 111).unwrap();
-            assert_eq!(delivered, 1);
-            // Peer 2 saw the delta live.
-            assert_eq!(rx2.try_recv().unwrap(), env);
-            // Peer 3 has one pending delta on disk.
-            let peer3 = [3u8; 32];
-            assert_eq!(rt.store.count_pending(&peer3).unwrap(), 1);
-        }
-        // Phase `fanout_prunes_dead_subscribers`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
-            let (tx, rx) = mpsc::channel(8);
-            let (disconnect, _disconnect_rx) = mpsc::channel(1);
-            drop(rx); // channel closed immediately
-            rt.add_subscriber(Subscriber {
-                device_public_key: [9u8; 32],
-                tx,
-                disconnect,
-            });
-            let env = env_delta(5, [1u8; 32]);
-            let delivered = rt.fanout_delta(&[1u8; 32], &env, b"", 1).unwrap();
-            assert_eq!(delivered, 0);
-            assert!(rt.subscribers.is_empty());
-        }
-        // Phase `fanout_from_attached_host_skips_other_attached_hosts`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 8, false, Membership::default()).unwrap();
-            // A local device + an attached host, both subscribed.
-            let (tx_dev, mut rx_dev) = mpsc::channel(8);
-            let (tx_host, mut rx_host) = mpsc::channel(8);
-            let (disconnect_dev, _disconnect_rx_dev) = mpsc::channel(1);
-            let (disconnect_host, _disconnect_rx_host) = mpsc::channel(1);
-            rt.add_subscriber(Subscriber {
-                device_public_key: [1u8; 32],
-                tx: tx_dev,
-                disconnect: disconnect_dev,
-            });
-            rt.note_attached_host([2u8; 32]);
-            rt.add_subscriber(Subscriber {
-                device_public_key: [2u8; 32],
-                tx: tx_host,
-                disconnect: disconnect_host,
-            });
-            // An attached host authored it (offline here).
-            let author = [3u8; 32];
-            rt.note_attached_host(author);
-            let env = env_delta(8, author);
-            let delivered = rt.fanout_delta(&author, &env, b"x", 1).unwrap();
-            // Only the local device saw it.
-            assert_eq!(delivered, 1);
-            assert_eq!(rx_dev.try_recv().unwrap(), env);
-            assert!(
-                rx_host.try_recv().is_err(),
-                "an attached host is not echoed to"
-            );
-        }
-        // Phase `attached_host_gets_pending_when_offline_and_origin_is_device`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 12, false, Membership::default()).unwrap();
-            let pr_pk = [7u8; 32];
-            rt.note_attached_host(pr_pk);
-            // A local device authors — the host is offline, so it is queued.
-            let author = [1u8; 32];
-            let env = env_delta(12, author);
-            rt.fanout_delta(&author, &env, b"x", 42).unwrap();
-            assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 1);
-        }
-        // Phase `attached_host_pending_suppressed_when_origin_is_attached_host`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 13, false, Membership::default()).unwrap();
-            let pr_pk = [7u8; 32];
-            rt.note_attached_host(pr_pk);
-            // An attached host is the origin — the offline one must NOT be
-            // queued for it.
-            let author = [2u8; 32];
-            rt.note_attached_host(author);
-            let env = env_delta(13, author);
-            rt.fanout_delta(&author, &env, b"x", 42).unwrap();
-            assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
-        }
-    }
-
-    #[test]
-    fn materialized_deltas_are_served_and_recovered_by_anti_entropy() {
-        // Phase `materialize_pins_delta_and_serves_it_via_changes_since`.
-        // A pinned host materializes an incoming raw Automerge delta into
-        // its doc and can then serve it back via `changes_since` — the
-        // source of truth for anti-entropy. A fresh peer converges from
-        // that alone.
-        {
-            use automerge::transaction::Transactable;
-            use automerge::{AutoCommit, ROOT};
-
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 55, true, Membership::default()).unwrap();
-
-            let mut doc_a = AutoCommit::new();
-            doc_a.put(ROOT, "title", "hello").unwrap();
-            let d1 = doc_a.save_incremental();
-
-            let env = env_delta(55, [1u8; 32]);
-            rt.fanout_delta(&[1u8; 32], &env, &d1, 1).unwrap();
-
-            // Host materialized the change — its heads match the author's.
-            let host_heads: Vec<[u8; 32]> = doc_a.get_heads().into_iter().map(|h| h.0).collect();
-            assert_eq!(rt.current_heads(), host_heads);
-            // And it persisted a snapshot (durable across restart).
-            assert!(rt.store.load_snapshot().unwrap().is_some());
-
-            // A fresh peer with nothing converges purely from the host's
-            // anti-entropy response.
-            let delta_since = rt.changes_since(&[]);
-            assert!(!delta_since.is_empty());
-            let mut doc_peer = AutoCommit::new();
-            doc_peer.load_incoming(&delta_since).unwrap();
-            assert_eq!(doc_peer.get_heads(), doc_a.get_heads());
-        }
-        // Phase `materialize_skips_non_automerge_payload`.
-        // A non-Automerge payload (the byte-blob deltas some peers publish,
-        // or a co-edit wrapper) must not corrupt or advance the pinned doc,
-        // and must not write a snapshot — materialization is best-effort and
-        // isolated from routing.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let mut rt =
-                WorkspaceRuntime::open(tmp.path(), 56, true, Membership::default()).unwrap();
-            let env = env_delta(56, [5u8; 32]);
-            // fanout still succeeds (routing is unaffected)...
-            rt.fanout_delta(&[5u8; 32], &env, b"not-automerge", 1)
-                .unwrap();
-            // ...but the doc did not advance and no snapshot was written.
-            assert!(rt.current_heads().is_empty());
-            assert!(rt.store.load_snapshot().unwrap().is_none());
-            assert!(rt.changes_since(&[]).is_empty());
-        }
-        // Phase `anti_entropy_recovers_delta_lost_in_half_closed_channel_race`.
-        // The previously-unrecoverable disconnect race, at the runtime
-        // level: a delta fanned out to a *live* subscriber whose channel
-        // then dies before the write lands. Because the subscriber was
-        // live, the delta is counted delivered and is NEVER written to its
-        // pending queue — so the store-and-forward tier has nothing to
-        // recover from. Anti-entropy against the host's materialized doc
-        // reconciles the peer to convergence anyway.
-        //
-        // This exercises the real `WorkspaceRuntime` (`fanout_delta`,
-        // `changes_since`, the production mpsc subscriber channel) — no
-        // mock of the code under test.
-        {
-            use automerge::transaction::Transactable;
-            use automerge::{AutoCommit, ROOT};
-
-            let tmp = tempfile::tempdir().unwrap();
-            let a = [1u8; 32];
-            let b = [2u8; 32];
-            let mut membership = Membership::default();
-            membership.set(vec![a, b]);
-            let mut rt = WorkspaceRuntime::open(tmp.path(), 77, true, membership).unwrap();
-
-            // B is a LIVE subscriber — exactly what `run_peer` registers.
-            let (tx_b, rx_b) = mpsc::channel(8);
-            let (disconnect_b, _disconnect_rx_b) = mpsc::channel(1);
-            rt.add_subscriber(Subscriber {
-                device_public_key: b,
-                tx: tx_b,
-                disconnect: disconnect_b,
-            });
-
-            // A authors a genuine Automerge edit and publishes it.
-            let mut doc_a = AutoCommit::new();
-            doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));
-            doc_a.put(ROOT, "title", "shared").unwrap();
-            let d1 = doc_a.save_incremental();
-            let env = Envelope::Delta {
-                workspace_id: 77,
-                author_device_public_key: a,
-                authored_at_ns: 1,
-                delta: d1.clone(),
-                signature: [0u8; 64],
-            };
-            let delivered = rt.fanout_delta(&a, &env, &d1, 111).unwrap();
-            assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
-
-            // The gap: a delivered delta is NOT queued, so the pending tier
-            // holds nothing to recover B from.
-            assert_eq!(
-                rt.store.count_pending(&b).unwrap(),
-                0,
-                "a delivered delta is never written to the pending queue"
-            );
-
-            // The genuine disconnect race: B's wire dies before the outbound
-            // channel drained, so B never applied d1. Dropping the receiver
-            // models the dead wire — the fanned-out delta is simply lost.
-            drop(rx_b);
-
-            // Pre-anti-entropy: B (fresh, empty) is divergent and has no
-            // queue entry — the previously-unrecoverable state.
-            let mut doc_b = AutoCommit::new();
-            doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-            assert_ne!(doc_b.get_heads(), doc_a.get_heads(), "B starts divergent");
-
-            let have: Vec<[u8; 32]> = doc_b.get_heads().into_iter().map(|h| h.0).collect();
-            let delta_since = rt.changes_since(&have);
-            assert!(
-                !delta_since.is_empty(),
-                "host serves the lost change from its materialized doc"
-            );
-            doc_b.load_incoming(&delta_since).unwrap();
-
-            assert_eq!(
-                doc_b.get_heads(),
-                doc_a.get_heads(),
-                "anti-entropy reconciles B to convergence despite the lost fan-out and empty queue"
-            );
-        }
-    }
-
     fn retained_envelope(
         author: [u8; 32],
         channel: [u8; 32],
@@ -1469,7 +975,8 @@ mod tests {
         }
     }
 
-    fn publish(rt: &mut WorkspaceRuntime, env: &Envelope, seq: u64) {
+    /// Retain `env` as the relay keeps an admitted change, at host order `seq`.
+    fn publish(rt: &WorkspaceRuntime, env: &Envelope, seq: u64) {
         let Envelope::Delta {
             author_device_public_key,
             delta,
@@ -1478,8 +985,16 @@ mod tests {
         else {
             panic!("delta")
         };
-        rt.fanout_delta(author_device_public_key, env, delta, seq)
-            .unwrap();
+        let raw = crate::transport::encode(env).unwrap();
+        match crate::coedit::retention_metadata(delta) {
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
+                rt.store.retain_checkpoint(&channel, &raw).unwrap();
+            }
+            Some((channel, crate::coedit::RetentionKind::Delta)) => {
+                rt.store.retain_delta(&channel, seq, &raw).unwrap();
+            }
+            None => panic!("{author_device_public_key:?} wrote no retained change"),
+        }
     }
 
     fn disk_usage(path: &std::path::Path) -> (u64, usize) {
@@ -1504,13 +1019,11 @@ mod tests {
         let membership = Membership {
             devices: (10..42).map(|key| [key; 32]).collect(),
         };
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+        let rt = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
         let other_author = retained_envelope([2; 32], [3; 32], true, 201);
         let other_channel = retained_envelope([1; 32], [4; 32], true, 202);
-        publish(&mut rt, &other_author, 1);
-        publish(&mut rt, &other_channel, 2);
-        let opaque = env_delta(7, [1; 32]);
-        publish(&mut rt, &opaque, 3);
+        publish(&rt, &other_author, 1);
+        publish(&rt, &other_channel, 2);
         let mut document = AutoCommit::new();
         document.set_actor(automerge::ActorId::from(b"retained-growth".as_slice()));
         document
@@ -1541,11 +1054,7 @@ mod tests {
                     delta: payload.encode().unwrap(),
                     signature: [0; 64],
                 };
-                publish(
-                    &mut rt,
-                    &envelope,
-                    10 + u64::from(round) * 2 + offset as u64,
-                );
+                publish(&rt, &envelope, 10 + u64::from(round) * 2 + offset as u64);
                 latest.push(envelope);
             }
         }
@@ -1560,12 +1069,6 @@ mod tests {
         for env in [other_author, other_channel].into_iter().chain(latest) {
             assert!(retained.contains(&crate::transport::encode(&env).unwrap()));
         }
-        for peer in &rt.membership.devices {
-            assert_eq!(
-                rt.store.drain_pending(peer).unwrap(),
-                vec![crate::transport::encode(&opaque).unwrap()]
-            );
-        }
     }
 
     #[test]
@@ -1576,10 +1079,10 @@ mod tests {
             let membership = Membership {
                 devices: (10..10 + offline_peers).map(|key| [key; 32]).collect(),
             };
-            let mut runtime = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+            let runtime = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
             for round in 1..=24u8 {
                 publish(
-                    &mut runtime,
+                    &runtime,
                     &retained_envelope([1; 32], [3; 32], true, round),
                     u64::from(round),
                 );
@@ -1589,9 +1092,6 @@ mod tests {
                 24,
                 "unknown checkpoints have no causal supersedence proof"
             );
-            for peer in &runtime.membership.devices {
-                assert_eq!(runtime.store.count_pending(peer).unwrap(), 0);
-            }
             sizes.push(disk_usage(runtime.store.root()));
         }
         assert_eq!(
@@ -1602,318 +1102,6 @@ mod tests {
             "opaque retained fixture: {} logical bytes in {} files for either 1 or 32 offline peers",
             sizes[0].0, sizes[0].1
         );
-    }
-
-    #[test]
-    fn failed_retained_commit_never_publishes_to_live_subscriber() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, Membership::default()).unwrap();
-        let (tx, mut rx) = mpsc::channel(8);
-        let (disconnect, _) = mpsc::channel(1);
-        rt.add_subscriber(Subscriber {
-            device_public_key: [8; 32],
-            tx,
-            disconnect,
-        });
-        std::fs::remove_dir_all(rt.store.root().join("retained")).unwrap();
-        std::fs::write(rt.store.root().join("retained"), b"blocked").unwrap();
-        let env = retained_envelope([1; 32], [3; 32], true, 1);
-        let Envelope::Delta { delta, .. } = &env else {
-            panic!("delta")
-        };
-        assert!(rt.fanout_delta(&[1; 32], &env, delta, 1).is_err());
-        assert!(
-            rx.try_recv().is_err(),
-            "uncommitted checkpoint reached live queue"
-        );
-    }
-
-    #[test]
-    fn fanout_backpressures_saturated_subscriber_without_dropping_it() {
-        // A full live queue is backpressure, never a disconnect: a
-        // slow subscriber (a browser on a busy main thread, or the native host
-        // publishing a large checkpoint) must stay subscribed while the missed
-        // durable delta spills to its store-and-forward queue. Dropping it here
-        // caused the reconnect -> retained-replay -> republish storm.
-        let tmp = tempfile::tempdir().unwrap();
-        let author = [1u8; 32];
-        let slow_peer = [2u8; 32];
-        let mut membership = Membership::default();
-        membership.set(vec![author, slow_peer]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-        let (tx, _rx) = mpsc::channel(1);
-        let (disconnect, mut disconnect_rx) = mpsc::channel(1);
-        // Saturate the one-slot live queue so the next fan-out cannot be sent.
-        tx.try_send(env_delta(6, [9u8; 32])).unwrap();
-        rt.add_subscriber(Subscriber {
-            device_public_key: slow_peer,
-            tx,
-            disconnect,
-        });
-
-        // Fan out several durable deltas past the queue bound.
-        for seq in 2..5 {
-            rt.fanout_delta(&author, &env_delta(6, author), b"durable", seq)
-                .unwrap();
-        }
-
-        // Never dropped, never told to disconnect, and every missed durable
-        // delta is preserved in the subscriber's pending queue.
-        assert!(
-            rt.subscribers.contains_key(&slow_peer),
-            "a slow subscriber must not be dropped within its queue bound"
-        );
-        assert!(
-            disconnect_rx.try_recv().is_err(),
-            "a full queue must apply backpressure, never signal a disconnect"
-        );
-        assert_eq!(
-            rt.store.count_pending(&slow_peer).unwrap(),
-            3,
-            "each durable delta the slow subscriber missed live is store-and-forwarded"
-        );
-    }
-
-    fn checkpoint_envelope(author: [u8; 32], seq: u64, body: Vec<u8>) -> (Envelope, Vec<u8>) {
-        checkpoint_on(author, seq, [9u8; 32], body)
-    }
-
-    fn checkpoint_on(
-        author: [u8; 32],
-        seq: u64,
-        channel: [u8; 32],
-        body: Vec<u8>,
-    ) -> (Envelope, Vec<u8>) {
-        let raw = crate::coedit::CoeditPayload::Checkpoint { channel, body }
-            .encode()
-            .unwrap();
-        (
-            Envelope::Delta {
-                workspace_id: 6,
-                author_device_public_key: author,
-                authored_at_ns: seq,
-                delta: raw.clone(),
-                signature: [7u8; 64],
-            },
-            raw,
-        )
-    }
-
-    fn retained_delta_envelope(author: [u8; 32], seq: u64) -> (Envelope, Vec<u8>) {
-        let raw = crate::coedit::CoeditPayload::RetainedDelta {
-            channel: [9u8; 32],
-            body: vec![4, 5],
-        }
-        .encode()
-        .unwrap();
-        (
-            Envelope::Delta {
-                workspace_id: 6,
-                author_device_public_key: author,
-                authored_at_ns: seq,
-                delta: raw.clone(),
-                signature: [7u8; 64],
-            },
-            raw,
-        )
-    }
-
-    #[test]
-    fn live_checkpoint_reaches_a_device_once_per_request_then_stops() {
-        // A connected device already holds every delta, so the
-        // native's idle checkpoint (2-3 MB, thousands of frames, a 124 ms frame
-        // when measured during pointer input) must not be fanned to it live. A device
-        // needs a live checkpoint exactly when it subscribes (its retained
-        // replay may be stale) and after it asks again; each request is served
-        // by one checkpoint, and the flag clears once one has been fanned.
-        let tmp = tempfile::tempdir().unwrap();
-        let author = [1u8; 32];
-        let device = [2u8; 32];
-        let mut membership = Membership::default();
-        membership.set(vec![author, device]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-        let (tx, mut rx) = mpsc::channel(8);
-        let (disconnect, _drx) = mpsc::channel(1);
-        rt.add_subscriber(Subscriber {
-            device_public_key: device,
-            tx,
-            disconnect,
-        });
-        let (workspace, record) = ([9u8; 32], [10u8; 32]);
-        assert!(
-            rt.needs_checkpoint(&device, &workspace),
-            "a fresh subscriber needs its first live checkpoint"
-        );
-        assert!(rt.needs_checkpoint(&device, &record));
-
-        // The native publishes its checkpoint as one message per channel (the
-        // workspace plus each record); the whole first set after subscribe passes.
-        let (env, raw) = checkpoint_on(author, 2, workspace, vec![1]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 2).unwrap(), 1);
-        let (env, raw) = checkpoint_on(author, 3, record, vec![1]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 3).unwrap(), 1);
-        assert!(
-            rx.try_recv().is_ok() && rx.try_recv().is_ok(),
-            "every channel of the first set is delivered live"
-        );
-        assert!(
-            !rt.needs_checkpoint(&device, &workspace),
-            "one fanned checkpoint serves its channel"
-        );
-        assert!(!rt.needs_checkpoint(&device, &record));
-
-        // The next (idle) set on the same channels is NOT fanned to the still-connected device.
-        let (env, raw) = checkpoint_on(author, 4, workspace, vec![2]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 4).unwrap(), 0);
-        let (env, raw) = checkpoint_on(author, 5, record, vec![2]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 5).unwrap(), 0);
-        assert!(
-            rx.try_recv().is_err(),
-            "an idle checkpoint must not reach a device that holds every delta"
-        );
-        assert!(
-            rt.subscribers.contains_key(&device),
-            "the device stays subscribed"
-        );
-        // The synthetic bodies are opaque rather than valid Automerge documents,
-        // so bounded retention preserves both versions without inventing causal
-        // supersedence. The live fanout gate remains one checkpoint per channel.
-        assert_eq!(rt.store.load_retained().unwrap().len(), 4);
-        // A checkpoint on a channel this device has never been served passes.
-        let (env, raw) = checkpoint_on(author, 6, [11u8; 32], vec![3]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 6).unwrap(), 1);
-        rx.try_recv().unwrap();
-
-        // Retained deltas keep flowing live regardless.
-        let (env, raw) = retained_delta_envelope(author, 4);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 4).unwrap(), 1);
-        assert!(
-            rx.try_recv().is_ok(),
-            "retained deltas are always delivered live"
-        );
-
-        // The device asks again (a presence frame: hello / SyncReq / rejected
-        // checkpoint): one more checkpoint per channel is delivered, then it stops.
-        rt.request_checkpoint(&device);
-        assert!(rt.needs_checkpoint(&device, &workspace));
-        let (env, raw) = checkpoint_on(author, 7, workspace, vec![3]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 7).unwrap(), 1);
-        assert!(
-            rx.try_recv().is_ok(),
-            "a requested checkpoint is delivered once"
-        );
-        let (env, raw) = checkpoint_on(author, 8, workspace, vec![4]);
-        assert_eq!(rt.fanout_delta(&author, &env, &raw, 8).unwrap(), 0);
-        assert!(
-            rx.try_recv().is_err(),
-            "the request is satisfied by one checkpoint per channel"
-        );
-    }
-
-    #[test]
-    fn bootstrap_stale_retained_then_sync_req_gets_exactly_one_live_checkpoint() {
-        // The bootstrap path the browser actually takes: it subscribes, the
-        // subscribe-time retained replay is stale (>300 s attestation window)
-        // and rejected, so it sends a SyncReq as presence; the native answers
-        // with a fresh checkpoint that must reach it live — once. Model the
-        // stale replay as the first (unsatisfying) checkpoint having already
-        // been consumed by the subscribe, i.e. the flag cleared, then presence.
-        let tmp = tempfile::tempdir().unwrap();
-        let native = [1u8; 32];
-        let browser = [2u8; 32];
-        let mut membership = Membership::default();
-        membership.set(vec![native, browser]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-        let (tx, mut rx) = mpsc::channel(8);
-        let (disconnect, _drx) = mpsc::channel(1);
-        rt.add_subscriber(Subscriber {
-            device_public_key: browser,
-            tx,
-            disconnect,
-        });
-        let (workspace, record) = ([9u8; 32], [10u8; 32]);
-        // The stale baseline set was replayed on subscribe and rejected by the browser.
-        for (seq, ch) in [(1u64, workspace), (2, record)] {
-            let (env, raw) = checkpoint_on(native, seq, ch, b"stale".to_vec());
-            rt.fanout_delta(&native, &env, &raw, seq).unwrap();
-            rx.try_recv().unwrap();
-        }
-        assert!(
-            !rt.needs_checkpoint(&browser, &workspace) && !rt.needs_checkpoint(&browser, &record)
-        );
-        // Browser: "checkpoint does not match" -> SyncReq (a presence frame).
-        rt.request_checkpoint(&browser);
-        // Native: refresh + publish a fresh SET (workspace + record) -> the whole set is delivered live, once.
-        for (seq, ch) in [(3u64, workspace), (4, record)] {
-            let (env, raw) = checkpoint_on(native, seq, ch, b"fresh".to_vec());
-            assert_eq!(
-                rt.fanout_delta(&native, &env, &raw, seq).unwrap(),
-                1,
-                "every channel of the fresh set reaches the requester"
-            );
-            let Envelope::Delta { delta, .. } = rx.try_recv().unwrap() else {
-                panic!("delta")
-            };
-            assert!(
-                matches!(crate::coedit::CoeditPayload::decode(&delta), Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) if body == b"fresh")
-            );
-        }
-        // The native's next idle set is not fanned to the now-current browser.
-        for (seq, ch) in [(5u64, workspace), (6, record)] {
-            let (env, raw) = checkpoint_on(native, seq, ch, b"idle".to_vec());
-            assert_eq!(rt.fanout_delta(&native, &env, &raw, seq).unwrap(), 0);
-        }
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn attached_hosts_keep_receiving_every_checkpoint_live() {
-        // A host serving the workspace must be able to forward every
-        // checkpoint onward, so the device-only gate does not apply to it.
-        let tmp = tempfile::tempdir().unwrap();
-        let author = [1u8; 32];
-        let host = [3u8; 32];
-        let mut membership = Membership::default();
-        membership.set(vec![author, host]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-        let (tx, mut rx) = mpsc::channel(8);
-        let (disconnect, _drx) = mpsc::channel(1);
-        rt.note_attached_host(host);
-        rt.add_subscriber(Subscriber {
-            device_public_key: host,
-            tx,
-            disconnect,
-        });
-        for seq in 2..5u64 {
-            let (env, raw) = checkpoint_envelope(author, seq, vec![u8::try_from(seq).unwrap()]);
-            assert_eq!(rt.fanout_delta(&author, &env, &raw, seq).unwrap(), 1);
-            assert!(rx.try_recv().is_ok());
-        }
-    }
-
-    #[test]
-    fn fanout_still_prunes_a_subscriber_whose_wire_is_closed() {
-        // Backpressure covers a full queue; a genuinely dead receiver (its task
-        // and rx dropped) is still pruned so fan-out does not keep cloning into
-        // a channel no one will ever read.
-        let tmp = tempfile::tempdir().unwrap();
-        let author = [1u8; 32];
-        let dead_peer = [2u8; 32];
-        let mut membership = Membership::default();
-        membership.set(vec![author, dead_peer]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-        let (tx, rx) = mpsc::channel(1);
-        let (disconnect, _disconnect_rx) = mpsc::channel(1);
-        drop(rx); // the receiving task is gone
-        rt.add_subscriber(Subscriber {
-            device_public_key: dead_peer,
-            tx,
-            disconnect,
-        });
-        rt.fanout_delta(&author, &env_delta(6, author), b"durable", 2)
-            .unwrap();
-        assert!(!rt.subscribers.contains_key(&dead_peer));
-        assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
     }
 
     /// Presence to a subscriber with a mailbox goes there, batched, and the
