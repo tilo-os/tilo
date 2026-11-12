@@ -65,6 +65,9 @@ impl Session {
         if let Some(plane) = &self.action_plane {
             plane.link.serve(&mut services);
         }
+        // What the answers wrote (an agent's record of its work) reaches the workspace in this
+        // pass, not in the next one's.
+        self.shared.records.write();
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
