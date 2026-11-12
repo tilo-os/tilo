@@ -236,3 +236,10 @@ calendar-a11y-toggle-task = { $done ->
    *[false] Aufgabe { $title } als erledigt markieren
 }
 calendar-a11y-delete-event = Termin löschen
+
+## Wie die Auswahllisten des Editors heißen
+calendar-editor-calendar = Kalender
+calendar-editor-repeat = Wiederholung
+calendar-editor-alert = Erinnerung
+calendar-editor-time-zone = Zeitzone
+calendar-editor-priority = Priorität

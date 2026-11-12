@@ -1007,6 +1007,19 @@ def named_in(code: str, begin: int, end: int, name: str) -> bool:
 FUNCTION = re.compile(r"\bfn\s+([a-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
 # A call to a helper: a free function, a method on `self`, an associated call.
 HELPER_CALL = r"(?<![\w$]){name}\s*\("
+# An inherent or trait implementation, whose brace follows the type it is for:
+# `impl ActionButton`, `impl<'a> Widget for Row<'a>`. What a method of it is
+# called by is the type's own name, which tells `ActionButton::new` from the
+# `new` every other type has.
+IMPLEMENTED_TYPE = re.compile(r"\bimpl(?:\s*<[^>{;]*>)?\s+([^{;]*?)\s*\{")
+# A catalogue lookup: what a window paints is the message `key` names, so a
+# helper that hands its parameter here takes a key, not words. A call site
+# filling that parameter with English words (`"Refresh disks"`) paints nothing
+# the catalogue carries, so it ships the source language inside a German
+# window.
+KEY_LOOKUP = re.compile(
+    r"(?<![\w$])(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:::|\.)\s*)*(?:t|t_args)\s*\("
+)
 
 
 def parameters(code: str, start: int) -> list[str]:
@@ -1060,14 +1073,27 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
     argument, because only then does a call site say which word is copy — a
     name the crate uses for two different jobs (`new`) says nothing. A test
     double's method paints nothing a person reads, so it decides no name.
+
+    A parameter a body hands to a catalogue lookup (`t(key)`, `CATALOG.t(key)`,
+    `i18n::t(key)`) is a key: the call site chooses which message is painted,
+    so words there never reach the catalogue at all.
     """
-    bodies: list[tuple[str, list[str], str, int, int]] = []
+    bodies: list[tuple[str, str, list[str], str, int, int]] = []
     for path in paths:
         text = path.read_text(errors="replace")
         if "fn " not in text:
             continue
         code, _ = rust_source.lex(text)
         shown = rust_source.blank_test_items(code)
+        implementations = []
+        for found in IMPLEMENTED_TYPE.finditer(code):
+            held = found.group(1)
+            if " for " in held:
+                held = held.split(" for ", 1)[1]
+            held = held.split("<", 1)[0].strip().rsplit("::", 1)[-1]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", held):
+                implementations.append((held, found.end(), rust_source.matching(code,
+                                                                               found.end() - 1)))
         for function in FUNCTION.finditer(code):
             if shown[function.start()] == " ":
                 continue
@@ -1077,12 +1103,18 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 names = names[1:]
             brace = code.find("{", function.end())
             if names and brace >= 0:
-                bodies.append((function.group(1), names, code, brace,
+                owner = next(
+                    (held for held, body, close in reversed(implementations)
+                     if body <= function.start() < close),
+                    "",
+                )
+                qualified = f"{owner}::{function.group(1)}" if owner else ""
+                bodies.append((function.group(1), qualified, names, code, brace,
                                rust_source.matching(code, brace)))
 
     lands: dict[int, set[int]] = {}
     flows: list[tuple[int, int, str, int]] = []
-    for number, (name, names, code, brace, body_end) in enumerate(bodies):
+    for number, (name, _, names, code, brace, body_end) in enumerate(bodies):
         painted_at: set[tuple[int, str]] = set()
         for call, index in TEXT_CONSTRUCTORS + SPEC_BUILDERS:
             at = code.find(call, brace, body_end)
@@ -1091,9 +1123,14 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 if begin < end:
                     painted_at.add((begin, code[begin:end]))
                 at = code.find(call, at + len(call), body_end)
+        keys_at: set[tuple[int, str]] = set()
+        for lookup in KEY_LOOKUP.finditer(code, brace, body_end):
+            begin, end = argument(code, lookup.end(), 0)
+            if begin < end:
+                keys_at.add((begin, code[begin:end]))
         passed_on: list[tuple[str, int, str]] = []
         for hand in re.finditer(r"[A-Za-z_][A-Za-z0-9_:]*\s*\(", code[brace:body_end]):
-            callee = hand.group(0)[:-1].strip().rsplit("::", 1)[-1]
+            callee = hand.group(0)[:-1].strip()
             open_paren = brace + hand.start() + len(hand.group(0)) - 1
             for called, (begin, end) in enumerate(calls_of(code, open_paren)):
                 if begin < end:
@@ -1103,18 +1140,33 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
                 continue
             if any(bare(source, parameter) for _, source in painted_at):
                 lands.setdefault(number, set()).add(index)
+            if any(bare(source, parameter) for _, source in keys_at):
+                lands.setdefault(number, set()).add(index)
             for callee, called, source in passed_on:
                 if bare(source, parameter):
                     flows.append((number, index, callee, called))
     by_name: dict[str, set[int]] = {}
-    for number, (name, _, _, _, _) in enumerate(bodies):
+    by_type_name: dict[str, set[int]] = {}
+    for number, (name, qualified, _, _, _, _) in enumerate(bodies):
         by_name.setdefault(name, set()).add(number)
+        if qualified:
+            by_type_name.setdefault(qualified, set()).add(number)
 
-    def painted_by(name: str) -> set[int]:
+    def landings(numbers) -> set[int]:
         found: set[int] = set()
-        for number in by_name.get(name, ()):
+        for number in numbers:
             found |= lands.get(number, set())
         return found
+
+    def painted_by(name: str) -> set[int]:
+        """What callers share with a callee: the arguments every definition of
+        a bare name paints, or the one definition of a type's method."""
+        if "::" in name:
+            typed = landings(by_type_name.get(name, ()))
+            if typed:
+                return typed
+            name = name.rsplit("::", 1)[-1]
+        return landings(by_name.get(name, ()))
 
     changed = True
     while changed:
@@ -1128,6 +1180,10 @@ def helper_table(paths: list[Path]) -> dict[str, set[int]]:
         sets = [lands.get(number, set()) for number in numbers]
         if sets[0] and all(other == sets[0] for other in sets):
             table[name] = sets[0]
+    for qualified, numbers in by_type_name.items():
+        shared = landings(numbers)
+        if shared and all(lands.get(number, set()) == shared for number in numbers):
+            table[qualified] = shared
     return table
 
 

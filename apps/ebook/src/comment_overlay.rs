@@ -269,7 +269,11 @@ impl CommentOverlay {
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
     pub(crate) fn begin_editing(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
-        self.editor = Some(NoteEditor::new(id, "Write a comment", library));
+        self.editor = Some(NoteEditor::new(
+            id,
+            &crate::resource::CATALOG.t("ebook-write-comment"),
+            library,
+        ));
     }
 
     pub(crate) fn finish_editing(&mut self) {

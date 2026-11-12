@@ -425,6 +425,43 @@ class CopyLanguageTests(unittest.TestCase):
                 "position at any call site is painted — also through a second "
                 "helper; a catalogue key or a value is not")
 
+    def test_a_helper_that_takes_a_key_is_handed_a_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "impl ActionButton {",
+                "    pub fn new(key: &str, control: Control) -> Self {",
+                "        let label = crate::strings::t(key);",
+                "        Self { label, control }",
+                "    }",
+                "}",
+                "impl Panel {",
+                "    fn nav_row(&self, forward: Control, forward_key: &str) -> Row {",
+                "        Row::new().push(ActionButton::new(forward_key, forward))",
+                "    }",
+                "    fn page(&self) -> Row {",
+                '        ActionButton::new("demo.action-back", self.back());',
+                '        ActionButton::new("Refresh disks", self.refresh());',
+                '        self.nav_row(self.next(), "demo.action-next");',
+                '        self.nav_row(self.next(), "Next");',
+                "        self.nav_row(self.next(), self.key());",
+                "        Row::new()",
+                "    }",
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Refresh disks", "Next"],
+                "a helper that hands its parameter to a catalogue lookup takes "
+                "a key, so a call site filling it with words paints the source "
+                "language inside a translated window")
+
     def test_a_resource_title_and_an_action_reason_are_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

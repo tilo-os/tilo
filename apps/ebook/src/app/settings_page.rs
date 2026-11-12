@@ -584,7 +584,13 @@ impl BooksApp {
 
         // The default font: a row whose trailing control is the list of
         // fonts.
-        let mut y = Self::draw_settings_section(ctx, col, y, "Default font", None);
+        let mut y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            &crate::resource::CATALOG.t("ebook-settings-default-font"),
+            None,
+        );
         let size = ControlSize::Regular;
         let control_w =
             HostedDropdown::width(fonts.iter().map(|f| f.name.as_str()), size, ctx.text, theme);

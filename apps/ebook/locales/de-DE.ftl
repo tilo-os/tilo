@@ -207,3 +207,8 @@ ebook-action-open-result = Treffer öffnen
 ebook-action-get-book = Buch holen
 ebook-action-back = Zurück
 ebook-empty-comment = Leerer Kommentar
+
+## Wie die Einstellungsseite und der Notiz-Editor heißen
+ebook-settings-default-font = Standardschrift
+ebook-write-comment = Kommentar schreiben
+ebook-write-note = Notiz schreiben

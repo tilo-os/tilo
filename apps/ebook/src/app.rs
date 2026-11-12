@@ -1369,7 +1369,10 @@ impl BooksApp {
             renaming: None,
             number_controls: NumberControls::default(),
             color_picker: SchemeColorSheet::default(),
-            font_dropdown: HostedDropdown::new("books.settings.default-font", "Default font"),
+            font_dropdown: HostedDropdown::new(
+                "books.settings.default-font",
+                &crate::resource::CATALOG.t("ebook-settings-default-font"),
+            ),
             modal_actions: Vec::new(),
             modal_close: Rect::ZERO,
             library_prefs: crate::model::LibraryPrefs::default(),

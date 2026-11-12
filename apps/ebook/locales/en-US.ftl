@@ -207,3 +207,8 @@ ebook-action-open-result = Open result
 ebook-action-get-book = Get book
 ebook-action-back = Back
 ebook-empty-comment = Empty comment
+
+## What the settings page and the note editor call themselves
+ebook-settings-default-font = Default font
+ebook-write-comment = Write a comment
+ebook-write-note = Write a note

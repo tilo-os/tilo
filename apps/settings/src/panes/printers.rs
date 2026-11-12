@@ -178,9 +178,17 @@ fn carry_out(
             let printer = discovered
                 .iter()
                 .find(|printer| &printer.uri == uri)
-                .ok_or_else(|| format!("no printer at `{uri}` was found nearby"))?;
+                .ok_or_else(|| {
+                    t_args(
+                        "settings-printers-not-found",
+                        &[("uri", ArgValue::Text(uri.clone()))],
+                    )
+                })?;
             if os_actions::printing::is_added(printer, queues) {
-                return Err(format!("{} is already added", printer.name));
+                return Err(t_args(
+                    "settings-printers-already-added",
+                    &[("printer", ArgValue::Text(printer.name.clone()))],
+                ));
             }
             service.add(printer)
         }

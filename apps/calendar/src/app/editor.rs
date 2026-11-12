@@ -47,11 +47,12 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    /// A dropdown named `name` whose `icon` says what it chooses.
-    pub(super) fn new(name: &str, icon: Icon) -> Self {
+    /// A dropdown named by the catalogue message `key`, whose `icon` says
+    /// what it chooses.
+    pub(super) fn new(key: &str, icon: Icon) -> Self {
         let state = LocalState::new(String::new());
         let dropdown = Dropdown::from_state(Vec::new(), &state)
-            .with_accessible_name(name)
+            .with_accessible_name(crate::resource::t(key))
             .leading_icon(icon);
         Self {
             state,
@@ -108,12 +109,12 @@ pub(crate) struct Choices {
 impl Choices {
     pub(super) fn new() -> Self {
         Self {
-            calendar: Choice::new("Calendar", Icon::Calendar),
-            repeat: Choice::new("Repeat", Icon::Repeat),
-            alert: Choice::new("Alert", Icon::Bell),
-            timezone: Choice::new("Time zone", Icon::Globe),
-            priority: Choice::new("Priority", Icon::Flag),
-            project: Choice::new("Project", Icon::Folder),
+            calendar: Choice::new("calendar-editor-calendar", Icon::Calendar),
+            repeat: Choice::new("calendar-editor-repeat", Icon::Repeat),
+            alert: Choice::new("calendar-editor-alert", Icon::Bell),
+            timezone: Choice::new("calendar-editor-time-zone", Icon::Globe),
+            priority: Choice::new("calendar-editor-priority", Icon::Flag),
+            project: Choice::new("calendar-project", Icon::Folder),
         }
     }
 

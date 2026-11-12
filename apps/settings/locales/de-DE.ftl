@@ -2881,3 +2881,6 @@ appearance-inspect-failed = Die Darstellungseinstellungen ließen sich nicht les
 disk-unlock-exited = Beendet mit { $status }
 display-brightness-failed = Die Helligkeit ließ sich nicht ändern: { $detail }
 display-mirror = { $display } spiegeln
+
+settings-printers-not-found = Kein Drucker antwortet unter { $uri }. Prüfe, ob er eingeschaltet und im selben Netzwerk ist, und suche dann erneut.
+settings-printers-already-added = { $printer } ist bereits hinzugefügt.

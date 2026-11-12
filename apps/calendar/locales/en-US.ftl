@@ -236,3 +236,10 @@ calendar-a11y-toggle-task = { $done ->
    *[false] Mark task { $title } complete
 }
 calendar-a11y-delete-event = Delete event
+
+## What the editor's dropdowns are called
+calendar-editor-calendar = Calendar
+calendar-editor-repeat = Repeat
+calendar-editor-alert = Alert
+calendar-editor-time-zone = Time zone
+calendar-editor-priority = Priority

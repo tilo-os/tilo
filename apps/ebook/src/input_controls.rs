@@ -505,7 +505,11 @@ impl NoteComposer {
 
     /// Open the editor on note `id`; it shows the note on the next sync.
     pub(crate) fn open(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
-        self.editor = Some(NoteEditor::new(id, "Write a note", library));
+        self.editor = Some(NoteEditor::new(
+            id,
+            &crate::resource::CATALOG.t("ebook-write-note"),
+            library,
+        ));
     }
 
     pub(crate) fn close(&mut self) {

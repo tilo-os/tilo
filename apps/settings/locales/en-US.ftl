@@ -2881,3 +2881,6 @@ appearance-inspect-failed = The appearance settings could not be read: { $detail
 disk-unlock-exited = Exited with { $status }
 display-brightness-failed = Brightness could not be changed: { $detail }
 display-mirror = Mirror { $display }
+
+settings-printers-not-found = No printer answers at { $uri }. Check that it is switched on and on the same network, then search again.
+settings-printers-already-added = { $printer } is already added.
