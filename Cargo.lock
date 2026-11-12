@@ -17836,6 +17836,7 @@ dependencies = [
  "tilo-files",
  "tilo-live",
  "tilo-lock",
+ "tilo-media",
  "tilo-model-gateway",
  "tilo-paths",
  "tilo-peer-state",

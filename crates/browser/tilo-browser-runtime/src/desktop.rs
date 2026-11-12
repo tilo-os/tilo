@@ -1216,12 +1216,15 @@ impl Tiles {
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
-        // Another device's window whose page travels here: this page draws it, as the native desk
-        // does, with the same tile.
-        if matches!(tab.tile, TileContent::HostedWindow { .. })
-            && let Some(host) = crate::pages::tile(tab.id, &tab.title)
-        {
-            return host;
+        // Another device's window whose pictures or page travel here: this page draws it, as the
+        // native desk does.
+        if let TileContent::HostedWindow { app_id, label, .. } = &tab.tile {
+            let title = if label.is_empty() { &tab.title } else { label };
+            if let Some(host) = crate::window_pictures::tile(tab.id, title, app_id)
+                .or_else(|| crate::pages::tile(tab.id, &tab.title))
+            {
+                return host;
+            }
         }
         let shared = self.shared.clone();
         let id = tab.id;

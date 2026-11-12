@@ -94,6 +94,8 @@ tilo-channels = { version = "0.1.0", path = "../../collab/channels" }
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
 # Which records a join does not replay, so a mount asks for them.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
+# The browser's decoder for another device's window pictures (src/window_pictures.rs).
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media" }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
@@ -168,4 +170,6 @@ tilo-session-core = { version = "0.1.0", path = "../../session/core" }
 tilo-desktop-search = { version = "0.1.0", path = "../../session/desktop-search" }
 serde.workspace = true
 serde_json.workspace = true
+# Another device's window pictures, as its track brings them (src/window_pictures.rs).
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
 

@@ -2471,6 +2471,18 @@ impl WasmPeer {
                     crate::pages::heard(self.id, workspace_id, tab, &body);
                     None
                 }
+                // A window's pictures: the video the device hosting it publishes, drawn in the tab
+                // of that window.
+                Event::LivePlane {
+                    ws: workspace_id,
+                    from,
+                    track: Track::Window(tab, _),
+                    body,
+                    ..
+                } if from != self.device_key => {
+                    crate::window_pictures::heard(self.id, workspace_id, tab, &body);
+                    None
+                }
                 Event::Live {
                     ws: workspace_id,
                     from,

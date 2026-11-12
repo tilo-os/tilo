@@ -1195,161 +1195,6 @@ impl PeerView {
     ) -> bool {
         self.state.borrow_mut().act(action, arguments).is_ok()
     }
-
-    /// Where a point in the tile is in the sender's own pixels, so a click on a scaled picture
-    /// lands where the person pointed.
-    fn stream_point(&self, point: Point) -> (f64, f64) {
-        let state = self.state.borrow();
-        if self.rect.width() <= 0.0
-            || self.rect.height() <= 0.0
-            || state.width == 0
-            || state.height == 0
-        {
-            return (point.x, point.y);
-        }
-        (
-            (point.x - self.rect.x0) / self.rect.width() * f64::from(state.width),
-            (point.y - self.rect.y0) / self.rect.height() * f64::from(state.height),
-        )
-    }
-}
-
-/// One key of the keyboard as the wire names it: a Linux evdev key code, which the owner translates
-/// into its own keyboard.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per key: the wire's code for each key of the keyboard"
-)]
-fn evdev_keycode(code: winit::keyboard::KeyCode) -> Option<u32> {
-    use winit::keyboard::KeyCode as K;
-    let code = match code {
-        K::KeyA => 30,
-        K::KeyB => 48,
-        K::KeyC => 46,
-        K::KeyD => 32,
-        K::KeyE => 18,
-        K::KeyF => 33,
-        K::KeyG => 34,
-        K::KeyH => 35,
-        K::KeyI => 23,
-        K::KeyJ => 36,
-        K::KeyK => 37,
-        K::KeyL => 38,
-        K::KeyM => 50,
-        K::KeyN => 49,
-        K::KeyO => 24,
-        K::KeyP => 25,
-        K::KeyQ => 16,
-        K::KeyR => 19,
-        K::KeyS => 31,
-        K::KeyT => 20,
-        K::KeyU => 22,
-        K::KeyV => 47,
-        K::KeyW => 17,
-        K::KeyX => 45,
-        K::KeyY => 21,
-        K::KeyZ => 44,
-        K::Digit0 => 11,
-        K::Digit1 => 2,
-        K::Digit2 => 3,
-        K::Digit3 => 4,
-        K::Digit4 => 5,
-        K::Digit5 => 6,
-        K::Digit6 => 7,
-        K::Digit7 => 8,
-        K::Digit8 => 9,
-        K::Digit9 => 10,
-        K::Escape => 1,
-        K::Minus => 12,
-        K::Equal => 13,
-        K::Backspace => 14,
-        K::Tab => 15,
-        K::BracketLeft => 26,
-        K::BracketRight => 27,
-        K::Enter => 28,
-        K::ControlLeft => 29,
-        K::Semicolon => 39,
-        K::Quote => 40,
-        K::Backquote => 41,
-        K::ShiftLeft => 42,
-        K::Backslash => 43,
-        K::Comma => 51,
-        K::Period => 52,
-        K::Slash => 53,
-        K::ShiftRight => 54,
-        K::NumpadMultiply => 55,
-        K::AltLeft => 56,
-        K::Space => 57,
-        K::CapsLock => 58,
-        K::F1 => 59,
-        K::F2 => 60,
-        K::F3 => 61,
-        K::F4 => 62,
-        K::F5 => 63,
-        K::F6 => 64,
-        K::F7 => 65,
-        K::F8 => 66,
-        K::F9 => 67,
-        K::F10 => 68,
-        K::NumLock => 69,
-        K::ScrollLock => 70,
-        K::Numpad7 => 71,
-        K::Numpad8 => 72,
-        K::Numpad9 => 73,
-        K::NumpadSubtract => 74,
-        K::Numpad4 => 75,
-        K::Numpad5 => 76,
-        K::Numpad6 => 77,
-        K::NumpadAdd => 78,
-        K::Numpad1 => 79,
-        K::Numpad2 => 80,
-        K::Numpad3 => 81,
-        K::Numpad0 => 82,
-        K::NumpadDecimal => 83,
-        K::F11 => 87,
-        K::F12 => 88,
-        K::NumpadEnter => 96,
-        K::ControlRight => 97,
-        K::NumpadDivide => 98,
-        K::PrintScreen => 99,
-        K::AltRight => 100,
-        K::Home => 102,
-        K::ArrowUp => 103,
-        K::PageUp => 104,
-        K::ArrowLeft => 105,
-        K::ArrowRight => 106,
-        K::End => 107,
-        K::ArrowDown => 108,
-        K::PageDown => 109,
-        K::Insert => 110,
-        K::Delete => 111,
-        K::SuperLeft => 125,
-        K::SuperRight => 126,
-        _ => return None,
-    };
-    Some(code)
-}
-
-/// The wire's name for a pointer button: the libinput code the owner's compositor replays.
-fn evdev_button(button: winit::event::MouseButton) -> u32 {
-    use winit::event::MouseButton;
-    match button {
-        MouseButton::Left => 272,
-        MouseButton::Right => 273,
-        MouseButton::Middle => 274,
-        MouseButton::Back => 275,
-        MouseButton::Forward => 276,
-        MouseButton::Other(other) => u32::from(other),
-    }
-}
-
-/// What the held modifiers are, in the xkb bitfield the wire carries: shift,
-/// control, alt and super, at the bits the owner reads.
-fn modifier_bits(modifiers: winit::keyboard::ModifiersState) -> u32 {
-    u32::from(modifiers.shift_key())
-        | (u32::from(modifiers.control_key()) << 2)
-        | (u32::from(modifiers.alt_key()) << 3)
-        | (u32::from(modifiers.super_key()) << 6)
 }
 
 impl Widget for PeerView {
@@ -1432,63 +1277,48 @@ impl Widget for PeerView {
     /// A person's pointer and keys are the tile's own actions, asked exactly as anything else
     /// driving the tile asks them: the share's rule refuses them the same way for both.
     fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
-        use winit::event::{ElementState, WindowEvent};
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if !self.rect.contains(point) {
-                    return;
-                }
-                let (x, y) = self.stream_point(point);
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("x".into(), serde_json::Value::from(x));
-                arguments.insert("y".into(), serde_json::Value::from(y));
-                if self.ask(PeerAction::PointerMotion, &arguments) {
-                    *ctx.handled = true;
-                }
+        let size = {
+            let state = self.state.borrow();
+            (state.width, state.height)
+        };
+        let Some(input) = crate::window_input::translate(
+            event,
+            self.rect,
+            size,
+            ctx.scale_factor,
+            ctx.modifiers.state(),
+        ) else {
+            return;
+        };
+        let (action, arguments) = match input {
+            InputEvent::PointerMotion { x, y } => (
+                PeerAction::PointerMotion,
+                serde_json::json!({ "x": x, "y": y }),
+            ),
+            InputEvent::PointerButton { button, pressed } => (
+                PeerAction::PointerButton,
+                serde_json::json!({ "button": button, "pressed": pressed }),
+            ),
+            InputEvent::Key {
+                keysym,
+                pressed,
+                modifiers,
+            } => (
+                PeerAction::Key,
+                serde_json::json!({ "keysym": keysym, "pressed": pressed, "modifiers": modifiers }),
+            ),
+            _ => return,
+        };
+        let serde_json::Value::Object(arguments) = arguments else {
+            return;
+        };
+        if self.ask(action, &arguments) {
+            *ctx.handled = true;
+            if matches!(input, InputEvent::PointerButton { pressed: true, .. }) {
+                // Clicking a window puts the keyboard on it: the keys that follow are meant for the
+                // shared one.
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert(
-                    "button".into(),
-                    serde_json::Value::from(evdev_button(*button)),
-                );
-                arguments.insert(
-                    "pressed".into(),
-                    serde_json::Value::from(*state == ElementState::Pressed),
-                );
-                if self.ask(PeerAction::PointerButton, &arguments) {
-                    *ctx.handled = true;
-                    if *state == ElementState::Pressed {
-                        // Clicking a window puts the keyboard on it: the keys that follow are meant
-                        // for the shared one.
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let ui::winit::keyboard::PhysicalKey::Code(code) = event.physical_key else {
-                    return;
-                };
-                let Some(keysym) = evdev_keycode(code) else {
-                    return;
-                };
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("keysym".into(), serde_json::Value::from(keysym));
-                arguments.insert(
-                    "pressed".into(),
-                    serde_json::Value::from(event.state == ElementState::Pressed),
-                );
-                arguments.insert(
-                    "modifiers".into(),
-                    serde_json::Value::from(modifier_bits(ctx.modifiers.state())),
-                );
-                if self.ask(PeerAction::Key, &arguments) {
-                    *ctx.handled = true;
-                }
-            }
-            _ => {}
         }
     }
 
