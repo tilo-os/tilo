@@ -26,8 +26,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# The records the app draws: their types, verbs and typed action arguments, and the module the
-# session's document host runs.
+# The records the app draws: their types, verbs and typed action arguments.
 tube-model = { path = "../tube-model" }
 # A channel's page as a described-components view, drawn by the shell like any app's
 # (one-app-model.md §2).

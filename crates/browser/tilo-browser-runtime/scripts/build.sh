@@ -349,10 +349,9 @@ PY
 fi
 
 # What the page has to resolve: every module the generated JavaScript imports. A bare name is
-# one only the document host provides (`tilo_model`, the imports a Rust app's model module calls
-# — the model's own crate built as a module), and a page has nothing to resolve it with: the
-# entry stops at its first import and never reaches the desktop. A bundle that links a model
-# where it links an app that draws one keeps it, so the build refuses it here instead.
+# one no page has to resolve — nothing outside a browser provides it — and a page has nothing to
+# resolve it with: the entry stops at its first import and never reaches the desktop. The build
+# refuses such a bundle here rather than shipping a page that cannot start.
 python3 - "$out" <<'PY'
 import pathlib, re, sys
 out = pathlib.Path(sys.argv[1])

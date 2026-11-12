@@ -1,6 +1,5 @@
 //! The app's record, which runs Agents shows: its type and verb are
-//! `console-model`'s, which the session's document host runs. What the app
-//! adds is reading a run against it.
+//! `console-model`'s. What the app adds is reading a run against it.
 //!
 //! The runs themselves are the workspaces' history, read through the session
 //! ([`ui::tilo_actions::remote::workspace_activity`]); this record holds no

@@ -179,8 +179,6 @@ members = [
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
-    "crates/sdk/tilo-model-abi",
-    "crates/sdk/tilo-model-guest",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",

@@ -2886,7 +2886,6 @@ dependencies = [
 name = "console-model"
 version = "0.1.0"
 dependencies = [
- "tilo-model-guest",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -16721,7 +16720,6 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-document",
- "tilo-model-guest",
  "tilo-reference",
  "tilo-resource",
  "workspace-hack",
@@ -19791,15 +19789,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-model-abi"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-model-client"
 version = "0.1.0"
 dependencies = [
@@ -19857,22 +19846,6 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "tilo-model-guest"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "getrandom 0.4.3",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-model-abi",
- "tilo-resource",
- "workspace-hack",
 ]
 
 [[package]]
@@ -23776,7 +23749,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "tilo-actions",
- "tilo-model-guest",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -28460,10 +28432,8 @@ dependencies = [
  "tilo-messaging-protocol",
  "tilo-messaging-service",
  "tilo-mime",
- "tilo-model-abi",
  "tilo-model-client",
  "tilo-model-gateway",
- "tilo-model-guest",
  "tilo-moderation",
  "tilo-native-media",
  "tilo-nearby-service",

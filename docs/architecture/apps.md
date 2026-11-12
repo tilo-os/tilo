@@ -167,22 +167,16 @@ Today the framework runs inside the app process:
 
 All of that moves to the document host:
 
-1. The document host in the session runs a package's model and verbs as a
-   WebAssembly module. The tilolang host already runs tilolang packages' code in
-   a system process rather than the app's, so it is the starting point; native
-   packages compile their model and verbs to the same kind of module.
-2. A Rust app's model runs as an instance kind of the workspace's tilolang
-   host, beside the tilolang packages': the app's windows, and an agent's
-   windowless launch, reach that instance, and the app's process keeps no
-   document of its own.
-3. Outbox workers become their own sandboxed launch, with their grants.
-4. Input gesture tokens and actor attribution move into the session's door.
-5. The identity broker connection, join proofs, channel keys and the peer
+1. A Rust app's model may later run as an instance kind of the workspace's tilolang host,
+   beside the tilolang packages'; its windows and an agent's windowless launch reach it.
+2. Outbox workers become their own sandboxed launch, with their grants.
+3. Input gesture tokens and actor attribution move into the session's door.
+4. The identity broker connection, join proofs, channel keys and the peer
    capability are removed from app launches, from the SDK and from the
    tilolang host; §6.5 of the security architecture is replaced by this document.
-6. Permission checks leave the SDK and the apps: a view sees what it is offered
+5. Permission checks leave the SDK and the apps: a view sees what it is offered
    and nothing else, and Chat's own `ChatPermissions` goes.
-7. The outbox drain is decided per entry by the session's policy, like an action.
+6. The outbox drain is decided per entry by the session's policy, like an action.
 
 Each step keeps apps working while it lands, and each ends by deleting the app-side
 code it replaced.

@@ -65,7 +65,7 @@ chrome and never opens a window.
 ## 4. Storage, actions, identity, permissions
 
 As apps.md §8 decided:
-- A Rust app's model and actions compile to the same WebAssembly module kind the document host runs for tilolang packages.
+- A Rust app's model and actions run as an instance kind of the workspace's tilolang host.
 - Its views are a client of the one launcher-made connection, and hold no identity, keys or transport.
 - Permission checks leave the app.
 
@@ -118,7 +118,7 @@ Order, each step keeping every app working, and each ending by deleting the code
 1. **Types:** every `#[resource]` publishes its `ResourceType`. `LiveRow` becomes typed item resources.
 2. **Views:** `#[view]` functions producing described components over the patch stream; the shell places them by resource and view.
 3. **Windows:** the SDK's window chrome becomes the app's root view. `ResourceApp::view` is removed.
-4. **Storage and actions:** apps.md §8, steps 1–7.
+4. **Storage and actions:** apps.md §8, steps 1–6.
 
 Each step migrates every app at once, or with a ratchet that fails for an app still on the old way.
 Tube goes first in each step, and proves it with the canvas query "youtube videos of <creator>",
