@@ -38,7 +38,7 @@ pub struct Failure {
     /// `FailureCode`: `transport-unavailable`, `transport-ended`,
     /// `certificate-expired`, `certificate-rejected`, `not-admitted`,
     /// `device-revoked`, `host-changed`, `workspace-deleted`, `agent-run-stopped`,
-    /// `protocol-rejected`, `permission-required`, `signature-rejected`,
+    /// `protocol-rejected`, `permission-required`, `write-refused`, `record-history-full`, `signing-failed`,
     /// `storage-transaction-failed`, `admission-timeout`, and the codes the
     /// page reports (see [`Link::report_failure`]).
     pub code: &'static str,

@@ -689,18 +689,36 @@ impl StatePeer {
             }
             candidate.sealed = history;
         } else {
-            if candidate.sealed.len() >= MAX_SEALED_OPS
-                || candidate
-                    .sealed
-                    .bytes()
-                    .saturating_add(envelope.payload.len())
-                    > MAX_SEALED_BYTES
-            {
+            if !Self::has_room(&candidate.sealed, &envelope) {
                 return Err(full());
             }
             candidate.sealed.push(envelope);
         }
         Ok(())
+    }
+
+    /// Whether `sealed`, a record's sealed history, has room for `envelope`, a write after it.
+    fn has_room(sealed: &backend::SealedLog, envelope: &SignedOp) -> bool {
+        sealed.len() < MAX_SEALED_OPS
+            && sealed.bytes().saturating_add(envelope.payload.len()) <= MAX_SEALED_BYTES
+    }
+
+    /// Whether the sealed history of `record` of `app` has room for `envelope`, a sealed write of
+    /// this device: a write past it is refused until a key holder compacts the history
+    /// ([`crate::PeerPublication::draft_sealed_compaction`]). A write in the clear keeps no sealed history.
+    #[must_use]
+    pub fn sealed_history_takes(&self, app: &str, record: &str, envelope: &SignedOp) -> bool {
+        if envelope.encryption.is_none() || envelope.kind == OpKind::Compaction {
+            return true;
+        }
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        self.core
+            .documents
+            .get(&route)
+            .is_none_or(|document| Self::has_room(&document.sealed, envelope))
     }
     /// Reinstall `route`'s stored sealed history, checking every write as it
     /// was admitted: sealed for this exact route, signed by its author, with

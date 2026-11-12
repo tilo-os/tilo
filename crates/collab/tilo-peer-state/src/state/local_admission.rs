@@ -57,12 +57,12 @@ impl StatePeer {
         else {
             return Ok((envelope, false));
         };
-        if self
-            .lookup_exact_local_document(app, record, &envelope, now)
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
-            return Ok((envelope, false));
+        // A sequence another write of this device took (a compaction it made since) is numbered
+        // past, as any it is under.
+        match self.lookup_exact_local_document(app, record, &envelope, now) {
+            Ok(Some(_)) => return Ok((envelope, false)),
+            Ok(None) | Err(super::AdmissionError::ConflictingSequence) => {}
+            Err(error) => return Err(error.to_string()),
         }
         envelope.seq = collab_types::next_unordered_document_sequence(now)
             .max(floor.checked_add(1).ok_or("sequence exhausted")?);

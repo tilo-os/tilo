@@ -11,6 +11,14 @@ use super::{
     Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute, Envelope,
     FailureSubject, RelayClient, Task,
 };
+use tilo_peer_state::owner::WriteRefusal;
+
+/// A record's history is full and this device could not compact it: its writes wait.
+const RECORD_FULL: &str = "record-history-full";
+/// This device's signer did not sign its writes: they wait.
+const SIGNING_FAILED: &str = "signing-failed";
+/// The failures of writes that wait, held: gone once nothing is held.
+const HELD_CODES: &[&str] = &[RECORD_FULL, SIGNING_FAILED];
 
 impl Task {
     /// `route` holds new writes of this device, held as the session was told of them: to commit
@@ -35,6 +43,8 @@ impl Task {
 
     /// Commit the writes held for their route's keys, once they may: every held write of a route
     /// whose keys this device holds, in one owner turn per route; held, so read, until committed.
+    /// Writes the record cannot take yet stay held, durably, for the next time this device
+    /// writes; only writes the workspace refuses for good are let go.
     pub(super) async fn commit_held(&mut self) {
         if !std::mem::take(&mut self.outbound_due) {
             return;
@@ -52,7 +62,9 @@ impl Task {
                 continue;
             };
             let taken = frames.len();
-            self.commit_frames(&route, frames).await;
+            if !self.commit_frames(&route, frames).await {
+                continue;
+            }
             let mut held = self.engine.held_writes().lock();
             if let Some(frames) = held.get_mut(&route) {
                 frames.drain(..taken.min(frames.len()));
@@ -61,25 +73,38 @@ impl Task {
                 }
             }
         }
+        if self.engine.held_writes().lock().is_empty() {
+            self.reports.change(|status| {
+                status.failures.retain(|failure| {
+                    failure.subject != FailureSubject::Session
+                        || !HELD_CODES.contains(&failure.code)
+                });
+            });
+        }
         self.persist_channels(true);
         self.release_barriers();
     }
 
-    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn,
-    /// done with all of them, committed or not. What this device writes, its readers read at
-    /// once, and custody keeps however long its host is away.
-    pub(super) async fn commit_frames(&mut self, route: &DocumentRoute, frames: Vec<Vec<u8>>) {
+    /// Seal, sign and commit `frames` of `route` into this device's custody, in one owner turn.
+    /// Answers whether it is done with them: committed, or refused for good. Writes its record
+    /// cannot take yet (its keys went away, its history is full, or the signer did not sign) stay
+    /// held. What this device writes, its readers read at once, and custody keeps however long
+    /// its host is away.
+    pub(super) async fn commit_frames(
+        &mut self,
+        route: &DocumentRoute,
+        frames: Vec<Vec<u8>>,
+    ) -> bool {
         let owner = self.replicas.owner();
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             self.fail(
                 "protocol-rejected",
                 "A document names an invalid workspace.",
             );
-            return;
+            return true;
         };
         let Some(keys) = self.keys_of(route) else {
-            self.fail("signature-rejected", "the route's channel keys went away");
-            return;
+            return false;
         };
         // The state carrying these keys is written before a write sealed
         // under them leaves ([`ChannelPeer::save_deferred`]): an admission
@@ -126,13 +151,29 @@ impl Task {
             .await
         {
             Ok(committed) => committed,
-            Err(error) => {
-                self.fail("signature-rejected", error);
-                return;
+            Err(refusal @ WriteRefusal::HistoryFull { .. }) => {
+                tracing::warn!(%refusal, "writes wait for their record's history to be compacted");
+                self.fail(
+                    RECORD_FULL,
+                    "This record is too large to share your latest changes. They are kept on this device.",
+                );
+                return false;
+            }
+            Err(WriteRefusal::Unsigned(error)) => {
+                tracing::warn!(%error, "writes wait for this device to sign them");
+                self.fail(
+                    SIGNING_FAILED,
+                    "This device could not sign your latest changes. They are kept on this device.",
+                );
+                return false;
+            }
+            Err(WriteRefusal::Refused(error)) => {
+                self.fail("write-refused", error);
+                return true;
             }
         };
         if committed.is_empty() {
-            return;
+            return true;
         }
         self.landed(route, Some(self.config.cert.device_public_key));
         let ids: Vec<[u8; 32]> = committed
@@ -143,6 +184,7 @@ impl Task {
         // What this device publishes, its own replica holds.
         self.note_delivered(route, &ids);
         self.count_custody();
+        true
     }
 
     /// `workspace`'s writes in this device's custody: id, bytes, channel and retention.
