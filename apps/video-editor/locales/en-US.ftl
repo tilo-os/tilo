@@ -236,3 +236,45 @@ video-editor-a11y-mix-level = Mix level
 
 ## Window and accessibility copy
 video-editor-a11y-timecode = Timecode
+
+## What the window shows
+video-editor-drop-import = Drop to import
+video-editor-scroll-more-shortcuts = Scroll for more shortcuts
+video-editor-scroll-earlier-shortcuts = Scroll up for earlier shortcuts
+video-editor-go-to-timecode = Go to timecode
+video-editor-finishing-file = Finishing the file
+video-editor-rendering = Rendering, { $percent }%
+video-editor-export-done = Done: { $path }
+video-editor-marker = Marker
+video-editor-pause = Pause
+video-editor-transition-named = Transition { $transition }
+video-editor-label-colour = Label colour { $slot }
+video-editor-link-audio-video = Link audio and video
+video-editor-reset-gain-pan = Reset gain and pan
+video-editor-reset-track = Reset { $track } to 0.0 dB, centre
+video-editor-media = Media
+video-editor-no-media = No media yet
+video-editor-remove-by-dragging = Drag out of the box to remove
+video-editor-drag-to-shape = Curve points
+video-editor-frame-rate = Frame rate
+video-editor-match = Match { $effect }
+video-editor-nothing-marked = Nothing marked yet.
+video-editor-transition = Transition
+video-editor-label = Label
+video-editor-picture-in-picture = Picture in picture
+video-editor-side-by-side = Side by side
+video-editor-crop = Crop
+video-editor-anchor = Anchor
+video-editor-lane-clip-only = Lane { $lane }, this clip only
+video-editor-lane-one-other = Lane { $lane }, with 1 other clip
+video-editor-lane-other-clips = Lane { $lane }, with { $count } other clips
+video-editor-key-colour = Key colour
+video-editor-words = Words
+video-editor-accept-cancel-keys = Ctrl+Enter to accept, Esc to cancel
+video-editor-type-title = Title text
+video-editor-font = Font
+video-editor-colour = Colour
+video-editor-preview-too-small = Not enough room for the preview
+video-editor-no-audio = No audio
+video-editor-mix = Mix
+video-editor-no-preview = No preview

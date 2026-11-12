@@ -234,3 +234,93 @@ reason = "What the copy tool refuses an agent: a wrong argument name, never show
 file = "apps/file-explorer/src/files_app.rs"
 text = "Files opens no `{anchor}`"
 reason = "What the open tool answers an agent about an anchor, never shown in a window."
+
+[[allow]]
+file = "apps/settings/src/panes/accessibility.rs"
+text = "`{code}` is not a dictation language code"
+reason = "What an action tells a caller that named an unknown argument value, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/accessibility.rs"
+text = "`{typed}` is not the name of a pointer theme"
+reason = "What an action tells a caller that named an unknown pointer theme, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/appearance.rs"
+text = "`{key}` is not an accent colour"
+reason = "What an action tells a caller that named an unknown accent colour, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/appearance.rs"
+text = "`{choice}` is not an interface face"
+reason = "What an action tells a caller that named an unknown interface face, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/appearance.rs"
+text = "`{key}` is not a translucency"
+reason = "What an action tells a caller that named an unknown translucency, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/display.rs"
+text = "`{mode}` is not a mode of this display"
+reason = "What an action tells a caller that named an unknown display mode, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/display.rs"
+text = "`{rotation}` is not a rotation"
+reason = "What an action tells a caller that named an unknown rotation, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/network/vpn.rs"
+text = "WireGuard"
+reason = "A protocol's name, spelled the same in every language."
+
+[[allow]]
+file = "apps/settings/src/panes/speakers.rs"
+text = "there is no speaker {speaker}"
+reason = "What an action tells a caller that named an unknown speaker, never a window's copy."
+
+[[allow]]
+file = "apps/settings/src/panes/speakers.rs"
+text = "`{role}` is not a role"
+reason = "What an action tells a caller that named an unknown role, never a window's copy."
+
+[[allow]]
+file = "apps/tube/src/app.rs"
+text = "there is no screen `{screen}`"
+reason = "What an action tells a caller that named an unknown screen, never a window's copy."
+
+[[allow]]
+file = "crates/session/desktop-surface/src/navigation.rs"
+text = "Unknown verb: {error}"
+reason = "What the navigation door answers a caller that sent an unknown verb, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/hosted_browser.rs"
+text = "the material is not the relay's: {error}"
+reason = "What the browser relay refuses a caller, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/pairing.rs"
+text = "the device was not paired: {}"
+reason = "What the pairing door answers a caller, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/plane.rs"
+text = "the arguments are not a JSON object: {error}"
+reason = "What the automation plane tells a caller, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/shell/state.rs"
+text = "{text} is not a place on the desk"
+reason = "What the desk action tells a caller that named no known place, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/shell/state.rs"
+text = "{text} is not a place to hang a surface"
+reason = "What the desk action tells a caller that named no known place, never a window's copy."
+
+[[allow]]
+file = "crates/session/session/src/sync/client/plane.rs"
+text = "the collaboration endpoint: {error}"
+reason = "What the sync client reports of a failed endpoint, never a window's copy."

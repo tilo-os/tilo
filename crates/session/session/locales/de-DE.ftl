@@ -406,3 +406,10 @@ mention-notice-channel = { $name } hat dich in { $channel } erwähnt
 mention-notice = { $name } hat dich erwähnt
 mention-notice-someone = Jemand
 mention-notice-open = Öffnen
+
+## What the window names
+session-resource-keyboard = Bildschirmtastatur
+session-resource-diagnostics = Sitzungsdiagnose
+session-resource-window-menu = Fenstermenü
+session-resource-surfaces = Oberflächen
+session-resource-keyboard-focus = Tastaturfokus

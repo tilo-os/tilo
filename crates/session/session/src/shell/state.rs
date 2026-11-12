@@ -509,10 +509,18 @@ impl Service for ShellService {
             offer::<ShellEffect>(ResourceSpec::new(
                 WINDOW_MENU,
                 WINDOW_MENU_KIND,
-                "Window menu",
+                crate::i18n::t("session-resource-window-menu"),
             )),
-            offer::<OverlayEffect>(ResourceSpec::new(OVERLAYS, OVERLAYS_KIND, "Surfaces")),
-            ResourceSpec::new(FOCUS, FOCUS_KIND, "Keyboard focus"),
+            offer::<OverlayEffect>(ResourceSpec::new(
+                OVERLAYS,
+                OVERLAYS_KIND,
+                crate::i18n::t("session-resource-surfaces"),
+            )),
+            ResourceSpec::new(
+                FOCUS,
+                FOCUS_KIND,
+                crate::i18n::t("session-resource-keyboard-focus"),
+            ),
         ]
     }
 

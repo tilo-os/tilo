@@ -417,7 +417,13 @@ fn helper_failure(output: &bounded_command::Output) -> String {
         .trim()
         .trim_start_matches("Error: ");
     if said.is_empty() {
-        format!("exited with {}", output.status)
+        crate::i18n::t_args(
+            "disk-unlock-exited",
+            &[(
+                "status",
+                ui::i18n::ArgValue::Text(output.status.to_string()),
+            )],
+        )
     } else {
         said.to_owned()
     }

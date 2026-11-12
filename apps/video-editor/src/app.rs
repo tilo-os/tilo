@@ -8075,9 +8075,9 @@ impl VideoEditorApp {
         }
         let w = self.rect;
         ui::overlay::scrim::modal(scene, tf, w, 1.0, theme);
-        let hint = "Drop to import";
+        let hint = crate::resource::CATALOG.t("video-editor-drop-import");
         let style = theme.text(TextRole::Heading);
-        let hw = text_width(tr, hint, &style);
+        let hw = text_width(tr, &hint, &style);
         let hh = line_height(tr, &style);
         let ctr = w.center();
         let plate = Rect::new(
@@ -8092,7 +8092,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            hint,
+            &hint,
             &style,
             ink.text_primary,
             plate.x0 + S6,
@@ -8208,9 +8208,9 @@ impl VideoEditorApp {
         scene.pop_layer();
         if let Some(hint_top) = l.footer_hint {
             let label = if self.help_scroll + 0.5 < l.max_scroll {
-                "Scroll for more shortcuts"
+                &crate::resource::CATALOG.t("video-editor-scroll-more-shortcuts")
             } else {
-                "Scroll up for earlier shortcuts"
+                &crate::resource::CATALOG.t("video-editor-scroll-earlier-shortcuts")
             };
             text(scene, tr, tf, label, &ty.xs, dim, body.x0, hint_top);
         }
@@ -8243,7 +8243,7 @@ impl VideoEditorApp {
             scene,
             tr,
             tf,
-            "Go to timecode",
+            &crate::resource::CATALOG.t("video-editor-go-to-timecode"),
             &ty.xs,
             panel.text_dim,
             x,
@@ -8414,14 +8414,25 @@ impl VideoEditorApp {
                 // it is, not as a render stuck at its end.
                 let percent = (progress * 100.0).round() as i32;
                 let words = if percent >= 100 {
-                    "Finishing the file".to_owned()
+                    crate::resource::CATALOG.t("video-editor-finishing-file")
                 } else {
-                    format!("Rendering, {percent}%")
+                    crate::resource::CATALOG.t_args(
+                        "video-editor-rendering",
+                        &[("percent", ui::i18n::ArgValue::Number(percent as f64))],
+                    )
                 };
                 text(scene, tr, tf, &words, &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
-                let done = elide_at(&format!("Done: {path}"), width, &ty.xs, tr);
+                let done = elide_at(
+                    &crate::resource::CATALOG.t_args(
+                        "video-editor-export-done",
+                        &[("path", ui::i18n::ArgValue::Text(path.to_string()))],
+                    ),
+                    width,
+                    &ty.xs,
+                    tr,
+                );
                 text(
                     scene,
                     tr,

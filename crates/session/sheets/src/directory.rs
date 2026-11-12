@@ -384,11 +384,22 @@ fn sample_directory() -> Directory {
         about: about.to_owned(),
         host: "tilo.sh".to_owned(),
         tag: None,
-        activity: format!("{here} here now"),
+        activity: crate::t_args(
+            "sheets-room-activity",
+            &[("people", ui::i18n::ArgValue::Number(here as f64))],
+        ),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
         joins_as: "You join as an editor".to_owned(),
         here: (0..here.min(FACES_SHOWN))
-            .map(|n| (format!("Person {n}"), format!("person-{n}")))
+            .map(|n| {
+                (
+                    crate::t_args(
+                        "sheets-room-person",
+                        &[("number", ui::i18n::ArgValue::Number(n as f64))],
+                    ),
+                    format!("person-{n}"),
+                )
+            })
             .collect(),
         here_count: here,
         action: ListingAction::Join,

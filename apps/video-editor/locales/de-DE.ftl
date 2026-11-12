@@ -236,3 +236,45 @@ video-editor-a11y-mix-level = Pegel des Mixes
 
 ## Fenster- und Barrierefreiheits-Texte
 video-editor-a11y-timecode = Zeitcode
+
+## What the window shows
+video-editor-drop-import = Zum Importieren ablegen
+video-editor-scroll-more-shortcuts = Weiter scrollen für mehr Kurzbefehle
+video-editor-scroll-earlier-shortcuts = Nach oben scrollen für frühere Kurzbefehle
+video-editor-go-to-timecode = Zu Zeitcode springen
+video-editor-finishing-file = Die Datei wird fertiggestellt
+video-editor-rendering = Wird gerendert, { $percent } %
+video-editor-export-done = Fertig: { $path }
+video-editor-marker = Marke
+video-editor-pause = Pause
+video-editor-transition-named = Übergang { $transition }
+video-editor-label-colour = Etikettenfarbe { $slot }
+video-editor-link-audio-video = Ton und Bild verbinden
+video-editor-reset-gain-pan = Pegel und Panorama zurücksetzen
+video-editor-reset-track = { $track } auf 0,0 dB und Mitte zurücksetzen
+video-editor-media = Medien
+video-editor-no-media = Noch keine Medien
+video-editor-remove-by-dragging = Zum Entfernen aus dem Rahmen ziehen
+video-editor-drag-to-shape = Kurvenpunkte
+video-editor-frame-rate = Bildrate
+video-editor-match = { $effect } übernehmen
+video-editor-nothing-marked = Noch nichts markiert.
+video-editor-transition = Übergang
+video-editor-label = Etikett
+video-editor-picture-in-picture = Bild im Bild
+video-editor-side-by-side = Nebeneinander
+video-editor-crop = Zuschnitt
+video-editor-anchor = Bezugspunkt
+video-editor-lane-clip-only = Spur { $lane }, nur dieser Clip
+video-editor-lane-one-other = Spur { $lane }, mit 1 weiteren Clip
+video-editor-lane-other-clips = Spur { $lane }, mit { $count } weiteren Clips
+video-editor-key-colour = Schlüsselfarbe
+video-editor-words = Wörter
+video-editor-accept-cancel-keys = Strg+Eingabe übernimmt, Esc verwirft
+video-editor-type-title = Titeltext
+video-editor-font = Schrift
+video-editor-colour = Farbe
+video-editor-preview-too-small = Zu wenig Platz für die Vorschau
+video-editor-no-audio = Kein Ton
+video-editor-mix = Mix
+video-editor-no-preview = Keine Vorschau

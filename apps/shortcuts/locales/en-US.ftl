@@ -104,3 +104,14 @@ shortcuts-no-matching-actions = No actions match this filter
 
 ## Window and accessibility copy
 shortcuts-a11y-window = Shortcuts
+
+## What the window shows
+shortcuts-running = Running…
+shortcuts-finished = Finished
+shortcuts-finished-degraded = Finished: { $detail }
+shortcuts-stopped = Stopped: { $detail }
+shortcuts-repeat-hint = Inside the repeat, each item is the variable { $variable }
+shortcuts-problems = { $count ->
+    [one] { $count } problem to fix before saving
+   *[other] { $count } problems to fix before saving
+}

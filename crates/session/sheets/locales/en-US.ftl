@@ -611,3 +611,7 @@ invite-revoked = The link no longer works.
 invite-no-answer = No link was made: the workspace did not answer.
 invite-failed = No link was made: { $reason }
 invite-revoke-failed = The link was not taken back: { $reason }
+
+## What the window names
+sheets-room-activity = { $people } here now
+sheets-room-person = Person { $number }

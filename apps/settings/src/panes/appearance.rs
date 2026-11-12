@@ -365,7 +365,12 @@ pub(crate) fn answer(
             let prefs = app.storage().settings::<AppearancePrefs>().get();
             serde_json::to_value(AppearanceInspection::from(&prefs))
                 .map(Effected::value)
-                .map_err(|error| format!("the appearance preferences could not be read: {error}"))
+                .map_err(|error| {
+                    crate::i18n::t_args(
+                        "appearance-inspect-failed",
+                        &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                    )
+                })
         }
         AppearanceEffect::ChooseWallpaper => choose_wallpaper(app, cx),
     }

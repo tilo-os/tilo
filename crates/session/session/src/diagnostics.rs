@@ -74,10 +74,14 @@ fn resource() -> ResourceSpec {
         },
     );
     status.type_mut().contract.result = result;
-    ResourceSpec::new(RESOURCE, KIND, "Session diagnostics")
-        .with_action(start)
-        .with_action(stop)
-        .with_action(status)
+    ResourceSpec::new(
+        RESOURCE,
+        KIND,
+        crate::i18n::t("session-resource-diagnostics"),
+    )
+    .with_action(start)
+    .with_action(stop)
+    .with_action(status)
 }
 
 /// What the session knows of its own cost now: the profiler's state and the heap trim's. One

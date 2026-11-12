@@ -846,7 +846,7 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     let mut rows: Vec<Element> = Vec::new();
     for run in door.runs.iter().take(20) {
         let secondary = match &run.status {
-            RunStatus::Running => String::from("Running…"),
+            RunStatus::Running => CATALOG.t("shortcuts-running"),
             // A run that finished with steps that fell short says so after
             // what it produced, and one that produced nothing says so alone.
             RunStatus::Completed { value, degraded } => {
@@ -854,11 +854,17 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
                 match (produced, degraded) {
                     (Some(produced), Some(degraded)) => format!("{produced} ({degraded})"),
                     (Some(produced), None) => produced,
-                    (None, Some(degraded)) => format!("Finished: {degraded}"),
-                    (None, None) => String::from("Finished"),
+                    (None, Some(degraded)) => CATALOG.t_args(
+                        "shortcuts-finished-degraded",
+                        &[("detail", ui::i18n::ArgValue::Text(degraded.clone()))],
+                    ),
+                    (None, None) => CATALOG.t("shortcuts-finished"),
                 }
             }
-            RunStatus::Failed(reason) => format!("Stopped: {reason}"),
+            RunStatus::Failed(reason) => CATALOG.t_args(
+                "shortcuts-stopped",
+                &[("detail", ui::i18n::ArgValue::Text(reason.clone()))],
+            ),
         };
         let open = {
             let ui = ui.clone();
@@ -1322,7 +1328,10 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 (_, 0) => save_blocker(input).unwrap_or_else(|| String::from("Ready to save")),
                 (Some(top), _) => top.join("; "),
                 (None, 1) => String::from("1 step needs attention"),
-                (None, count) => format!("{count} problems to fix before saving"),
+                (None, count) => CATALOG.t_args(
+                    "shortcuts-problems",
+                    &[("count", ui::i18n::ArgValue::Number(count as f64))],
+                ),
             }
         })
         .with_id("draft-problems")
@@ -2607,8 +2616,9 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 let repeated = repeated.clone();
                 move |binding| json!({"step": "for_each", "items": binding, "item": item, "body": repeated})
             }));
-            body = body.push(Box::new(caption(&format!(
-                "Inside the repeat, each item is the variable {item}"
+            body = body.push(Box::new(caption(&CATALOG.t_args(
+                "shortcuts-repeat-hint",
+                &[("variable", ui::i18n::ArgValue::Text(item.clone()))],
             ))));
             nested.push(branch(
                 CATALOG.t("shortcuts-repeat"),

@@ -286,7 +286,7 @@ fn keyboard_resource() -> ResourceSpec {
     tilo_service::offer::<KeyboardAction>(ResourceSpec::new(
         KEYBOARD,
         KEYBOARD_KIND,
-        "On-screen keyboard",
+        &crate::i18n::t("session-resource-keyboard"),
     ))
 }
 

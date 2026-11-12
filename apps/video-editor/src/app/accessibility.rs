@@ -48,7 +48,7 @@ impl VideoEditorApp {
                 // hearing nothing where the screen shows a word is being
                 // told a different story about the same row.
                 let name = if m.name.trim().is_empty() {
-                    "Marker".to_string()
+                    crate::resource::CATALOG.t("video-editor-marker")
                 } else {
                     m.name.clone()
                 };
@@ -381,9 +381,9 @@ impl VideoEditorApp {
                 // shuttle counts: pressing it there stops the shuttle, so
                 // "Play" would name something the press does not do.
                 let name = if *action == TransportAction::PlayPause && self.is_moving() {
-                    "Pause"
+                    crate::resource::CATALOG.t("video-editor-pause")
                 } else {
-                    name
+                    (*name).to_owned()
                 };
                 AccessNode::new(Role::Button)
                     .with_name(name)
@@ -754,12 +754,21 @@ impl VideoEditorApp {
                 self.selected_clip().is_some_and(|c| c.mask.shape == shape),
             ),
             PickField::Transition(t) => (
-                format!("Transition {}", t.label().to_lowercase()),
+                crate::resource::CATALOG.t_args(
+                    "video-editor-transition-named",
+                    &[(
+                        "transition",
+                        ui::i18n::ArgValue::Text(t.label().to_lowercase()),
+                    )],
+                ),
                 Role::RadioButton,
                 self.selected_clip().is_some_and(|c| c.transition == t),
             ),
             PickField::Label(slot) => (
-                format!("Label colour {}", slot + 1),
+                crate::resource::CATALOG.t_args(
+                    "video-editor-label-colour",
+                    &[("slot", ui::i18n::ArgValue::Number((slot + 1) as f64))],
+                ),
                 Role::RadioButton,
                 self.selected_clip().is_some_and(|c| c.palette == slot),
             ),
@@ -768,7 +777,7 @@ impl VideoEditorApp {
             // one pressing it will do — the same words the button carries.
             PickField::LinkToggle => (
                 self.link_affordance().map_or_else(
-                    || "Link audio and video".to_string(),
+                    || crate::resource::CATALOG.t("video-editor-link-audio-video"),
                     |o| o.label().to_string(),
                 ),
                 Role::Button,
@@ -778,8 +787,13 @@ impl VideoEditorApp {
             // has no fader in view to tell them which one that is.
             PickField::MixReset => (
                 self.selected_track().map_or_else(
-                    || "Reset gain and pan".to_string(),
-                    |t| format!("Reset {} to 0.0 dB, centre", t.name),
+                    || crate::resource::CATALOG.t("video-editor-reset-gain-pan"),
+                    |t| {
+                        crate::resource::CATALOG.t_args(
+                            "video-editor-reset-track",
+                            &[("track", ui::i18n::ArgValue::Text(t.name.clone()))],
+                        )
+                    },
                 ),
                 Role::Button,
                 false,

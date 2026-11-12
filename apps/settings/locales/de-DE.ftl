@@ -2864,3 +2864,19 @@ settings-a11y-server-url = Server-URL
 settings-a11y-display-name = Anzeigename
 settings-a11y-verification-code = Bestätigungscode
 settings-a11y-provider-code = Code vom Anbieter
+
+## What the window shows
+notif-turn-on = { $what } einschalten
+notif-turn-off = { $what } ausschalten
+notif-choice-banners = Benachrichtigungsbanner
+notif-choice-previews = Nachrichtenvorschauen
+notif-choice-sounds = Benachrichtigungstöne
+notif-choice-badges = Benachrichtigungszähler
+notif-choice-priority = Vorrang bei Fokus
+notif-choice-priority-contacts = vorrangige Kontakte bei Fokus
+settings-accounts-verify = Bestätigen
+settings-accounts-sign-in = Anmelden
+appearance-inspect-failed = Die Darstellungseinstellungen ließen sich nicht lesen: { $detail }
+disk-unlock-exited = Beendet mit { $status }
+display-brightness-failed = Die Helligkeit ließ sich nicht ändern: { $detail }
+display-mirror = { $display } spiegeln

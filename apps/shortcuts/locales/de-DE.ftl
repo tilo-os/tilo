@@ -104,3 +104,14 @@ shortcuts-no-matching-actions = Keine Aktionen passen zu diesem Filter
 
 ## Fenster- und Barrierefreiheits-Texte
 shortcuts-a11y-window = Tastenkürzel
+
+## What the window shows
+shortcuts-running = Läuft…
+shortcuts-finished = Fertig
+shortcuts-finished-degraded = Fertig: { $detail }
+shortcuts-stopped = Gestoppt: { $detail }
+shortcuts-repeat-hint = In der Wiederholung ist jedes Element die Variable { $variable }
+shortcuts-problems = { $count ->
+    [one] { $count } Problem vor dem Speichern beheben
+   *[other] { $count } Probleme vor dem Speichern beheben
+}
