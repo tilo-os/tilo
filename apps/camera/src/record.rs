@@ -81,7 +81,7 @@ impl Record {
     /// The capture taken last, whose verified bytes are in the content
     /// store, becomes the one Camera offers to open in Photos or Video
     /// Player.
-    #[action]
+    #[action(label = "camera-action-register-capture")]
     pub fn register_capture(&mut self, #[param("The capture")] capture: SharedCapture) {
         self.recent = Some(capture);
     }
@@ -90,7 +90,7 @@ impl Record {
     ///
     /// It goes to the front of the history; the same code scanned again
     /// moves there rather than repeating.
-    #[action]
+    #[action(label = "camera-action-record-scan")]
     pub fn record_scan(
         &mut self,
         cx: &mut ActionCx,

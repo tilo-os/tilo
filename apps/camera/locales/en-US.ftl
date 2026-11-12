@@ -10,6 +10,8 @@ camera-title = Camera
 ## Actions
 camera-action-use-device = Use { $device }
 camera-action-stop-recording = Stop recording
+camera-action-register-capture = Hand off capture
+camera-action-record-scan = Record scanned code
 
 ## What the window names
 camera-screen-camera = Camera

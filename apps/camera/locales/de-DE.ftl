@@ -10,6 +10,8 @@ camera-title = Kamera
 ## Aktionen
 camera-action-use-device = { $device } verwenden
 camera-action-stop-recording = Aufnahme beenden
+camera-action-register-capture = Aufnahme weitergeben
+camera-action-record-scan = Gescannten Code festhalten
 
 ## Was das Fenster benennt
 camera-screen-camera = Kamera
