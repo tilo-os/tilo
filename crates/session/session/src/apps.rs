@@ -556,14 +556,14 @@ impl Apps {
             .ok()
             .flatten()
             .ok_or_else(|| format!("{app} is not installed here"))?;
-        let mut environment = state.environment.clone();
-        environment.x11_display = None;
         let context = PlanContext {
-            environment: &environment,
+            environment: &state.environment,
             workspace,
             launcher: Some(launcher),
             identity: state.identity.clone(),
             authority: Some(&state.authority),
+            // A connector draws nothing, so the plan leaves out the session's display and render
+            // node whatever it is given.
             render_node: None,
             new_window: false,
             continuity_instance: None,

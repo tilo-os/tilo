@@ -58,7 +58,8 @@ fn every_dev_session_app_is_an_installed_package() {
 
 /// The session plans each app's connector from its installed manifest: the `YouTube` client's
 /// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
-/// the app's own with the origin named (`--tilolang-connector <origin>`).
+/// the app's own with the origin named (`--tilolang-connector <origin>`) and nothing a window
+/// has — no display, no render node, nothing open — which the launcher refuses beside it.
 #[test]
 fn the_installed_apps_connectors_are_planned_from_their_manifests() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
@@ -72,11 +73,12 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests() {
     // plan, so a stand-in that starts nothing is the launcher here.
     let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 0\n")
         .expect("a launcher to plan through");
-    let apps = Apps::with_launcher(
-        SessionEnvironment::from_process(),
-        None,
-        Some(launcher.path().to_owned()),
-    );
+    // A session that shows windows: a connector's plan must leave its display out all the same.
+    let environment = SessionEnvironment {
+        wayland_socket: Some(home.state().join("wayland-0")),
+        ..SessionEnvironment::from_process()
+    };
+    let apps = Apps::with_launcher(environment, None, Some(launcher.path().to_owned()));
     let workspace = apps.workspace_named("workspace-1");
     for (app, origin) in [
         ("so.tilo.lang.tube", "youtube"),
@@ -99,6 +101,25 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests() {
             "{app}'s launch is its connector for {origin}: {:?}",
             planned.args
         );
+        for window_only in [
+            "--wayland-socket",
+            "--render-node",
+            "--open",
+            "--open-uri",
+            "--open-as-visitor",
+        ] {
+            assert!(
+                !planned.args.iter().any(|arg| arg == window_only),
+                "{app}'s connector launch is no window, so it has no {window_only}: {:?}",
+                planned.args
+            );
+        }
+        for display in ["WAYLAND_DISPLAY", "DISPLAY"] {
+            assert!(
+                !planned.env.contains_key(display),
+                "{app}'s connector reaches no compositor: {display}"
+            );
+        }
     }
 }
 
