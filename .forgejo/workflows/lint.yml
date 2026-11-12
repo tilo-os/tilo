@@ -9,90 +9,25 @@ name: CI / fast quality
 # instead of the sum of every step, and a slow inventory scan no longer delays
 # the compile-heavy lints that developers wait for.
 #
-# A lint run checks the whole tree at one commit, so a later run says everything
-# an earlier one could, and one verdict at a time is all main needs. The
-# `supersede` job hands that verdict out with the same decision check.yml makes
-# (tools/ci/push_window.py): a push skips its gates while another run holds them,
-# and the first push after that run finishes takes over.
+# Every push gets its own verdict: the format, commit-message and unused
+# dependency gates check exactly the commits a push added
+# (`github.event.before`), so a push whose run another run stood in for would
+# never have them checked at all.
 on:
   push:
     branches: ["main"]
   workflow_dispatch:
 
 # Without a `concurrency:` block the forge cancels every unfinished push run of
-# this workflow on main when the next push arrives, so the run holding the gates
-# never finished. One group per commit with `cancel-in-progress: false` turns
-# that off and queues nothing behind another commit's run.
+# this workflow on main when the next push arrives. One group per commit with
+# `cancel-in-progress: false` turns that off and queues nothing behind another
+# commit's run.
 concurrency:
   group: lint-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  # Whose run lints the tree: see tools/ci/push_window.py for the rules.
-  supersede:
-    runs-on: runner
-    timeout-minutes: 15
-    container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
-    outputs:
-      superseded: ${{ steps.window.outputs.superseded }}
-      window: ${{ steps.window.outputs.window }}
-    steps:
-      - name: Check out the verdict decision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 1
-          filter: blob:none
-
-      - name: Decide whether this run lints the tree
-        id: window
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_NUMBER: ${{ github.run_number }}
-          API_URL: ${{ github.api_url }}
-          REPOSITORY: ${{ github.repository }}
-          CI_TOKEN: ${{ github.token }}
-          # Cancelling a run writes to this repository, and the run's own token
-          # may not carry that; a refusal falls back to the repository token.
-          CI_SPARE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          # This workflow's runs supersede each other, and `policy` is the first
-          # job a run starts only when it decided to run.
-          WORKFLOW: lint.yml
-          MARKER_JOB: policy
-        run: python3 tools/ci/push_window.py
-
-  # A superseded run lints nothing, so it must not read as a success: this job
-  # cancels the run, and fails it when the cancellation is refused
-  # (tools/ci/push_window.py --close). The run named in its summary lints the
-  # tree.
-  untested:
-    needs: [supersede]
-    if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}
-    runs-on: runner
-    timeout-minutes: 15
-    container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
-    steps:
-      - name: Check out the window decision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 1
-          filter: blob:none
-
-      - name: End this untested run as cancelled
-        env:
-          WINDOW_RUN: ${{ needs.supersede.outputs.window }}
-          RUN_NUMBER: ${{ github.run_number }}
-          API_URL: ${{ github.api_url }}
-          REPOSITORY: ${{ github.repository }}
-          CI_TOKEN: ${{ github.token }}
-          CI_SPARE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          WORKFLOW: lint.yml
-        run: python3 tools/ci/push_window.py --close
-
   policy:
-    needs: [supersede]
-    if: needs.supersede.outputs.superseded != 'true'
     runs-on: runner-quality
     timeout-minutes: 30
     container:
@@ -180,8 +115,6 @@ jobs:
           '${{ github.event.before }}'
 
   lints:
-    needs: [supersede]
-    if: needs.supersede.outputs.superseded != 'true'
     runs-on: runner-quality
     timeout-minutes: 30
     container:

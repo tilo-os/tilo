@@ -77,7 +77,7 @@ import time
 import urllib.error
 import urllib.request
 
-# The job of the workflow that decides a run's window, in both push workflows.
+# The job of the workflow that decides a run's window.
 DECISION_JOB = os.environ.get("DECISION_JOB", "supersede")
 # The first job a run starts only when it decided to run: `skipped` on a run
 # that gave its commits away, anything else on the run that holds the window.

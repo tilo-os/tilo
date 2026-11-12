@@ -104,10 +104,9 @@ publications build from.
   every push, before and independent of that window, so a break only the web
   build sees fails the head that introduced it. Its `wasm` job then adds the
   browser crates and web-capable examples the window selects.
-- `lint.yml` makes the same decision for the policy and lint gates: a whole-tree
-  lint at a later commit says everything an earlier one could, so a push skips
-  its gates while another run holds them and the first push after that run
-  finishes takes over.
+- `lint.yml` runs for every push: its format, commit-message and unused
+  dependency gates check exactly the commits the push added, so no push's run
+  stands in for another's.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the

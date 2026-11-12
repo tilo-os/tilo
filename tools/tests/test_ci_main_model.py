@@ -71,31 +71,40 @@ class MainIsNotGated(unittest.TestCase):
                 self.assertNotIn("pull_request", on)
                 self.assertRegex(on, r"(?m)^  workflow_dispatch:")
 
-    def test_both_gates_hand_their_one_verdict_out_the_same_way(self):
-        # A whole-tree lint at a later commit says everything an earlier one
-        # could, and one window of checks at a time is what the runners carry.
-        # Both workflows decide who runs with tools/ci/push_window.py. Without
-        # an explicit `cancel-in-progress: false` the forge cancels every
-        # unfinished push run on main at the next push, holder included, and a
-        # group wider than one commit would queue runs behind each other.
-        for name, marker in (("check.yml", "select"), ("lint.yml", "policy")):
-            with self.subTest(workflow=name):
-                text = workflow(name)
-                concurrency = block(text, "concurrency")
-                self.assertIn("cancel-in-progress: false", concurrency)
-                self.assertIn("-${{ github.sha }}", concurrency)
-                supersede = block(text, "supersede", 2)
-                self.assertIn("tools/ci/push_window.py", supersede)
-                self.assertIn(f"WORKFLOW: {name}", supersede)
-                self.assertIn(f"MARKER_JOB: {marker}", supersede)
-                self.assertIn("superseded: ${{ steps.window.outputs.superseded }}",
-                              supersede)
-                for job in ("policy", "lints") if name == "lint.yml" else ("builder", "select"):
-                    with self.subTest(job=job):
-                        body = block(text, job, 2)
-                        self.assertIn("needs: [supersede]", body)
-                        self.assertIn("if: needs.supersede.outputs.superseded != 'true'",
-                                      body)
+    def test_check_hands_its_window_out_through_the_push_window(self):
+        # One window of checks at a time is what the runners carry; the decision
+        # is tools/ci/push_window.py's. Without an explicit
+        # `cancel-in-progress: false` the forge cancels every unfinished push run
+        # on main at the next push, holder included, and a group wider than one
+        # commit would queue runs behind each other.
+        text = workflow("check.yml")
+        concurrency = block(text, "concurrency")
+        self.assertIn("cancel-in-progress: false", concurrency)
+        self.assertIn("-${{ github.sha }}", concurrency)
+        supersede = block(text, "supersede", 2)
+        self.assertIn("tools/ci/push_window.py", supersede)
+        self.assertIn("WORKFLOW: check.yml", supersede)
+        self.assertIn("MARKER_JOB: select", supersede)
+        self.assertIn("superseded: ${{ steps.window.outputs.superseded }}", supersede)
+        for job in ("builder", "select"):
+            with self.subTest(job=job):
+                body = block(text, job, 2)
+                self.assertIn("needs: [supersede]", body)
+                self.assertIn("if: needs.supersede.outputs.superseded != 'true'", body)
+
+    def test_every_push_gets_its_own_lint_verdict(self):
+        # The format, commit-message and unused-dependency gates check the
+        # commits the push added (`github.event.before`): a push whose run was
+        # stood in for by another would never have them checked.
+        text = workflow("lint.yml")
+        concurrency = block(text, "concurrency")
+        self.assertIn("cancel-in-progress: false", concurrency)
+        self.assertIn("-${{ github.sha }}", concurrency)
+        self.assertNotIn("push_window.py", text)
+        self.assertNotIn("supersede", text)
+        for job in ("policy", "lints"):
+            with self.subTest(job=job):
+                self.assertNotIn("needs:", block(text, job, 2))
 
     def test_a_push_that_cannot_open_the_window_skips_its_jobs(self):
         # A run that never reached a runner is superseded by skipping its jobs:
@@ -115,20 +124,17 @@ class MainIsNotGated(unittest.TestCase):
     def test_a_superseded_run_never_reads_as_a_success(self):
         # Skipping every job would leave the run green although it tested
         # nothing; `untested` cancels it after the jobs it ran for its own head.
-        for name, needs in (("check.yml", "[supersede, web]"), ("lint.yml", "[supersede]")):
-            with self.subTest(workflow=name):
-                text = workflow(name)
-                self.assertIn("window: ${{ steps.window.outputs.window }}",
-                              block(text, "supersede", 2))
-                untested = block(text, "untested", 2)
-                self.assertIn(f"needs: {needs}", untested)
-                self.assertIn("if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}",
-                              untested)
-                self.assertIn("python3 tools/ci/push_window.py --close", untested)
-                self.assertIn(f"WORKFLOW: {name}", untested)
-                self.assertIn("WINDOW_RUN: ${{ needs.supersede.outputs.window }}", untested)
-        self.assertIn("HEAD_RESULTS: ${{ needs.web.result }}",
-                      block(workflow("check.yml"), "untested", 2))
+        text = workflow("check.yml")
+        self.assertIn("window: ${{ steps.window.outputs.window }}",
+                      block(text, "supersede", 2))
+        untested = block(text, "untested", 2)
+        self.assertIn("needs: [supersede, web]", untested)
+        self.assertIn("if: ${{ always() && needs.supersede.outputs.superseded == 'true' }}",
+                      untested)
+        self.assertIn("python3 tools/ci/push_window.py --close", untested)
+        self.assertIn("WORKFLOW: check.yml", untested)
+        self.assertIn("WINDOW_RUN: ${{ needs.supersede.outputs.window }}", untested)
+        self.assertIn("HEAD_RESULTS: ${{ needs.web.result }}", untested)
 
     def test_the_plan_starts_where_the_last_window_that_ran_ended(self):
         check = workflow("check.yml")
