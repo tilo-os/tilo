@@ -9,10 +9,10 @@
 2 apps/git-client/src/app.rs
 1 apps/git-client/src/app/diff.rs
 3 apps/git-client/src/app/remote.rs
-15 apps/notes/src/app.rs
+14 apps/notes/src/app.rs
 25 apps/notes/src/app/effects.rs
 2 apps/notes/src/app/window_bar.rs
-12 apps/notes/src/main_panel.rs
+4 apps/notes/src/main_panel.rs
 1 apps/notes/src/note_header.rs
 3 apps/notes/src/notebook.rs
 7 apps/notes/src/notion.rs

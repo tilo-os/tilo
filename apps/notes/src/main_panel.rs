@@ -2642,13 +2642,14 @@ impl Widget for MainPanel {
         if self.page_id.is_none() && !self.empty_adds {
             // Nothing to press: the empty notebook says only that it is.
             return Some(
-                AccessNode::new(Role::StaticText).with_name(ui::i18n!("notes-empty-title")),
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::metadata::CATALOG.t("notes-empty-title")),
             );
         }
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
-                .with_name(ui::i18n!("notes-empty-action"))
-                .with_description(ui::i18n!("notes-a11y-first-note"))
+                .with_name(crate::metadata::CATALOG.t("notes-empty-action"))
+                .with_description(crate::metadata::CATALOG.t("notes-a11y-first-note"))
                 .with_action_target("notes.first_note")
                 .with_state(
                     AccessState::new()
@@ -2665,7 +2666,7 @@ impl Widget for MainPanel {
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)
-                .with_name(ui::i18n!("notes-a11y-note-title"))
+                .with_name(crate::metadata::CATALOG.t("notes-a11y-note-title"))
                 .with_value(self.title_label.current_text())
                 .with_action_target("notes.page-title")
                 .with_bounds(self.title_rect)
@@ -2678,8 +2679,8 @@ impl Widget for MainPanel {
         if let Some(thumb) = self.scroll_thumb() {
             children.push(
                 AccessNode::new(Role::Slider)
-                    .with_name(ui::i18n!("notes-scroll-position"))
-                    .with_description(ui::i18n!("notes-scroll-help"))
+                    .with_name(crate::metadata::CATALOG.t("notes-scroll-position"))
+                    .with_description(crate::metadata::CATALOG.t("notes-scroll-help"))
                     .with_value(format!(
                         "{:.0}",
                         self.scroll_y / self.scroll_metrics().max_scroll() * 100.0
@@ -2695,8 +2696,8 @@ impl Widget for MainPanel {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name(ui::i18n!("notes-a11y-header"))
-                .with_description(ui::i18n!("notes-a11y-header-description"))
+                .with_name(crate::metadata::CATALOG.t("notes-a11y-header"))
+                .with_description(crate::metadata::CATALOG.t("notes-a11y-header-description"))
                 .with_children(children),
         )
     }
