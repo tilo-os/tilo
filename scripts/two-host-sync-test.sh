@@ -38,4 +38,10 @@ case "$ROLE" in
     exit 2
     ;;
 esac
-exec "${TILO_SESSION:-tilo-session}" "$@"
+session="${TILO_SESSION:-tilo-session}"
+command -v "$session" >/dev/null || {
+    echo "[two-host] no session program at $session; set TILO_SESSION to a build" >&2
+    echo "[two-host] (TILO_SESSION=target/debug/tilo-session) or install the session" >&2
+    exit 2
+}
+exec "$session" "$@"
