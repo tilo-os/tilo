@@ -2,11 +2,13 @@
  * Workspaces on the person's machines, as the desktop's host actions:
  * making one, and inviting someone into it.
  *
- * - `new-workspace`: a workspace on a machine the person set up
- *   (`machine-setup.mjs`): the one this page is on when its host is theirs,
- *   else one this browser set up for them. The host creates it and admits
- *   this device as its owner (`workspaces.create`, `enter`); the page then
- *   opens it.
+ * - `new-workspace`: a workspace of the person's own. On a machine they set
+ *   up (`machine-setup.mjs`) it is the one this page is on when its host is
+ *   theirs, else one this browser set up for them: the host creates it and
+ *   admits this device as its owner (`workspaces.create`, `enter`). On a host
+ *   that keeps workspaces of people's own for the people it lets in
+ *   (`can_own_workspaces`), it is asked for by name and entered as theirs
+ *   (`enterOwnWorkspace`), however many they ask for. The page then opens it.
  * Inviting someone is the desktop's own invite sheet (`invite.rs`): it makes
  * and lists the workspace's invitations through its host, so the page carries
  * no invite action of its own.
@@ -47,6 +49,11 @@ export function invitedLine(atMs, now = Date.now(), locale = undefined) {
 
 export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.hostCert?.user_public_key) === peer.userPublicKey;
 
+/** Whether the host this page is in keeps workspaces of people's own for the
+ * people it lets in, so this person's next workspace is one of theirs even
+ * though the host is not. */
+export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.hostCert?.capabilities?.can_own_workspaces);
+
 /**
  * The workspace actions of a page whose peer is `peer` (`null` on the
  * person's own desktop). `machines()` lists the origins of the machines
@@ -73,7 +80,7 @@ export function createWorkspaceActions({
   let workspaceName = null;
   const inWorkspace = Boolean(peer?.workspace && peer.createInvitation);
   const actions = () => [
-    ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
+    ...(ownHost(peer) || machines().length || keepsOwn(peer) ? [NEW_WORKSPACE] : []),
     JOIN_WORKSPACE,
     ...(lettingIn ? [WAITING] : []),
   ];
@@ -85,10 +92,18 @@ export function createWorkspaceActions({
 
   const newWorkspace = async (on = null) => {
     const own = ownHost(peer) && (!on || on === peer.origin);
-    const choices = own ? [peer.origin] : on ? [on] : machines();
+    // A host that keeps workspaces of people's own keeps this person's next
+    // one beside theirs: it is asked for by name and entered as theirs, with
+    // no machine of this person's in between.
+    const kept = !own && keepsOwn(peer) && (!on || on === peer.origin);
+    const choices = own || kept ? [peer.origin] : on ? [on] : machines();
     const origin = choices.length > 1 ? await ui.chooseMachine(choices) : choices[0];
     if (!origin) return;
     const created = await ui.askWorkspaceName(async name => {
+      if (kept) {
+        const made = await peer.enterOwnWorkspace({name});
+        return {room: made.workspace, name: made.name ?? name, hostDevice: hex(peer.host?.hostCert?.device_public_key)};
+      }
       const host = own ? peer : await lobby(origin);
       try {
         const workspace = await host.workspaces.create(name);

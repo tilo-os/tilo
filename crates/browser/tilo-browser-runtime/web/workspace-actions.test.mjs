@@ -149,3 +149,24 @@ test('in someone else’s workspace a person with a machine can still make a wor
   assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
   assert.equal(opened[0].origin, origin);
 });
+
+test('a person on a host that keeps workspaces of people’s own makes their next one there', async () => {
+  const origin = 'https://lounge.example';
+  const calls = [];
+  // The Lounge: a listed workspace on a host that keeps a workspace of each
+  // person's own for the people its door lets in.
+  const lounge = {origin, workspace: 'lounge', userPublicKey: ADA,
+    host: {hostCert: {user_public_key: bytes('bb'.repeat(32)), device_public_key: Array(32).fill(0xcd),
+      capabilities: {can_own_workspaces: true}}},
+    enterOwnWorkspace: async ({name}) => { calls.push(['own', name]); return {workspace: 'studio-room', name}; }};
+  const opened = [];
+  const {mount, shown} = desktop();
+  const actions = createWorkspaceActions({peer: lounge, machines: () => [],
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: save => save('Studio'), fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.ok(ids(shown.at(-1)).includes(NEW_WORKSPACE.id), 'the person is in a workspace of their own making on that host');
+  await actions.perform(NEW_WORKSPACE.id);
+  assert.deepEqual(calls, [['own', 'Studio']]);
+  assert.deepEqual(opened, [{origin, room: 'studio-room', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
+});
