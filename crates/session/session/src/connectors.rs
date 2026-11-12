@@ -233,6 +233,24 @@ pub(crate) fn reconcile(session: &crate::Session) {
             }
         }
     }
+    // An app the session runs itself keeps its records here, with no place of it on the desk: the
+    // person's actions on those records — a search, an agent's task — queue what the outside
+    // service answers, so that app's origin runs in the workspace in front whether or not a place
+    // shows it. Without it an app whose only surface is the record it holds could not reach its
+    // service at all.
+    let active = session.shared.active_workspace_id();
+    if !active.is_empty() {
+        let runs = |app: &str| session.shared.services.borrow().module(app).is_some();
+        for connector in &connectors {
+            if runs(&connector.app) {
+                needed.insert((
+                    connector.app.clone(),
+                    connector.origin.clone(),
+                    active.clone(),
+                ));
+            }
+        }
+    }
     // The connectors running for no workspace any more end: their records stand as they were,
     // and a workspace that shows the app again starts one when it does.
     for key in session.connectors.keys() {
