@@ -193,6 +193,33 @@ fn a_face_pressed_again_brings_everyone_here() {
     assert!(people.borrow().is_open());
 }
 
+/// Kept on screen on a phone, the roster stands centred across the desk with equal gutters, inside
+/// it, whichever side edge it was kept at; on a wide desk it keeps to its edge.
+#[test]
+fn the_pinned_roster_is_centred_on_a_phone() {
+    let theme = Theme::light();
+    let now = ui::time::Instant::now();
+    for edge in [DockEdge::Right, DockEdge::Left, DockEdge::BottomRight] {
+        let mut pin = Pinned::new(edge, true);
+        pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
+        Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 390.0, 844.0), &theme, now);
+        let (left, right) = (pin.panel.x0, 390.0 - pin.panel.x1);
+        assert!(
+            (left - right).abs() < 1.0 && left >= 0.0,
+            "kept at {edge:?} on a phone, the roster stands centred inside the desk: {:?}",
+            pin.panel
+        );
+    }
+    let mut pin = Pinned::new(DockEdge::Right, true);
+    pin.panel = Rect::from_origin_size(Point::ZERO, Size::new(319.0, 300.0));
+    Panel::place_pinned(&mut pin, Rect::new(0.0, 0.0, 1280.0, 800.0), &theme, now);
+    assert!(
+        pin.panel.x1 > 1200.0,
+        "on a wide desk it keeps to its edge: {:?}",
+        pin.panel
+    );
+}
+
 /// A desk whose page writes an agent in as here, as it does for the bar, and its roster's layer.
 fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     let here = WorkspaceId::new();

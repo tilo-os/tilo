@@ -1541,6 +1541,14 @@ impl Panel {
             || Rect::from_origin_size(work.origin(), size),
             |slot| slot.glance,
         );
+        // On a desk too narrow to keep the roster beside the work (a phone), an edge's margin
+        // leaves it lopsided over the one window there is: it stands centred across the desk, its
+        // gutters equal, at the height its edge gives it.
+        let rest = if work.width() < 2.0 * size.width {
+            rest.with_origin(Point::new(work.center().x - size.width / 2.0, rest.y0))
+        } else {
+            rest
+        };
         // The roster waits where its slot does, moved by the spring back from a drop and by a drag
         // still in flight.
         let mut at = rest.origin();
