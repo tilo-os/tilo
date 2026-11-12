@@ -401,7 +401,12 @@ impl RasterBackend {
         // content store, sealed as the record's content is, so the markup
         // record can pin exactly what it annotates. A store that refuses
         // (size limits) still leaves the bytes' hash as the identity.
-        let source_bytes = Bytes::keep(&content, bytes).unwrap_or_else(|_| Bytes::of(bytes));
+        // Kept as a blob, however small, so the record names a reference
+        // the store answers for.
+        let source_bytes = match content.put(bytes) {
+            Ok(reference) => Bytes::kept_as(bytes, &reference),
+            Err(_) => Bytes::of(bytes),
+        };
         let source = match engine.open_bytes(bytes) {
             Ok(doc) => Self::source_from(doc)
                 .ok_or_else(|| anyhow!("the PDF has no pages or unsupported page sizes"))?,

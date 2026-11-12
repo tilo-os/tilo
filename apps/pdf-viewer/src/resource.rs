@@ -912,9 +912,10 @@ impl ResourceApp for PdfViewerShell {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Ok(source) = Bytes::keep(content, file.bytes()) else {
+        let Ok(reference) = content.put(file.bytes()) else {
             return Vec::new();
         };
+        let source = Bytes::kept_as(file.bytes(), &reference);
         vec![crate::actions::pin_source_action(&source, file.name())]
     }
 

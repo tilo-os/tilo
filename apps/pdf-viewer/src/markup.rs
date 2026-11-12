@@ -54,6 +54,8 @@ pub const MAX_IMPORTED_PAGES: usize = 512;
 /// before it has downloaded the blob.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImportedPage {
+    /// The payload's content reference: the address it is kept under, and the
+    /// key that opens it when the workspace keeps content sealed.
     pub hash: String,
     pub kind: String,
     pub page: usize,
@@ -63,8 +65,7 @@ pub struct ImportedPage {
 
 impl ImportedPage {
     pub fn valid(&self) -> bool {
-        self.hash.len() == 64
-            && self.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        tilo_content::valid_reference(&self.hash)
             && matches!(self.kind.as_str(), "pdf" | "image")
             && self.page > 0
             && self.width_milli > 0
