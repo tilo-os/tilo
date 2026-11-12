@@ -928,9 +928,6 @@ d-s7yqm7cb = Canvas
 
 d-t3cux3yd = Framed place
 
-d-kctmkzva = Place handle
-    .w-move-place = Move place
-
 d-s6b5stgz = Space content
 
 d-ewgdlyyr = Show app menus~present
