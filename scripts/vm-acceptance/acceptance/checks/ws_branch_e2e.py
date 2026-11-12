@@ -624,10 +624,16 @@ def branch_said(ctx, name: str, room: str) -> dict:
         return [n for n in names if "is ready" in n or "is not complete" in n] or None
 
     notices = wait_until(told, 15, interval=0.5) or []
+    # What did not come along, as the session logged it (the notice's body is not on screen).
+    why = ctx.vm.root_exec("journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' "
+                           f"| grep -a 'a branch of a workspace is not complete' | grep -a {shlex.quote(room)} "
+                           "| tail -n 12 | cut -c1-500", timeout=120, check=False) if any(
+        "is not complete" in n for n in notices) else ""
     audit = ctx.vm.exec("cat \"$HOME\"/.local/share/ush/audit/* \"$HOME\"/.local/share/ush/*/audit/* 2>/dev/null "
                         f"| grep -a branch-workspace | grep -a {shlex.quote(room)} | tail -n 2 | cut -c1-600",
                         check=False)
     return {"ready": [n for n in notices if "is ready" in n], "missing": [n for n in notices if "is not complete" in n],
+            "why": [l for l in why.splitlines() if l.strip()],
             "runtime": [l for l in audit.splitlines() if l.strip()]}
 
 
@@ -818,13 +824,30 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                                  "coredumpctl --no-pager info 2>&1 | grep -aE '^ +#|Signal|Executable|Command' | head -n 60",
                                  timeout=180, check=False)
         # The kernel names a crashed library by its object in the image's store: which file it is.
-        objects = sorted(set(re.findall(r" in ([0-9a-f]{64,128})\[", crash)))
-        for digest in objects[:3]:
+        objects = sorted(set(re.findall(r" in ([0-9a-f]{64,128})\[([0-9a-f]+),", crash)))
+        for digest, offset in objects[:3]:
+            # Its object, wherever the image's store keeps it, and the file it is; then the function
+            # at the crashed offset of its code segment, and what it links.
             crash += "\n" + ctx.vm.root_exec(
-                f"o=$(find /sysroot /composefs /var/lib -xdev -name '{digest[2:]}*' 2>/dev/null | head -1); "
-                "echo \"object $o\"; [ -n \"$o\" ] || exit 0; n=$(stat -c %s \"$o\"); "
+                f"o=$(find / \\( -path /proc -o -path /sys -o -path /dev -o -path /run/user \\) -prune -o "
+                f"-type f -name '{digest[2:]}*' -print 2>/dev/null | head -1); "
+                "echo \"object $o\"; [ -n \"$o\" ] || exit 0; file -L \"$o\" | cut -c1-300; "
+                "readelf -dW \"$o\" 2>/dev/null | grep -aE 'SONAME|NEEDED' | head -n 12; n=$(stat -c %s \"$o\"); "
                 "find /usr /opt -xdev -type f -size ${n}c 2>/dev/null | while read -r f; do "
-                "cmp -s \"$f\" \"$o\" && echo \"crashed in $f\"; done; true", timeout=300, check=False)
+                "cmp -s \"$f\" \"$o\" && echo \"crashed in $f\"; done; "
+                "seg=$(readelf -lW \"$o\" | awk '$1==\"LOAD\" && $0 ~ / R E / {print $3; exit}'); "
+                f"at=$(printf '0x%x' $(( (${{seg:-0}} & ~0xfff) + 0x{offset} ))); echo \"at $at\"; "
+                "addr2line -f -C -e \"$o\" \"$at\" 2>&1 | head -n 4; "
+                "nm -D -C --defined-only \"$o\" 2>/dev/null | sort | awk -v at=\"$at\" "
+                "'{ if (strtonum(\"0x\" $1) <= strtonum(at)) last=$0 } END { print \"nearest \" last }'; true",
+                timeout=600, check=False)
+        # Which processes the crashed threads were: the units started around the first crash.
+        first = re.search(r"^(\w+ +\d+ [\d:]+) \S+ kernel: native-render-p", crash, re.M)
+        if first:
+            crash += "\n" + ctx.vm.root_exec(
+                f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
+                "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
+                "| tail -n 30 | cut -c1-300", timeout=120, check=False)
         said = crash + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
