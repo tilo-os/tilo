@@ -1306,9 +1306,9 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
             "Claude Code".to_owned(),
             true,
             Some(("Looking at the apps".to_owned(), Written)),
-            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            AGENT_COLOUR,
         )],
-        "one row for the agent, in its client's colour, with its activity line: {on_page:?}"
+        "one row for the agent, in the colour its face announced, with its activity line: {on_page:?}"
     );
     assert_eq!(
         agents(&on_page),
@@ -1448,6 +1448,10 @@ fn roster_rows(client: &Client) -> Vec<RosterRow> {
         .collect()
 }
 
+/// The colour an agent's face announces: what it is drawn in wherever a person reads the roster,
+/// rather than a colour the surface picks for it.
+const AGENT_COLOUR: (u8, u8, u8) = (0xd9, 0x77, 0x57);
+
 /// What the agent `tilo mcp` serves for person 1 says of itself on the plane, from `device`, the
 /// way every agent does: a shell that is an agent, with the line it works on.
 fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
@@ -1461,7 +1465,10 @@ fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
             sent_at_ms: 0,
             label: "Claude Code".to_owned(),
             agent: true,
-            colour: "#d97757".to_owned(),
+            colour: format!(
+                "#{:02x}{:02x}{:02x}",
+                AGENT_COLOUR.0, AGENT_COLOUR.1, AGENT_COLOUR.2
+            ),
             activity: Some("Looking at the apps".to_owned()),
             place: None,
             size: [0, 0],
