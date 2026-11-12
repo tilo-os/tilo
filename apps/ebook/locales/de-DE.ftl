@@ -171,6 +171,7 @@ ebook-action-annotation = { $action }: { $text }
 ebook-action-open-comments = Kommentare zur Markierung öffnen
 ebook-action-close-comments = Kommentare schließen
 ebook-action-delete-highlight = Markierung löschen
+ebook-action-delete-highlight-comments = Markierung und Kommentare löschen
 ebook-action-add-comment = Kommentar hinzufügen
 ebook-action-edit-comment = Kommentar bearbeiten
 ebook-action-delete-comment = Kommentar löschen

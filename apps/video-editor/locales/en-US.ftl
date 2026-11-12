@@ -191,6 +191,12 @@ video-editor-a11y-export-blocked = Why export cannot run
 video-editor-a11y-export-dialog = Export video
 video-editor-a11y-close-shortcuts = Close shortcuts
 video-editor-a11y-shortcuts = Keyboard shortcuts
+video-editor-a11y-chroma-key = { $on ->
+    [true] Switch chroma key off
+   *[false] Switch chroma key on
+}
+video-editor-a11y-mask-shape = Mask shape { $shape }
+video-editor-a11y-match-media = Match media
 
 ## The shortcut sheet
 video-editor-shortcut-project = Project

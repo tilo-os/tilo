@@ -171,6 +171,7 @@ ebook-action-annotation = { $action }: { $text }
 ebook-action-open-comments = Open highlight comments
 ebook-action-close-comments = Close comments
 ebook-action-delete-highlight = Delete highlight
+ebook-action-delete-highlight-comments = Delete highlight and comments
 ebook-action-add-comment = Add comment
 ebook-action-edit-comment = Edit comment
 ebook-action-delete-comment = Delete comment
