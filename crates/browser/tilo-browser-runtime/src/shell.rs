@@ -391,7 +391,15 @@ fn mount_people(
             // The page's frames draw its layers in the frame's own scale.
             scale: 1.0,
             seated: chrome.authorship.author.clone(),
-            notes: Rc::new(move || shared.shown_records()),
+            // Each window's record as its route names it; the page's windows name no app
+            // beside it, which the route does.
+            notes: Rc::new(move || {
+                shared
+                    .shown_records()
+                    .into_iter()
+                    .map(|(tab, record)| (tab, None, record))
+                    .collect()
+            }),
             apps: Some(
                 Arc::new(crate::page_apps::PageApps) as Arc<dyn tilo_session::platform::apps::Apps>
             ),
@@ -431,13 +439,14 @@ pub(crate) fn here_people(
 ) -> Vec<tilo_desktop::here::Person> {
     let bindings: HashMap<TabId, ui::record::RecordCheckout> =
         shared.bound_records().into_iter().collect();
-    let records: Vec<(TabId, String)> = tree
+    let records: Vec<(TabId, String, String)> = tree
         .tabs()
         .filter_map(|tab| {
             let (app, record) =
                 tilo_desktop_surface::host::records::of_window(tree, &bindings, tab.id)?;
             let named = tilo_relay_protocol::live::LiveRecord { app, record };
-            Some((tab.id, hex::encode(named.short_digest())))
+            let digest = hex::encode(named.short_digest());
+            Some((tab.id, named.app, digest))
         })
         .collect();
     let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
@@ -864,7 +873,7 @@ impl BrowserShell {
         self.follow.borrow_mut().follow(followed);
         let shared = self.chrome.shared.clone();
         let tree = self.handle.read(Clone::clone);
-        let people = sync.people(&tree, &shared.shown_records(), &|_: &str| None);
+        let people = here_people(sync.here(), &shared, &tree);
         let places: Vec<tilo_session_core::presence::Place<'_>> = people
             .iter()
             .map(|person| tilo_session_core::presence::Place {
