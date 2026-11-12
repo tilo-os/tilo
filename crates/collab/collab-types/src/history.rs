@@ -66,7 +66,6 @@ pub struct NamedApp {
     /// The name its package gives itself.
     pub name: String,
     /// The name in other languages, by BCP 47 tag.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub names: std::collections::BTreeMap<String, String>,
 }
 

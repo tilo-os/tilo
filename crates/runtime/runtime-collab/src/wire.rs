@@ -587,8 +587,7 @@ pub enum ContextUpdate {
         permissions: Vec<String>,
         /// What each installed app is called, in each language its package
         /// names it in: a window names another app's changes by these, never
-        /// by an id. Absent on a host that names none.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        /// by an id. Empty on a host that names none.
         apps: Vec<collab_types::history::NamedApp>,
     },
     /// The person at this desktop started following `peer_id`, or stopped.
