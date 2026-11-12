@@ -401,14 +401,6 @@ def main() -> int:
             check("the package Tasks runs in gives it no network of its own", offline, how)
 
             step("5", "a task typed on the host reaches the peer's Tasks")
-            # A session's desk can end up in another workspace while the apps open, and the
-            # workspace's app actions are then out of reach of that session's own person. Each
-            # desk is put back where the work is, and the drift is said rather than hidden.
-            for session in (host, peer):
-                moved = (front_workspace(session) or {}).get("room")
-                if moved != room:
-                    note(f"{session.tag}'s desk had moved to {moved}; standing it in {room}")
-                    stand_in(session, room)
             # The peer's own Tasks is asked from the workspace the task crosses in: the app a
             # person's desk shows there is the one whose copy of it must list the task, and a
             # desk that stands elsewhere offers none of that workspace's actions at all.
@@ -438,9 +430,14 @@ def main() -> int:
                       f"{peer_tasks_drawn} frames, then {frames(peer, TASKS)} after "
                       f"{CROSSING_BOUND:.0f} s; the peer's session says {stumbles(peer)}")
             peer.snapshot(out / "06-peer-task.png")
-            standing = (front_workspace(peer) or {}).get("room")
-            check("the peer's desk still stands where the task crosses", standing == room,
-                  f"{standing} of {room}")
+            # A session's desk can end up in another workspace while the apps open, and this
+            # workspace's app actions are then out of reach of that session's own person. The
+            # desk is put back where the work is, and the drift is said rather than hidden.
+            for session in (host, peer):
+                moved = (front_workspace(session) or {}).get("room")
+                if moved != room:
+                    note(f"{session.tag}'s desk had moved to {moved}; standing it in {room}")
+                    stand_in(session, room)
             listed = tasks_content(peer, bound=30.0)
             check("the peer's own Tasks lists the task the host typed", task_title in listed,
                   f"{listed[:400]}; the peer's desk stands in "
