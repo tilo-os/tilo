@@ -33,35 +33,7 @@ pub type WorkspaceStatusFuture =
 /// Native workspace membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
-    /// Recheck custody, retained integrity and all current source rights before
-    /// disclosing a completed checkpoint invocation, including journal retries.
-    fn checkpoint_result_access(
-        &self,
-        _workspace: &str,
-        _caller: &tilo_user_identity::DeviceCert,
-        _id: uuid::Uuid,
-        _mutation: bool,
-    ) -> Result<(), String> {
-        Err("native checkpoint result access unavailable".into())
-    }
-
-    /// Execute an authenticated native checkpoint request with host-owned custody.
-    fn checkpoint(
-        &self,
-        _request: tilo_peer_state::workspace_checkpoint::CheckpointRequest,
-    ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
-        Box::pin(async { Err("native checkpoint service unavailable".into()) })
-    }
-
     fn requires_workspace(&self, workspace: &str) -> bool;
-
-    /// Whether this device keeps `workspace`'s checkpoints. They are its
-    /// governor's custody, so a workspace this device governs offers them
-    /// whichever model its records follow, and a workspace governed elsewhere
-    /// does not.
-    fn keeps_checkpoints(&self, workspace: &str) -> bool {
-        self.requires_workspace(workspace)
-    }
 
     /// Where `workspace` stands for the apps on this device: ready, waiting for
     /// its join or its placement on its host, or refused, as when no host

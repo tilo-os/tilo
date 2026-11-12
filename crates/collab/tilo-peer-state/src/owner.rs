@@ -11,7 +11,6 @@
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
 mod certified;
-mod checkpoint;
 mod create;
 mod document_read;
 mod effect_history;
@@ -44,10 +43,6 @@ mod workspace_membership;
 mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-pub use checkpoint::{
-    CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
-    CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
-};
 pub use document_read::{
     CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
@@ -580,7 +575,6 @@ impl NativeWorkspaceOwner {
         for (workspace, record) in &authority.workspaces {
             let view = enrollment::restore(*workspace, record, now)?;
             effect_receipt::validate_history(&view, store.as_ref())?;
-            checkpoint::validate_restore(&view, store.as_ref())?;
             current.workspaces.insert(*workspace, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {

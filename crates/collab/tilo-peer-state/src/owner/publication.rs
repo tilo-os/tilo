@@ -712,19 +712,7 @@ pub(crate) fn refresh_governance_checkpoint(
         return Ok(());
     }
     let bytes = encode(&live.workspace_message(), MAX_BYTES)?;
-    let binding = if matches!(
-        existing.binding.target,
-        crate::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
-    ) {
-        crate::owner::checkpoint::binding(
-            view.workspace,
-            live.workspace()
-                .workspace_checkpoint_root()?
-                .ok_or("native checkpoint root disappeared")?,
-        )
-    } else {
-        existing.binding.clone()
-    };
+    let binding = existing.binding.clone();
     if bytes == existing.bytes && binding == existing.binding {
         return Ok(());
     }
@@ -898,7 +886,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     }
     if let crate::owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
         if view.peer.workspace().workspace_checkpoint_root()? != Some(root)
-            || entry.binding != crate::owner::checkpoint::binding(view.record.workspace, root)
+            || entry.binding != checkpoint_root_binding(view.record.workspace, root)
         {
             return Err("native checkpoint publication differs from signed root".into());
         }
@@ -908,6 +896,23 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         return Err("native governance checkpoint lacks its owner receipt".into());
     }
     Ok(())
+}
+
+/// The binding a publication of a workspace's checkpoint root carried. No
+/// device anchors new checkpoint content, but a workspace whose root was
+/// anchored before still publishes it as it was signed.
+fn checkpoint_root_binding(workspace: WorkspaceId, address: [u8; 32]) -> CommitBinding {
+    CommitBinding {
+        workspace: workspace.to_string(),
+        target: crate::owner_commit::CommitTarget::NativeCheckpointRoot { root: address },
+        request_digest: *blake3::Hasher::new_derive_key(
+            "Tilo native checkpoint root publication v1",
+        )
+        .update(&address)
+        .finalize()
+        .as_bytes(),
+        basis: address,
+    }
 }
 
 /// Whether `binding` is one this device receipted: a membership command, a

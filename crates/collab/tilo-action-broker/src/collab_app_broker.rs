@@ -80,8 +80,6 @@ mod tracker_runs;
     )
 )]
 mod wire;
-#[path = "workspace_checkpoints.rs"]
-mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
@@ -1515,7 +1513,6 @@ impl AppBrokerState {
             &current.broker_actor(),
             now,
         )?;
-        self.authorize_checkpoint_result(&caller.workspace, current.certificate.as_ref(), record)?;
         Ok(())
     }
 
@@ -2701,20 +2698,17 @@ struct AdmissionProvenance<'a> {
     retained_time: Option<&'a crate::policy_clock::PolicyTime>,
 }
 /// What an admission's intent records besides the surface it resolves to:
-/// which invocation, for whom, and the exact request the caller asked for.
+/// who asks for it and the exact request the caller asked for.
 /// Built once per admission, so a repeated invocation is compared with what
 /// was recorded.
 #[derive(Clone, Copy)]
 struct IntentInputs<'a> {
     peer_id: u64,
-    id: u64,
-    invocation: tilo_actions::InvocationId,
     actor: &'a BrokerActor,
     argument: Option<&'a str>,
     revision: Option<&'a str>,
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
     durable: Option<DurableContext<'a>>,
-    origin: Option<&'a InvocationCaller>,
     local_report: Option<&'a crate::local_document_action::Request>,
     typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
     receipt_context: &'a tilo_actions::ActionContext,
@@ -2834,9 +2828,6 @@ pub struct AppBrokerState {
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
-    // Retain result authorization even when the host has no durable journal.
-    // Entries share the completed invocation cache's bounded lifetime.
-    checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
     /// Jobs whose action's contract declares untrusted content, so every
     /// observation of them says so. They share the completed invocation
     /// cache's bounded lifetime.
@@ -3239,9 +3230,6 @@ impl AppBrokerState {
                     break;
                 };
                 completed.remove(&oldest);
-                if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
-                    checkpoints.remove(&oldest);
-                }
                 if let Ok(mut untrusted) = self.untrusted_jobs.lock() {
                     untrusted.remove(&oldest);
                 }
@@ -3590,7 +3578,6 @@ impl AppBrokerState {
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
-                checkpoint_jobs: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
@@ -5325,23 +5312,20 @@ impl AppBrokerState {
             receipt_context = receipt_context.enriched_by(ambient);
         }
         let intent = match journal.as_ref() {
-            Some(_) => Some(self.invocation_intent(
+            Some(_) => Some(Self::invocation_intent(
                 &offered,
                 IntentInputs {
                     peer_id,
-                    id,
-                    invocation,
                     actor,
                     argument,
                     revision,
                     original_request,
                     durable,
-                    origin: origin.as_ref(),
                     local_report,
                     typed_local_arguments: typed_local_arguments.as_ref(),
                     receipt_context: &receipt_context,
                 },
-            )?),
+            )),
             _ => None,
         };
         // Only what this connection's own admission decides has a record to
@@ -5505,15 +5489,6 @@ impl AppBrokerState {
         // Spent now, not once durable: a grant used once never admits twice,
         // even should this admission fail.
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
-        let checkpoint = (offered.0.app_id == "so.tilo.desktop"
-            && offered.1.resource == workspace_checkpoints::RESOURCE)
-            .then(|| {
-                (
-                    offered.0.route.cluster_id.clone(),
-                    offered.1.action.clone(),
-                    offered.1.contract.clone(),
-                )
-            });
         let untrusted = offered.1.contract.carries_untrusted_content();
         // Admitted: an offloadable action may now run on a better-placed
         // device, which the turn asks the route about. The device that runs it
@@ -5624,7 +5599,6 @@ impl AppBrokerState {
                 envelope,
                 sender,
                 offload,
-                checkpoint,
                 untrusted,
             })),
         })
@@ -5634,67 +5608,27 @@ impl AppBrokerState {
     /// request the caller asked for, and everything that decides it. Built
     /// once, so a repeated invocation is compared with what was admitted.
     fn invocation_intent(
-        &self,
         offered: &(PublishedSurface, PublishedAction),
         inputs: IntentInputs<'_>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> serde_json::Value {
         let IntentInputs {
             peer_id,
-            id,
-            invocation,
             actor,
             argument,
             revision,
             original_request,
             durable,
-            origin,
             local_report,
             typed_local_arguments,
             receipt_context,
         } = inputs;
-        let request = if offered.0.app_id == "so.tilo.desktop"
-            && offered.1.resource == workspace_checkpoints::RESOURCE
-        {
-            let certificate = match origin {
-                Some(InvocationCaller::Certified { caller, .. }) => self
-                    .current_action_caller(caller)?
-                    .certificate
-                    .ok_or("checkpoint caller certificate absent")?,
-                Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
-                _ => return Err("checkpoint requires original certified caller custody".into()),
-            };
-            let mut intent = workspace_checkpoints::intent(
-                &offered.0.route.cluster_id,
-                &certificate,
-                &InvocationEnvelope {
-                    id,
-                    invocation,
-                    resource: offered.1.resource.clone(),
-                    action: offered.1.action.clone(),
-                    argument: argument.map(str::to_owned),
-                    actor: actor.id.clone(),
-                    context: None,
-                },
-            )?;
-            if let Some(request) = original_request {
-                intent
-                    .as_object_mut()
-                    .ok_or("checkpoint intent invalid")?
-                    .insert(
-                        "remote_request".into(),
-                        workspace_checkpoints::remote_request(request)?,
-                    );
-            }
-            intent
-        } else {
-            match durable {
-                Some(context) => context.intent(),
-                None => serde_json::json!({
-                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                    "original_request": original_request,
-                }),
-            }
+        let request = match durable {
+            Some(context) => context.intent(),
+            None => serde_json::json!({
+                "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                "original_request": original_request,
+            }),
         };
         let request = match local_report {
             Some(report) => serde_json::json!({
@@ -5713,12 +5647,12 @@ impl AppBrokerState {
             }),
             None => request,
         };
-        Ok(serde_json::json!({ "request": request,
+        serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
             "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
             "record_id": offered.0.route.record_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
-            "action": offered.1.action, "revision": revision }))
+            "action": offered.1.action, "revision": revision })
     }
 
     /// What `record`'s invocation is answered with when it is asked for

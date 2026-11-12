@@ -1,7 +1,6 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use crate::workspace::AGENT_ACTOR_PREFIX;
-use collab_types::signer::DeviceSigner;
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
 impl PeerWorkspace<'_> {
@@ -26,66 +25,8 @@ impl PeerWorkspace<'_> {
         }
         Ok(receipt)
     }
-    /// Authenticate a historical reader against exact current certificate evidence.
-    pub fn check_checkpoint_reader(
-        self,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-        record: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self
-            .peer
-            .certificate(&caller.device_public_key, now)
-            .map_err(|error| error.to_string())?
-            != caller
-        {
-            return Err("checkpoint caller is not exact current admitted evidence".into());
-        }
-        self.peer
-            .check_document_read(caller.device_public_key, app, record, now)
-    }
-    /// Require current workspace undoable-write permission for checkpoint capture and naming.
-    pub fn check_checkpoint_namer(
-        self,
-        caller: &tilo_user_identity::DeviceCert,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        if self
-            .peer
-            .certificate(&caller.device_public_key, now)
-            .map_err(|error| error.to_string())?
-            != caller
-        {
-            return Err("checkpoint caller is not exact current admitted evidence".into());
-        }
-        if !self.peer.membership(caller.device_public_key, now)?.allows(
-            &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        ) {
-            return Err(
-                "checkpoint capture and naming require current workspace undoable-write permission"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-    /// Check current native checkpoint signing custody, including retries: the
-    /// checkpoint rows are the workspace's settings, so the settings action
-    /// permits them.
-    pub fn check_checkpoint_writer(
-        self,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        self.peer.require_governance_action(
-            key,
-            tilo_action_policy::roles::governance::SETTINGS,
-            now,
-        )
-    }
-    /// Read the native checkpoint content anchor, never treating corruption as absence.
+    /// Read the checkpoint content anchor a workspace was signed with before
+    /// checkpoints were retired, never treating corruption as absence.
     pub fn workspace_checkpoint_root(self) -> Result<Option<[u8; 32]>, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let doc = self
@@ -235,39 +176,6 @@ impl PeerWorkspaceMut<'_> {
         let mut candidate = workspace.clone();
         candidate.set_actor(self.peer.workspace_actor_for(&caller.device_public_key));
         Ok(Some(candidate))
-    }
-
-    /// Anchor retained checkpoint content as `key`'s device, when the
-    /// workspace's settings are its to change.
-    pub fn set_workspace_checkpoint_root(
-        self,
-        root: [u8; 32],
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        self.peer.require_governance_action(
-            key,
-            tilo_action_policy::roles::governance::SETTINGS,
-            now,
-        )?;
-        let mut candidate = self
-            .peer
-            .core
-            .workspace_doc
-            .as_deref()
-            .ok_or("checkpoint workspace is absent")?
-            .clone();
-        candidate
-            .put(
-                ROOT,
-                "native_checkpoint_root_v1",
-                ScalarValue::Bytes(root.to_vec()),
-            )
-            .map_err(|e| e.to_string())?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
-        Ok(())
     }
 
     /// Anchor `caller`'s archived effect receipts at `root`, in its

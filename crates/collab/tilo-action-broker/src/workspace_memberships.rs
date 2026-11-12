@@ -586,18 +586,13 @@ impl AppBrokerState {
                 .map(|workspace| (workspace.id().to_string(), membership_actions()))
                 .collect::<Vec<_>>()
         })?;
-        for (workspace, mut actions) in workspaces {
+        for (workspace, actions) in workspaces {
             // A workspace its host stewards offers its membership changes here
             // too: this device writes them itself, as in any workspace it holds.
             if !(service.requires_workspace(&workspace)
                 || service.grants_authorship_at_host(&workspace))
             {
                 continue;
-            }
-            // Checkpoints are their governor's custody: offered where this
-            // device governs the workspace, whichever model its records follow.
-            if service.keeps_checkpoints(&workspace) {
-                actions.extend(super::workspace_checkpoints::actions());
             }
             let governance = people_actions(&governance_resource(&workspace));
             let membership = self.publish_workspace_surface(
@@ -701,45 +696,6 @@ impl AppBrokerState {
         Ok(true)
     }
 
-    async fn execute_workspace_checkpoint(
-        &self,
-        workspace: &str,
-        envelope: &InvocationEnvelope,
-        command: tilo_peer_state::workspace_checkpoint::CheckpointCommand,
-        pending: &super::PendingInvocation,
-        service: &dyn crate::services::WorkspaceMemberships,
-    ) -> Result<serde_json::Value, String> {
-        if !service.keeps_checkpoints(workspace) {
-            return Err("checkpoint workspace changed".into());
-        }
-        if command.mutates() {
-            let key = pending
-                .journal_key
-                .as_ref()
-                .ok_or("checkpoint has no durable admission")?;
-            if key.workspace != workspace
-                || key.invocation != envelope.invocation
-                || key.owner != pending.owner
-            {
-                return Err("checkpoint invocation binding changed".into());
-            }
-        }
-        let original = pending
-            .original
-            .as_ref()
-            .ok_or("checkpoint original custody unavailable")?;
-        let caller = original.owner_person_certificate(self, workspace, envelope)?;
-        service.health()?;
-        service
-            .checkpoint(tilo_peer_state::workspace_checkpoint::CheckpointRequest {
-                workspace: workspace.into(),
-                invocation: envelope.invocation.0,
-                caller,
-                command,
-            })
-            .await
-    }
-
     async fn execute_workspace_membership(
         &self,
         peer: u64,
@@ -757,11 +713,6 @@ impl AppBrokerState {
             })
             .cloned()
             .ok_or("membership invocation is no longer admitted")?;
-        if let Some(command) = super::workspace_checkpoints::command(envelope)? {
-            return self
-                .execute_workspace_checkpoint(workspace, envelope, command, &pending, service)
-                .await;
-        }
         let key = pending
             .journal_key
             .as_ref()
@@ -1454,7 +1405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_workspace_a_host_stewards_offers_its_own_membership_but_no_checkpoint() {
+    async fn a_workspace_a_host_stewards_offers_its_own_membership() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut tree = crate::test_support::WorkspaceTree::default();
@@ -1505,12 +1456,6 @@ mod tests {
                 // Admission is the record's: the agent it names changes no
                 // membership action here.
                 assert_membership_action_set(&state, &workspace, &expected);
-                assert!(
-                    !expected
-                        .iter()
-                        .any(|(resource, _)| *resource == "desktop:checkpoints"),
-                    "a checkpoint is this device's custody, not the host's"
-                );
                 drop(state);
             })
             .await;
@@ -1639,8 +1584,8 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 16));
-                let mut expected = vec![
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 12));
+                let expected = vec![
                     (WORKSPACE, "grant-app-authorship"),
                     (WORKSPACE, "grant"),
                     (WORKSPACE, "revoke"),
@@ -1654,12 +1599,6 @@ mod tests {
                     (WORKSPACE, "request-bot"),
                     (WORKSPACE, "withdraw-bot-request"),
                 ];
-                expected.extend([
-                    ("desktop:checkpoints", "capture"),
-                    ("desktop:checkpoints", "inspect"),
-                    ("desktop:checkpoints", "name-bind"),
-                    ("desktop:checkpoints", "find"),
-                ]);
                 assert_membership_action_set(&state, &workspace, &expected);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(
@@ -1682,7 +1621,7 @@ mod tests {
                     1,
                     "an admitted agent adds no membership action"
                 );
-                assert_eq!(membership_surface_counts(&state, &workspace), (1, 16));
+                assert_eq!(membership_surface_counts(&state, &workspace), (1, 12));
                 assert_membership_action_set(&state, &workspace, &expected);
                 let peer = *state
                     .workspace_membership_peers
