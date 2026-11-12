@@ -1352,12 +1352,15 @@ try {
     await key(a.tab, 'Escape');
 
     // The launcher's chord opens the search, and Escape closes it opening
-    // nothing: the keys a browser leaves to the page.
+    // nothing: the keys a browser leaves to the page. The desk has every app
+    // the Lounge offers open by now and presents a frame every several
+    // seconds through the software rasteriser, and each answer is a presented
+    // frame: the waits are the ones a search gets everywhere in this gate.
     await click(a.tab, 640, 700);
     await key(a.tab, 'k', a.command);
-    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 30_000);
+    await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 120_000);
     await key(a.tab, 'Escape');
-    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
+    await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 180_000);
     console.log('ok: the search chord opens the search and Escape closes it');
     mark('the search chord and Escape');
 
