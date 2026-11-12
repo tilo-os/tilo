@@ -1010,16 +1010,19 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the desk this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own, and what a person saves through the action door lands
-        // on the desk on the loop's next pass.
+        // of its own, and what a person saves through the action door is one
+        // of its workspace's settings, written into the workspace's records
+        // and shown on the desk on the loop's next pass.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
             .map_err(crate::Error::host)?;
-        let (shortcut_library, saved_shortcuts) =
-            crate::plane::ShortcutLibrary::new(automation_runtime.handle().clone());
+        let shortcut_library = crate::plane::ShortcutLibrary::new(
+            automation_runtime.handle().clone(),
+            engine.as_ref().map(std::sync::Arc::clone),
+        );
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
@@ -1169,7 +1172,6 @@ impl Session {
             options.wake.handle(),
             handle.clone(),
             options.person.clone(),
-            saved_shortcuts,
             crate::automation::Feeds {
                 // Which of the person's devices this one is, and which of
                 // them are online: each schedule runs on one of them.

@@ -33,7 +33,6 @@ mod record;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
-mod shortcuts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]

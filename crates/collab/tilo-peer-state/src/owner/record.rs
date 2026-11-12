@@ -105,9 +105,9 @@ pub(crate) struct StoredWorkspace {
     /// Exact broker terminal bindings, committed with the signed workspace checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::owner::effect_receipt::StoredEffectReceipt>,
-    /// The latest shortcut change committed here: the owner receipt its
-    /// signed workspace checkpoint is published under. A shortcut change is
-    /// idempotent, so no older one is kept.
+    /// Retired with the shortcut commit family: a saved shortcut is one of the
+    /// workspace's settings. A record kept before then still names the receipt
+    /// its published checkpoint was committed under, so it stays here to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcut_change: Option<crate::owner_commit::OwnerCommitReceipt>,
     /// Content-addressed cold UUID index, also anchored in signed public workspace history.
