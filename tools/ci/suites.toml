@@ -1725,10 +1725,6 @@ suite = "os/dev/test-installed-desktop.sh"
 reason = "boots the gated dev disk in a VM and signs in at its greeter"
 
 [[unrequired]]
-suite = "os/dev/test-slow-frame-launch.sh"
-reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
-
-[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"

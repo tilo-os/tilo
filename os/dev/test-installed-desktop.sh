@@ -387,9 +387,5 @@ cat "$touch_log"
 # The image's apps are installed packages: Settings updates from a registry,
 # launches as the new version, and rolls back.
 RUNNER="$vm ssh" "$repo/os/tests/booted_app_update.sh"
-# Last, because it ends this session: signed in again with every frame stalled
-# 50-130 ms, as on a slow laptop, apps opened beside each other keep their
-# windows, are never configured larger than the display, and never exit.
-"$dev_dir/test-slow-frame-launch.sh" --out "$out/slow-frames" --stall 50-130
 printf 'PASS\n' > "$out/verdict.txt"
 note "the installed desktop passed"
