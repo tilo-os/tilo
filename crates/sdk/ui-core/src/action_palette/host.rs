@@ -275,6 +275,13 @@ impl ActionPalette {
         ActivationModifier::of(self.held)
     }
 
+    /// The modifier held as the last row was chosen, which says where it opens: the person may
+    /// have let go of it by the time the host carries the choice out.
+    #[must_use]
+    pub fn chosen_with(&self) -> Option<ActivationModifier> {
+        self.chosen_with
+    }
+
     /// The chips a host feeding its own rows offers above them: it declared
     /// the facets, so it is the one that can narrow its rows by what is
     /// picked ([`Self::picked_filters`]). Unlike the facets an app's own rows
@@ -712,6 +719,7 @@ impl ActionPalette {
             self.begin_host_step(entry.id, spec);
             return;
         }
+        self.chosen_with = ActivationModifier::of(self.held);
         self.outcome = Some(CommandOutcome {
             id: entry.id,
             argument: None,
@@ -790,6 +798,7 @@ impl ActionPalette {
                 };
                 let value = self.field.value().to_owned();
                 self.submitted_argument = Some(value.clone());
+                self.chosen_with = ActivationModifier::of(self.held);
                 self.outcome = Some(CommandOutcome {
                     id: step.id,
                     argument: Some(value),
@@ -920,6 +929,12 @@ impl ActionPalette {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.set_held_modifiers(modifiers.state());
             return false;
+        }
+        // A key carries the modifiers held as it is pressed: a host that hands the palette no
+        // change of them (the desktop's search, over the shell's own keys) still opens a row
+        // where the held modifier asks.
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            self.set_held_modifiers(ctx.modifiers.state());
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)

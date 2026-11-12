@@ -518,6 +518,9 @@ pub struct ActionPalette {
     /// The modifiers held now, so a selected row can show what its
     /// alternative activation would do before it is chosen.
     held: winit::keyboard::ModifiersState,
+    /// The modifier held as the last row was chosen: where it asked the row to open, read by the
+    /// host after the person may have let go of it.
+    chosen_with: Option<crate::search::ActivationModifier>,
     /// The keycap notation the host's rows are drawn with.
     platform: crate::platform::PlatformConventions,
     /// The theme's text and interface scales, as last laid out.
@@ -755,6 +758,7 @@ impl ActionPalette {
             max_list_height: None,
             max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
+            chosen_with: None,
             platform: crate::platform::PlatformConventions::default(),
             text_scale: 1.0,
             ui_scale: 1.0,

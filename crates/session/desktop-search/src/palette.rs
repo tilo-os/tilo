@@ -16,8 +16,8 @@ use crate::providers::{
 };
 use crate::window::WindowSearch;
 use crate::workers::SearchWorkers;
-use ui::search::Scope;
 use ui::search::system::{KindGroup, ResourceKind};
+use ui::search::{ActivationModifier, Scope};
 
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
@@ -569,7 +569,7 @@ impl DesktopSearch {
             .iter()
             .find_map(|entry| self.hit(&entry.id));
         if let Some(hit) = top {
-            self.choose_hit(hit, None);
+            self.choose_hit(hit, None, self.palette.held_modifier());
         }
     }
 
@@ -1000,7 +1000,7 @@ impl DesktopSearch {
                 // an Enter that carries one is never this.
                 self.choose_top_of_typed_query();
             } else if let Some(hit) = self.hit(&outcome.id) {
-                self.choose_hit(hit, outcome.argument);
+                self.choose_hit(hit, outcome.argument, self.palette.chosen_with());
             }
         }
         if self.sources.is_none() || self.palette.is_open() {
@@ -1023,7 +1023,7 @@ impl DesktopSearch {
     /// Choose `hit`, with `argument` the one line its action asks for:
     /// it is remembered, and its target is the choice. A switch stays in
     /// view, showing what it flipped to; anything else closes search.
-    fn choose_hit(&mut self, hit: Hit, argument: Option<String>) {
+    fn choose_hit(&mut self, hit: Hit, argument: Option<String>, held: Option<ActivationModifier>) {
         // A source switched off or on again: the rows change under the
         // switch, which stays where it is so it can be flipped back.
         if let Target::Prefer { source, enabled } = &hit.target {
@@ -1043,13 +1043,11 @@ impl DesktopSearch {
         let mut target = hit.target;
         // The place the person asked the window to go with the modifier
         // they held as they chose: the row said what it would be.
-        if let (Target::Launch { place, .. }, Some(asked)) =
-            (&mut target, self.palette.held_modifier())
-        {
+        if let (Target::Launch { place, .. }, Some(asked)) = (&mut target, held) {
             *place = match asked {
-                ui::search::ActivationModifier::Shift => LaunchPlace::TabHere,
-                ui::search::ActivationModifier::Ctrl => LaunchPlace::Beside,
-                ui::search::ActivationModifier::Alt => LaunchPlace::Focus,
+                ActivationModifier::Shift => LaunchPlace::TabHere,
+                ActivationModifier::Ctrl => LaunchPlace::Beside,
+                ActivationModifier::Alt => LaunchPlace::Focus,
             };
         }
         let mut toggles = false;
@@ -1098,7 +1096,7 @@ impl DesktopSearch {
         let Some(hit) = self.rows.get(index).cloned() else {
             return false;
         };
-        self.choose_hit(hit, argument);
+        self.choose_hit(hit, argument, self.palette.held_modifier());
         true
     }
 
@@ -1744,6 +1742,10 @@ mod tests {
             settled(&mut search);
             search.palette_mut().set_held_modifiers(held);
             search.palette_mut().activate_selected();
+            // Let go before the desk carries the choice out: what was held then still counts.
+            search
+                .palette_mut()
+                .set_held_modifiers(ModifiersState::empty());
             assert!(search.observe(), "choosing a row closes search");
             assert_eq!(
                 search.take_choice(),
@@ -1751,7 +1753,7 @@ mod tests {
                     app: "so.tilo.sheets".into(),
                     place: asked,
                 }),
-                "the modifier held decides where the app opens"
+                "the modifier held as the row was chosen decides where the app opens"
             );
         }
     }
