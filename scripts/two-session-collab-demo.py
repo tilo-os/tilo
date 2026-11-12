@@ -24,12 +24,12 @@ the other side answers it from its own copy of the record, its window there is
 counted before and after, and the desk's state is read from that session's own
 control socket. Screenshots of both sides are left in OUT.
 
-A native app's record crosses today. A tilolang app's does not: each session's
-tilolang host keeps its own copy of the same record and never merges with the
-other's, and the first action a session invokes on a joined workspace's tilolang
-app ends that host's collaboration ("collaboration stopped: native invocation
-capture; outcome unknown"). The two Tasks checks say so, with what the peer's
-own session logged, and stay red until the record crosses.
+A task is read back through the tilolang app's own `read`, and an action's address
+belongs to the listing it was taken from: an app publishes what its window shows, so
+a row a listing held across a change may be gone, and invoking it is refused as an
+unknown action. The demo therefore takes the row from a listing made when it
+invokes. The Tasks step also says which workspace each desk stands in, because an
+app offers its actions only in the workspace whose window shows it.
 
     scripts/two-session-collab-demo.py
     scripts/two-session-collab-demo.py --out target/collab-demo --build
