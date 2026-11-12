@@ -155,7 +155,7 @@ pub fn enroll_into(
         iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
     );
     let hint = governor.hint(endpoint);
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let now_ns = ns(now).unwrap();
     // One workspace admits more than one device: each asks with an id of its own.
     let mut request_id = [0_u8; 32];
@@ -249,7 +249,7 @@ pub fn raw_fixture() -> (
     [u8; 32],
     SystemTime,
 ) {
-    raw_fixture_at(SystemTime::now())
+    raw_fixture_at(tilo_clock::wall())
 }
 /// The joining device's own key the raw fixture enrolls.
 #[must_use]

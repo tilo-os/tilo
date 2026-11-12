@@ -73,7 +73,7 @@ pub fn deliver(
     document: RemoteDocument,
     from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) -> Delivery {
-    deliver_at(channels, fanout, document, from_user_id, SystemTime::now())
+    deliver_at(channels, fanout, document, from_user_id, tilo_clock::wall())
 }
 
 fn deliver_at(
@@ -304,7 +304,7 @@ fn record_already_redacted(
             AuditEntry {
                 envelope: Box::new(envelope),
                 rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                at: SystemTime::now(),
+                at: tilo_clock::wall(),
             },
         );
     }
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let an_hour_ago = tilo_clock::wall() - Duration::from_secs(3600);
         let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
         let mut op = SignedOp::new_unsigned(
             mutation.encode().unwrap(),
@@ -339,7 +339,7 @@ mod tests {
             1,
         );
         collab_types::sign_op(&mut op, &key).unwrap();
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let channel = || {
             let mut state = ChannelState {
                 room: "workspace".into(),
@@ -377,7 +377,7 @@ mod tests {
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
-                std::time::SystemTime::now(),
+                tilo_clock::wall(),
                 1,
             );
             collab_types::sign_op(&mut op, &key).unwrap();
@@ -446,7 +446,7 @@ mod tests {
             let heads = note.get_heads();
             note.put(automerge::ROOT, field, text).unwrap();
             let change = note.save_after(&heads);
-            let now = SystemTime::now();
+            let now = tilo_clock::wall();
             let mut op = SignedOp::new_unsigned_with_encryption(
                 change,
                 document_artifact_id("notes", "workspace", "record"),
@@ -553,7 +553,7 @@ mod tests {
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
-                SystemTime::now(),
+                tilo_clock::wall(),
                 seq,
             );
             collab_types::sign_op(&mut op, &key).unwrap();
@@ -636,7 +636,7 @@ mod tests {
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("so.tilo.chat", "workspace", record),
                 OpKind::Change,
-                std::time::SystemTime::now(),
+                tilo_clock::wall(),
                 sequence,
             );
             collab_types::sign_op(&mut op, &key).unwrap();

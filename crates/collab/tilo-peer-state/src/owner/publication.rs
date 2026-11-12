@@ -1147,7 +1147,7 @@ impl NativeWorkspaceOwner {
     pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         candidate
             .peer
             .permissions(candidate.device().device_public_key, now)

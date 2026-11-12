@@ -239,7 +239,7 @@ impl OwnWorkspaces {
     /// all of them when `fresh`. The records are read once for all of them,
     /// so a person's hundredth workspace costs no more than their first.
     fn sizes(&self, dir: &Path, workspaces: &[String], fresh: bool) -> Vec<u64> {
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let cached: Vec<Option<u64>> = {
             let measured = self.measured.lock_recover();
             workspaces

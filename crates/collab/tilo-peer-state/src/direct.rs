@@ -540,7 +540,7 @@ impl DirectSync {
         &self,
         write: impl FnOnce(&mut StatePeer, &SigningKey, SystemTime) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let message = write(&mut self.0.replica.lock(), &self.0.key, SystemTime::now())?;
+        let message = write(&mut self.0.replica.lock(), &self.0.key, tilo_clock::wall())?;
         self.0.changed.send_modify(bump);
         self.keep(&message, false);
         self.outgoing(Authored {
@@ -1188,14 +1188,14 @@ impl DirectSync {
                     messages.extend(admission.owner.commit_bootstrap(
                         admission.workspace,
                         &self.0.key,
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                     )?);
                 }
                 None => {
                     messages.extend(
                         replica
                             .publication_mut()
-                            .bootstrap_messages(&self.0.key, SystemTime::now())?,
+                            .bootstrap_messages(&self.0.key, tilo_clock::wall())?,
                     );
                 }
             }
@@ -1379,7 +1379,7 @@ impl DirectSync {
         } else {
             TransportOrigin::RelayDelta(author)
         };
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let report = admission
             .owner
             .receive(admission.workspace, origin, message.clone(), now);
@@ -1426,7 +1426,7 @@ impl DirectSync {
             .then(|| self.certificate().ok())
             .flatten();
         let mut replica = self.0.replica.lock();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut landed = false;
         let report = match replica.receive_from_report(origin, message.clone(), now) {
             Ok(report) => {
@@ -2078,7 +2078,7 @@ mod tests {
     /// the authority's, holding `revocations`.
     fn link(roster: &[(SigningKey, DeviceCert)], revocations: RevocationList) -> DirectSync {
         let (key, authority) = roster.first().unwrap();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut peer = StatePeer::new(
             WORKSPACE,
             authority.clone(),
@@ -2140,7 +2140,7 @@ mod tests {
                     peer.governance_mut().publish_governed_revocations(
                         &[revocation(&root, member.device_public_key)],
                         &roster[0].0,
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                     )
                 })
                 .unwrap()

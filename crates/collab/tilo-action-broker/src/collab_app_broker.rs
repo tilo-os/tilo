@@ -3102,7 +3102,7 @@ impl AppBrokerState {
     const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         self.expire_stale_invocations_at(
             now,
             Self::INVOCATION_IDLE_TIMEOUT,
@@ -4484,7 +4484,7 @@ impl AppBrokerState {
             .confirmation_grants
             .lock()
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
@@ -4878,7 +4878,7 @@ impl AppBrokerState {
             .confirmation_grants
             .lock()
             .map_err(|_| "the confirmation registry is unavailable".to_string())?;
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
@@ -4889,7 +4889,7 @@ impl AppBrokerState {
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
                 host_witnessed: None,
-                expires: std::time::Instant::now()
+                expires: tilo_clock::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
             },
@@ -5386,7 +5386,7 @@ impl AppBrokerState {
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
             if (requires_store_witness(&offered.0.app_id, &offered.1.action)
                 && grant.host_witnessed.is_none())
-                || grant.expires < std::time::Instant::now()
+                || grant.expires < tilo_clock::now()
                 || grant.peer_id != peer_id
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
@@ -5602,7 +5602,7 @@ impl AppBrokerState {
             operation_kind: offered.1.operation_kind,
             cluster_id: offered.0.route.cluster_id.clone(),
             context: receipt_context,
-            last_activity: std::time::Instant::now(),
+            last_activity: tilo_clock::now(),
             cancellation_requested_at: None,
             cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
@@ -5961,7 +5961,7 @@ impl AppBrokerState {
     ) -> Result<String, String> {
         let unavailable = || "the confirmation registry is unavailable".to_owned();
         let token = uuid::Uuid::new_v4().to_string();
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let expires = now
             .checked_add(std::time::Duration::from_secs(60))
             .ok_or_else(unavailable)?;
@@ -5990,7 +5990,7 @@ impl AppBrokerState {
     ///
     /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
     pub(crate) fn witness_confirmation(&self, binding: &WitnessBinding) -> Option<String> {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let expires = now.checked_add(std::time::Duration::from_secs(60))?;
         let token = uuid::Uuid::new_v4().to_string();
         let mut witnessed = self.witnessed_confirmations.lock().ok()?;
@@ -6035,7 +6035,7 @@ impl AppBrokerState {
             return false;
         };
         let matches = witnessed.get(token).is_some_and(|witness| {
-            witness.expires >= std::time::Instant::now() && witness.binding == *binding
+            witness.expires >= tilo_clock::now() && witness.binding == *binding
         });
         if matches {
             witnessed.remove(token);
@@ -6170,7 +6170,7 @@ impl AppBrokerState {
             .ok_or_else(|| "the invocation is not running".to_string())?;
         let durable = self.persist_cancellation(job)?;
         if job.cancellation_requested_at.is_none() {
-            job.cancellation_requested_at = Some(std::time::Instant::now());
+            job.cancellation_requested_at = Some(tilo_clock::now());
             self.execution_activity.publish_status(
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
@@ -7897,7 +7897,7 @@ struct JoinPhases {
 
 impl JoinPhases {
     fn start() -> Self {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         Self {
             started: now,
             last: now,
@@ -7906,7 +7906,7 @@ impl JoinPhases {
     }
 
     fn mark(&mut self, phase: &'static str) {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         self.spans.push((phase, now.duration_since(self.last)));
         self.last = now;
     }
@@ -8890,7 +8890,7 @@ fn handle_signed_op_send_for_artifact(
                     AuditEntry {
                         envelope: Box::new(envelope),
                         rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                        at: std::time::SystemTime::now(),
+                        at: tilo_clock::wall(),
                     },
                 );
             }
@@ -8908,7 +8908,7 @@ fn handle_signed_op_send_for_artifact(
                     AuditEntry {
                         envelope: Box::new(envelope),
                         rejection: Some(reason),
-                        at: std::time::SystemTime::now(),
+                        at: tilo_clock::wall(),
                     },
                 );
             }
@@ -9949,7 +9949,7 @@ async fn serve_broker_thread(
     // delivered at.
     let mut delivered = None;
     loop {
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let epoch = tilo_identity_host::policy_change::epoch();
         if policy.due(now, epoch).is_some_and(|due| due <= now) {
             let clocked = state.refresh_policy_surfaces();
@@ -10008,7 +10008,7 @@ async fn serve_broker_thread(
         // policy announcements, and with them runs to deliver, through
         // `policy_turn`; connected apps run as
         // tasks of this LocalSet.
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
         let armed = policy_watch.arm();
         if (recheck.is_none() && armed != policy.epoch())
@@ -13701,7 +13701,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
@@ -13735,7 +13735,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             2,
             collab_types::EncryptionMetadata::mls_application(7, expected_channel),
         );
@@ -13882,7 +13882,7 @@ pub mod tests {
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
@@ -13933,7 +13933,7 @@ pub mod tests {
             author,
             document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         state.fanout_to_route(
@@ -14618,7 +14618,7 @@ pub mod tests {
                 .expect("cancellation registry")
                 .contains(&refresh.id)
         );
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         {
             let mut pending = state.pending_invocations.lock().expect("pending");
             pending
@@ -14927,7 +14927,7 @@ pub mod tests {
             )
             .with_app("org.tilo.Writer", "Writer")
             .with_group("task:release", "Release", "task"),
-            last_activity: std::time::Instant::now(),
+            last_activity: tilo_clock::now(),
             cancellation_requested_at: None,
             cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
@@ -15085,7 +15085,7 @@ impl AppBrokerState {
             .ok_or_else(|| {
                 BrokerError::failed("invocation changed while committing; outcome unknown".into())
             })?;
-        pending.last_activity = std::time::Instant::now();
+        pending.last_activity = tilo_clock::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         state.publish_pending_activity(pending, &update);

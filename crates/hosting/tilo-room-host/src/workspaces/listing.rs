@@ -581,7 +581,7 @@ impl Workspaces {
             let mut governed = governed.lock().await;
             let policy = governed
                 .peer()
-                .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
+                .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
@@ -1068,7 +1068,7 @@ mod door_tests {
     async fn writes_in_chat(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) -> bool {
         const CHAT: &str = "so.tilo.chat";
         let state = workspaces.workspace(workspace).await.unwrap();
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let member = state
             .lock()
             .await

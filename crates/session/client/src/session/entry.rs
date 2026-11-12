@@ -171,11 +171,7 @@ impl Task {
         let channels = self.channels.clone();
         async move {
             channels
-                .ask_on_entry(
-                    workspace?,
-                    tilo_clock::Instant::now(),
-                    tilo_clock::unix_now(),
-                )
+                .ask_on_entry(workspace?, tilo_clock::now(), tilo_clock::unix_now())
                 .await
         }
     }

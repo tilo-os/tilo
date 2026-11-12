@@ -22,7 +22,7 @@ pub(super) fn over_change_limit(
         return None;
     }
     limits
-        .admit_change(&peer.user_public_key, standing, std::time::Instant::now())
+        .admit_change(&peer.user_public_key, standing, tilo_clock::now())
         .err()
 }
 

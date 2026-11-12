@@ -271,7 +271,7 @@ impl Hosting {
         {
             return Err("the workspace is not served by a device of this host's person".into());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut peer = replica(&request.bootstrap, now)?;
         if resumed {
             // What the workspace published since it was handed over, as this host
@@ -536,7 +536,7 @@ impl Follower {
             if author != self.governor {
                 continue;
             }
-            let now = SystemTime::now();
+            let now = tilo_clock::wall();
             if !follow(&mut self.peer, author, &body, now) {
                 continue;
             }
@@ -553,7 +553,7 @@ impl Follower {
             }
         }
         drop(dialer);
-        if self.dropped(SystemTime::now()) {
+        if self.dropped(tilo_clock::wall()) {
             if let Err(error) = stop_serving(&self.services, self.workspace_id).await {
                 tracing::warn!(workspace = %self.workspace, %error, "a room no longer hosted here was not closed");
             }

@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn a_burst_of_forty_passes_then_changes_refill_at_two_per_second() {
         let limits = MemberLimits::new(MemberLimitsConfig::default());
-        let (user, start) = ([1; 32], Instant::now());
+        let (user, start) = ([1; 32], tilo_clock::now());
         for _ in 0..40 {
             limits.admit_change(&user, GUEST, start).unwrap();
         }
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn people_have_their_own_budgets() {
         let limits = MemberLimits::new(MemberLimitsConfig::default());
-        let now = Instant::now();
+        let now = tilo_clock::now();
         for _ in 0..40 {
             limits.admit_change(&[1; 32], GUEST, now).unwrap();
         }
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn an_owner_is_never_paced_by_the_guest_budget() {
         let limits = MemberLimits::new(MemberLimitsConfig::default());
-        let (user, now) = ([1; 32], Instant::now());
+        let (user, now) = ([1; 32], tilo_clock::now());
         for _ in 0..40 {
             limits.admit_change(&user, GUEST, now).unwrap();
         }
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn eight_mebibytes_of_content_per_hour() {
         let limits = MemberLimits::new(MemberLimitsConfig::default());
-        let (user, start) = ([1; 32], Instant::now());
+        let (user, start) = ([1; 32], tilo_clock::now());
         limits.admit_content(&user, 8 * 1024 * 1024, start).unwrap();
         assert_eq!(limits.admit_content(&user, 1, start), Err(Limited::Content));
         limits

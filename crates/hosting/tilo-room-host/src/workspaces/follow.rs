@@ -123,7 +123,7 @@ impl GovernedWorkspace {
             peer.receive_from(
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
                 message,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
         };
         match received {
@@ -181,7 +181,7 @@ impl GovernedWorkspace {
             .receive_from(
                 TransportOrigin::RetainedRelayDelta(author),
                 message.clone(),
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
             .err()
     }
@@ -201,7 +201,7 @@ impl GovernedWorkspace {
             message,
             reason,
             key,
-            SystemTime::now(),
+            tilo_clock::wall(),
         );
         match filed {
             Ok(filed) => Followed {

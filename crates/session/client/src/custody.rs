@@ -332,7 +332,7 @@ impl Sending {
         authorize: impl FnOnce(&tilo_peer_state::owner::NativeCommittedView) -> Result<(), String>,
         send: impl FnMut(Outgoing<'_>) -> bool,
     ) -> Result<bool, String> {
-        owner.with_outgoing(workspace, web_time::SystemTime::now(), |view, outgoing| {
+        owner.with_outgoing(workspace, tilo_clock::wall(), |view, outgoing| {
             authorize(view)?;
             Ok(self.pass(
                 outgoing.queued(),

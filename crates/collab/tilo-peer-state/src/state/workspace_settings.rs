@@ -288,7 +288,7 @@ mod tests {
     /// the owner's other device `[13; 32]` is on its roster.
     fn governor() -> (DeviceCert, SigningKey, StatePeer) {
         let (cert, device) = device(12);
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let roster = vec![cert.clone(), self::device(13).0];
         let mut peer = StatePeer::new(
             WORKSPACE,
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn the_governor_saves_the_workspaces_grant_sets_and_members_read_them() {
         let (_, key, mut peer) = governor();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         assert!(
             peer.governance_mut()
                 .put_governed_presets(&[preset("Reviewers")], &key, now)
@@ -349,12 +349,12 @@ mod tests {
         let (_, _, mut peer) = governor();
         let other = SigningKey::from_bytes(&[13; 32]);
         peer.governance_mut()
-            .put_governed_sandbox(&[], &other, SystemTime::now())
+            .put_governed_sandbox(&[], &other, tilo_clock::wall())
             .unwrap();
         let stranger = SigningKey::from_bytes(&[99; 32]);
         assert!(
             peer.governance_mut()
-                .put_governed_sandbox(&[], &stranger, SystemTime::now())
+                .put_governed_sandbox(&[], &stranger, tilo_clock::wall())
                 .is_err()
         );
     }
@@ -385,7 +385,7 @@ mod tests {
                 room: WORKSPACE.into(),
                 changes,
             },
-            SystemTime::now(),
+            tilo_clock::wall(),
         )
         .map(|_| ())
     }

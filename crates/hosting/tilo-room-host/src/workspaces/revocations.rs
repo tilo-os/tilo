@@ -171,7 +171,7 @@ impl Workspaces {
         if carry.is_empty() {
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         if candidate
             .governance_mut()
@@ -578,7 +578,7 @@ mod tests {
         joined: &tilo_peer_state::join::JoinBootstrap,
         retained: &[crate::store::compaction::ChannelEntry],
     ) -> tilo_peer_state::StatePeer {
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let mut replica = tilo_peer_state::StatePeer::from_join(
             workspace,
             authority.clone(),

@@ -123,7 +123,7 @@ impl PersonalSync {
             SystemTime,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let message = self.0.store.write(|store| publish(store, &self.0.key, now));
         self.publish_refusals();
         Ok(self.published(message?))
@@ -152,7 +152,7 @@ impl PersonalSync {
         envelope: collab_types::SignedOp,
     ) -> Result<NeighbourMsg, String> {
         let message = self.0.store.write(|store| {
-            store.admit_local(app, record, envelope, &self.0.key, SystemTime::now())
+            store.admit_local(app, record, envelope, &self.0.key, tilo_clock::wall())
         });
         self.publish_refusals();
         Ok(self.published(message?))
@@ -169,7 +169,7 @@ impl PersonalSync {
         let changed = self
             .0
             .store
-            .write(|store| admit(store, SystemTime::now()))?;
+            .write(|store| admit(store, tilo_clock::wall()))?;
         self.publish_refusals();
         if changed {
             self.published(self.0.store.read(super::PersonalStore::hello));
@@ -241,7 +241,7 @@ impl PersonalSync {
     fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
         self.0
             .store
-            .write(|store| store.catch_up(&self.0.key, remote, SystemTime::now()))
+            .write(|store| store.catch_up(&self.0.key, remote, tilo_clock::wall()))
     }
 
     /// Admit every frame `remote` sends until its stream ends. A document the
@@ -260,7 +260,7 @@ impl PersonalSync {
             let admitted = self
                 .0
                 .store
-                .write(|store| store.receive(&self.0.key, remote, message, SystemTime::now()));
+                .write(|store| store.receive(&self.0.key, remote, message, tilo_clock::wall()));
             // Whatever the store decided, what it now refuses of this
             // device's writes is sent: the verdict reaches its author, live.
             if self.publish_refusals() {

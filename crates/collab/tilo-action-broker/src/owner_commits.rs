@@ -110,7 +110,7 @@ impl OwnerCommitService for NativeOwnerCommits {
             // A receipt is this device's own, recorded in its person's slice
             // of the workspace and published as its own change.
             custody.check_custody(&owner, room)?;
-            let receipt = owner.commit_effect_receipt(&request, std::time::SystemTime::now())?;
+            let receipt = owner.commit_effect_receipt(&request, tilo_clock::wall())?;
             custody.schedule_publication(room);
             Ok(receipt)
         }))
@@ -138,7 +138,7 @@ impl OwnerCommitService for NativeOwnerCommits {
             let (committed, receipt) = futures::executor::block_on(owner.commit_local_document(
                 request,
                 signer.as_ref(),
-                std::time::SystemTime::now(),
+                tilo_clock::wall(),
             ))?;
             // What search holds of the record is read again from what it now
             // holds.

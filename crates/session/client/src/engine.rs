@@ -516,7 +516,7 @@ impl Engine {
                     view.document_revision(
                         reader,
                         (app, record),
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                         History { open, kept },
                     )
                 })
@@ -680,7 +680,7 @@ impl Engine {
                     (app, record),
                     holding,
                     maximum,
-                    SystemTime::now(),
+                    tilo_clock::wall(),
                     history,
                 )
             })
@@ -829,7 +829,7 @@ impl Engine {
                 return Err("the reader is no device the workspace certifies".to_owned());
             }
             view.peer()
-                .check_document_read(reader, app, record, SystemTime::now())
+                .check_document_read(reader, app, record, tilo_clock::wall())
         })
     }
 
@@ -889,7 +889,7 @@ impl Engine {
     ) -> Result<tilo_peer_state::owner::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
         let device = self.identity.device_cert.device_public_key;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
         let frame = if founding {
             collab_types::DocumentMutation::Snapshot(changes.to_vec())
@@ -1091,7 +1091,7 @@ impl Engine {
             let members = view
                 .peer()
                 .governance()
-                .governed_members(SystemTime::now())?;
+                .governed_members(tilo_clock::wall())?;
             Ok(members
                 .into_iter()
                 .map(|member| Person {
@@ -1128,7 +1128,7 @@ impl Engine {
                 Ok(view
                     .peer()
                     .workspace()
-                    .check_workspace_administration(device, SystemTime::now())
+                    .check_workspace_administration(device, tilo_clock::wall())
                     .is_ok())
             })
             .unwrap_or(false)
@@ -1196,7 +1196,7 @@ impl Engine {
         let key = self.identity().signer.as_ref();
         self.owner
             .with_current(workspace, |view| {
-                Ok(view.peer().governance().may_invite(key, SystemTime::now()))
+                Ok(view.peer().governance().may_invite(key, tilo_clock::wall()))
             })
             .unwrap_or(false)
     }
@@ -1265,7 +1265,7 @@ impl Engine {
         let key = self.identity().signer.as_ref();
         self.owner
             .with_current(workspace, |view| {
-                let now = SystemTime::now();
+                let now = tilo_clock::wall();
                 Ok([
                     MemberRole::Viewer,
                     MemberRole::Commenter,
@@ -1610,7 +1610,7 @@ impl Engine {
             &identity.device_cert,
             identity.signer.as_ref(),
             host_hint.as_ref(),
-            SystemTime::now(),
+            tilo_clock::wall(),
         ) {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {

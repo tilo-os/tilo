@@ -1142,7 +1142,7 @@ mod tests {
     }
 
     fn now() -> SystemTime {
-        SystemTime::now()
+        tilo_clock::wall()
     }
 
     /// A record with `field` set to `value`, as an app's first write of it.

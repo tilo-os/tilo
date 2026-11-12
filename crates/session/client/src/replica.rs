@@ -93,7 +93,7 @@ impl Replicas {
     /// longer restores is let go: the host's bootstraps and replays bring
     /// its workspaces back.
     pub(crate) fn new(device: DeviceCert, store: Arc<dyn PeerStore>) -> Self {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let kept = store
             .load_rooms()
             .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok());
@@ -246,7 +246,7 @@ impl Replicas {
             let members = view
                 .peer()
                 .governance()
-                .governed_members(SystemTime::now())?;
+                .governed_members(tilo_clock::wall())?;
             Ok(members
                 .into_iter()
                 .filter(|member| !member.removed)

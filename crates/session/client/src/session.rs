@@ -1842,7 +1842,7 @@ impl Task {
     /// `all` first reads every waiting route's again, as after the
     /// workspace's governance moved, so what it now names asks in this pass.
     fn pump_channels(&mut self, all: bool) {
-        let now = tilo_clock::Instant::now();
+        let now = tilo_clock::now();
         if all {
             self.read_all_keys();
         }

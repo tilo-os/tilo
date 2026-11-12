@@ -128,7 +128,7 @@ impl Capture {
             return Err("invalid native document capture".into());
         }
         reservation.keep(len);
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         Ok(Self {
             body,
             _reservation: reservation,
@@ -173,7 +173,7 @@ impl Capture {
         offset: u32,
         token: [u8; 16],
     ) -> Result<runtime_collab::committed_document::Reply, String> {
-        self.check_deadline(std::time::Instant::now())?;
+        self.check_deadline(tilo_clock::now())?;
         if token != self.token {
             return Err("committed document continuation token mismatch".into());
         }
@@ -269,7 +269,7 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
         let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let roster = vec![certificate.clone()];
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         let mut source = StatePeer::new(
             workspace,
             certificate.clone(),
@@ -364,7 +364,7 @@ mod tests {
         );
         assert!(
             capture
-                .check_deadline(std::time::Instant::now() + std::time::Duration::from_secs(6))
+                .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
                 .is_err()
         );
         assert!(

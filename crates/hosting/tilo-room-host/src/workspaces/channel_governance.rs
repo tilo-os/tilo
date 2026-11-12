@@ -138,7 +138,7 @@ impl Workspaces {
                 governed
                     .peer()
                     .governance()
-                    .governed_access(SystemTime::now())
+                    .governed_access(tilo_clock::wall())
                     .is_ok_and(|access| access.member_devices.contains(&author)),
             )
         };

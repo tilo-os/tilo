@@ -699,7 +699,7 @@ impl NativeWorkspaceOwner {
         name: &str,
         id: uuid::Uuid,
     ) -> Result<(), String> {
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         crate::owner::write::signed_turn(signer, |key| {
             self.bind_checkpoint_name_bound(workspace, caller, key, (name, id), now, None)
         })

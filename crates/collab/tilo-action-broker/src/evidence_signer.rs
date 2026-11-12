@@ -221,7 +221,7 @@ mod tests {
         std::fs::File::open(path)
             .expect("open")
             .set_modified(
-                SystemTime::now()
+                tilo_clock::wall()
                     .checked_sub(Duration::from_secs(10))
                     .expect("file timestamp"),
             )

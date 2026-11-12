@@ -176,7 +176,7 @@ impl Task {
     pub(super) fn custody(&self, workspace: tilo_desktop_model::WorkspaceId) -> Vec<CustodyEntry> {
         self.replicas
             .owner()
-            .with_outgoing(workspace, web_time::SystemTime::now(), |_, outgoing| {
+            .with_outgoing(workspace, tilo_clock::wall(), |_, outgoing| {
                 Ok(outgoing
                     .entries()
                     .map(|entry| {

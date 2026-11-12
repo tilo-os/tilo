@@ -236,7 +236,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(app, workspace, record),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         if sealed {
@@ -420,7 +420,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         let channels = Mutex::new(BrokerChannels::default());
@@ -459,7 +459,7 @@ mod tests {
             Ed25519PublicKey::from_bytes([5; 32]),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
             collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
+            tilo_clock::wall(),
             1,
         );
         let channels = Mutex::new(BrokerChannels::default());

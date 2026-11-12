@@ -30,10 +30,10 @@ impl AppBrokerState {
         caller: &Caller,
         workspace_id: &str,
     ) -> Option<(Workspace, BrokerActor)> {
-        let until = Instant::now().checked_add(WORKSPACE_OWNER_WAIT)?;
+        let until = tilo_clock::now().checked_add(WORKSPACE_OWNER_WAIT)?;
         let slice = WORKSPACE_OWNER_WAIT.div_f32(25.0);
         let mut sample = None;
-        while Instant::now() < until {
+        while tilo_clock::now() < until {
             if let Some((workspace, actor, _)) =
                 self.decide_for(caller, workspace_id, |workspace, policy, now| {
                     (workspace.clone(), policy.clone(), now)

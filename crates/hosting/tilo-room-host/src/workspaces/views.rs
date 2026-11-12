@@ -27,7 +27,7 @@ impl GovernedWorkspace {
         {
             return None;
         }
-        peer.permissions(device, SystemTime::now()).ok()
+        peer.permissions(device, tilo_clock::wall()).ok()
     }
 
     /// Whether `caller` is someone this workspace admits.
@@ -44,7 +44,7 @@ impl GovernedWorkspace {
             workspace: self.workspace().to_owned(),
             standing,
             sandbox,
-            unix_time: SystemTime::now()
+            unix_time: tilo_clock::wall()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .ok()?
                 .as_secs(),
@@ -55,7 +55,7 @@ impl GovernedWorkspace {
     fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
         let device = *caller.device_public_key()?;
         self.peer()
-            .check_document_read(device, app, record, SystemTime::now())
+            .check_document_read(device, app, record, tilo_clock::wall())
             .ok()?;
         self.workspace_policy(caller)
     }
@@ -104,7 +104,7 @@ impl Workspaces {
     /// false for a workspace not governed here.
     pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
         self.governing(workspace, |runtime| {
-            bot_shows_personas(&runtime.peer(), installation, SystemTime::now())
+            bot_shows_personas(&runtime.peer(), installation, tilo_clock::wall())
         })
         .await
         .unwrap_or(false)

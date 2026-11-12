@@ -498,7 +498,7 @@ impl Workspaces {
             .await
             .map_err(super::CollaborationError::new)?
             .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         keys.compact(
             &mut candidate,
@@ -571,7 +571,7 @@ impl Workspaces {
                     let settled = match workspace.commit(
                         candidate,
                         &self.inner.host.key,
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                         |_, _| Ok(collaboration),
                     ) {
                         Ok(_) => self.settle(&mut workspace).await,
@@ -678,7 +678,7 @@ impl Workspaces {
             workspace.compaction_wait = workspace.compaction_wait.saturating_sub(1);
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let mut compacted = 0usize;
         for (app, record) in &due {

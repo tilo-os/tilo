@@ -67,7 +67,7 @@ pub async fn plaintext_record(
         author,
         collab_types::document_attestation_id(app, workspace, record),
         collab_types::OpKind::Change,
-        SystemTime::now(),
+        tilo_clock::wall(),
         1,
     )
     .with_surface(surface);
@@ -288,7 +288,7 @@ impl SealingMember {
             .await
             .peer()
             .clone();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut op = candidate
             .publication()
             .draft_sealed_compaction(
@@ -386,7 +386,7 @@ impl SealingMember {
             author,
             collab_types::document_attestation_id(app, workspace, record),
             collab_types::OpKind::Change,
-            SystemTime::now(),
+            tilo_clock::wall(),
             seq,
             metadata,
         )

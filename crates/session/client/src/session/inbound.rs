@@ -226,7 +226,7 @@ impl Task {
         self.keep_arrived();
         match self
             .replicas
-            .bootstrap(workspace_id, bootstrap, web_time::SystemTime::now())
+            .bootstrap(workspace_id, bootstrap, tilo_clock::wall())
         {
             Ok(true) => self.follow_governance(workspace_id),
             Ok(false) => {}
@@ -382,9 +382,9 @@ impl Task {
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
         // Governance the replica refuses is not the workspace's.
-        let Ok(report) =
-            self.replicas
-                .admit(workspace_id, author, message, web_time::SystemTime::now())
+        let Ok(report) = self
+            .replicas
+            .admit(workspace_id, author, message, tilo_clock::wall())
         else {
             return false;
         };
@@ -481,7 +481,7 @@ impl Task {
                 .collect();
             match self
                 .replicas
-                .keep(workspace_id, documents, web_time::SystemTime::now())
+                .keep(workspace_id, documents, tilo_clock::wall())
             {
                 Ok(reports) => {
                     for (document, report) in run.into_iter().zip(reports) {

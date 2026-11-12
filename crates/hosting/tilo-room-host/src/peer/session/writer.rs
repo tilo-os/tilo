@@ -138,7 +138,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
                 self.write.shutdown().await?;
                 return Ok(());
             }
-            let started = std::time::Instant::now();
+            let started = tilo_clock::now();
             let turn = self.write_ready(cx).await?;
             let held = started.elapsed();
             if held >= SLOW_WRITE {

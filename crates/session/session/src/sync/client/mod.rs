@@ -765,7 +765,7 @@ impl Seat {
         }
         self.engine
             .as_ref()
-            .is_some_and(|engine| engine.invitations_open(std::time::SystemTime::now()))
+            .is_some_and(|engine| engine.invitations_open(tilo_clock::wall()))
             .then_some("a link into a workspace is out")
     }
 
@@ -986,7 +986,7 @@ impl Host for Hosting {
         let seat = &self.seat;
         let engine = seat.engine.as_ref()?;
         let identity = tilo_desktop_model::WorkspaceId::parse(workspace)?;
-        let now = std::time::SystemTime::now();
+        let now = tilo_clock::wall();
         engine
             .owner()
             .with_current(identity, |view| {
