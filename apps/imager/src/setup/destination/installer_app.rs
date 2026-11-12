@@ -2693,7 +2693,7 @@ impl InstallerApp {
             .profile_completion
             .is_some_and(ProfileCompletion::identity_complete);
         children.push(Box::new(
-            Text::new(if identity_complete {
+            Text::new(&if identity_complete {
                 crate::setup::strings::t("installer-account-secure")
             } else {
                 crate::setup::strings::t("installer-account-create")
@@ -3251,7 +3251,10 @@ impl InstallerApp {
             CATALOG.t("installer-property-filesystem"),
             self.filesystem(),
         ));
-        summary.push(Property::new(CATALOG.t("installer-property-encryption"), "LUKS"));
+        summary.push(Property::new(
+            CATALOG.t("installer-property-encryption"),
+            "LUKS",
+        ));
         summary.push(Property::new(
             CATALOG.t("installer-property-unlocks-with"),
             self.encryption_factors().join(", "),
@@ -3407,7 +3410,7 @@ impl InstallerApp {
                 ));
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
-                        Text::new(if self.uses_guided_alongside() {
+                        Text::new(&if self.uses_guided_alongside() {
                             crate::setup::strings::t("installer-boot-order")
                         } else {
                             crate::setup::strings::t("installer-boot-shortcuts")
@@ -3494,7 +3497,7 @@ impl InstallerApp {
             .with_test_id("recovery_key_copy"),
         ));
         children.push(Box::new(
-            Text::new(if self.recovery_key_copied {
+            Text::new(&if self.recovery_key_copied {
                 crate::setup::strings::t("installer-recovery-key-copied")
             } else {
                 crate::setup::strings::t("installer-recovery-key-copy-note")
