@@ -209,12 +209,9 @@ and commit again, or regenerate it with 'cargo run -p tilo-ui --example componen
     verified_at="$(git rev-parse --path-format=absolute --git-dir)/component-catalogue-verified"
     if [ "$(cat "$verified_at" 2>/dev/null)" != "$sources_id $catalogue_id" ]; then
       # No binary is built for this: the generator is the toolkit itself, so the one command
-      # that writes the catalogue compiles it first. The fleet's builder is used when it is
-      # here, since compiling the toolkit is what the hook must not do on a laptop.
+      # that writes the catalogue compiles it first.
       cat_run=()
-      if command -v rcargo >/dev/null 2>&1; then
-        cat_run=(rcargo run --locked -q -p tilo-ui --example component-catalogue)
-      elif command -v cargo >/dev/null 2>&1; then
+      if command -v cargo >/dev/null 2>&1; then
         cat_run=(cargo run --locked -q -p tilo-ui --example component-catalogue)
       fi
       cat_generated=""
