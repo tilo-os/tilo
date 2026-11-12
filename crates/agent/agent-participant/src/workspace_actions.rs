@@ -84,6 +84,7 @@ use catch_up::catch_up;
 use collab_types::DocumentMutation;
 use keys::{Keys, catalogue_keys};
 use ledger::Ledger;
+use publish::Unsaved;
 use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
@@ -2063,20 +2064,9 @@ impl Worker {
     }
 
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
-        let (caller, request) = {
-            let mut ledger = self.ledger();
-            let Some(entry) = ledger.entries.get(&invocation) else {
-                return rejected(invocation, ActionHostError::UnknownInvocation);
-            };
-            if entry.update.is_terminal() {
-                // Cancelled before it started.
-                return InvocationState::new(invocation, entry.update.clone()).receipt();
-            }
-            let caller = entry.caller.clone();
-            let request = entry.request.clone();
-            ledger.running = Some(invocation);
-            drop(ledger);
-            (caller, request)
+        let (caller, request) = match self.claim(invocation) {
+            Ok(claimed) => claimed,
+            Err(receipt) => return receipt,
         };
         self.voice(
             workspace_id,
@@ -2116,6 +2106,42 @@ impl Worker {
             &request,
             (&run_voice::ended_phase(&outcome), left),
         );
+        self.settle(invocation, outcome, unsaved)
+    }
+
+    /// Mark `invocation` running, naming its caller and what it asked: a
+    /// receipt instead when it is unknown or already finished.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the receipt is the answer the caller records"
+    )]
+    fn claim(
+        &self,
+        invocation: InvocationId,
+    ) -> Result<(Caller, InvokeRequest), InvocationReceipt> {
+        let mut ledger = self.ledger();
+        let claimed = match ledger.entries.get(&invocation) {
+            None => Err(rejected(invocation, ActionHostError::UnknownInvocation)),
+            Some(entry) if entry.update.is_terminal() => {
+                // Cancelled before it started.
+                Err(InvocationState::new(invocation, entry.update.clone()).receipt())
+            }
+            Some(entry) => Ok((entry.caller.clone(), entry.request.clone())),
+        };
+        if claimed.is_ok() {
+            ledger.running = Some(invocation);
+        }
+        claimed
+    }
+
+    /// Record what `outcome` answered for `invocation` and answer it: done
+    /// once what it wrote is saved, or the failure or refusal it ended with.
+    fn settle(
+        &self,
+        invocation: InvocationId,
+        outcome: Performed,
+        unsaved: Option<Unsaved>,
+    ) -> InvocationReceipt {
         let outcome = match (outcome, unsaved) {
             (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
             (outcome, _) => outcome,
@@ -2157,10 +2183,7 @@ impl Worker {
                 return rejected(invocation, error);
             }
         };
-        if let Some(entry) = ledger.entries.get_mut(&invocation) {
-            entry.update = update.clone();
-            entry.left_at = left_at;
-        }
+        ledger.answered(invocation, &update, left_at);
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
     }
