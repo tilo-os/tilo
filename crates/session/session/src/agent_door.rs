@@ -1532,7 +1532,16 @@ pub(crate) struct SessionDoors {
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
     kept: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Why the apps of each desk workspace this device holds but is not admitted to yet run
+    /// nothing, by the workspace's id, as of the loop's last pass ([`Self::keep_awaiting`]).
+    awaiting: std::sync::Mutex<HashMap<String, String>>,
+    /// When [`Self::awaiting`] was last read: once a second, not on every pass.
+    awaited_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// How often the loop reads again which workspaces wait for their host to admit this device: the
+/// admission arrives from the host, at most once per workspace.
+const AWAITED_EVERY: Duration = Duration::from_secs(1);
 
 /// How long a connection's thread waits on the session's pass for an answer (its record, a change,
 /// the modules): the loop answers each pass, so this is only a bound on a frozen session rather
@@ -1589,7 +1598,49 @@ impl SessionDoors {
             workspaces: std::sync::Mutex::new(Vec::new()),
             runs: std::sync::OnceLock::new(),
             kept: std::sync::Mutex::default(),
+            awaiting: std::sync::Mutex::default(),
+            awaited_at: std::sync::Mutex::default(),
         }
+    }
+
+    /// Keep which of the desk's workspaces this device holds but its host has not taken it in
+    /// yet, read from `engine` on the loop's pass: a machine copied from one of the person's
+    /// devices is a device of its own, and only the workspace's host admits it, once it reaches
+    /// that host. Until then the workspace's apps take part in nothing there, so what is asked of
+    /// them is refused at once, saying so ([`Self::awaited_reason`]).
+    pub(crate) fn keep_awaiting(
+        &self,
+        handle: &DesktopHandle,
+        engine: &tilo_session_client::engine::Engine,
+    ) {
+        {
+            let mut at = self.awaited_at.lock_recover();
+            let now = std::time::Instant::now();
+            if at.is_some_and(|at| now.duration_since(at) < AWAITED_EVERY) {
+                return;
+            }
+            *at = Some(now);
+        }
+        let awaiting = handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .filter_map(|workspace| {
+                    let host = engine.awaited_host(workspace.id())?;
+                    Some((
+                        workspace.id().to_string(),
+                        awaited_sentence(&workspace.name, &host),
+                    ))
+                })
+                .collect()
+        });
+        *self.awaiting.lock_recover() = awaiting;
+    }
+
+    /// Why an action of `provider` 's app is refused: the workspace it runs in is one this device
+    /// holds but is not admitted to yet. `None` for any other provider.
+    fn awaited_reason(&self, provider: &str) -> Option<String> {
+        let workspace = app_provider_workspace(provider)?;
+        self.awaiting.lock_recover().get(workspace).cloned()
     }
 
     /// The session's services keep `app`'s records from now on.
@@ -1911,6 +1962,12 @@ impl Host {
         request: InvokeRequest,
         at_seat: bool,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        // An app of a workspace this device is not admitted to yet takes part in nothing there:
+        // asked of it, an action would wait for an app that never answers. It is refused now, with
+        // the reason, for the person and an agent alike.
+        if let Some(reason) = self.session.awaited_reason(&request.target.provider) {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        }
         // The seat's own doors, and a desktop with no broker at all, reach the session's own
         // actions on the loop: the broker is the gate for a caller on another's word, and the
         // person at this seat is nobody's delegate.
@@ -2643,6 +2700,26 @@ fn ask(
 /// The provider the session's own actions are published under.
 fn wire_provider() -> &'static str {
     tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+}
+
+/// The workspace an app's own provider names: `application:<workspace>:<app>…`, an app the desk
+/// opened there, or `launch:<workspace>:<app>…`, one it would start there.
+fn app_provider_workspace(provider: &str) -> Option<&str> {
+    let rest = provider
+        .strip_prefix("application:")
+        .or_else(|| provider.strip_prefix("launch:"))?;
+    let (workspace, _) = rest.split_once(':')?;
+    (!workspace.is_empty()).then_some(workspace)
+}
+
+/// What a person and an agent are told of an app's action in the workspace `name` , which this
+/// device holds but `host` has not admitted it to yet.
+fn awaited_sentence(name: &str, host: &str) -> String {
+    let host = if host.is_empty() { "its host" } else { host };
+    format!(
+        "this device hasn't been admitted to {name} yet: {host}, the workspace's host, must be \
+         reachable once to take it in"
+    )
 }
 
 #[cfg(test)]

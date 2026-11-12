@@ -121,9 +121,10 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
 setup = "page-bundle"
 
-# Chat's acceptance drives the app itself, as a desktop starts it: the app, the
-# launcher that starts it and the runtime host the app runs on are packages of
-# other crates, which Cargo builds for no test of the session's.
+# Chat's acceptance, and a branched device running it with its host away, drive
+# the app itself, as a desktop starts it: the app, the launcher that starts it
+# and the runtime host the app runs on are packages of other crates, which Cargo
+# builds for no test of the session's.
 [scripts.setup.chat-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
@@ -132,7 +133,7 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(chat_2x2)"
+filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
@@ -142,7 +143,7 @@ setup = ["test-runtime", "headless-audio"]
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(chat_2x2)"
+filter = "package(tilo-session) and (binary(chat_2x2) or binary(device_branch))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]

@@ -257,6 +257,9 @@ impl Shared {
         // through.
         let catalog = self.arrangement.borrow().targets();
         self.session_doors.keep_tabs(&self.handle);
+        if let Some(engine) = &self.engine {
+            self.session_doors.keep_awaiting(&self.handle, engine);
+        }
         self.session_doors.answer(
             &self.doors,
             &self.services,

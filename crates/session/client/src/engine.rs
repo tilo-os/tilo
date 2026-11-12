@@ -378,6 +378,29 @@ impl Engine {
         self.owner.contains_workspace(workspace)
     }
 
+    /// The host `workspace` waits on to take this device in, by the name its person gave it,
+    /// while this device holds the workspace but is not its member yet: the workspace's record
+    /// names another device (the one this machine was copied from) until its host admits this
+    /// one, and only the host can. `None` for a workspace this device is a member of, or does not
+    /// hold.
+    #[must_use]
+    pub fn awaited_host(&self, workspace: WorkspaceId) -> Option<String> {
+        if !self.holds(workspace) {
+            return None;
+        }
+        let own = self.identity.device_public_key();
+        self.owner
+            .with_current(workspace, |view| {
+                Ok((view.device().device_public_key != own).then(|| {
+                    view.transport_hint()
+                        .map(|hint| hint.host.device_label.clone())
+                        .unwrap_or_default()
+                }))
+            })
+            .ok()
+            .flatten()
+    }
+
     /// What the workspace `workspace` holds of the app `app`'s `record`: the document
     /// as the workspace last admitted it, also what it held before this device joined.
     /// A sealed record opens with this device's channel keys, which reach back past the
