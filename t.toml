@@ -4829,7 +4829,7 @@ env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO
 requires = ["arch=x86_64"]
 # What it found, not what it ran: each flow's pages, reports and consoles and each part's log; the
 # site it served is the bundle again.
-outputs = ["/target/e2e/*.log", "/target/e2e/lounge/*.log", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/lounge/*.log", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/wait-list/**", "/target/e2e/restart/**"]
 timeout_secs = 1200
 
 # A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,

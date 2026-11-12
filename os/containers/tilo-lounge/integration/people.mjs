@@ -45,14 +45,15 @@ if (!site || !relay || !origin || !out || !rolesFile) {
 mkdirSync(out, {recursive: true});
 // One case of what two people do, each with two people of its own who join
 // and see each other first: `call` (a call, its card and hanging up), `desk`
-// (the window menu, a few apps from the search, the strip panned and swiped, a
-// pinch, the menus, the profile card and the search chord, nothing reaching
-// the browser) or `invite` (a person made an inviter while their page is open
-// invites a third). The cases share nothing but the Lounge, so a run starts
-// them side by side; none named runs all three in one pair, one after another.
+// (the window menu, a few apps from the search, the strip panned over Notes
+// and Sheets swiped), `menus` (a pinch, the text menu, the profile card's
+// Report a problem, the search chord, and nothing of it reaching the browser)
+// or `invite` (a person made an inviter while their page is open invites a
+// third). The cases share nothing but the Lounge, so a run starts them side by
+// side; none named runs them all in one pair, one after another.
 const only = process.env.TILO_PEOPLE_CASE ?? '';
-if (only && !['call', 'desk', 'invite'].includes(only)) {
-  console.error(`TILO_PEOPLE_CASE is call, desk or invite, not ${only}`);
+if (only && !['call', 'desk', 'menus', 'invite'].includes(only)) {
+  console.error(`TILO_PEOPLE_CASE is call, desk, menus or invite, not ${only}`);
   process.exit(2);
 }
 const runs = name => !only || only === name;
@@ -1120,125 +1121,177 @@ try {
     await dump(b.tab, '7-b-hung-up');
   }
 
-  if (runs('desk')) {
-    // The desk as a laptop drives it: the launcher's search opens the apps
-    // asked for (APPS), two fingers sideways pan the strip over an app that does
-    // not scroll that way and scroll the app over one that does, a pinch is no
-    // pan, and the window menu, a right-click menu, Report a problem and the
-    // search chord are the desk's own. Nothing any of it does reaches the
-    // browser: no page scroll, zoom or history.
-    const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
-    const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
-    // Where the strip comes to rest: the same place on three reads a few frames apart.
-    const restingPan = async tab => {
-      let last = null;
-      let same = 0;
-      for (let reads = 0; reads < 100 && same < 2; reads++) {
-        await settle(tab, 2);
-        const now = await panOf(tab);
-        same = now && last && now.offset === last.offset ? same + 1 : 0;
-        last = now;
-      }
-      return last;
-    };
-    const namesOf = async tab => {
-      await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-      await settle(tab, 1);
-      return (await snapshot(tab)).names;
-    };
-    const choose = async (tab, pattern) => {
-      const name = (await namesOf(tab)).find(candidate => pattern.test(candidate));
-      if (!name) return null;
-      return await press(tab, name) ? name : null;
-    };
-    const picture = async tab => (await tab.screenshot())?.toString('base64') ?? '';
-    const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
-      tab.send('Input.dispatchMouseEvent',
-        {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
-    // One gesture: a trackpad's fingers send their travel many events per
-    // frame, and the desk gives a gesture to its first event's answer, so the
-    // events go in together and only the gesture's effect is waited for.
-    const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
-      // The pointer rests where the fingers are, as a person's does: a wheel
-      // says where it is, and the desk routes it to that place.
-      await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-      await settle(tab, 1);
-      const steps = [6, 12, 18, 24, 18, 12, 6];
-      for (const [index, step] of steps.entries()) {
-        await wheel(tab, x, y, {deltaX: forward ? step : -step});
-        // What the desk shows while the fingers are still on it, not only where
-        // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
-        if (during && index === 2) {
-          await settle(tab, 1);
-          await during();
-        }
-      }
+  // The desk as a laptop drives it: the launcher's search opens the apps
+  // asked for (APPS), two fingers sideways pan the strip over an app that does
+  // not scroll that way and scroll the app over one that does, a pinch is no
+  // pan, and the window menu, a right-click menu, Report a problem and the
+  // search chord are the desk's own. Nothing any of it does reaches the
+  // browser: no page scroll, zoom or history.
+  const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
+  const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
+  // Where the strip comes to rest: the same place on three reads a few frames apart.
+  const restingPan = async tab => {
+    let last = null;
+    let same = 0;
+    for (let reads = 0; reads < 100 && same < 2; reads++) {
       await settle(tab, 2);
-    };
-    const rightClick = async (tab, x, y) => {
-      await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-      for (const type of ['mousePressed', 'mouseReleased']) {
-        await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'right', clickCount: 1});
+      const now = await panOf(tab);
+      same = now && last && now.offset === last.offset ? same + 1 : 0;
+      last = now;
+    }
+    return last;
+  };
+  const namesOf = async tab => {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await settle(tab, 1);
+    return (await snapshot(tab)).names;
+  };
+  const choose = async (tab, pattern) => {
+    const name = (await namesOf(tab)).find(candidate => pattern.test(candidate));
+    if (!name) return null;
+    return await press(tab, name) ? name : null;
+  };
+  const picture = async tab => (await tab.screenshot())?.toString('base64') ?? '';
+  const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
+    tab.send('Input.dispatchMouseEvent',
+      {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
+  // One gesture: a trackpad's fingers send their travel many events per
+  // frame, and the desk gives a gesture to its first event's answer, so the
+  // events go in together and only the gesture's effect is waited for.
+  const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
+    // The pointer rests where the fingers are, as a person's does: a wheel
+    // says where it is, and the desk routes it to that place.
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+    await settle(tab, 1);
+    const steps = [6, 12, 18, 24, 18, 12, 6];
+    for (const [index, step] of steps.entries()) {
+      await wheel(tab, x, y, {deltaX: forward ? step : -step});
+      // What the desk shows while the fingers are still on it, not only where
+      // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
+      if (during && index === 2) {
+        await settle(tab, 1);
+        await during();
       }
-      await settle(tab, 1);
-    };
-    const centreOf = async tab => {
-      const corner = JSON.parse(await canvasTopLeft(tab));
-      return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
-    };
-    // Where the browser's own history stood, in this very document: the desk
-    // adds entries of its own as the person opens and moves between windows
-    // (Back goes through Tilo), and the browser navigating on its own would
-    // leave this document or step back from the newest entry.
-    const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
+    }
+    await settle(tab, 2);
+  };
+  const rightClick = async (tab, x, y) => {
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'right', clickCount: 1});
+    }
+    await settle(tab, 1);
+  };
+  const centreOf = async tab => {
+    const corner = JSON.parse(await canvasTopLeft(tab));
+    return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
+  };
+  // Where the browser's own history stood, in this very document: the desk
+  // adds entries of its own as the person opens and moves between windows
+  // (Back goes through Tilo), and the browser navigating on its own would
+  // leave this document or step back from the newest entry.
+  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
 
-    // The window menu, from a secondary click in the window's own bar: what the
-    // desktop can do to that window, and choosing a row does it. Asked before
-    // any app opens or the strip is swiped, so the menu is tested whatever those
-    // steps find, and asked twice, the second row giving back what the first
-    // took, so the desk the later steps meet is the one they would have met.
-    // A window bar on screen: with windows the strip scrolled out of view, the
-    // first Maximize in the tree can be one of theirs.
-    const shownRow = name => a.tab.evaluate(`(() => {
-      const found = [];
-      const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
-      const node = n => { const b = n.bounds ?? n.rect; if (n.name === ${JSON.stringify(name)} && b) found.push(box(b)); (n.children || []).forEach(node); };
-      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-      const root = globalThis.tiloMount?.state()?.semantics?.root;
-      if (root) walk(root);
-      const r = globalThis.tiloMount.canvas.getBoundingClientRect();
-      const shown = found.find(([x0, y0, x1, y1]) => x0 >= 0 && y0 >= 0 && x1 <= r.width && y1 <= r.height);
-      return JSON.stringify(shown ? {bounds: shown} : null);
-    })()`).then(JSON.parse);
-    // Right-click a window's bar and choose the menu's strip row: the row it
-    // offered. The menu acts on the window whose bar it was opened from, and its
-    // strip row says that window's state ("Fill the strip" while it does not,
-    // "Give the strip back" while it does), so the row offered the second time
-    // says whether the first choice did anything.
-    const stripRow = async (what, bar) => {
-      await rightClick(a.tab, bar.x, bar.y);
-      // The menu is the frame after the click's, and a busy desk draws a few a
-      // second: its rows are read until they are there.
-      let row = null;
-      for (const deadline = Date.now() + stepLimit(1); !row && Date.now() < deadline;) {
-        row = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
-      }
-      if (!row) {
-        failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
-      }
-      await settle(a.tab, 1);
-      // A row the click took closes the menu: still standing somewhere on the page, the click
-      // never reached it. A closed menu keeps naming its rows, standing nowhere.
-      await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-      await settle(a.tab, 1);
-      let open = false;
-      for (const name of ['Fill the strip', 'Give the strip back']) {
-        const node = JSON.parse(await find(a.tab, name));
-        const b = node?.bounds;
-        if (b && (b.x1 ?? b.x + b.width) > (b.x0 ?? b.x) && (b.y1 ?? b.y + b.height) > (b.y0 ?? b.y)) open = true;
-      }
-      return {row, open};
+  // The window menu, from a secondary click in the window's own bar: what the
+  // desktop can do to that window, and choosing a row does it. Asked before
+  // any app opens or the strip is swiped, so the menu is tested whatever those
+  // steps find, and asked twice, the second row giving back what the first
+  // took, so the desk the later steps meet is the one they would have met.
+  // A window bar on screen: with windows the strip scrolled out of view, the
+  // first Maximize in the tree can be one of theirs.
+  const shownRow = name => a.tab.evaluate(`(() => {
+    const found = [];
+    const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+    const node = n => { const b = n.bounds ?? n.rect; if (n.name === ${JSON.stringify(name)} && b) found.push(box(b)); (n.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    const r = globalThis.tiloMount.canvas.getBoundingClientRect();
+    const shown = found.find(([x0, y0, x1, y1]) => x0 >= 0 && y0 >= 0 && x1 <= r.width && y1 <= r.height);
+    return JSON.stringify(shown ? {bounds: shown} : null);
+  })()`).then(JSON.parse);
+  // Right-click a window's bar and choose the menu's strip row: the row it
+  // offered. The menu acts on the window whose bar it was opened from, and its
+  // strip row says that window's state ("Fill the strip" while it does not,
+  // "Give the strip back" while it does), so the row offered the second time
+  // says whether the first choice did anything.
+  const stripRow = async (what, bar) => {
+    await rightClick(a.tab, bar.x, bar.y);
+    // The menu is the frame after the click's, and a busy desk draws a few a
+    // second: its rows are read until they are there.
+    let row = null;
+    for (const deadline = Date.now() + stepLimit(1); !row && Date.now() < deadline;) {
+      row = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
+    }
+    if (!row) {
+      failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
+    }
+    await settle(a.tab, 1);
+    // A row the click took closes the menu: still standing somewhere on the page, the click
+    // never reached it. A closed menu keeps naming its rows, standing nowhere.
+    await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await settle(a.tab, 1);
+    let open = false;
+    for (const name of ['Fill the strip', 'Give the strip back']) {
+      const node = JSON.parse(await find(a.tab, name));
+      const b = node?.bounds;
+      if (b && (b.x1 ?? b.x + b.width) > (b.x0 ?? b.x) && (b.y1 ?? b.y + b.height) > (b.y0 ?? b.y)) open = true;
+    }
+    return {row, open};
+  };
+  // Where the desk's middle is, once the desk case or the menus case has
+  // looked: the pinch, the right-click and the profile card's swipe act there.
+  let centre = null;
+
+  // Report a problem: the bar's own avatar, then the card's row. After a
+  // while here the bar asks about the person beside their avatar, and while
+  // that question waits the avatar opens it rather than their card: a person
+  // puts it off, as the question offers, and opens their card then. A failed
+  // check keeps no outputs, so what was pressed and what the card offered are
+  // said in the log.
+  const reportProblem = async () => {
+    // The bar's own avatar, by the whole name the bar gives it ("<name> (you):
+    // your profile"): a chat author's card or anything else named after the
+    // person is not it.
+    const avatar = async () => {
+      const before = await namesOf(a.tab);
+      const own = before.find(name => / \(you\): your profile$/.test(name));
+      if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
+      if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
+      await settle(a.tab, 2);
+      const after = await namesOf(a.tab);
+      const seen = new Set(before);
+      console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
+      return after;
     };
+    let shown = await avatar();
+    if (shown.includes('Not now')) {
+      await press(a.tab, 'Not now');
+      await settle(a.tab, 2);
+      shown = await avatar();
+    }
+    const reportRow = await choose(a.tab, /^Report a problem/);
+    if (!reportRow) {
+      // The row is there once the page holds the Lounge's feedback channel:
+      // why it does not is in what the page said about feedback.
+      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
+      await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
+    }
+    // Picking what to report takes every event: nothing under the pointer
+    // reacts to it, and the strip the desk shows stays where it was.
+    await settle(a.tab, 2);
+    const pickingPan = await panOf(a.tab);
+    await sidewaysSwipe(a.tab, centre.x, centre.y, true);
+    if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
+      failed('a sideways wheel panned the strip under the report picker');
+    }
+    report.reportProblem = reportRow;
+    console.log(`ok: Report a problem opens its picker (${reportRow})`);
+    mark('Report a problem');
+    await key(a.tab, 'Escape');
+  };
+
+  if (runs('desk')) {
     const desk = await centreOf(a.tab);
     const barRow = await shownRow('Maximize') ?? await shownRow('Close');
     if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
@@ -1317,7 +1370,7 @@ try {
 
     // Two fingers sideways over Notes, which does not scroll that way: the
     // strip pans by the gesture and the windows stay as they were.
-    const centre = await centreOf(a.tab);
+    centre = await centreOf(a.tab);
     await search(a.tab, a.command, 'notes', 'Notes');
     await settle(a.tab, 2);
     // Where Notes' own window is once the strip is at rest: with a few windows
@@ -1381,58 +1434,11 @@ try {
     if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
     console.log('ok: the same gesture scrolls Sheets and leaves the strip');
     mark('a sideways swipe over Sheets');
-
-    // Report a problem: the bar's own avatar, then the card's row. After a
-    // while here the bar asks about the person beside their avatar, and while
-    // that question waits the avatar opens it rather than their card: a person
-    // puts it off, as the question offers, and opens their card then. A failed
-    // check keeps no outputs, so what was pressed and what the card offered are
-    // said in the log.
-    const reportProblem = async () => {
-      // The bar's own avatar, by the whole name the bar gives it ("<name> (you):
-      // your profile"): a chat author's card or anything else named after the
-      // person is not it.
-      const avatar = async () => {
-        const before = await namesOf(a.tab);
-        const own = before.find(name => / \(you\): your profile$/.test(name));
-        if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
-        if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
-        await settle(a.tab, 2);
-        const after = await namesOf(a.tab);
-        const seen = new Set(before);
-        console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
-        return after;
-      };
-      let shown = await avatar();
-      if (shown.includes('Not now')) {
-        await press(a.tab, 'Not now');
-        await settle(a.tab, 2);
-        shown = await avatar();
-      }
-      const reportRow = await choose(a.tab, /^Report a problem/);
-      if (!reportRow) {
-        // The row is there once the page holds the Lounge's feedback channel:
-        // why it does not is in what the page said about feedback.
-        const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
-        await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
-      }
-      // Picking what to report takes every event: nothing under the pointer
-      // reacts to it, and the strip the desk shows stays where it was.
-      await settle(a.tab, 2);
-      const pickingPan = await panOf(a.tab);
-      await sidewaysSwipe(a.tab, centre.x, centre.y, true);
-      if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
-        failed('a sideways wheel panned the strip under the report picker');
-      }
-      report.reportProblem = reportRow;
-      console.log(`ok: Report a problem opens its picker (${reportRow})`);
-      mark('Report a problem');
-      await key(a.tab, 'Escape');
-    };
   }
 
   let invited = null;
-  if (runs('desk')) {
+  if (runs('menus')) {
+    centre ??= await centreOf(a.tab);
     // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
     // never a pan, with or without a sideways part.
     const beforePinch = await panOf(a.tab);

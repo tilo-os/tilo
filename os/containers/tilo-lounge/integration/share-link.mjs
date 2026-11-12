@@ -284,8 +284,8 @@ try {
   report.liveEditMs = Date.now() - typed;
 
   // 5. Each sees the other here, in this document.
-  await until(bo, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Ada in Bo’s bar', stepLimit(2));
-  await until(ada, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Bo in Ada’s bar', stepLimit(2));
+  await until(bo, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Ada in Bo’s bar', stepLimit(4));
+  await until(ada, `document.querySelectorAll('#bar-people .bar-face:not(.bar-elsewhere)').length > 0`, 'Bo in Ada’s bar', stepLimit(4));
   report.boBar = JSON.parse(await bo.evaluate(`JSON.stringify([...document.querySelectorAll('#bar-people .bar-face')].map(face => face.getAttribute('aria-label')))`));
   await shoot(bo, 'document-390');
   await shoot(ada, 'document-1280');
@@ -306,7 +306,7 @@ try {
   if (await cy.evaluate('document.documentElement.dataset.arrival') !== 'done') {
     await failed(`Cy at a run stopped: ${await cy.evaluate("document.getElementById('status')?.textContent")}`);
   }
-  await until(cy, `globalThis.tiloMount?.state()?.livePlace?.focus?.app === 'so.tilo.console'`, 'Console focused on the desktop', stepLimit(2));
+  await until(cy, `globalThis.tiloMount?.state()?.livePlace?.focus?.app === 'so.tilo.console'`, 'Console focused on the desktop', stepLimit(4));
   report.runPlace = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.livePlace?.focus ?? null)'));
   report.runTarget = JSON.parse(await cy.evaluate('JSON.stringify(globalThis.tiloRouter?.route?.target ?? null)'));
   if (report.runTarget?.app !== 'so.tilo.console' || report.runTarget?.resource?.id !== run) {

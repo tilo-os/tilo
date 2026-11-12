@@ -51,9 +51,14 @@ const browserArgs = [
 
 const finish = async (code, message) => {
   if (message) report.error = message;
+  // Said first: what follows reads every tab, and a tab that stopped answering
+  // must not keep the run from saying why it failed.
+  if (message) console.error(`FAIL: ${message}`);
   for (const {name, tab, browser} of tabs) {
     writeFileSync(join(out, `${name}.log`), (tab.log ?? []).join('\n'));
-    const shot = await tab.screenshot().catch(() => null);
+    // A capture waits for the tab's next frame, which a stopped tab never
+    // draws: a picture missing from the report, not a run that never ends.
+    const shot = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
     if (shot) writeFileSync(join(out, `${name}.png`), shot);
     report[`${name}Text`] = await pageText(tab);
     // Where the browser says the tab is, and whether the page answers at all:

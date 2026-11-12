@@ -22,8 +22,10 @@
 #   people-call    two people chat, see each other here and call each other
 #                  (integration/people.mjs, TILO_PEOPLE_CASE=call)
 #   people-desk    two people; the window menu, a few apps from the search,
-#                  the strip panned and swiped, a pinch, the menus and the
-#                  search chord, nothing reaching the browser (case desk)
+#                  the strip panned over Notes and Sheets swiped (case desk)
+#   people-menus   two people; a pinch, the text menu, the profile card's
+#                  Report a problem, the search chord, and none of it reaching
+#                  the browser (case menus)
 #   people-invite  a person made an inviter while their page is open invites
 #                  a third, who arrives from the link (case invite)
 #   share-link     a document's link opens that document live for another
@@ -90,7 +92,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
 ' "$room"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
-    people-call|people-desk|people-invite)
+    people-call|people-desk|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
         "$relay_origin" "$out" "$roles" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$room" "$out" ;;
@@ -108,7 +110,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(directory boot people-call people-desk people-invite share-link agent-setup setup-resume wait-list restart)
+all=(directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume wait-list restart)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
