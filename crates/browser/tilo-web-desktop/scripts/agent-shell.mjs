@@ -1199,8 +1199,22 @@ async function openNote(tab) {
   if (!await windowed()) {
     // The desk's own app list first ("Open an app"), the palette after.
     if (await press(tab, /^open an app$/i, {what: 'the app list'})) {
-      await press(tab, /^notes$/i, {what: 'Notes'});
-      await untilDrawn(tab, windowed, 6000);
+      // The list's own Notes, once a frame drew the list: pressed sooner, the press found the
+      // welcome card's Notes, a verb that waits on the app starting in the workspace and opened
+      // its window minutes later, beside the one the agent's note had opened meanwhile.
+      const listed = await untilDrawn(tab, async () => {
+        const nodes = await semantics(tab);
+        const results = nodes.findIndex(node => /^results$/i.test(node.name));
+        return results < 0 ? undefined : nodes.slice(results + 1).find(node => /^notes$/i.test(node.name) && node.rect);
+      }, 6000);
+      if (listed) {
+        const {x0, y0, x1, y1} = listed.rect;
+        await clickAt(tab, (x0 + x1) / 2, (y0 + y1) / 2);
+        log(`pressed Notes in the app list at ${Math.round((x0 + x1) / 2)},${Math.round((y0 + y1) / 2)}`);
+        await untilDrawn(tab, windowed, 6000);
+      } else {
+        log(`the app list drew no Notes: ${names(await semantics(tab))}`);
+      }
     }
     if (!await windowed()) {
       const opened = await palette(tab, 'Notes');
