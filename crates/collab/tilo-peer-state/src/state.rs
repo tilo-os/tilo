@@ -88,8 +88,7 @@ pub use seed::{seed_workspace, workspace_seed};
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
-    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason,
-    UnmergedWrite,
+    OpenedHistory, OpenedRecord, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
 /// authority a device holds there, the records it keeps, what it takes in and
