@@ -102,6 +102,10 @@ pub mod keys {
         ui::i18n::LabelKey::new("console-run-missing-message");
     pub const CONSOLE_RUN_PENDING: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("console-run-pending");
+    pub const CONSOLE_RUN_STARTED_BY: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("console-run-started-by");
+    pub const CONSOLE_RUN_STARTED_BY_YOU: ui::i18n::LabelKey =
+        ui::i18n::LabelKey::new("console-run-started-by-you");
     pub const CONSOLE_RUN_STOP: ui::i18n::LabelKey = ui::i18n::LabelKey::new("console-run-stop");
     pub const CONSOLE_RUN_TAKE_OVER: ui::i18n::LabelKey =
         ui::i18n::LabelKey::new("console-run-take-over");
