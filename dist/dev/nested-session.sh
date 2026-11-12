@@ -149,19 +149,27 @@ state=$(realpath -m "$state")
 [[ $state != "$HOME" && $state != / ]] || die "refusing state directory $state"
 mkdir -p "$state"
 chmod 700 "$state"
-# A headless session in a container has no login runtime directory of its
-# own: its sockets live in the session's state, with the same private mode a
-# login gives them.
-if [[ -z $host_runtime ]]; then
-    host_runtime=$state/run
-    mkdir -p "$host_runtime"
-    chmod 700 "$host_runtime"
-    say "no XDG_RUNTIME_DIR: the session's runtime directory is $host_runtime"
-fi
 # The compositor's own runtime directory: private sockets, services and the
-# control socket, under the host's runtime directory so it stays on tmpfs and
-# per-user.
-runtime=$host_runtime/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# control socket, under a login runtime directory so it stays on tmpfs and
+# per-user. Never under the state directory: a unix socket's path holds 108
+# bytes, and a state directory sits as deep as its caller's output directory
+# (a worktree's own target/session-e2e is already too deep for it). A login
+# session's own XDG_RUNTIME_DIR comes first; a container's exec leaves it
+# unset even though the user's /run/user/<uid> is there, so that comes next,
+# and a fresh private directory in /tmp last.
+runtime_base=$host_runtime
+own_runtime_base=0
+if [[ -z $runtime_base ]]; then
+    seat=/run/user/$(id -u)
+    if [[ -d $seat && -w $seat ]]; then
+        runtime_base=$seat
+    else
+        runtime_base=$(mktemp -d /tmp/tilo-nested-runtime.XXXXXXXX)
+        own_runtime_base=1
+    fi
+    say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
+fi
+runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
 pidfile=$state/session.pid
 if [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null; then
     die "a nested session for $state is already running (pid $(<"$pidfile"))"
@@ -588,6 +596,8 @@ cleanup() {
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
     rm -rf "$runtime" 2>/dev/null || true
+    # A runtime directory this script made under /tmp goes with it.
+    if ((own_runtime_base)); then rm -rf "$runtime_base" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
