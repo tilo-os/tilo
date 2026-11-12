@@ -15,6 +15,24 @@ use super::{
 #[cfg(test)]
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
+/// The digests of a replica's durable parts, each kept with its part: the
+/// part's allocation is alive while it is kept, so its address names it.
+#[derive(Clone, Default)]
+pub(crate) struct PartDigests(std::sync::Arc<parking_lot::Mutex<Digested>>);
+/// Each part's digest, by the part's address and length.
+type Digested = std::collections::HashMap<(usize, usize), (std::sync::Arc<[u8]>, [u8; 32])>;
+
+/// A stretch of the durable encoding ([`StatePeer::durable_parts`]).
+#[derive(Clone)]
+pub(super) enum Piece {
+    /// A part with bytes of its own.
+    Part(std::sync::Arc<[u8]>),
+    /// A document's changes since its base, in runs, and the digest of the
+    /// runs' bytes one after the other: digested as one stretch, as a
+    /// restored document holds them in one run.
+    Since(Vec<std::sync::Arc<[u8]>>, [u8; 32]),
+}
+
 impl StatePeer {
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(
@@ -131,12 +149,37 @@ impl StatePeer {
             .durable_coverage_with_current(app, record)?
             .is_some_and(|(_, current)| current))
     }
-    /// The digest of [`Self::durable`], taken part by part.
+    /// A digest of [`Self::durable`]: of the length and digest of each of
+    /// its stretches ([`Piece`]), in order. A part an earlier call digested
+    /// and this state still holds is not read again, and a document's
+    /// changes since its base carry their digest, so a write pays for
+    /// digesting what it changed, not the record's whole history.
     pub fn durable_hash(&self) -> Result<[u8; 32], String> {
+        let pieces = self.durable_pieces()?;
+        let mut kept = std::mem::take(&mut *self.durable_digests.0.lock());
+        let mut next = std::collections::HashMap::with_capacity(pieces.len());
         let mut hasher = blake3::Hasher::new();
-        for part in self.durable_parts()? {
-            hasher.update(&part);
+        for piece in pieces {
+            let (len, digest) = match piece {
+                Piece::Part(part) => {
+                    let at = (part.as_ptr() as usize, part.len());
+                    let digest = kept.remove(&at).map_or_else(
+                        || {
+                            crate::write_work::read(part.len());
+                            *blake3::hash(&part).as_bytes()
+                        },
+                        |(_, digest)| digest,
+                    );
+                    let len = part.len();
+                    next.insert(at, (part, digest));
+                    (len, digest)
+                }
+                Piece::Since(runs, digest) => (runs.iter().map(|run| run.len()).sum(), digest),
+            };
+            hasher.update(&(len as u64).to_le_bytes());
+            hasher.update(&digest);
         }
+        *self.durable_digests.0.lock() = next;
         Ok(*hasher.finalize().as_bytes())
     }
     /// Encode this peer's durable state.
@@ -150,23 +193,26 @@ impl StatePeer {
     }
     /// Append the workspace's document to `head`, the durable encoding's head,
     /// as postcard writes an `Option<&[u8]>`: its stored base a part of its
-    /// own, the same allocation while the base lasts, then the changes since
-    /// it ([`CachedDocument::stored`]). Answers the head to go on with.
+    /// own, the same allocation while the base lasts, then the runs of
+    /// changes since it, each a part too ([`CachedDocument::stored`]).
+    /// Answers the head to go on with.
     fn put_workspace_document(
         &self,
         mut head: Vec<u8>,
-        parts: &mut Vec<std::sync::Arc<[u8]>>,
+        parts: &mut Vec<Piece>,
     ) -> Result<Vec<u8>, String> {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
         }
         match self.core.workspace_doc.as_ref().map(CachedDocument::stored) {
-            Some((base, since)) => {
+            Some((base, since, digest)) => {
+                let since_len = since.iter().map(|run| run.len()).sum::<usize>();
                 head = put(&1u8, head)?;
-                head = put(&base.len().saturating_add(since.len()), head)?;
-                parts.push(head.into());
-                parts.push(base);
-                Ok(since.to_vec())
+                head = put(&base.len().saturating_add(since_len), head)?;
+                parts.push(Piece::Part(head.into()));
+                parts.push(Piece::Part(base));
+                parts.push(Piece::Since(since, digest));
+                Ok(Vec::new())
             }
             None => put(&0u8, head),
         }
@@ -183,6 +229,18 @@ impl StatePeer {
     /// allocation as then, and whoever stores the parts apart rewrites only
     /// what changed.
     pub fn durable_parts(&self) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
+        Ok(self
+            .durable_pieces()?
+            .into_iter()
+            .flat_map(|piece| match piece {
+                Piece::Part(part) => vec![part],
+                Piece::Since(runs, _) => runs,
+            })
+            .collect())
+    }
+
+    /// [`Self::durable_parts`] as the stretches [`Self::durable_hash`] digests.
+    fn durable_pieces(&self) -> Result<Vec<Piece>, String> {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
         }
@@ -200,7 +258,7 @@ impl StatePeer {
             documents.push(entry.encoded(route, || encode_document(route, entry))?);
         }
         // The fields of `DurableV6`/`DurableV5`/`DurableV4`, in order.
-        let mut parts: Vec<std::sync::Arc<[u8]>> = Vec::new();
+        let mut parts: Vec<Piece> = Vec::new();
         let mut head = Vec::new();
         if sealed > 0 {
             head = put(&6u32, head)?;
@@ -214,7 +272,7 @@ impl StatePeer {
         )?;
         head = self.put_workspace_document(head, &mut parts)?;
         head = put(&documents.len(), head)?;
-        parts.push(head.into());
+        parts.push(Piece::Part(head.into()));
         parts.extend(
             documents
                 .iter()
@@ -241,20 +299,21 @@ impl StatePeer {
         if self.core.admission_v5 {
             let (settled, rest) = self.core.exact_admissions.encode_parts().map_err(err)?;
             tail = put(&settled.len().saturating_add(rest.len()), tail)?;
-            parts.push(tail.into());
-            parts.push(settled);
+            parts.push(Piece::Part(tail.into()));
+            parts.push(Piece::Part(settled));
             tail = rest;
         }
         if sealed > 0 {
             tail = put(&sealed, tail)?;
         }
-        parts.push(tail.into());
+        parts.push(Piece::Part(tail.into()));
         parts.extend(
             documents
                 .iter()
                 .filter_map(|encoded| encoded.sealed.as_ref())
                 .flatten()
-                .cloned(),
+                .cloned()
+                .map(Piece::Part),
         );
         Ok(parts)
     }
@@ -270,8 +329,8 @@ impl StatePeer {
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
                 bytes: {
-                    let (base, since) = entry.doc.stored();
-                    [&*base, &*since].concat()
+                    let (base, since, _) = entry.doc.stored();
+                    [&*base, &since.concat()].concat()
                 },
                 watermarks: entry
                     .channel
@@ -294,8 +353,8 @@ impl StatePeer {
                 workspace: self.core.workspace.clone(),
                 owner: self.core.owner,
                 workspace_bytes: self.core.workspace_doc.as_ref().map(|doc| {
-                    let (base, since) = doc.stored();
-                    [&*base, &*since].concat()
+                    let (base, since, _) = doc.stored();
+                    [&*base, &since.concat()].concat()
                 }),
                 documents,
                 receipts: (*self.core.receipts).clone(),
@@ -462,6 +521,7 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             brought_up: false,
+            durable_digests: PartDigests::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -575,17 +635,18 @@ impl StatePeer {
     }
 }
 
-/// A record's part of the durable encoding: its `DurableDocument` in three
-/// parts — the route and the document's length; its stored base, the same
-/// allocation while the base lasts; the changes since the base, which a
-/// further change extends, and the fields after the document — and its
-/// sealed history, when it holds one.
+/// A record's part of the durable encoding: its `DurableDocument` in parts —
+/// the route and the document's length; its stored base, the same allocation
+/// while the base lasts; the runs of changes since the base, each the same
+/// allocation while it lasts; the fields after the document — and its sealed
+/// history, when it holds one.
 fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDocument, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
     }
-    let (base, since) = entry.doc.stored();
-    let head = put(&(route, base.len().saturating_add(since.len())), Vec::new())?;
+    let (base, since, digest) = entry.doc.stored();
+    let since_len = since.iter().map(|run| run.len()).sum::<usize>();
+    let head = put(&(route, base.len().saturating_add(since_len)), Vec::new())?;
     let rest = put(
         &(
             entry
@@ -601,7 +662,7 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
                 .as_ref()
                 .map(|snapshot| snapshot.0.bytes.as_slice()),
         ),
-        since.to_vec(),
+        Vec::new(),
     )?;
     let sealed = if entry.sealed.is_empty() {
         None
@@ -610,7 +671,12 @@ fn encode_document(route: &Route, entry: &Document) -> Result<backend::EncodedDo
     };
     Ok(backend::EncodedDocument {
         route: route.clone(),
-        document: vec![head.into(), base, rest.into()],
+        document: vec![
+            Piece::Part(head.into()),
+            Piece::Part(base),
+            Piece::Since(since, digest),
+            Piece::Part(rest.into()),
+        ],
         sealed,
     })
 }

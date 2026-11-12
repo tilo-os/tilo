@@ -36,8 +36,8 @@ pub(crate) struct CachedDocument {
     earlier: Option<Arc<Views>>,
     /// The document as stored ([`Self::stored`]), once asked.
     stored: Arc<OnceLock<Stored>>,
-    /// The saved base the state this one was changed from was stored on.
-    base: Option<Base>,
+    /// How the state this one was changed from was stored.
+    before: Option<Stored>,
     /// [`Self::security_basis`], with the revocations it was worked out
     /// under.
     security_basis: Arc<OnceLock<SecurityBasis>>,
@@ -50,17 +50,25 @@ type SecurityBasis = (
 /// The redemption receipts device rows keep, by invitation.
 pub(crate) type Redemptions =
     std::collections::BTreeMap<[u8; 32], Vec<crate::state::RedemptionReceipt>>;
-/// A whole saved state of the document and the heads it was saved at.
-#[derive(Clone)]
-struct Base {
-    bytes: Arc<[u8]>,
-    heads: Vec<automerge::ChangeHash>,
-}
-/// The document as stored: a saved base, then the changes since it.
+/// A document as [`CachedDocument::stored`] answers it: its base, the runs
+/// of changes since it, and the digest of the runs' bytes.
+pub(crate) type StoredParts = (Arc<[u8]>, Vec<Arc<[u8]>>, [u8; 32]);
+/// The document as stored: a saved base, then the changes since it, in
+/// runs each a state's changes since the one before ([`CachedDocument::stored`]).
 #[derive(Clone)]
 struct Stored {
-    base: Base,
-    since: Arc<[u8]>,
+    /// A whole saved state of the document.
+    base: Arc<[u8]>,
+    since: Vec<Arc<[u8]>>,
+    /// The runs' bytes, one after the other, digested.
+    since_digest: blake3::Hasher,
+    /// The heads the base and the runs hold the changes of.
+    heads: Vec<automerge::ChangeHash>,
+}
+impl Stored {
+    fn since_len(&self) -> usize {
+        self.since.iter().map(|run| run.len()).sum()
+    }
 }
 /// The derived views of one document state.
 struct Views {
@@ -128,7 +136,7 @@ impl From<AutoCommit> for CachedDocument {
             redemptions: Arc::default(),
             earlier: None,
             stored: Arc::default(),
-            base: None,
+            before: None,
             security_basis: Arc::default(),
         }
     }
@@ -147,7 +155,7 @@ impl DerefMut for CachedDocument {
         if let Some(views) = self.views() {
             self.earlier = Some(views);
         }
-        self.base = self.stored_base();
+        self.before = self.stored_before();
         self.stored = Arc::default();
         self.policy = Arc::default();
         self.identities = Arc::default();
@@ -245,7 +253,7 @@ impl CachedDocument {
             .map(|heads| Arc::new(doc.get_changes(heads)));
         Self {
             earlier: self.views().or_else(|| self.earlier.clone()),
-            base: self.stored_base(),
+            before: self.stored_before(),
             since_checked,
             ..Self::from(doc)
         }
@@ -351,12 +359,9 @@ impl CachedDocument {
                 .collect()
         })
     }
-    /// The base this state is stored on, or the one it inherited.
-    fn stored_base(&self) -> Option<Base> {
-        self.stored
-            .get()
-            .map(|stored| stored.base.clone())
-            .or_else(|| self.base.clone())
+    /// How this state is stored, or the state it was changed from.
+    fn stored_before(&self) -> Option<Stored> {
+        self.stored.get().cloned().or_else(|| self.before.clone())
     }
     /// The document as a store keeps it: a saved base, then the changes
     /// made since it, which together are the document's storage
@@ -370,34 +375,70 @@ impl CachedDocument {
     /// those saves is about its own size. The base's bytes are the same
     /// allocation as long as it lasts, so a store keeping it apart writes it
     /// once.
-    pub(crate) fn stored(&self) -> (Arc<[u8]>, Arc<[u8]>) {
-        use automerge::ReadDoc as _;
+    ///
+    /// The changes since the base are runs: the earlier state's, then this
+    /// state's own changes since it, so a state saves only what it added. A
+    /// run at most twice as long as the one after it is joined with it,
+    /// which keeps a few runs however many states there were, each byte
+    /// joined into a longer run a few times at most.
+    ///
+    /// Beside the base and the runs, it answers the digest of the runs'
+    /// bytes one after the other, which a state takes on from the one it
+    /// was changed from by what it added.
+    pub(crate) fn stored(&self) -> StoredParts {
+        use automerge::transaction::Transactable as _;
         let stored = self.stored.get_or_init(|| {
-            let mut doc = AutoCommit::clone(&self.doc);
-            if let Some(base) = &self.base
-                && base
+            // Copying the document to close a transaction cost a copy of its
+            // whole history per write; a document with nothing pending is
+            // read as it is.
+            let copy;
+            let committed = if self.doc.pending_ops() == 0 {
+                &*self.doc
+            } else {
+                let mut doc = AutoCommit::clone(&self.doc);
+                let _ = doc.document();
+                copy = doc;
+                &copy
+            };
+            let doc = committed.committed_document();
+            let heads = committed.committed_heads();
+            if let Some(before) = &self.before
+                && before
                     .heads
                     .iter()
-                    .all(|head| doc.get_change_by_hash(head).is_some())
+                    .all(|head| doc.get_change_meta_by_hash(head).is_some())
             {
-                let since = doc.save_after(&base.heads);
-                if since.len().saturating_mul(2) <= base.bytes.len() {
+                let added = doc.save_after(&before.heads);
+                crate::write_work::read(added.len());
+                let since = before.since_len().saturating_add(added.len());
+                if since.saturating_mul(2) <= before.base.len() {
+                    let mut runs = before.since.clone();
+                    let mut since_digest = before.since_digest.clone();
+                    if !added.is_empty() {
+                        since_digest.update(&added);
+                        runs.push(added.into());
+                        join_runs(&mut runs);
+                    }
                     return Stored {
-                        base: base.clone(),
-                        since: since.into(),
+                        base: before.base.clone(),
+                        since: runs,
+                        since_digest,
+                        heads,
                     };
                 }
             }
-            let heads = doc.get_heads();
             Stored {
-                base: Base {
-                    bytes: self.saved_bytes().into(),
-                    heads,
-                },
-                since: Arc::from([]),
+                base: self.saved_bytes().into(),
+                since: Vec::new(),
+                since_digest: blake3::Hasher::new(),
+                heads,
             }
         });
-        (Arc::clone(&stored.base.bytes), Arc::clone(&stored.since))
+        (
+            Arc::clone(&stored.base),
+            stored.since.clone(),
+            *stored.since_digest.finalize().as_bytes(),
+        )
     }
     /// A document as a store kept it: [`Self::stored`]'s saved base, then
     /// the changes made since it, which [`AutoCommit::load`] reads as one
@@ -423,12 +464,14 @@ impl CachedDocument {
         }
         // Nothing has kept this state yet: the memo this state was made with
         // holds no base.
+        crate::write_work::read(since.len());
+        let mut since_digest = blake3::Hasher::new();
+        since_digest.update(since);
         let _ = self.stored.set(Stored {
-            base: Base {
-                bytes: base_bytes.into(),
-                heads,
-            },
-            since: since.into(),
+            base: base_bytes.into(),
+            since: vec![since.into()],
+            since_digest,
+            heads: self.committed_heads(),
         });
         Ok(self)
     }
@@ -440,7 +483,9 @@ impl CachedDocument {
         self.serialized.get_or_init(|| {
             #[cfg(test)]
             SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
-            AutoCommit::clone(&self.doc).save()
+            let saved = AutoCommit::clone(&self.doc).save();
+            crate::write_work::read(saved.len());
+            saved
         })
     }
 }
@@ -473,6 +518,19 @@ fn saved_chunk(bytes: &[u8]) -> Option<usize> {
     }
     let total = at.checked_add(data)?;
     (total < bytes.len()).then_some(total)
+}
+/// Join the last run with the one before it while that one is at most twice
+/// as long: run lengths then fall by more than half from each to the next,
+/// so there are a few of them.
+fn join_runs(runs: &mut Vec<Arc<[u8]>>) {
+    while let [.., earlier, last] = runs.as_slice()
+        && earlier.len() <= last.len().saturating_mul(2)
+    {
+        crate::write_work::read(earlier.len().saturating_add(last.len()));
+        let joined: Arc<[u8]> = [&**earlier, &**last].concat().into();
+        runs.truncate(runs.len().saturating_sub(2));
+        runs.push(joined);
+    }
 }
 #[cfg(test)]
 thread_local! {
@@ -539,33 +597,36 @@ mod tests {
     #[test]
     fn a_stored_document_reopens_on_the_base_it_was_stored_on() {
         let mut doc = AutoCommit::new();
-        for n in 0..200 {
+        for n in 0..2_000 {
             doc.put(ROOT, format!("row-{n}"), n.to_string()).unwrap();
         }
         let mut cached = CachedDocument::from(doc);
         cached.commit();
         let _ = cached.stored();
-        cached
-            .put(ROOT, "one-more", "a change since the base")
-            .unwrap();
-        cached.commit();
-        let (base, since) = cached.stored();
+        // A long change, then a short one: the runs stay apart.
+        for value in ["a change since the base ".repeat(4), "short".to_owned()] {
+            cached.put(ROOT, value.clone(), value).unwrap();
+            cached.commit();
+            let _ = cached.stored();
+        }
+        let (base, since, digest) = cached.stored();
         assert!(
-            !since.is_empty(),
-            "the change since the base is stored beside it"
+            since.len() > 1,
+            "the changes since the base are stored beside it, run by run"
         );
-        let bytes = [&*base, &*since].concat();
+        let bytes = [&*base, &since.concat()].concat();
         let reopened = CachedDocument::from(AutoCommit::load(&bytes).unwrap())
             .stored_as(&bytes)
             .unwrap();
-        let (reopened_base, reopened_since) = reopened.stored();
+        let (reopened_base, reopened_since, reopened_digest) = reopened.stored();
         assert_eq!(
-            [&*reopened_base, &*reopened_since].concat(),
+            [&*reopened_base, &reopened_since.concat()].concat(),
             bytes,
             "the state reopened as the bytes that were stored"
         );
         assert_eq!(
-            reopened_since, since,
+            (reopened_since.concat(), reopened_digest),
+            (since.concat(), digest),
             "the reopened state keeps the changes beside the base it was stored on"
         );
     }

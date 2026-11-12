@@ -191,8 +191,8 @@ pub(super) struct StoredDocument {
 /// A record's part of a durable peer encoding.
 pub(super) struct EncodedDocument {
     pub(super) route: Route,
-    /// Its `DurableDocument`, in parts.
-    pub(super) document: Vec<Arc<[u8]>>,
+    /// Its `DurableDocument`, in stretches.
+    pub(super) document: Vec<super::durable::Piece>,
     /// Its `(Route, Vec<SignedOp>)` sealed history entry, when it holds
     /// sealed writes, in parts ([`SealedLog::encode_parts`]).
     pub(super) sealed: Option<Vec<Arc<[u8]>>>,

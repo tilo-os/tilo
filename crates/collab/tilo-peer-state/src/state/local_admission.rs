@@ -208,8 +208,13 @@ impl StatePeer {
         envelope: SignedOp,
         now: SystemTime,
     ) -> Result<(), String> {
-        let author = *envelope.author.as_bytes();
-        let before = self.clone();
+        // The evidence is the entry this admission writes, found by its key:
+        // comparing the index with a copy of it from before made every write
+        // cost every entry the index held since it last settled.
+        let evidence = DocumentAdmission::from_op(&self.core.workspace, app, record, &envelope)
+            .map_err(|error| error.to_string())?;
+        let held = self.core.exact_admissions.get(&evidence.key).is_some()
+            || self.core.exact_admissions.covers(&evidence.key);
         let report = self.admit_local(app, record, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
@@ -230,13 +235,10 @@ impl StatePeer {
                 "native local document was deferred, incomplete or rejected, not newly admitted{waiting}{incomplete}"
             ));
         }
-        let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
-        if !admissions.iter().any(|entry| {
-            entry.workspace() == self.core.workspace
-                && entry.app() == app
-                && entry.record() == record
-                && entry.author() == author
-        }) {
+        if held
+            || !self.core.admission_v5
+            || self.core.exact_admissions.get(&evidence.key) != Some(&evidence.operation_id)
+        {
             return Err("native local document has no exact admission evidence".into());
         }
         Ok(())

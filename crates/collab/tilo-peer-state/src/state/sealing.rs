@@ -87,7 +87,7 @@ impl StatePeer {
         clippy::needless_pass_by_value,
         reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"
     )]
-    pub(super) fn prepare_signed_mutation(
+    pub(crate) fn prepare_signed_mutation(
         &self,
         app: &str,
         record: &str,

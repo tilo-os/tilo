@@ -326,6 +326,9 @@ pub struct StatePeer {
     /// stored layout ([`workspace::layout`]): a device that governs the
     /// workspace then publishes it anew ([`Self::governance_brought_up`]).
     brought_up: bool,
+    /// The digests of the durable parts [`Self::durable_hash`] last took,
+    /// shared by the copies of this replica. Never persisted.
+    durable_digests: durable::PartDigests,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,
