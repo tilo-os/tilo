@@ -162,7 +162,7 @@ verify_records_read
 declare -A flow_started=() flow_of=()
 running=()
 run_flow() {
-  flow_started[$1]=$SECONDS
+  flow_started[$1]=$(date +%s)
   setsid timeout -k 5 "$limit" bash "$0" --flow "$1" > "$work/$1.log" 2>&1 &
   flow_of[$!]=$1
   flow_pids+=("$!")
@@ -179,7 +179,9 @@ await_flow() {
   set -- "${flow_of[$pid]}"
   # Whatever the flow left running goes with it.
   kill -KILL -- "-$pid" 2>/dev/null || true
-  local took=$((SECONDS - ${flow_started[$1]}))
+  # Its own seconds: from its start to its log's last word, not to when this
+  # run got round to it.
+  local took=$(($(stat -c %Y "$work/$1.log") - ${flow_started[$1]}))
   ((status != 124)) || echo "FAIL: $1 did not finish in ${limit}s" >> "$work/$1.log"
   if ((status == 0)); then
     printf 'TIMING flow=%s seconds=%s result=ok\n' "$1" "$took"
@@ -198,8 +200,21 @@ await_flow() {
 
 parallel=()
 for flow in "${asked[@]}"; do [[ $flow == restart ]] || parallel+=("$flow"); done
-for flow in "${parallel[@]}"; do run_flow "$flow"; done
-for _ in "${parallel[@]}"; do await_flow; done
+# At most E2E_PARALLEL flows at once (default 5), the longest first, the next
+# starting as one ends. Every page here draws in software, and a node gives a
+# run so many cores: past that, more pages at once make every step of every
+# flow slower rather than the run shorter (measured: with nine flows and four
+# people cases at once, steps a run of three cases passes in 15-20 s ran out at
+# 45 s - a search opening, a composer showing, a call's channel).
+order=(setup-resume people-call people-invite people-desk people-menus boot wait-list share-link agent-setup directory)
+queue=()
+for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
+at_once=${E2E_PARALLEL:-5}
+for flow in "${queue[@]}"; do
+  ((${#running[@]} < at_once)) || await_flow
+  run_flow "$flow"
+done
+while ((${#running[@]})); do await_flow; done
 timing "phase=every flow side by side (${parallel[*]})"
 if wants restart; then
   if [[ " ${failed[*]} " == *' people-call '* ]]; then
