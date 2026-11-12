@@ -14,7 +14,9 @@
 // all in ms: `hide` from the reload asked to the old page's first pagehide
 // listener; `handlers` the time the old page's pagehide listeners took, from
 // the first to one added after the page arrived (so after the runtime's own);
-// `unload` the old document's unload event (the new document's navigation
+// `oldRanUntil` the last tick a timer the old page started in its pagehide
+// ran, so how long it lived on after it hid; `gpuDevices` the GPU devices it
+// had asked for; `unload` the old document's unload event (the new document's navigation
 // timing); `fetch` the new document's fetchStart, which waits for the old one
 // to let go; `connect`, `request`, `response`, `body` its connection's setup
 // and when it asked, its first byte and its last; `commit` the new document committed (Page.frameNavigated);
@@ -57,9 +59,13 @@ const EARLY = `(() => {
   }
   addEventListener('pagehide', () => {
     try { sessionStorage.setItem('tilo-reload-hide', String(Date.now())); } catch {}
+    try { sessionStorage.setItem('tilo-reload-devices', String(devices.length)); } catch {}
     if (sessionStorage.getItem('tilo-reload-release-gpu') === '1') {
       for (const device of devices) { try { device.destroy(); } catch {} }
     }
+    // The old page still runs its tasks after it hid, until the browser
+    // tears it down: the last tick it ran says how long it lived on.
+    setInterval(() => { try { sessionStorage.setItem('tilo-reload-alive', String(Date.now())); } catch {} }, 25);
   }, {capture: true});
 })();`;
 // Added once the page arrived, so it runs after the runtime's own listeners.
@@ -77,6 +83,8 @@ const BEFORE = `JSON.stringify((() => {
     origin: performance.timeOrigin,
     hide: read('tilo-reload-hide'),
     hidden: read('tilo-reload-hidden'),
+    alive: read('tilo-reload-alive'),
+    devices: read('tilo-reload-devices'),
     unload: nav ? nav.unloadEventEnd - nav.unloadEventStart : null,
     fetch: nav ? nav.fetchStart : null,
     connect: nav && nav.connectEnd > nav.connectStart ? nav.connectEnd - nav.connectStart : 0,
@@ -174,6 +182,8 @@ for (let n = 1; n <= times; n += 1) {
     deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-custody:[^#]*/, '') || '#0').join(',') : 'none',
     hide: before.hide ? before.hide - asked : null,
     handlers: before.hidden && before.hide ? before.hidden - before.hide : null,
+    oldRanUntil: before.alive ? before.alive - asked : null,
+    gpuDevices: Number.isFinite(before.devices) ? before.devices : null,
     unload: before.unload == null ? null : Math.round(before.unload),
     fetch: before.fetch == null ? null : Math.round(before.origin + before.fetch - asked),
     connect: before.connect == null ? null : Math.round(before.connect),
