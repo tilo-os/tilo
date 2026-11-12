@@ -7,7 +7,7 @@ use notes::actions::create_page_action;
 use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{Invoke, Resource as _};
 
 fn fresh() -> TestApp<NotesShell> {
     ui::i18n::I18nManager::init("en-US");
@@ -82,7 +82,7 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
 
     // The marker an agent's action draws rests on that control: the action
     // resolves to the "+" and to nothing else.
-    let address = tilo_actions::ActionAddress::new("notes.notebook", "new-note");
+    let address = notes::notebook::Notebook::NEW_NOTE.on(notes::notebook::Notebook::KIND);
     let routes = app.harness().action_ui_routes(&address);
     let [route] = routes.as_slice() else {
         panic!("the window binds one control to New note: {routes:?}");
