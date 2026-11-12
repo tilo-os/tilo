@@ -225,6 +225,16 @@ impl PillMetrics {
         (self.height - 8.0).max(self.glyph)
     }
 
+    /// The "×" of a removable pill: inset from its trailing edge and centred
+    /// in it.
+    fn remove_rect(&self, pill: Rect) -> Rect {
+        let x1 = pill.x1 - self.pad_x;
+        Rect::from_center_size(
+            Point::new(x1 - self.glyph / 2.0, pill.center().y),
+            (self.glyph, self.glyph),
+        )
+    }
+
     fn lead_width(&self, lead: ChipLead) -> f64 {
         match lead {
             ChipLead::None => 0.0,
@@ -373,12 +383,7 @@ impl<'a> ChipFace<'a> {
         if !self.removable {
             return Rect::ZERO;
         }
-        let metrics = PillMetrics::of(theme, TextRole::Label);
-        let x1 = self.rect.x1 - metrics.pad_x;
-        Rect::from_center_size(
-            Point::new(x1 - metrics.glyph / 2.0, self.rect.center().y),
-            (metrics.glyph, metrics.glyph),
-        )
+        PillMetrics::of(theme, TextRole::Label).remove_rect(self.rect)
     }
 
     pub fn paint(
@@ -1116,6 +1121,17 @@ impl Chip {
             height: self.box_height() as f32,
         }
     }
+
+    /// Where the "×" stands: the layout's place, so a press, a screen reader
+    /// or a script finds it before anything paints, inside the chip rather
+    /// than at the window's origin, where a control nothing placed stands.
+    fn place_remove(&mut self) {
+        self.x_rect = if self.removable && self.rect.width() > 0.0 {
+            self.metrics.remove_rect(self.pill_rect())
+        } else {
+            Rect::ZERO
+        };
+    }
 }
 
 impl Widget for Chip {
@@ -1233,6 +1249,7 @@ impl Widget for Chip {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.place_remove();
     }
 
     /// A settled pill keeps its footprint until its label or type changes
@@ -1253,12 +1270,6 @@ impl Widget for Chip {
             return;
         }
         let pill = self.pill_rect();
-        let face = ChipFace::new(pill, &self.label);
-        self.x_rect = if self.removable {
-            face.removable(false).remove_rect(theme)
-        } else {
-            Rect::ZERO
-        };
         // Highlight over the same grown rect the press handler and
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
@@ -1856,7 +1867,7 @@ mod tests {
             lay_out(&mut c);
             draw(&mut c);
             let x = c.remove_rect().center();
-            assert!(x.x > 0.0, "× rect resolves after draw");
+            assert!(x.x > 0.0, "the × stands where the layout puts it");
             dispatch(&mut c, &cursor(x));
             assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
             assert!(c.take_removed(), "remove signal fires");
@@ -1969,6 +1980,25 @@ mod tests {
         );
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+
+    /// A control's place is the layout's: a chip laid out and not yet painted
+    /// still answers a press on its "×", inside the chip, never at the
+    /// window's origin where a control nothing placed stands.
+    #[test]
+    fn the_layout_places_the_remove_control_without_a_paint() {
+        let mut chip = Chip::new("alice@example.com").removable();
+        lay_out(&mut chip);
+        let x = chip.remove_rect();
+        assert!(!x.is_zero_area(), "the layout places the ×: {x:?}");
+        assert!(
+            chip.get_rect().contains(x.center()),
+            "inside the chip: {x:?} in {:?}",
+            chip.get_rect()
+        );
+        dispatch(&mut chip, &cursor(x.center()));
+        assert!(dispatch(&mut chip, &mouse_press()), "the × press lands");
+        assert!(chip.take_removed(), "and removes");
     }
 }
 
