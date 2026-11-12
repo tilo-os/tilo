@@ -11,7 +11,7 @@ camera-title = Kamera
 
 camera-action-use-device = { $device } verwenden
 camera-action-stop-recording = Aufnahme beenden
-camera-action-register-capture = Aufnahme weitergeben
+camera-action-register-capture = Letzte Aufnahme anbieten
 camera-action-record-scan = Gescannten Code festhalten
 camera-effect-open-camera = Kamera öffnen
 camera-effect-open-scanner = Scan öffnen

@@ -55,10 +55,7 @@ glyph-join 1 apps/photos/src/app/accessibility.rs
 glyph-join 4 apps/settings/src/input_sources.rs
 glyph-join 2 apps/slides/src/model.rs
 glyph-join 2 apps/store/src/app.rs
-glyph-join 3 apps/terminal/src/main_body.rs
 glyph-join 1 apps/terminal/src/scenarios.rs
-glyph-join 1 apps/totp/src/model.rs
-glyph-join 1 apps/totp/src/resource.rs
 glyph-join 1 apps/tube/src/actions.rs
 glyph-join 7 apps/tube/src/sample.rs
 glyph-join 1 apps/typst-editor/src/app.rs

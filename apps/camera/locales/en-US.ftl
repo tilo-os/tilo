@@ -11,7 +11,7 @@ camera-title = Camera
 
 camera-action-use-device = Use { $device }
 camera-action-stop-recording = Stop recording
-camera-action-register-capture = Hand off capture
+camera-action-register-capture = Offer the latest capture
 camera-action-record-scan = Record scanned code
 camera-effect-open-camera = Open Camera
 camera-effect-open-scanner = Open Scan

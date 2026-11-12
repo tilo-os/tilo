@@ -123,6 +123,7 @@ slides-a11y-send-back = Send to back
 slides-a11y-duplicate-element = Duplicate object
 slides-a11y-delete-element = Delete object
 slides-a11y-layout = Layout { $name }
+slides-a11y-layout-menu = Slide layout, { $name }
 slides-a11y-background = Background { $name }
 slides-a11y-deck-theme = Deck theme { $name }
 slides-a11y-deck-look = Deck look { $name }

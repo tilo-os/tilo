@@ -120,6 +120,7 @@ slides-a11y-send-back = Nach hinten
 slides-a11y-duplicate-element = Objekt duplizieren
 slides-a11y-delete-element = Objekt löschen
 slides-a11y-layout = Layout { $name }
+slides-a11y-layout-menu = Folienlayout, { $name }
 slides-a11y-background = Hintergrund { $name }
 slides-a11y-deck-theme = Design { $name }
 slides-a11y-deck-look = Erscheinungsbild { $name }

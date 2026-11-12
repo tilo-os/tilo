@@ -44,16 +44,6 @@ text = "What this holds as typed data: the items of its parts, the newest part f
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
 
 [[allow]]
-file = "crates/session/desktop-surface/src/window.rs"
-text = "See a window this desktop does not run as it shows now: answers with the picture, \\\n         kept as content of the workspace the window stands in."
-reason = "What the window-picture tool answers an agent."
-
-[[allow]]
-file = "crates/session/desktop-surface/src/window.rs"
-text = "What a window this desktop does not run says of itself: its title and the app it \\\n         belongs to."
-reason = "What the window-description tool answers an agent."
-
-[[allow]]
 file = "apps/word-processor/src/semantic_read/action.rs"
 text = "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next"
 reason = "How the Markdown an agent reads is shaped; a description of a tool's answer."
