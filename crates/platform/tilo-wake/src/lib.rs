@@ -717,7 +717,9 @@ impl Reporting {
     ) -> Result<(), std::sync::mpsc::SendError<T>> {
         self.wake.wake();
         let queued = queue();
-        self.wake.wake();
+        if queued.is_ok() {
+            self.wake.wake();
+        }
         queued
     }
 }
