@@ -238,6 +238,19 @@ The host's memory budget counts a VM at its size instead (a small VM is
 4 GiB, as its tenant may fill it), so it wakes 3 small VMs there at once, and
 a workspace that only holds its Browser counts the same as one compiling.
 
+Per hour, at westus2 prices of November 2026 (`clusters/azure-tilo-sh` in
+the infra repo), for a workspace with Browser open:
+
+| Node | Price | Counted at its size (small, 4 GiB) | By what a clone takes (about 325 MiB) |
+| :--- | ---: | ---: | ---: |
+| Warm D4s_v5 (always up, already paid) | $0.192/h | 3 VMs: $0.064 each | about 38: $0.005 each |
+| Overflow D16s_v5, on demand | $0.768/h | 14 VMs: $0.055 each | about 180: $0.004 each |
+| E16as_v5 on Spot, once quota is granted | $0.167/h | 31 VMs: $0.005 each | about 380: under $0.001 each |
+
+Browser-only workspaces are mostly idle, so CPU limits a node well before
+memory does in the right-hand column. A ten-minute visa form costs about a
+cent on demand counted at size, and a tenth of that on Spot.
+
 ## Running it
 
 A host that places workspaces (`tilo-relay room … --room-records`) serves
