@@ -130,6 +130,26 @@ fn a_pointer_is_said_in_the_pixels_of_its_tile_and_a_rest_draws_nothing() {
 }
 
 #[test]
+fn a_pointer_that_stopped_is_drawn_where_it_was_said_last() {
+    let mut board = board();
+    board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.0);
+    board.hear([1; 32], &pointed(WORKSPACE, 3, 40.0, 55.0), 1_094.0);
+    let moved = board.revision();
+    // They stopped there: their device says the same place again.
+    board.hear([1; 32], &pointed(WORKSPACE, 3, 40.0, 55.0), 1_300.0);
+    assert_ne!(board.revision(), moved, "the pointer stopping is drawn");
+    assert_eq!(
+        board.pointers(3, 2_000.0),
+        vec![([1; 32], 40.0, 55.0)],
+        "drawn where they put it, not where its last motion would have carried it"
+    );
+    let rested = board.revision();
+    board.hear([1; 32], &pointed(WORKSPACE, 3, 40.0, 55.0), 4_300.0);
+    assert_eq!(board.revision(), rested, "a rest said again draws nothing");
+    assert_eq!(board.pointers(3, 5_000.0), vec![([1; 32], 40.0, 55.0)]);
+}
+
+#[test]
 fn this_device_says_its_whole_self_at_once_and_nothing_unchanged() {
     let mut board = board();
     let own = Own {
