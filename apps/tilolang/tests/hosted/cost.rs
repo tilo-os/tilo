@@ -2023,6 +2023,42 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
 /// chunk the row it shows is stored in. An index reads a tree whose depth is the logarithm of what
 /// it holds, so ten times the workspace must not make a step do twice the work: what a step costs
 /// is what it changed.
+/// Adding a task runs the row it adds and the views that count it, not every row the window
+/// shows: the task is written into its collection's newest chunk, which the window had not read
+/// but the workspace's index already reflects, so taking that chunk in moves nothing any row
+/// read.
+#[test]
+fn adding_a_task_runs_the_row_it_adds_not_every_row() {
+    use ui::winit::keyboard::NamedKey;
+
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let storage = kept_index(&route, &chunks, "adding");
+    let mut session = Session::tasks_over_in(&route, chunks, Some(storage));
+    let (x, y) = place_at(&mut session, "Inbox");
+    session.window.click_at(x, y);
+    session.settle();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Buy");
+    session.settle();
+    let rows = rows_shown(&mut session);
+    let done = step(&mut session, |session| {
+        session.window.press_key(NamedKey::Enter)
+    });
+    assert!(
+        record_has_task(&session, "Buy"),
+        "the entry's task is in the workspace"
+    );
+    assert!(
+        rows > 20 && done.renders <= 12,
+        "adding a task with {rows} rows on screen ran {} boundaries: the rows it did not \
+         touch ran again",
+        done.renders
+    );
+}
+
 #[test]
 fn a_step_costs_what_it_changes_not_the_workspace() {
     let _motion = ui::motion::testing::settled();
