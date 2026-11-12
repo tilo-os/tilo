@@ -113,3 +113,12 @@ backups-keep-hourly = Stündliche Sicherungen aufbewahren
 backups-keep-daily = Tägliche Sicherungen aufbewahren
 backups-keep-weekly = Wöchentliche Sicherungen aufbewahren
 backups-keep-monthly = Monatliche Sicherungen aufbewahren
+
+## What the window shows
+backups-verifying-on = Wird auf { $destination } geprüft
+backups-copy-failed = Kopieren nach { $destination } fehlgeschlagen: { $reason }
+backups-copy-failed-unrecorded = Kopieren nach { $destination } fehlgeschlagen; es wurde kein Grund festgehalten
+backups-restore = Wiederherstellen…
+backups-verify = Dateien prüfen
+backups-restore-labelled = „{ $snapshot }“ wiederherstellen
+backups-restore-from = { $snapshot } von { $when } wiederherstellen

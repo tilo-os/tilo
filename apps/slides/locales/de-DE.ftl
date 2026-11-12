@@ -219,3 +219,6 @@ slides-a11y-slide-window = Zeigt Folien { $first } bis { $last } von { $count }
 slides-a11y-slide-of = Folie { $slide } von { $count }
 slides-a11y-elapsed = Verstrichen: { $time }
 slides-a11y-presenting = { $deck } wird vorgeführt
+
+## What the window shows
+slides-slide-number = Folie { $number }

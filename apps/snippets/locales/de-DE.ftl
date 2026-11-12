@@ -102,3 +102,5 @@ snippets-remove-tag = Tag { $tag } von allen Snippets entfernt
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 snippets-a11y-tag = Schlagwort: { $tag }
 snippets-a11y-folder = Ordner: { $folder }
+
+## What the window shows

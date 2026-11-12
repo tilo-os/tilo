@@ -49,3 +49,6 @@ camera-a11y-choose-camera = Choose a camera
 camera-a11y-scan-page = Scan document page
 camera-a11y-apply-crop = Apply crop
 camera-a11y-cancel-crop = Cancel crop
+
+## What the window shows
+camera-scan-kind = Kind

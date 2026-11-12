@@ -541,7 +541,10 @@ fn proof_places_section() -> ModelView<Vec<String>> {
             }
             for ((index, place), number) in places.iter().enumerate().zip(1_usize..) {
                 column = column.push(value_group(
-                    &format!("Publish at {number}"),
+                    &crate::locales::CATALOG.t_args(
+                        "publisher-publish-at",
+                        &[("place", ui::i18n::ArgValue::Number(number as f64))],
+                    ),
                     place,
                     &format!("proof-place-{index}"),
                     None,

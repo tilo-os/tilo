@@ -34,3 +34,9 @@ disks-partition-a11y = Partition { $device } auswählen
 disks-section-attributes = Attribute
 disks-section-drive = Laufwerk
 disks-section-partition-map = Partitionskarte
+
+## What the window shows
+disks-open-in-files = In Dateien öffnen
+disks-space-left = Wie viel Platz ist noch frei?
+disks-swap = Auslagerungsspeicher
+disks-filesystem-at = { $filesystem } unter { $path }

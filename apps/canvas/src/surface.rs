@@ -3251,7 +3251,7 @@ impl Widget for CanvasSurface {
         Some(
             AccessNode::new(Role::Image)
                 .with_name(if self.art.title.is_empty() {
-                    "Artwork".to_owned()
+                    CATALOG.t("canvas-resource-artwork")
                 } else {
                     self.art.title.clone()
                 })

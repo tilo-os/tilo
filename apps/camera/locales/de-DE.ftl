@@ -49,3 +49,6 @@ camera-a11y-choose-camera = Kamera auswählen
 camera-a11y-scan-page = Dokumentseite scannen
 camera-a11y-apply-crop = Zuschnitt anwenden
 camera-a11y-cancel-crop = Zuschnitt verwerfen
+
+## What the window shows
+camera-scan-kind = Art

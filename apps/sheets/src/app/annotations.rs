@@ -965,7 +965,7 @@ impl SheetsApp {
 
         // How many replies it has.
         let replies = match thread.replies.len() {
-            0 => "No replies".to_owned(),
+            0 => crate::resource::CATALOG.t("sheets-no-replies"),
             1 => "1 reply".to_owned(),
             n => format!("{n} replies"),
         };

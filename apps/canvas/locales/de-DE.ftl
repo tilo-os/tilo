@@ -483,3 +483,6 @@ canvas-pictures-decoding = Dafür braucht es ein Bild, das noch decodiert wird. 
 
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 canvas-a11y-artwork = { $width } mal { $height } Einheiten, { $layers } Ebenen, { $marks } Markierungen, { $selected } ausgewählt; inspect listet sie auf, look zeigt sie
+
+## What the window shows
+canvas-resource-artwork = Zeichnung

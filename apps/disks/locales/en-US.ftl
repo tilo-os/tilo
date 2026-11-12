@@ -34,3 +34,9 @@ disks-partition-a11y = Select partition { $device }
 disks-section-attributes = Attributes
 disks-section-drive = Drive
 disks-section-partition-map = Partition map
+
+## What the window shows
+disks-open-in-files = Open in Files
+disks-space-left = How much space is left?
+disks-swap = Swap space
+disks-filesystem-at = { $filesystem } at { $path }

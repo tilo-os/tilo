@@ -154,3 +154,53 @@ reason = "Sample conversation a headless screenshot stages, never a person's own
 file = "apps/mail/src/compose.rs"
 text = "Launch order\\n\\\n            Thanks both. The new order works for me: website first, then the press kit, then the email campaign.\\n\\\n            Website copy final by Wednesday\\n\\\n            Press kit review on Thursday\\n\\\n            Email campaign goes out last\\n\\\n            Let’s not send the campaign before the website is live."
 reason = "Sample mail the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/chat/src/live_share_panel.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/chat/src/render_chat/attach_picker.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "Release Notes"
+reason = "Sample chat the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/chat/src/app/scenarios.rs"
+text = "Changelogs and launch dates"
+reason = "Sample chat the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Par"
+reason = "Sample search query behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Reykjav"
+reason = "Sample place behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/weather/src/app.rs"
+text = "Zzqx"
+reason = "Sample query with no results behind the `samples` feature, never a person's own window."
+
+[[allow]]
+file = "apps/terminal/src/main_body.rs"
+text = "Writing"
+reason = "A name the headless harness gives a new environment, never a person's own window."
+
+[[allow]]
+file = "apps/totp/src/list.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
+
+[[allow]]
+file = "apps/weather/src/presentation.rs"
+text = "Ag"
+reason = "A measuring sample a list row lays out to find its height, never a word a person reads."

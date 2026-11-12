@@ -37,3 +37,7 @@ code-editor-a11y-document-description = Code-Editor: Dateibaum, Dateikopf, Dokum
 
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 code-editor-a11y-code = Code: { $project }
+
+## What the window shows
+code-editor-open-failed = { $path } ließ sich nicht öffnen: { $detail }
+code-editor-cursor = Z. { $line }, Sp. { $column }

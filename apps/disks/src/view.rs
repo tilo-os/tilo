@@ -489,7 +489,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
             Row::new()
                 .push(Box::new(mounted_action(
                     "disks-open-in-files",
-                    "Open in Files",
+                    &CATALOG.t("disks-open-in-files"),
                     Icon::Folder,
                     &mount,
                     Intent::OpenInFiles(Some(target)),
@@ -497,7 +497,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 )))
                 .push(Box::new(mounted_action(
                     "disks-space-left",
-                    "How much space is left?",
+                    &CATALOG.t("disks-space-left"),
                     Icon::BarChart,
                     &mount,
                     Intent::DiskUsage(Some(target)),
@@ -556,9 +556,18 @@ const FULL: f64 = 0.97;
 fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents) -> ListRow {
     let pick = intents.clone();
     let secondary = match (part.mount_display(), &part.fstype) {
-        (Some(mount), _) if mount == "Swap" => "Swap space".to_owned(),
-        (Some(mount), Some(fstype)) if !fstype.is_empty() => format!("{fstype} at {mount}"),
-        (Some(mount), _) => format!("At {mount}"),
+        (Some(mount), _) if mount == "Swap" => CATALOG.t("disks-swap"),
+        (Some(mount), Some(fstype)) if !fstype.is_empty() => CATALOG.t_args(
+            "disks-filesystem-at",
+            &[
+                ("filesystem", ui::i18n::ArgValue::Text(fstype.clone())),
+                ("path", ui::i18n::ArgValue::Text(mount.to_owned())),
+            ],
+        ),
+        (Some(mount), _) => CATALOG.t_args(
+            "disks-mounted-at",
+            &[("path", ui::i18n::ArgValue::Text(mount.to_owned()))],
+        ),
         (None, _) => String::new(),
     };
     let mut row = ListRow::new(format!("disks-filesystem-{index}"), part.display_label())

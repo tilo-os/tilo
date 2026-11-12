@@ -221,8 +221,18 @@ impl JournalPane {
     /// edits through `actions`.
     pub(crate) fn new(shared: Shared, actions: &Actions<Logs>) -> Self {
         let paths = Logs::paths();
-        let unit = Self::facet(actions, "logs.unit", "Unit", paths.unit);
-        let boot = Self::facet(actions, "logs.boot", "Boot", paths.boot);
+        let unit = Self::facet(
+            actions,
+            "logs.unit",
+            &CATALOG.t("logs-facet-unit"),
+            paths.unit,
+        );
+        let boot = Self::facet(
+            actions,
+            "logs.boot",
+            &CATALOG.t("logs-facet-boot"),
+            paths.boot,
+        );
         let severity = Dropdown::from_state(Vec::new(), &LocalState::new(String::new()))
             .with_id("logs.severity")
             .caption(crate::locales::CATALOG.t("logs-severity"));
@@ -750,7 +760,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
             ui::widget::Button::icon_only(
                 "logs.copy-message",
                 ui::icons::Icon::Copy,
-                "Copy message",
+                &CATALOG.t("logs-copy-message"),
             )
             .control_size(ui::widget::ControlSize::Small)
             .on_view(move || {
@@ -761,7 +771,7 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
             ui::widget::Button::icon_only(
                 "logs.copy-entry",
                 ui::icons::Icon::ClipboardPaste,
-                "Copy entry",
+                &CATALOG.t("logs-copy-entry"),
             )
             .control_size(ui::widget::ControlSize::Small)
             .on_view(move || {

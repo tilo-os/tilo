@@ -434,3 +434,7 @@ browser-settings-private = Privates Surfen
 browser-settings-private-detail = Aus einem privaten Fenster bleibt nach dem Schließen nichts erhalten.
 browser-settings-search-engine-label = Suchmaschine
 browser-settings-search-engine-detail = Suchen aus dem Adressfeld gehen dorthin.
+
+## What the window shows
+browser-quit-keep-downloading = Weiter herunterladen
+browser-quit-cancel-downloads = Downloads abbrechen und beenden

@@ -59,3 +59,9 @@ calculator-graph-delete = Delete { $kind } { $number }
 calculator-graph-show = Show { $kind } { $number }
 calculator-graph-field = { $kind } { $number } formula
 calculator-next-unit = Change { $unit } to the next unit
+
+## What the window shows
+calculator-result = Result { $value }
+calculator-invalid-expression = The expression is not valid: { $detail }
+calculator-graph-functions = Functions
+calculator-graph-surfaces = Surfaces

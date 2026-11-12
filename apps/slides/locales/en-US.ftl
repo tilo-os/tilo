@@ -222,3 +222,6 @@ slides-a11y-slide-window = Showing slides { $first } through { $last } of { $cou
 slides-a11y-slide-of = Slide { $slide } of { $count }
 slides-a11y-elapsed = Elapsed { $time }
 slides-a11y-presenting = Presenting { $deck }
+
+## What the window shows
+slides-slide-number = Slide { $number }

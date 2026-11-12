@@ -102,3 +102,5 @@ snippets-remove-tag = Removed the tag { $tag } from every snippet
 ## Facts, property labels and section titles
 snippets-a11y-tag = Tag: { $tag }
 snippets-a11y-folder = Folder: { $folder }
+
+## What the window shows

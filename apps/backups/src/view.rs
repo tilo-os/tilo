@@ -801,10 +801,22 @@ fn snapshot_row(
         .map_or("its destination", |d| d.name.as_str());
     let secondary = match snapshot.status {
         SnapStatus::Complete => changed(snapshot),
-        SnapStatus::Verifying => format!("Verifying on {dest}"),
+        SnapStatus::Verifying => CATALOG.t_args(
+            "backups-verifying-on",
+            &[("destination", ui::i18n::ArgValue::Text(dest.to_owned()))],
+        ),
         SnapStatus::Failed => match &snapshot.failure {
-            Some(reason) => format!("Couldn’t copy to {dest}: {reason}"),
-            None => format!("Couldn’t copy to {dest} (no reason was recorded)"),
+            Some(reason) => CATALOG.t_args(
+                "backups-copy-failed",
+                &[
+                    ("destination", ui::i18n::ArgValue::Text(dest.to_owned())),
+                    ("reason", ui::i18n::ArgValue::Text(reason.clone())),
+                ],
+            ),
+            None => CATALOG.t_args(
+                "backups-copy-failed-unrecorded",
+                &[("destination", ui::i18n::ArgValue::Text(dest.to_owned()))],
+            ),
         },
     };
     let id = snapshot.id.clone();
@@ -976,13 +988,13 @@ pub fn snapshot_details(
     let usable = can_act && snapshot.status != SnapStatus::Failed;
     let restore = {
         let intents = intents.clone();
-        Button::new("backups-restore", "Restore…")
+        Button::new("backups-restore", &CATALOG.t("backups-restore"))
             .with_enabled(usable)
             .on_view(move || intents.push(Intent::OpenRestore))
     };
     let verify = {
         let intents = intents.clone();
-        Button::new("backups-verify", "Verify files")
+        Button::new("backups-verify", &CATALOG.t("backups-verify"))
             .with_enabled(usable)
             .tooltip("Read every file and compare its checksum")
             .on_effect(move || intents.push(Intent::Verify))
@@ -1043,11 +1055,22 @@ pub fn restore_dialog(
         ),
     });
     let title = match &snapshot.label {
-        Some(label) => format!("Restore “{label}”"),
-        None => format!(
-            "Restore {} from {}",
-            snapshot_title(snapshot, catalog),
-            when(snapshot.taken, now).to_lowercase()
+        Some(label) => CATALOG.t_args(
+            "backups-restore-labelled",
+            &[("snapshot", ui::i18n::ArgValue::Text(label.clone()))],
+        ),
+        None => CATALOG.t_args(
+            "backups-restore-from",
+            &[
+                (
+                    "snapshot",
+                    ui::i18n::ArgValue::Text(snapshot_title(snapshot, catalog)),
+                ),
+                (
+                    "when",
+                    ui::i18n::ArgValue::Text(when(snapshot.taken, now).to_lowercase()),
+                ),
+            ],
         ),
     };
     let choose = intents.clone();

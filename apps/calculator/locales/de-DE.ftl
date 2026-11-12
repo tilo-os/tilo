@@ -59,3 +59,9 @@ calculator-graph-delete = { $kind } { $number } löschen
 calculator-graph-show = { $kind } { $number } anzeigen
 calculator-graph-field = Formel { $kind } { $number }
 calculator-next-unit = { $unit } zur nächsten Einheit wechseln
+
+## What the window shows
+calculator-result = Ergebnis { $value }
+calculator-invalid-expression = Der Ausdruck ist nicht gültig: { $detail }
+calculator-graph-functions = Funktionen
+calculator-graph-surfaces = Flächen

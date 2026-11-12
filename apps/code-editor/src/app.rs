@@ -578,7 +578,13 @@ impl CodeApp {
     fn failed_to_open(path: &std::path::Path, reason: &str) -> Self {
         let mut app = Self::new();
         app.notice = Some(Notice {
-            text: format!("Could not open {}: {reason}", path.display()),
+            text: CATALOG.t_args(
+                "code-editor-open-failed",
+                &[
+                    ("path", ui::i18n::ArgValue::Text(path.display().to_string())),
+                    ("detail", ui::i18n::ArgValue::Text(reason.to_string())),
+                ],
+            ),
             is_error: true,
         });
         app

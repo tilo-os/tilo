@@ -2796,7 +2796,15 @@ impl Widget for SlidesApp {
                             .then(|| element.text.lines().next().unwrap_or("").to_string())
                     })
                 })
-                .unwrap_or_else(|| format!("Slide {}", self.cur_slide + 1));
+                .unwrap_or_else(|| {
+                    CATALOG.t_args(
+                        "slides-slide-number",
+                        &[(
+                            "number",
+                            ui::i18n::ArgValue::Number((self.cur_slide + 1) as f64),
+                        )],
+                    )
+                });
             let controls = [
                 ("Previous slide", "slides.present.previous"),
                 ("Next slide", "slides.present.next"),
@@ -2856,7 +2864,12 @@ impl Widget for SlidesApp {
                     .find(|element| element.kind == ElementKind::Text)
                     .map(|element| element.text.clone())
                     .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| format!("Slide {}", index + 1));
+                    .unwrap_or_else(|| {
+                        CATALOG.t_args(
+                            "slides-slide-number",
+                            &[("number", ui::i18n::ArgValue::Number((index + 1) as f64))],
+                        )
+                    });
                 AccessNode::new(Role::Button)
                     .with_name(title)
                     .with_description(CATALOG.t_args(

@@ -1094,7 +1094,13 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
                 metrics.cpu_hist.as_slice().to_vec(),
                 theme.tokens.colors.presence.series(0),
             )
-            .with_legend(format!("Total {}", percent_label(metrics.cpu_overall()))),
+            .with_legend(CATALOG.t_args(
+                "monitor-cpu-total",
+                &[(
+                    "percent",
+                    ui::i18n::ArgValue::Text(percent_label(metrics.cpu_overall())),
+                )],
+            )),
         ],
         100.0,
         "100%",
@@ -1105,7 +1111,10 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
         .enumerate()
         .map(|(index, usage)| {
             level_gauge(
-                format!("Core {}", index + 1),
+                CATALOG.t_args(
+                    "monitor-cpu-core",
+                    &[("core", ui::i18n::ArgValue::Number((index + 1) as f64))],
+                ),
                 percent_label(*usage),
                 usage / 100.0,
                 theme,
@@ -1144,7 +1153,7 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
                 theme,
             ),
             level_gauge(
-                "Swap",
+                &CATALOG.t("monitor-memory-swap"),
                 of(metrics.swap_used, metrics.swap_total),
                 metrics.swap_frac(),
                 theme,
@@ -1249,7 +1258,7 @@ fn dashboard(
     theme: &Theme,
 ) -> Column {
     let network = throughput_section(
-        "Network",
+        &CATALOG.t("monitor-section-network"),
         &[
             Flow {
                 history: metrics.net_rx_hist.as_slice(),
@@ -1267,7 +1276,7 @@ fn dashboard(
         &metrics.history_period(),
     );
     let disk = throughput_section(
-        "Disk",
+        &CATALOG.t("monitor-section-disk"),
         &[
             Flow {
                 history: metrics.disk_read_hist.as_slice(),

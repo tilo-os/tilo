@@ -4168,7 +4168,7 @@ impl PdfApp {
             return;
         }
         let name = if source.name.is_empty() {
-            "Document.pdf".to_string()
+            crate::CATALOG.t("pdf-viewer-untitled")
         } else {
             source.name.clone()
         };
@@ -5849,9 +5849,15 @@ impl PdfApp {
             .min(count);
         let mut pages = Vec::new();
         for page in first..=last {
-            let text = document
-                .text(page - 1)
-                .map_err(|error| format!("page {page} cannot be read: {error}"))?;
+            let text = document.text(page - 1).map_err(|error| {
+                crate::CATALOG.t_args(
+                    "pdf-viewer-page-unreadable",
+                    &[
+                        ("page", ui::i18n::ArgValue::Number(page as f64)),
+                        ("detail", ui::i18n::ArgValue::Text(error.to_string())),
+                    ],
+                )
+            })?;
             pages.push(crate::model::PdfPageText {
                 page,
                 text: text.text().trim_end().to_owned(),

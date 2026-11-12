@@ -25,3 +25,9 @@ logs-transport = Transport
 logs-host = Rechner
 logs-process-id = Prozess-ID
 logs-program = Programm
+
+## What the window shows
+logs-facet-unit = Einheit
+logs-facet-boot = Start
+logs-copy-message = Meldung kopieren
+logs-copy-entry = Eintrag kopieren
