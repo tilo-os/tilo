@@ -42,7 +42,7 @@ mkdirSync(out, {recursive: true});
 // left for the next one in sessionStorage.
 //
 // The GPU devices the page asks for are kept, so a reload the run marks
-// (every second one, TILO_RELOADS_RELEASE_GPU=0 for none) destroys them in
+// (every second one with TILO_RELOADS_RELEASE_GPU=1) destroys them in
 // that first pagehide: reloads that do and reloads that don't, side by side on
 // the same machine, say whether an old page's GPU device is what holds the
 // new one back.
@@ -166,7 +166,20 @@ for (let n = 1; n <= times; n += 1) {
   await until(tab, `(${FRAMES}) > 0`, stepLimit(3));
   await tab.evaluate(LATE).catch(() => {});
   committed.delete(tab.sessionId);
-  const release = process.env.TILO_RELOADS_RELEASE_GPU !== '0' && n % 2 === 0;
+  const release = process.env.TILO_RELOADS_RELEASE_GPU === '1' && n % 2 === 0;
+  // Every second reload (TILO_RELOADS_IDLE=0 for none) waits until the desk
+  // has drawn nothing for ten seconds, so no frame of the old page is still
+  // being drawn as it goes: side by side with the reloads that go at once,
+  // they say whether a frame still drawing is what holds the new page back.
+  const idle = process.env.TILO_RELOADS_IDLE !== '0' && n % 2 === 0;
+  if (idle) {
+    let frames = Number(await tab.evaluate(FRAMES).catch(() => 0));
+    for (let still = Date.now(), until = Date.now() + stepLimit(3); Date.now() < until && Date.now() - still < 10_000;) {
+      await sleep(250);
+      const now = Number(await tab.evaluate(FRAMES).catch(() => frames));
+      if (now !== frames) { frames = now; still = Date.now(); }
+    }
+  }
   await tab.evaluate(`sessionStorage.setItem('tilo-reload-release-gpu', '${release ? 1 : 0}')`).catch(() => {});
   const asked = Date.now();
   await tab.reload().catch(() => {});
@@ -179,6 +192,7 @@ for (let n = 1; n <= times; n += 1) {
   const line = {
     n, result,
     gpuReleased: release ? 'yes' : 'no',
+    idleFirst: idle ? 'yes' : 'no',
     deviceLocks: locks.length ? locks.map(name => name.replace(/^tilo-device-custody:[^#]*/, '') || '#0').join(',') : 'none',
     hide: before.hide ? before.hide - asked : null,
     handlers: before.hidden && before.hide ? before.hidden - before.hide : null,
@@ -217,6 +231,8 @@ if (keys.length > 1) {
 const median = values => { const v = values.filter(x => x != null).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
 const commitOf = released => lines.filter(l => l.result === 'ok' && (l.gpuReleased === 'yes') === released).map(l => l.commit);
 console.log(`TIMING commit-median gpu-released=${median(commitOf(true))} gpu-kept=${median(commitOf(false))} (ms after the reload)`);
+const commitIdle = idle => lines.filter(l => l.result === 'ok' && (l.idleFirst === 'yes') === idle).map(l => l.commit);
+console.log(`TIMING commit-median idle-first=${median(commitIdle(true))} at-once=${median(commitIdle(false))} (ms after the reload)`);
 const slowest = [...lines].sort((a, b) => (b.fetch ?? 0) - (a.fetch ?? 0)).slice(0, 3);
 console.log(`TIMING reloads=${times} ok=${counts.ok} crashed=${counts.crashed} never-arrived=${counts.neverArrived} stopped=${counts.stopped}`);
 console.log(`the old page held the navigation longest (fetch ms): ${slowest.map(l => `#${l.n} ${l.fetch}`).join(', ')}`);
