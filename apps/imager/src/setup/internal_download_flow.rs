@@ -254,12 +254,13 @@ impl InternalDownloadFlow {
         }
     }
 
-    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, String> {
+    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, &'static str> {
         #[cfg(test)]
         if let Some(catalog) = self.catalogs.pop_front() {
             return Ok(catalog);
         }
         crate::release::bundled_internal_releases()
+            .map_err(|_| "imager-setup-error-download-catalog")
     }
 
     fn refresh_catalog(&mut self) {
@@ -375,7 +376,7 @@ impl InternalDownloadFlow {
     }
 
     pub(super) fn catalog_error(&self) -> Option<&'static str> {
-        self.catalog_error.as_deref()
+        self.catalog_error
     }
 
     pub(super) fn can_resume(&self) -> bool {
