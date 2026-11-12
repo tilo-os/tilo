@@ -3,8 +3,8 @@
 //! workspace").
 //!
 //! The desk names the branch and its id the moment it is asked (`branch-workspace`,
-//! [`tilo_desktop::desktop_host::DesktopAsk::BranchWorkspace`]); the session does the rest, off
-//! the loop, so the desk never waits for a copy:
+//! [`tilo_desktop::desktop_host::DesktopAsk::BranchWorkspace`]); the session does the rest
+//! without holding its loop, so the desk never waits for a copy:
 //!
 //! 1. The branch is founded in this device's engine as any workspace made here is
 //!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
@@ -32,7 +32,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -44,6 +45,7 @@ use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
 
 use crate::engine::{Engine, SealKeys};
+use crate::engine_write::Polled;
 use crate::platform::notice::Notice;
 
 /// Chat's records: every conversation of the workspace, which stays behind.
@@ -55,8 +57,6 @@ const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
 /// How long a branch waits for what it reads and writes to be here: a record its hosts send only
 /// once asked, and the keys of the branch's channels, which its first sealed write asks for.
 const PATIENCE: Duration = Duration::from_secs(60);
-/// How often a waiting read or write asks again.
-const ASK_AGAIN: Duration = Duration::from_millis(100);
 
 /// Whether the record `record` of `app` stays behind when its workspace is branched: what is tied
 /// to other people, and what the branch makes of its own.
@@ -115,7 +115,9 @@ pub(crate) struct Branching {
     slot: WorkspaceSlot,
     workspace: WorkspaceId,
     name: String,
-    copied: Receiver<Branched>,
+    copied: Polled<Branched>,
+    /// When the copy stops waiting for what is not here yet.
+    until: Instant,
 }
 
 /// The branches being made, followed on every pass.
@@ -123,11 +125,15 @@ pub(crate) struct Branching {
 pub(crate) struct Branches(std::cell::RefCell<Vec<Branching>>);
 
 impl Branches {
-    /// When the loop looks again at a branch being made: soon, while one is.
+    /// When the loop looks again at a branch being made with nothing arriving: when it stops
+    /// waiting.
     pub(crate) fn next_deadline(&self, now: Instant) -> Option<Instant> {
-        (!self.0.borrow().is_empty())
-            .then(|| now.checked_add(ASK_AGAIN))
-            .flatten()
+        self.0
+            .borrow()
+            .iter()
+            .map(|branching| branching.until)
+            .filter(|until| *until > now)
+            .min()
     }
 }
 
@@ -179,95 +185,74 @@ type Sources = BTreeMap<(String, String), AutoCommit>;
 /// app that owns it, and every app that keeps it beside its own.
 type Local = BTreeMap<(String, String), Vec<PathBuf>>;
 
-/// Where a branch reads the source's records and writes the branch's: this device's engine.
-pub(crate) trait Held: Sync {
-    /// Whether `workspace` is held here.
-    fn holds(&self, workspace: WorkspaceId) -> bool;
-    /// Every record `workspace` holds here, by app and record.
-    ///
-    /// # Errors
-    /// The workspace's records cannot be listed.
-    fn list(&self, workspace: WorkspaceId) -> Result<Vec<(String, String)>, String>;
-    /// `record` of `app` whole, with its history: `None` while it is not here yet.
-    ///
-    /// # Errors
-    /// This device may not read it, or it cannot be read.
-    fn read(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String>;
-    /// Found `record` of `app` in `workspace` as `changes` , a whole document.
-    ///
-    /// # Errors
-    /// The workspace refused it, or it could not be sealed.
-    fn found(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-        changes: &[u8],
-    ) -> Result<(), String>;
+/// What ticks when a read or a seal waiting for what is not here yet may answer otherwise: a write
+/// landing from another device, a host's answer or replay, a channel's keys changing.
+fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
+    let mut events = vec![engine.arrivals().watching()];
+    events.extend(engine.replays());
+    events.extend(engine.record_answers());
+    events.extend(engine.keys().get().and_then(|keys| keys.changes()));
+    events
 }
 
-impl Held for Engine {
-    fn holds(&self, workspace: WorkspaceId) -> bool {
-        Self::holds(self, workspace)
-    }
-
-    fn list(&self, workspace: WorkspaceId) -> Result<Vec<(String, String)>, String> {
-        self.records(&workspace.to_string())
-    }
-
-    fn read(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        self.record(&workspace.to_string(), app, record)
-    }
-
-    /// Sealed under the keys of the record's channel in the branch, which its first sealed
-    /// write asks for and this device, the branch's only member, makes; in the clear where the
-    /// branch's records are documents this device commits.
-    fn found(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-        changes: &[u8],
-    ) -> Result<(), String> {
-        use tilo_action_broker::owner_commits::OwnerCustody as _;
-        let sealed = if self.commits_documents(workspace) {
-            None
-        } else {
-            Some(seal_keys(self, workspace, app, record)?)
-        };
-        pollster::block_on(self.write_record(
-            workspace,
-            (app, record),
-            changes,
-            true,
-            sealed.as_ref(),
-        ))
+/// Found `record` of `app` in the branch `workspace` as `changes` , a whole document: sealed under
+/// the keys of the record's channel in the branch, which its first sealed write asks for and this
+/// device, the branch's only member, makes, waiting for them until `until`; in the clear where the
+/// branch's records are documents this device commits.
+async fn found(
+    engine: &Engine,
+    workspace: WorkspaceId,
+    (app, record): (&str, &str),
+    changes: &[u8],
+    until: Instant,
+) -> Result<(), String> {
+    use tilo_action_broker::owner_commits::OwnerCustody as _;
+    let sealed = if engine.commits_documents(workspace) {
+        None
+    } else {
+        Some(seal_keys(engine, workspace, app, record, until).await?)
+    };
+    engine
+        .write_record(workspace, (app, record), changes, true, sealed.as_ref())
+        .await
         .map(|_| ())
+}
+
+/// Wait for one of `events` to tick: false once `until` passed, or when none of them can tick.
+/// The loop looks again at `until` ([`Branches::next_deadline`]).
+async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant) -> bool {
+    if events.is_empty() {
+        return false;
+    }
+    let passed = std::future::poll_fn(|_| {
+        if Instant::now() < until {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    });
+    let ticked =
+        futures_util::future::select_all(events.iter_mut().map(|event| Box::pin(event.changed())));
+    match futures_util::future::select(ticked, std::pin::pin!(passed)).await {
+        futures_util::future::Either::Left(((Ok(()), _, _), _)) => Instant::now() < until,
+        _ => false,
     }
 }
 
 /// Make the branch `to` of `from`: everything but the desk, which the loop makes when this is done.
-/// Runs off the loop.
-pub(crate) fn copy(
-    engine: Option<&dyn Held>,
-    places: &Places,
+/// What it reads and founds it awaits on the loop, waiting until `until` for what is not here yet;
+/// its copies run off the loop.
+pub(crate) async fn copy(
+    engine: Option<&Engine>,
+    places: Places,
     from: WorkspaceId,
     to: WorkspaceId,
+    until: Instant,
 ) -> Branched {
     let mut branched = Branched::default();
-    let mut sources = match engine {
+    let sources = match engine {
         Some(engine) if engine.holds(from) && engine.holds(to) => {
-            read_records(engine, from, &mut branched)
+            read_records(engine, from, until, &mut branched).await
         }
         // The source's records are this device's to read, and the branch holds none: it could not
         // be founded here.
@@ -279,6 +264,36 @@ pub(crate) fn copy(
         }
         _ => Sources::new(),
     };
+    let founds = engine.filter(|engine| engine.holds(to));
+    let copied = tilo_rt::io::run(move || {
+        let records = make_copies(&places, from, to, sources, &mut branched);
+        Ok((branched, records))
+    });
+    let (mut branched, records) = copied.await.unwrap_or_else(|error| {
+        let mut branched = Branched::default();
+        branched.missing.push(error.to_string());
+        (branched, Vec::new())
+    });
+    for ((app, record), changes) in records {
+        let Some(engine) = founds else { break };
+        match found(engine, to, (&app, &record), &changes, until).await {
+            Ok(()) => branched.records = branched.records.saturating_add(1),
+            Err(error) => branched.missing.push(format!("{record} of {app}: {error}")),
+        }
+    }
+    branched
+}
+
+/// Off the loop: copy what the apps keep for `from` on this device, fork each of `sources` into
+/// the branch `to` — written as each app's copy of it there, and answered with the changes that
+/// found it as the branch's own record — and copy the workspace's files and environments.
+fn make_copies(
+    places: &Places,
+    from: WorkspaceId,
+    to: WorkspaceId,
+    mut sources: Sources,
+    branched: &mut Branched,
+) -> Vec<((String, String), Vec<u8>)> {
     let mut local: Local = BTreeMap::new();
     if let Some(data_home) = &places.data_home {
         match copy_app_data(data_home, from, to, &mut sources, &mut local) {
@@ -286,16 +301,38 @@ pub(crate) fn copy(
             Err(error) => branched.missing.push(error),
         }
     }
-    if let Some(engine) = engine.filter(|engine| engine.holds(to)) {
-        write_records(engine, to, sources, &local, &mut branched);
-    } else {
-        for ((app, record), doc) in sources {
-            for path in local.get(&(app, record)).into_iter().flatten() {
-                if let Err(error) = write_local(&doc, path, to) {
-                    branched.missing.push(error);
-                }
+    let workspace = to.to_string();
+    let mut records = Vec::new();
+    for ((app, record), source) in sources {
+        let mut doc = match ui::record::transfer::branch(&source, &workspace) {
+            Ok(doc) => doc,
+            Err(error) => {
+                branched.missing.push(format!("{record} of {app}: {error}"));
+                continue;
+            }
+        };
+        let changes = doc.save_after(&[]);
+        // Every app's copy of it on this device: the app that keeps it, and each app that keeps
+        // it beside its own records (the workspace's emoji, in every app's store), the very
+        // document the branch's engine founds. A copy left out would be made again by its app, as
+        // a genesis of its own the branch's record does not share.
+        let bytes = doc.save();
+        for path in local
+            .get(&(app.clone(), record.clone()))
+            .into_iter()
+            .flatten()
+        {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(path, &bytes));
+            if let Err(error) = written {
+                branched
+                    .missing
+                    .push(format!("{record} of {app} on this device: {error}"));
             }
         }
+        records.push(((app, record), changes));
     }
     if let Some(files) = &places.files {
         match copy_files(files, from, to) {
@@ -307,21 +344,24 @@ pub(crate) fn copy(
         Ok(environments) => branched.environments = environments,
         Err(error) => branched.missing.push(error),
     }
-    branched
+    records
 }
 
 /// Every record of `from` this device reads, but those that stay behind.
-fn read_records(engine: &dyn Held, from: WorkspaceId, branched: &mut Branched) -> Sources {
+async fn read_records(
+    engine: &Engine,
+    from: WorkspaceId,
+    until: Instant,
+    branched: &mut Branched,
+) -> Sources {
     let mut sources = Sources::new();
-    let routes = match engine.list(from) {
+    let routes = match engine.records(&from.to_string()) {
         Ok(routes) => routes,
         Err(error) => {
             branched.missing.push(error);
             return sources;
         }
     };
-    let until = Instant::now().checked_add(PATIENCE);
-    let patient = || until.is_some_and(|until| Instant::now() < until);
     for (app, record) in routes {
         if stays(&app, &record) {
             branched.left = branched.left.saturating_add(1);
@@ -330,8 +370,14 @@ fn read_records(engine: &dyn Held, from: WorkspaceId, branched: &mut Branched) -
         // A record the workspace's hosts send only once asked, or one whose keys are not here yet,
         // reads as nothing until it is here.
         let read = loop {
-            match engine.read(from, &app, &record) {
-                Ok(None) if patient() => std::thread::sleep(ASK_AGAIN),
+            // Subscribed before the read, so what lands while it reads is not slept through.
+            let mut events = events(engine);
+            match engine.record(&from.to_string(), &app, &record) {
+                Ok(None) if Instant::now() < until => {
+                    if !moved(&mut events, until).await {
+                        break Ok(None);
+                    }
+                }
                 other => break other,
             }
         };
@@ -349,69 +395,23 @@ fn read_records(engine: &dyn Held, from: WorkspaceId, branched: &mut Branched) -
     sources
 }
 
-/// Write each of `sources` into the branch `to` , as its own record and, where an app keeps it on
-/// this device too, as that app's copy of it in the branch (`local`).
-fn write_records(
-    engine: &dyn Held,
-    to: WorkspaceId,
-    sources: Sources,
-    local: &Local,
-    branched: &mut Branched,
-) {
-    let workspace = to.to_string();
-    for ((app, record), source) in sources {
-        let mut doc = match ui::record::transfer::branch(&source, &workspace) {
-            Ok(doc) => doc,
-            Err(error) => {
-                branched.missing.push(format!("{record} of {app}: {error}"));
-                continue;
-            }
-        };
-        let changes = doc.save_after(&[]);
-        if let Err(error) = engine.found(to, &app, &record, &changes) {
-            branched.missing.push(format!("{record} of {app}: {error}"));
-            continue;
-        }
-        branched.records = branched.records.saturating_add(1);
-        // Every app's copy of it on this device: the app that keeps it, and each app that keeps
-        // it beside its own records (the workspace's emoji, in every app's store). A copy left
-        // out would be made again by its app, as a genesis of its own the branch's record does
-        // not share.
-        let bytes = doc.save();
-        for path in local
-            .get(&(app.clone(), record.clone()))
-            .into_iter()
-            .flatten()
-        {
-            let written = path
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(path, &bytes))
-                .map_err(|error| format!("{record} of {app} on this device: {error}"));
-            if let Err(error) = written {
-                branched.missing.push(error);
-            }
-        }
-    }
-}
-
 /// The keys `record` of `app` is sealed with in the branch: its first sealed write asks the
 /// branch's channel for them, which this device, its only member, makes.
-fn seal_keys(
+async fn seal_keys(
     engine: &Engine,
     workspace: WorkspaceId,
     app: &str,
     record: &str,
+    until: Instant,
 ) -> Result<channel_crypto::ChannelContentKeys, String> {
-    let until = Instant::now().checked_add(PATIENCE);
     loop {
-        let patient = until.is_some_and(|until| Instant::now() < until);
+        let mut events = events(engine);
         match engine.seal_keys(workspace, app, record)? {
             SealKeys::Here(keys) => return Ok(keys),
             SealKeys::NoSecretStore => {
                 return Err("this device holds no secret store to keep its keys in".to_owned());
             }
-            SealKeys::Waiting if patient => std::thread::sleep(ASK_AGAIN),
+            SealKeys::Waiting if moved(&mut events, until).await => {}
             SealKeys::Waiting => return Err("the branch's keys did not come".to_owned()),
         }
     }
@@ -741,7 +741,7 @@ pub(crate) fn desk_of(
 
 impl crate::Shared {
     /// The desk branched the workspace `source` into `workspace` , called `name` , in `slot` : found
-    /// it here and copy what the source holds into it, off the loop.
+    /// it here and copy what the source holds into it, without holding the loop.
     pub(crate) fn branch_workspace(
         &self,
         source: WorkspaceSlot,
@@ -764,20 +764,12 @@ impl crate::Shared {
             let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
             engine.found(slot, workspace, &name, endpoint.as_ref());
         }
-        let places = Places::here();
-        let (done, copied) = std::sync::mpsc::channel();
-        let started = std::thread::Builder::new()
-            .name("workspace-branch".to_owned())
-            .spawn(move || {
-                let held = engine.as_deref().map(|engine| engine as &dyn Held);
-                let branched = copy(held, &places, from, workspace);
-                let _ = done.send(branched);
-            });
-        if let Err(error) = started {
-            tracing::warn!(%error, "a branch of a workspace could not start");
-            self.handle.acknowledge(error.to_string());
-            return;
-        }
+        let until = Instant::now()
+            .checked_add(PATIENCE)
+            .unwrap_or_else(Instant::now);
+        let copied = Polled::new(Arc::clone(&self.wake_handle), async move {
+            copy(engine.as_deref(), Places::here(), from, workspace, until).await
+        });
         self.telling().show(
             &Notice::new(
                 String::new(),
@@ -801,6 +793,7 @@ impl crate::Shared {
             workspace,
             name,
             copied,
+            until,
         });
     }
 
@@ -811,8 +804,8 @@ impl crate::Shared {
         self.branches
             .0
             .borrow_mut()
-            .retain(|branching| match branching.copied.try_recv() {
-                Ok(branched) => {
+            .retain_mut(|branching| match branching.copied.done() {
+                Some(branched) => {
                     landed.push((
                         branching.source,
                         branching.source_slot,
@@ -824,8 +817,7 @@ impl crate::Shared {
                     ));
                     false
                 }
-                Err(TryRecvError::Empty) => true,
-                Err(TryRecvError::Disconnected) => false,
+                None => true,
             });
         for (source, source_slot, source_name, slot, workspace, name, branched) in landed {
             self.land_branch(
@@ -1027,7 +1019,7 @@ mod tests {
             // A workspace with environments asks the runtime, and there is none here.
             runtime: None,
         };
-        let branched = copy(None, &places, from, to);
+        let branched = branch(None, places, from, to);
         assert_eq!(
             branched.missing,
             vec!["the Terminal environments: no runtime here".to_owned()],
@@ -1161,67 +1153,14 @@ mod tests {
         assert!(branch.strips[0].id.0 > 100);
     }
 
-    /// This device's engine, reading and sealing with a channel's keys the test holds itself, as
-    /// the channel service hands them to a member.
-    struct Keyed<'a> {
-        engine: &'a Engine,
-        keys: channel_crypto::ChannelContentKeys,
-    }
-
-    impl Held for Keyed<'_> {
-        fn holds(&self, workspace: WorkspaceId) -> bool {
-            self.engine.holds(workspace)
-        }
-
-        fn list(&self, workspace: WorkspaceId) -> Result<Vec<(String, String)>, String> {
-            self.engine.records(&workspace.to_string())
-        }
-
-        fn read(
-            &self,
-            workspace: WorkspaceId,
-            app: &str,
-            record: &str,
-        ) -> Result<Option<Vec<u8>>, String> {
-            self.engine.record_opened_with(
-                workspace,
-                (app, record),
-                &self.unit(workspace, app, record),
-            )
-        }
-
-        fn found(
-            &self,
-            workspace: WorkspaceId,
-            app: &str,
-            record: &str,
-            changes: &[u8],
-        ) -> Result<(), String> {
-            pollster::block_on(self.engine.write_record(
-                workspace,
-                (app, record),
-                changes,
-                true,
-                Some(&self.unit(workspace, app, record)),
-            ))
-            .map(|_| ())
-        }
-    }
-
-    impl Keyed<'_> {
-        /// The keys as the record's own unit uses them, as the channel service names them for it.
-        fn unit(
-            &self,
-            workspace: WorkspaceId,
-            app: &str,
-            record: &str,
-        ) -> channel_crypto::ChannelContentKeys {
-            self.keys.for_unit(collab_types::document_channel_id(
-                app,
-                &workspace.to_string(),
-                record,
-            ))
-        }
+    /// `from` branched into `to` , with everything this device holds here.
+    fn branch(
+        held: Option<&Engine>,
+        places: Places,
+        from: WorkspaceId,
+        to: WorkspaceId,
+    ) -> Branched {
+        pollster::block_on(copy(held, places, from, to, Instant::now()))
     }
 
     /// A device of a person, certified for their root, that owns workspaces.
@@ -1258,13 +1197,30 @@ mod tests {
 
     /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
     fn write(
-        held: &Keyed<'_>,
+        engine: &Engine,
+        keys: &channel_crypto::ChannelContentKeys,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
         doc: &mut AutoCommit,
     ) {
-        held.found(workspace, app, record, &doc.save_after(&[]))
-            .expect("the workspace takes the record");
+        // The keys of the record's channel in the source and in the branch, as the channel service
+        // hands them to a member.
+        let unit = |workspace: &str| {
+            keys.for_unit(collab_types::document_channel_id(app, workspace, record))
+        };
+        for (held, name) in [(ids().0, FROM), (ids().1, TO)] {
+            let route = collab_types::ChannelRoute::new(app, record);
+            engine.hand_keys(held, route, unit(name));
+        }
+        let sealed = unit(&workspace.to_string());
+        pollster::block_on(engine.write_record(
+            workspace,
+            (app, record),
+            &doc.save_after(&[]),
+            true,
+            Some(&sealed),
+        ))
+        .expect("the workspace takes the record");
     }
 
     /// A record that comes along is one document wherever this device keeps it: the engine's copy,
@@ -1287,13 +1243,9 @@ mod tests {
         .unwrap()
         .content_keys()
         .unwrap();
-        let held = Keyed {
-            engine: &engine,
-            keys,
-        };
         let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
         let mut party = record(FROM, "party-parrot");
-        write(&held, from, (CHAT, &emoji), &mut party);
+        write(&engine, &keys, from, (CHAT, &emoji), &mut party);
         let home = tempfile::tempdir().unwrap();
         let rooms = home.path().join("data/tilo-rooms");
         // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
@@ -1323,12 +1275,12 @@ mod tests {
             files: None,
             runtime: None,
         };
-        let branched = copy(Some(&held), &places, from, to);
+        let branched = branch(Some(&engine), places, from, to);
         assert!(branched.missing.is_empty(), "{:?}", branched.missing);
 
         let mut engines = AutoCommit::load(
-            &held
-                .read(to, CHAT, &emoji)
+            &engine
+                .record(TO, CHAT, &emoji)
                 .unwrap()
                 .expect("the branch holds the emoji"),
         )
@@ -1373,41 +1325,39 @@ mod tests {
         .unwrap()
         .content_keys()
         .unwrap();
-        let held = Keyed {
-            engine: &engine,
-            keys,
-        };
         let notes = ("so.tilo.notes", "uuid-plan");
         let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
         let mut plan = record(FROM, "plan");
-        write(&held, from, notes, &mut plan);
+        write(&engine, &keys, from, notes, &mut plan);
         write(
-            &held,
+            &engine,
+            &keys,
             from,
             (CHAT, &emoji),
             &mut record(FROM, "party-parrot"),
         );
         write(
-            &held,
+            &engine,
+            &keys,
             from,
             (CHAT, "messages"),
             &mut record(FROM, "see you at nine"),
         );
 
-        let branched = copy(Some(&held), &Places::default(), from, to);
+        let branched = branch(Some(&engine), Places::default(), from, to);
         assert!(branched.missing.is_empty(), "{:?}", branched.missing);
         assert_eq!((branched.records, branched.left), (2, 1));
 
-        let read = |workspace, route| {
+        let read = |workspace: &str, route| {
             AutoCommit::load(
-                &held
-                    .read(workspace, notes.0, route)
+                &engine
+                    .record(workspace, notes.0, route)
                     .unwrap()
                     .expect("the record is held"),
             )
             .unwrap()
         };
-        let mut copied = read(to, notes.1);
+        let mut copied = read(TO, notes.1);
         assert_eq!(body(&copied), "plan");
         assert_eq!(ui::record::workspace_scope(&copied).as_deref(), Some(TO));
         for change in plan.get_heads() {
@@ -1437,7 +1387,7 @@ mod tests {
         );
 
         // The source holds what it held, and the two are documents of their own.
-        let mut source = read(from, notes.1);
+        let mut source = read(FROM, notes.1);
         assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
         assert_ne!(source.get_heads(), copied.get_heads());
         assert!(
@@ -1447,7 +1397,6 @@ mod tests {
                 .contains(&(CHAT.to_owned(), "messages".to_owned()))
         );
 
-        drop(held);
         drop(engine);
         let engine = reopened(&state, &identity);
         assert!(

@@ -388,14 +388,13 @@ impl Inner {
                         }
                     }
                 };
-                let mut writing = Writing::start(
-                    Arc::clone(&engine),
-                    Arc::clone(&self.wake),
-                    (room, app.clone(), record.clone()),
-                    changes,
-                    founding,
-                    sealed,
-                );
+                let (engine, route) = (Arc::clone(&engine), (app.clone(), record.clone()));
+                let mut writing = Writing::new(Arc::clone(&self.wake), async move {
+                    let route = (route.0.as_str(), route.1.as_str());
+                    engine
+                        .write_record(room, route, &changes, founding, sealed.as_ref())
+                        .await
+                });
                 match writing.done() {
                     Some(written) => {
                         if !self.written(&key, written, next.heads) {
