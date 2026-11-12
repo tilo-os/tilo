@@ -293,30 +293,20 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         libc::signal(libc::SIGINT, handler);
     }
     let mut service = Service::open(config, system_clock()).map_err(|e| e.to_string())?;
-    let memory = |name: &str, default: u64| -> Result<u64, String> {
-        flags.get(name).map_or(Ok(default), |mib| {
-            mib.parse::<u64>()
-                .map_err(|_| format!("{name} takes mebibytes"))
-        })
-    };
-    let budget = legacy_vm::hosted::memory::Budget {
-        node_mib: flags
-            .get("--memory-mib")
-            .map(|mib| {
-                mib.parse::<u64>()
-                    .map_err(|_| "--memory-mib takes mebibytes".to_string())
-            })
-            .transpose()?,
-        reserve_mib: memory(
-            "--memory-reserve-mib",
-            legacy_vm::hosted::memory::Budget::DEFAULT_RESERVE_MIB,
-        )?,
-        headroom_mib: memory(
-            "--memory-headroom-mib",
-            legacy_vm::hosted::memory::Budget::DEFAULT_HEADROOM_MIB,
-        )?,
-    };
+    let budget = memory_budget(flags)?;
     service = service.with_memory(budget);
+    eprintln!(
+        "tilo-legacy hosted: admitting VMs by what they take: {} for them of the node's {}, \
+         {} kept for this host, and a new VM counted at {} MiB until it is measured",
+        budget
+            .for_vms_mib()
+            .map_or_else(|| "no limit".to_owned(), |mib| format!("{mib} MiB")),
+        budget
+            .node_mib
+            .map_or_else(|| "unknown".to_owned(), |mib| format!("{mib} MiB")),
+        budget.reserve_mib,
+        budget.expected_mib(),
+    );
     let service = Arc::new(service);
     if let Some(address) = flags.get("--status-listen") {
         let listener = std::net::TcpListener::bind(address)
@@ -332,6 +322,35 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         .serve(&STOP, evict_notice.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// What this host admits its VMs by, from the flags it was started with: the
+/// node's memory, what it keeps free, and what a VM is counted at until it is
+/// measured.
+fn memory_budget(flags: &Flags) -> Result<legacy_vm::hosted::memory::Budget, String> {
+    let mib = |name: &str, default: u64| -> Result<u64, String> {
+        flags.get(name).map_or(Ok(default), |mib| {
+            mib.parse::<u64>()
+                .map_err(|_| format!("{name} takes mebibytes"))
+        })
+    };
+    Ok(legacy_vm::hosted::memory::Budget {
+        node_mib: flags
+            .get("--memory-mib")
+            .map(|mib| {
+                mib.parse::<u64>()
+                    .map_err(|_| "--memory-mib takes mebibytes".to_string())
+            })
+            .transpose()?,
+        reserve_mib: mib(
+            "--memory-reserve-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_RESERVE_MIB,
+        )?,
+        headroom_mib: mib(
+            "--memory-headroom-mib",
+            legacy_vm::hosted::memory::Budget::DEFAULT_HEADROOM_MIB,
+        )?,
+    })
 }
 
 /// The size `--size` names; small when it names none.
