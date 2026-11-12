@@ -1180,28 +1180,35 @@ fn commit_failed(message: String, retryable: bool) -> Outcome {
 
 /// Everything `app` changed since the last take, each with the route it
 /// belongs to: the held record's own is `holder`'s, then each record held
-/// beside it on the route of the same app and workspace its id names.
+/// beside it on the route of the same app and workspace its id names. All
+/// or none: when the records beside cannot be taken, the record's own change
+/// is put back for the next take, never dropped with the failure.
 fn take_all(
     app: &ConfinedReplica,
     holder: &DocumentRoute,
 ) -> Result<Vec<(DocumentRoute, DocumentMutation)>, crate::apps::AppError> {
-    let mut taken: Vec<(DocumentRoute, DocumentMutation)> = app
-        .take_mutation()?
+    let own = app.take_mutation()?;
+    let beside = match app.take_record_mutations() {
+        Ok(beside) => beside,
+        Err(error) => {
+            if let Some(own) = own {
+                app.put_back(own);
+            }
+            return Err(error);
+        }
+    };
+    let mut taken: Vec<(DocumentRoute, DocumentMutation)> = own
         .into_iter()
         .map(|mutation| (holder.clone(), mutation))
         .collect();
-    taken.extend(
-        app.take_record_mutations()?
-            .into_iter()
-            .map(|(record, mutation)| {
-                let route = DocumentRoute {
-                    app_id: holder.app_id.clone(),
-                    cluster_id: holder.cluster_id.clone(),
-                    record: record.route().to_owned(),
-                };
-                (route, mutation)
-            }),
-    );
+    taken.extend(beside.into_iter().map(|(record, mutation)| {
+        let route = DocumentRoute {
+            app_id: holder.app_id.clone(),
+            cluster_id: holder.cluster_id.clone(),
+            record: record.route().to_owned(),
+        };
+        (route, mutation)
+    }));
     Ok(taken)
 }
 
