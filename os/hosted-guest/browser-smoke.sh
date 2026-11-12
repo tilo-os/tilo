@@ -4,17 +4,21 @@
 # headless session comes up on Mesa's software driver and serves its display.
 # The build fails here rather than on a host's first environment.
 #
-# It runs as the tenant (uid 1000): Chromium refuses root, and the agent starts
-# every program of the environment as that user, so root would prove nothing.
+# It runs as the session's own user (tilo-browser): Chromium refuses root, and
+# the session never runs as anything else, so root would prove nothing.
 set -eu
 
-version=${CHROMIUM_RUNTIME_VERSION:?the engine runtime's version is not set}
+version=${CHROMIUM_RUNTIME_VERSION:?CHROMIUM_RUNTIME_VERSION is not set}
 engine="/usr/lib/tilo-runtime/$version/lib/chromium/tilo-chromium-host"
-test -x "$engine"
+missing() {
+    echo "the browser smoke: $1" >&2
+    exit 1
+}
+[ -x "$engine" ] || missing "no Chromium engine host at $engine"
 # The session runs on its own session bus, which this root filesystem serves
 # itself: there is no systemd here to have started one.
-command -v dbus-run-session >/dev/null
-command -v setpriv >/dev/null
+command -v dbus-run-session >/dev/null || missing 'no dbus-run-session'
+command -v setpriv >/dev/null || missing 'no setpriv'
 
 work=$(mktemp -d)
 trace() {
@@ -24,19 +28,17 @@ trace() {
         sed -e 's/^/  /' "$work/engine.log" >&2 2>/dev/null || true
         printf -- '--- session ---\n' >&2
         sed -e 's/^/  /' "$work/session.log" >&2 2>/dev/null || true
-        printf -- '--- identity ---\n' >&2
-        sed -e 's/^/  /' "$work/identity.log" >&2 2>/dev/null || true
     fi
     rm -rf "$work"
     return "$status"
 }
 trap trace EXIT
 
-# The tenant's own files are its own: the engine writes its profile, and the
-# session its runtime directory.
-chown 1000:1000 "$work"
-as_tilo() {
-    setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/tilo "$@"
+# The session user's own files are its own: the engine writes its profile, and
+# the session its runtime directory.
+chown tilo-browser:tilo-browser "$work"
+as_browser_user() {
+    setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups env HOME=/home/tilo-browser "$@"
 }
 
 # Wait for FILE to hold TEXT, or stop waiting: never longer than the bound.
@@ -50,7 +52,7 @@ wait_for_text() {
         tries=$((tries - 1))
         sleep 0.2
     done
-    echo "the browser guest smoke: $what never came" >&2
+    echo "the browser smoke: $what never came" >&2
     return 1
 }
 
@@ -59,8 +61,8 @@ wait_for_text() {
 # events to its standard output; it stops when its input ends. The input stays
 # open until the ready event has been read.
 mkfifo "$work/commands"
-chown 1000:1000 "$work/commands"
-as_tilo setsid "$engine" --profile="$work/profile" \
+chown tilo-browser:tilo-browser "$work/commands"
+as_browser_user setsid "$engine" --profile="$work/profile" \
     < "$work/commands" > "$work/engine.out" 2> "$work/engine.log" &
 engine_pid=$!
 exec 3> "$work/commands"
@@ -71,36 +73,46 @@ exec 3>&-
 wait "$engine_pid" 2>/dev/null || true
 
 # ---- The session --------------------------------------------------------------
-# Through the script the guest agent runs, so the smoke proves that path too: a
-# device mints its own identity on first start, and this one has to, because
-# joining the workspace is what the browser guest exists for.
+# Through the script the guest agent runs, so the smoke proves that path too.
+# Its identity is not proved here: a session is handed one by the relay at
+# every start, and the image holds none.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
-chown 1000:1000 "$work/session.env"
-as_tilo setsid /usr/libexec/tilo/browser-session "$work/session.env" \
-    > "$work/session.log" 2>&1 &
+chown tilo-browser:tilo-browser "$work/session.env"
+# Started directly, not through a function, so $! is the script itself, which
+# a VM host signals.
+setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups env HOME=/home/tilo-browser \
+    /usr/libexec/tilo/browser-session "$work/session.env" > "$work/session.log" 2>&1 &
 session_pid=$!
-runtime_dir=/home/tilo/.local/share/tilo/runtime
+runtime_dir=/home/tilo-browser/.local/share/tilo/runtime
 tries=600
 display=
 while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
     if ! kill -0 "$session_pid" 2>/dev/null; then
-        echo 'the browser guest smoke: the session stopped before it served a display' >&2
+        echo 'the browser smoke: the session stopped before it served a display' >&2
         exit 1
     fi
-    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' -print -quit 2>/dev/null)
+    # Until the session made its runtime directory, find has none to read.
+    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' ! -name '*.lock' -print -quit 2>/dev/null || true)
     tries=$((tries - 1))
     [ -n "$display" ] || sleep 0.2
 done
 if [ -z "$display" ]; then
-    echo 'the browser guest smoke: the session never served a display' >&2
+    echo 'the browser smoke: the session never served a display' >&2
     exit 1
 fi
 printf 'session: the headless session serves %s\n' "$display"
-kill -TERM -"$session_pid" 2>/dev/null || true
+# SIGTERM ends it, and in time: the profile is saved after the session ended,
+# and a VM host kills what has not ended within its grace.
+kill -TERM "$session_pid" 2>/dev/null || true
+tries=50
+while [ "$tries" -gt 0 ] && kill -0 "$session_pid" 2>/dev/null; do
+    tries=$((tries - 1))
+    sleep 0.2
+done
+if kill -0 "$session_pid" 2>/dev/null; then
+    echo 'the browser smoke: the session did not end within 10 s of SIGTERM' >&2
+    ps -eo pid,pgid,stat,args >&2 || true
+    exit 1
+fi
 wait "$session_pid" 2>/dev/null || true
-
-# The device the session made of this guest verifies the way a release gate
-# checks an installed machine.
-as_tilo /usr/bin/tilo-session --verify-collaboration-identity > "$work/identity.log" 2>&1
-grep -q 'identity verified' "$work/identity.log"
-echo 'identity: this guest is a device of its own'
+echo 'session: ends on SIGTERM'

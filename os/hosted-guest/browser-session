@@ -1,0 +1,134 @@
+#!/bin/sh
+# A workspace VM's Browser session: one headless Tilo desktop, drawn on the
+# CPU, that joins its workspace as a device of it (docs/hosted-browser.md).
+#
+# The guest agent runs this, as the tenant, at the workspace's first browser
+# action (`crates/runtime/legacy-vm/src/hosted/browser.rs`, "The session in the
+# guest"): it becomes the image's own unprivileged browser user, then runs the
+# session headless, on its own bus, drawing with the image's software Vulkan
+# driver, and the session knows it holds a hosted Browser from
+# `TILO_HOSTED_BROWSER`. What workspace it joins arrives on its standard input,
+# as one line of material, and what it reports goes to its standard output.
+#
+# Every setting here has a default the image needs; an operator or the build's
+# smoke test may name a shell-compatible KEY=VALUE file to override them, and
+# `TILO_SESSION_ARGS` holds the session's own arguments.
+#
+# Usage: browser-session [CONFIG]
+#   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, when it names one
+#   TILO_BROWSER_STORE names the folder of the workspace's files the profile
+#   is kept in between runs, when the workspace keeps it.
+#
+# The process it starts is the sandbox's own: nothing here runs as root, and
+# SIGTERM to this script ends the session and the bus beside it, and the script
+# once they have.
+set -eu
+
+# Never the tenant: the tenant has sudo in their VM, and a page that got out of
+# Chromium's sandbox must not. The sudoers rule the image ships allows this one
+# hop and keeps the input, the output and the marks.
+user=tilo-browser
+as_browser() { sudo -n -u "$user" -- "$0" "$@"; }
+if [ "$(id -un)" != "$user" ]; then
+    store=${TILO_BROWSER_STORE:-}
+    [ -n "$store" ] || exec sudo -n -u "$user" -- "$0" "$@"
+    # The profile (cookies, storage) is kept among the workspace's own files
+    # between runs: restored before the session starts, written back once it
+    # ended, and replaced whole, so a save cut short keeps the last one.
+    profile=$store/profile.tar.gz
+    if [ -s "$profile" ]; then
+        as_browser --restore < "$profile" || echo 'browser-session: the saved profile did not restore' >&2
+    fi
+    # A background job's input is /dev/null unless named: the material is on 3.
+    # sudo itself, not a function in a subshell, so SIGTERM reaches it, and
+    # sudo hands it on.
+    exec 3<&0
+    sudo -n -u "$user" -- "$0" "$@" <&3 &
+    session=$!
+    trap 'kill -TERM "$session" 2>/dev/null || true' TERM INT
+    status=0
+    wait "$session" || status=$?
+    # A signal ends the first wait; the session is still writing its profile.
+    wait "$session" 2>/dev/null || true
+    if as_browser --save > "$profile.new"; then
+        mv -f "$profile.new" "$profile"
+    else
+        rm -f "$profile.new"
+        echo 'browser-session: the profile was not saved' >&2
+    fi
+    exit "$status"
+fi
+
+# What a device is (its identity and secrets, handed fresh at every start), its
+# runtime directory, and what Chromium fetches again (caches) are never saved.
+case ${1:-} in
+    --restore)
+        cd "$(getent passwd "$(id -u)" | cut -d: -f6)" && exec tar -xzf - ;;
+    --save)
+        cd "$(getent passwd "$(id -u)" | cut -d: -f6)" && exec tar -czf - --exclude=./.config/tilo/identity \
+            --exclude=./.local/share/tilo/secrets --exclude=./.local/share/tilo/runtime \
+            --exclude=./.cache --exclude='*/Cache' --exclude='*/Code Cache' \
+            --exclude='*/GPUCache' . ;;
+esac
+
+config=${1:-${TILO_BROWSER_SESSION_CONFIG:-}}
+if [ -n "$config" ] && [ -r "$config" ]; then
+    # shellcheck disable=SC1090 # the file the agent wrote is the point
+    . "$config"
+fi
+
+# The account's own home, whatever HOME the agent started this with: the
+# session writes its identity, caches and runtime directory there.
+home=$(getent passwd "$(id -u)" | cut -d: -f6)
+export HOME=$home
+umask 077
+
+# A device keeps its own runtime directory, caches and state: there is no
+# systemd here to make one, so this makes the one a login would have.
+runtime=${TILO_SESSION_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$home/.local/share/tilo/runtime}}
+mkdir -p -m 700 "$runtime" "$home/.cache" "$home/.config" \
+    "$home/.local/state" "$home/.local/share"
+export XDG_RUNTIME_DIR=$runtime
+
+# The VM has no GPU: the session and every app it starts draw with Mesa's
+# software Vulkan driver, and an empty TILO_DMABUF_DEVICE advertises no render
+# node, so nothing probes /dev/dri for a GPU that is not there.
+for icd in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
+    if [ -f "$icd" ]; then
+        VK_DRIVER_FILES=$icd
+        export VK_DRIVER_FILES VK_ICD_FILENAMES=$icd
+        break
+    fi
+done
+export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
+
+# The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
+# secrets go to the sealed file store a machine without a Secret Service uses.
+# The identity is the one the material hands it at every start, which is what
+# the relay certifies for each session; the image holds none.
+mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
+export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
+
+size=${TILO_HEADLESS_SIZE:-1280x800}
+# No X11: the guest carries no Xwayland, and Browser is not an X11 client, so
+# nothing here serves an X display. Word splitting is the point below:
+# TILO_SESSION_ARGS carries the session's own arguments as written in the
+# configuration file.
+#
+# The session and its bus are a process group of their own (setsid does not
+# fork here: a background job of this shell leads no group), because
+# dbus-run-session ends on SIGTERM without handing it on. SIGTERM goes to the
+# whole group, and this script ends once every process in it has, so the
+# profile is saved from a session that wrote its last.
+exec 3<&0
+# shellcheck disable=SC2086
+setsid dbus-run-session -- /usr/bin/tilo-session --backend headless --no-x11 \
+    --size "$size" ${TILO_SESSION_ARGS:-} <&3 &
+group=$!
+trap 'kill -TERM -"$group" 2>/dev/null || true' TERM INT
+status=0
+wait "$group" || status=$?
+while kill -0 -"$group" 2>/dev/null; do
+    sleep 0.1
+done
+exit "$status"

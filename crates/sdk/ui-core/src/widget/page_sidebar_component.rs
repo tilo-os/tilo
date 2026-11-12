@@ -221,6 +221,14 @@ impl crate::widget::Widget for DeclaredRail {
         self.rect
     }
 
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.rail.tooltip_target_at(point)
+    }
+
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        self.rail.tooltip_side()
+    }
+
     fn name(&self) -> &'static str {
         "PageSidebar"
     }

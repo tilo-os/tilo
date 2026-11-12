@@ -262,6 +262,14 @@ impl InteractionEnvironment {
         matches!(self.pointer_precision, PointerPrecision::Fine)
     }
 
+    /// Whether a file can be dragged onto the window: a drag is carried by a
+    /// pointing device, and a finger cannot carry one. A device without a
+    /// pointer — a touch-only phone — is told how to open a file, never where
+    /// to drop one.
+    pub const fn drags_files(self) -> bool {
+        self.available.contains(InputDevice::Pointer)
+    }
+
     /// Input language to lead with in shortcut help: the one the person used
     /// last. Typing after touch leads with keyboard shortcuts, touching after
     /// typing leads with gestures, and a controller leads only while it is
@@ -938,6 +946,21 @@ mod tests {
             assert!(!env.supports_hover());
             assert!(env.available.contains(InputDevice::Touch));
             assert!(env.available.contains(InputDevice::Keyboard));
+            assert!(
+                !env.drags_files(),
+                "a phone has no pointer to drag a file in with"
+            );
+        }
+
+        {
+            // A desktop someone touched is still a desktop: the touch changes
+            // the modality, never the pointing device the window has.
+            assert!(InteractionEnvironment::default().drags_files());
+            assert!(
+                InteractionEnvironment::default()
+                    .with_touch_modality()
+                    .drags_files()
+            );
         }
 
         {

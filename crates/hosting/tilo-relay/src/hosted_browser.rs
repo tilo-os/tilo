@@ -32,7 +32,11 @@
 //!   the window that certified it accepts for its own person, running it
 //!   without asking again; nothing else is a confirmation there. Denied or
 //!   unanswered, it ends refused. A caller needs nothing beyond asking and
-//!   following what it asked for. A key its person let operate web pages
+//!   following what it asked for. The window's refusal states the departure
+//!   the action's run reached — what is about to leave, where, and the
+//!   picture of the filled page — so the question names what leaves rather
+//!   than a label for it, the same as for a departure the page started on its
+//!   own. A key its person let operate web pages
 //!   ([`DeviceCapabilities::browser_pages`]) is not asked about the page
 //!   actions that lets it take — [`OPERATING_ACTIONS`], never a submission —
 //!   and this host answers for them where their answer would have: the
@@ -534,6 +538,7 @@ impl HostedBrowsers {
                 window,
                 device,
                 request: request.clone(),
+                departure: None,
                 until_ns: tilo_clock::unix_now_ns()
                     .saturating_add(answer_wait_ns(self.answer_wait)),
             };
@@ -636,6 +641,9 @@ impl HostedBrowsers {
             window,
             device: *device,
             request: request.clone(),
+            // The departure the session reported is what the person is asked
+            // about: the window stated it beside the hold it published.
+            departure: departure_of(request.context.as_ref()),
             until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
         };
         let question = asked.question(caller);
@@ -695,13 +703,15 @@ impl HostedBrowsers {
                 allowed.then(|| state_message(receipt.invocation, update))
             }
             ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired,
+                error: ActionHostError::ConfirmationRequired { departure },
             } if !matches!(entry.stage, Stage::Over(_)) => {
                 entry.stage = Stage::Asking;
                 let caller = entry.caller.clone();
                 let request = entry.request.clone();
+                let departure =
+                    departure_of_facts(&tilo_actions::remote::browser::stated_facts(departure));
                 drop(handed);
-                self.ask(workspace_id, &caller, &request);
+                self.ask(workspace_id, &caller, &request, departure);
                 Some(waiting_receipt(request.invocation))
             }
             // Running, or to be followed: the answer is still to come, and
@@ -720,8 +730,15 @@ impl HostedBrowsers {
     /// `workspace_id`'s window — may run, once. Their answer runs it as the
     /// caller asked it, carrying the witness the window accepts; a denial, or
     /// a question nobody answers, ends the invocation refused and nothing
-    /// runs.
-    fn ask(&self, workspace_id: u64, caller: &Caller, request: &InvokeRequest) {
+    /// runs. `departure` is what the window said it holds for them, when it
+    /// said so: the question names what leaves a page rather than a label.
+    fn ask(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+        departure: Option<PageDeparture>,
+    ) {
         let Some(window) = self.window_of(workspace_id, request) else {
             return;
         };
@@ -737,6 +754,7 @@ impl HostedBrowsers {
             window,
             device,
             request: request.clone(),
+            departure,
             until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
         };
         let question = asked.question(caller);
@@ -1306,6 +1324,9 @@ struct Asked {
     /// The action as the caller asked it: what the question shows, and what
     /// their answer is good for running.
     request: InvokeRequest,
+    /// The page departure the question asks about, when there is one: what
+    /// leaves a page nobody stands at, and the filled page it leaves from.
+    departure: Option<PageDeparture>,
     /// When the question stops waiting for an answer.
     until_ns: u64,
 }
@@ -1317,6 +1338,7 @@ impl Asked {
             caller.workspace().unwrap_or_default(),
             caller,
             &self.request,
+            self.departure.clone(),
             self.until_ns,
         )
     }
@@ -1359,7 +1381,7 @@ impl Asked {
                     })
             }
             Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-            Err(_) => Err(ActionHostError::ConfirmationRequired),
+            Err(_) => Err(ActionHostError::confirmation_required()),
         }
     }
 }
@@ -1463,12 +1485,14 @@ fn update_of_error(
 /// The question `request` puts to the person, as their approving devices
 /// draw it: the agent that asked, by the name it goes by, the action as the
 /// caller described it, the workspace it acts in, and — when what it asks
-/// about is a page about to send something — the page it leaves from, what it
-/// sends there, and the filled page as a picture they can see.
+/// about is a page about to send something (`departure`, which the window
+/// stated) — the page it leaves from, what it sends there, and the filled page
+/// as a picture they can see.
 fn question(
     workspace: &str,
     caller: &tilo_actions::remote::Caller,
     request: &InvokeRequest,
+    departure: Option<PageDeparture>,
     until_ns: u64,
 ) -> PendingConfirmation {
     let mut id = [0_u8; 32];
@@ -1479,7 +1503,6 @@ fn question(
         tilo_actions::remote::CallerPrincipal::Agent(agent) => agent.clone(),
         _ => String::new(),
     };
-    let departure = departure_of(context);
     PendingConfirmation {
         id,
         agent_id,
@@ -1522,7 +1545,13 @@ fn question(
 ///
 /// [`DEPARTURE_FACET`]: tilo_actions::remote::browser::DEPARTURE_FACET
 fn departure_of(context: Option<&tilo_actions::ActionContext>) -> Option<PageDeparture> {
-    let facts = tilo_actions::remote::browser::departure_facts(context);
+    departure_of_facts(&tilo_actions::remote::browser::departure_facts(context))
+}
+
+/// [`departure_of`], from the facts a window stated: the same ones it publishes
+/// a hold it started itself with, and the ones it answers a page action's run
+/// with when what that reached waits for the person.
+fn departure_of_facts(facts: &[(String, String)]) -> Option<PageDeparture> {
     let stated = |name: &str| {
         facts
             .iter()

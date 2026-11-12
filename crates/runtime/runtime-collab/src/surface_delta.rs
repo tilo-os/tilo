@@ -15,7 +15,8 @@
 //! * each resource once, with the fields that are its own and the template of
 //!   the actions it offers.
 //!
-//! The broker's [`SurfaceTable`] applies deltas and expands the result into
+//! [`SurfacePublication`] turns the next surface into a delta from what the
+//! receiver holds. The broker's [`SurfaceTable`] applies deltas and expands the result into
 //! the same `Vec<ExportedAction>` a full `publishActions` installs, so
 //! nothing that reads a surface changes.
 
@@ -232,6 +233,226 @@ impl SurfaceTable {
     pub fn is_empty(&self) -> bool {
         self.resources.is_empty()
     }
+}
+
+/// One entry a surface is published from: an action as the app describes it,
+/// or as the broker already holds it.
+pub trait SurfaceEntry: PartialEq {
+    /// The resource it is offered on.
+    fn resource(&self) -> &str;
+    /// It as the surface exports it.
+    fn exported(&self) -> ExportedAction;
+}
+
+impl SurfaceEntry for tilo_actions::ActionDescriptor {
+    fn resource(&self) -> &str {
+        &self.address.resource
+    }
+
+    fn exported(&self) -> ExportedAction {
+        ExportedAction::from(self)
+    }
+}
+
+impl SurfaceEntry for ExportedAction {
+    fn resource(&self) -> &str {
+        &self.resource
+    }
+
+    fn exported(&self) -> ExportedAction {
+        self.clone()
+    }
+}
+
+/// One published resource and where its actions sit in the descriptors the
+/// state was built from.
+struct Held {
+    indices: Vec<usize>,
+    resource: SurfaceResource,
+}
+
+/// What the broker holds of one connection's surface, as the publisher last
+/// sent it.
+#[derive(Default)]
+pub struct SurfacePublication {
+    resources: HashMap<String, Held>,
+    /// The templates the resources name, and so the shapes they name.
+    templates: HashMap<ShapeId, Vec<ShapeId>>,
+}
+
+impl SurfacePublication {
+    /// The delta from `prior` (what the broker holds, with the descriptors it
+    /// was built from) to `descriptors`, and the state once it is applied.
+    /// Without a `prior` the delta is a reset: the broker discards whatever
+    /// it holds. Nothing is remembered until the caller keeps the returned
+    /// state, so a delta that was not sent changes nothing.
+    #[must_use]
+    pub fn next<E: SurfaceEntry>(
+        prior: Option<(&Self, &[E])>,
+        descriptors: &[E],
+    ) -> (SurfaceDelta, Self) {
+        let empty = Self::default();
+        let (base, base_descriptors) = prior.unwrap_or((&empty, &[]));
+        let mut delta = SurfaceDelta {
+            reset: prior.is_none(),
+            ..SurfaceDelta::default()
+        };
+        let held_templates: HashSet<ShapeId> = base.templates.keys().copied().collect();
+        let held_shapes: HashSet<ShapeId> = base.templates.values().flatten().copied().collect();
+
+        // A resource's actions, in the order they were surveyed.
+        let mut order: Vec<&str> = Vec::new();
+        let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            let name = descriptor.resource();
+            groups
+                .entry(name)
+                .or_insert_with(|| {
+                    order.push(name);
+                    Vec::new()
+                })
+                .push(index);
+        }
+
+        let mut resources = HashMap::with_capacity(order.len());
+        let mut templates: HashMap<ShapeId, Vec<ShapeId>> = HashMap::new();
+        let mut sent_shapes: HashSet<ShapeId> = HashSet::new();
+        let mut sent_templates: HashSet<ShapeId> = HashSet::new();
+        for name in order {
+            let indices = groups.remove(name).unwrap_or_default();
+            let old = base.resources.get(name);
+            if let Some(old) = old
+                && old.indices.len() == indices.len()
+                && indices
+                    .iter()
+                    .zip(&old.indices)
+                    .all(|(new, old)| base_descriptors.get(*old) == descriptors.get(*new))
+            {
+                if let Some(members) = base.templates.get(&old.resource.template) {
+                    templates
+                        .entry(old.resource.template)
+                        .or_insert_with(|| members.clone());
+                }
+                resources.insert(
+                    name.to_owned(),
+                    Held {
+                        indices,
+                        resource: old.resource.clone(),
+                    },
+                );
+                continue;
+            }
+            let mut members = Vec::with_capacity(indices.len());
+            let mut shapes = Vec::new();
+            let mut fields = None;
+            for index in &indices {
+                let Some(descriptor) = descriptors.get(*index) else {
+                    continue;
+                };
+                let exported = descriptor.exported();
+                fields.get_or_insert_with(|| exported.resource_fields());
+                let shape = exported.shape();
+                let id = shape_id(&shape);
+                members.push(id);
+                shapes.push((id, shape));
+            }
+            let Some(fields) = fields else { continue };
+            let template = template_id(&members);
+            let resource = SurfaceResource {
+                resource: name.to_owned(),
+                fields,
+                template,
+            };
+            if old.map(|old| &old.resource) != Some(&resource) {
+                for (id, shape) in shapes {
+                    if !held_shapes.contains(&id) && sent_shapes.insert(id) {
+                        delta.shapes.push((id, shape));
+                    }
+                }
+                if !held_templates.contains(&template) && sent_templates.insert(template) {
+                    delta.templates.push((template, members.clone()));
+                }
+                delta.resources.push(resource.clone());
+            }
+            templates.entry(template).or_insert(members);
+            resources.insert(name.to_owned(), Held { indices, resource });
+        }
+        delta.removed = base
+            .resources
+            .keys()
+            .filter(|name| !resources.contains_key(*name))
+            .cloned()
+            .collect();
+        delta.removed.compact_sort();
+        (
+            delta,
+            Self {
+                resources,
+                templates,
+            },
+        )
+    }
+
+    /// Where the actions of the published resource `resource` sit in the descriptors this
+    /// state was built from.
+    #[must_use]
+    pub fn indices(&self, resource: &str) -> Option<&[usize]> {
+        self.resources
+            .get(resource)
+            .map(|held| held.indices.as_slice())
+    }
+
+    /// The delta for resources whose own fields (a label) changed in `descriptors`, which are
+    /// the descriptors this state was built from with only those fields patched; the state is
+    /// then that delta applied. Costs what the `changed` resources hold, whatever the surface.
+    /// `None`, changing nothing, when one of them is not published.
+    pub fn relabel<E: SurfaceEntry>(
+        &mut self,
+        descriptors: &[E],
+        changed: &[&str],
+    ) -> Option<SurfaceDelta> {
+        let mut resources = Vec::with_capacity(changed.len());
+        for name in changed {
+            let held = self.resources.get(*name)?;
+            let descriptor = descriptors.get(*held.indices.first()?)?;
+            resources.push(SurfaceResource {
+                resource: (*name).to_owned(),
+                fields: descriptor.exported().resource_fields(),
+                template: held.resource.template,
+            });
+        }
+        let mut delta = SurfaceDelta::default();
+        for resource in resources {
+            let Some(held) = self.resources.get_mut(&resource.resource) else {
+                continue;
+            };
+            if held.resource != resource {
+                held.resource = resource.clone();
+                delta.resources.push(resource);
+            }
+        }
+        Some(delta)
+    }
+}
+
+fn hash16(bytes: &[u8]) -> ShapeId {
+    let mut id = ShapeId::default();
+    for (to, from) in id.iter_mut().zip(blake3::hash(bytes).as_bytes()) {
+        *to = *from;
+    }
+    id
+}
+
+/// The content hash that names a catalogue entry on the wire.
+fn shape_id(shape: &ExportedAction) -> ShapeId {
+    // Serializing an `ExportedAction` cannot fail: it holds only strings,
+    // numbers and the typed action vocabulary.
+    hash16(&serde_json::to_vec(shape).unwrap_or_default())
+}
+
+/// The content hash that names an ordered set of shapes.
+fn template_id(members: &[ShapeId]) -> ShapeId {
+    hash16(&members.concat())
 }
 
 #[cfg(test)]

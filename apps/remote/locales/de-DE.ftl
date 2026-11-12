@@ -36,6 +36,7 @@ remote-describe-forget-host-key = Die veraltete SSH-Hostschlüssel-Bindung diese
 
 ## Fenster- und Barrierefreiheits-Texte
 remote-a11y-window = Remote
+remote-waiting-first-frame = Warte auf das erste Bild
 
 ## Fakten, Eigenschaftsnamen und Bereichstitel
 remote-action-trust-host-key = { $algorithm } { $fingerprint } nur nach Prüfung über einen anderen Weg ausdrücklich für dieses Gerät vertrauen.

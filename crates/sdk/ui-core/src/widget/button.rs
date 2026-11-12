@@ -1,4 +1,4 @@
-use crate::i18n;
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
@@ -2085,7 +2085,7 @@ pub fn focus_ring_reach(theme: &Theme) -> f64 {
 }
 
 /// Resolve a label key for painting, measuring or speaking. An empty key is
-/// an icon-only face and stays empty: routed through `i18n!` it would come
+/// an icon-only face and stays empty: routed through the catalogue it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
 /// the glyph, and a non-empty spoken name that hides the `accessible_name` /
 /// tooltip fallback.
@@ -2093,7 +2093,7 @@ fn localized_label(key: &str) -> String {
     if key.is_empty() {
         String::new()
     } else {
-        i18n!(key)
+        widget_text(key)
     }
 }
 
@@ -2743,7 +2743,7 @@ impl Widget for Button {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
         let spoken = |text: &str| {
-            let spoken = i18n!(text);
+            let spoken = widget_text(text);
             (!spoken.is_empty()).then_some(spoken)
         };
         // The key the name was resolved from: the app's own copy when its
@@ -2796,7 +2796,7 @@ impl Widget for Button {
         let description = self
             .description
             .as_deref()
-            .map(|why| i18n!(why))
+            .map(|why| widget_text(why))
             .filter(|why| !why.trim().is_empty())
             .or_else(|| {
                 self.detail

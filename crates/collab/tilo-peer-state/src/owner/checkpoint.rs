@@ -460,7 +460,7 @@ fn retain_manifest(
             DocumentRead::CheckpointPending => {
                 return Err("native checkpoint capture pending workspace checkpoint".into());
             }
-            DocumentRead::Unchanged(_) => {
+            DocumentRead::Unchanged(_) | DocumentRead::Changes(_) => {
                 return Err("native checkpoint capture missing snapshot".into());
             }
         };

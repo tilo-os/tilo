@@ -178,9 +178,7 @@ mod lane;
 #[cfg(feature = "broker-transport")]
 pub mod write_attribution_lane;
 
-mod surface_publication;
-pub use runtime_collab::{SurfaceDelta, SurfaceTable};
-pub use surface_publication::SurfacePublication;
+pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -518,12 +516,6 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
-    /// Replace this application's complete exported resource/action surface,
-    /// whole. For small surfaces a caller builds directly; the toolkit's own
-    /// publication sends [`Self::PublishActionSurface`].
-    PublishActions {
-        actions: Vec<ExportedAction>,
-    },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new
     /// surface). See [`SurfacePublication`].
@@ -708,13 +700,7 @@ pub enum ActionDirectoryRequest {
 /// carries: the one exported-action shape, shared with the broker.
 pub use runtime_collab::{ExportedAction, ExportedInput};
 
-pub use runtime_collab::BrokerActionSurface;
-
-#[derive(serde::Deserialize)]
-#[cfg(feature = "broker-transport")]
-pub struct BrokerActionCatalogueWire {
-    pub(crate) surfaces: Vec<BrokerActionSurface>,
-}
+pub use runtime_collab::{ActionCatalogue, BrokerActionSurface, CatalogueChange};
 
 pub use runtime_collab::route::{ChannelAccessState, RouteSpec};
 
@@ -897,6 +883,19 @@ pub struct CollaborationManager {
 }
 
 impl CollaborationManager {
+    /// The tid of the thread serving this connection's broker, for tests
+    /// that hold the connection idle and count whether it wakes at all.
+    #[cfg(all(test, unix))]
+    pub fn shovel_thread(&self) -> Option<i32> {
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        transport
+            .as_any()?
+            .downcast_ref::<broker::BrokerTransport>()?
+            .shovel_tid()
+    }
+
     /// Speak to an explicitly supplied transport.
     ///
     /// The manager announces nothing on its own: send a

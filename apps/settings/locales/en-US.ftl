@@ -2145,6 +2145,7 @@ settings-personal-apps-choice-follows = Your preferred app is used unless the wo
 settings-personal-apps-scope-caption = Workspace app defaults are managed in that workspace.
 settings-personal-apps-workspace-rules = This workspace's app rules
 settings-personal-apps-open = Open
+settings-app-open-with = Open { $kind } with { $app }
 settings-printers-driverless = Driverless printer
 settings-region-preview-week = Week starts on
 settings-region-shared-body = Apps use these formats for dates, times, numbers and measurements.

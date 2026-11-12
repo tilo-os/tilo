@@ -328,9 +328,11 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   these classes (old copy is listed per catalogue in
   `copy_language_baseline/`, which only shrinks), and rejects an English
   literal or `format!` sentence handed to a window's text constructors (a
-  label, a section title, a property's name, an accessible name) unless
-  `copy_source_literals.toml` says why no catalogue carries it; `tilo_copy_lint`
-  rejects `{:?}` handed to a copy builder.
+  label, a section title, a property's name, an accessible name), directly or
+  through a wrapper, a conversion, a default or a local, and a literal assigned
+  to an action's label, unless `copy_source_literals.toml` says why no
+  catalogue carries it; `tilo_copy_lint` rejects `{:?}` handed to a copy
+  builder.
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.
 - Never present fabricated content as live data (no synthesized "video feed"

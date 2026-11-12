@@ -3,7 +3,7 @@
 
 No app installation, identity enrollment, file grants or app networking. The
 headless developer fixture is separate from an ordinary first-login OS session.
-Foreign-frame observation is not physical display or device-to-photon latency.
+Window-frame observation is not physical display or device-to-photon latency.
 """
 from __future__ import annotations
 
@@ -130,13 +130,15 @@ def stop(child: subprocess.Popen | None) -> None:
         child.wait(timeout=5)
 
 
-def frames(sock: pathlib.Path) -> list[dict]:
-    response = call(str(sock), {"op": "foreign_frames"}, timeout=5)
+def windows(sock: pathlib.Path) -> list[dict]:
+    """The desk's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
+    null while no window of the tab is mapped) and `frames`, the frames its client committed."""
+    response = call(str(sock), {"op": "windows"}, timeout=5)
     if "err" in response:
-        raise RuntimeError(f"foreign-frame observation refused: {response['err']}")
-    rows = response.get("foreign_frames", {}).get("frames")
+        raise RuntimeError(f"window observation refused: {response['err']}")
+    rows = response.get("answer", {}).get("windows")
     if not isinstance(rows, list):
-        raise RuntimeError(f"foreign-frame response cannot observe its subject: {response}")
+        raise RuntimeError(f"window response cannot observe its subject: {response}")
     return rows
 
 
@@ -202,7 +204,7 @@ def main() -> None:
     if args.alternate_mesa_seed and (not args.mesa_seed or args.mesa_seed_source != "package" or args.samples % 2):
         parser.error("alternating seed mode requires a package seed and an even sample count")
     binaries = args.binaries.resolve()
-    paths = {"shell": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
+    paths = {"session": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
              "probe": binaries / "examples/startup-frame-probe"}
     for path in paths.values():
         if not path.is_file():
@@ -224,7 +226,7 @@ def main() -> None:
                TILO_AUTHORITY_SOCKET_DIR=str(runtime / "authority"),
                TILO_FS_AUTHORITY_CACHE_DIR=str(profile / "system/fs-cache"),
                TILO_FS_CONTENT_PEER_CACHE_DIR=str(profile / "system/peer-cache"),
-               TILO_TEST_CONTROL=str(runtime / "control.sock"), TILO_HEADLESS_SIZE="1280x720",
+               TILO_TEST_CONTROL=str(runtime / "control.sock"),
                TILO_FRAME_TRACE=str(out / "compositor-frames.csv"),
                TILO_STARTUP_METRICS_PATH=str(out / "compositor-startup.json"))
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "TILO_TEST_CONTROL_FIRST_USE"):
@@ -285,11 +287,17 @@ def main() -> None:
         except (FileNotFoundError, ProcessLookupError):
             pass
         pidfile.unlink(missing_ok=True)
+    provision = subprocess.run([str(paths["session"]), "--provision-identity"], env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               timeout=args.timeout)
+    if provision.returncode != 0:
+        raise RuntimeError(f"the fixture's identity was not provisioned: {provision.stdout[-2000:]}")
     try:
         with (out / "compositor.log").open("w") as log:
             started = time.monotonic_ns()
-            shell = subprocess.Popen([str(paths["shell"]), "--backend", "headless"], env=env,
-                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            shell = subprocess.Popen(
+                [str(paths["session"]), "--backend", "headless", "--size", "1280x720"], env=env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             sock = runtime / "control.sock"
             deadline = time.monotonic() + args.timeout
             while True:
@@ -302,15 +310,18 @@ def main() -> None:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("compositor did not answer semantic state before deadline")
                     time.sleep(POLL_SECONDS)
-            if state["chrome"]["input_capture"]["onboarding"]:
+            # A fixture in first use shows its own setup controls, which this probe must not drive
+            # past: it measures an ordinary desktop's first frame, not the enrollment flow.
+            targets = call(str(sock), {"op": "list_targets"}, timeout=5).get("targets", [])
+            if any(str(entry.get("name", "")).startswith("onboarding.") for entry in targets):
                 raise RuntimeError("synthetic fixture is in first use; do not bypass ordinary OS enrollment")
             result["compositor_semantic_ready_ms"] = (time.monotonic_ns() - started) / 1e6
             watch = call(str(sock), {"op": "watch", "watching": True})
             if "err" in watch:
                 raise RuntimeError(f"headless watch refused: {watch['err']}")
-            banner = re.search(r'tilo compositor listening on "([^"\n]+)"', (out / "compositor.log").read_text())
+            banner = re.search(r"^WAYLAND_DISPLAY=(\S+)$", (out / "compositor.log").read_text(), re.MULTILINE)
             if not banner:
-                raise RuntimeError("production Wayland endpoint banner missing")
+                raise RuntimeError("the session printed no Wayland endpoint")
             wayland = runtime / banner.group(1)
             if not wayland.is_socket():
                 raise RuntimeError("announced production Wayland endpoint is not a socket")
@@ -340,7 +351,7 @@ def main() -> None:
                 # Remove only the prior probe's metric; keep normal launcher routing.
                 for previous in (profile / "data").rglob("startup-frame-probe.json"):
                     previous.unlink()
-                ignore = {row["surface_id"] for row in frames(sock)}
+                ignore = {row["window"] for row in windows(sock)}
                 host_load = os.getloadavg()
                 before = time.monotonic_ns()
                 response = call(str(sock), {"op": "actions_invoke", "provider": launch[0]["provider"], "id": launch[0]["id"]})
@@ -351,16 +362,16 @@ def main() -> None:
                 deadline = time.monotonic() + args.timeout
                 while True:
                     query_before = time.monotonic_ns()
-                    observed = frames(sock)
+                    observed = windows(sock)
                     query_after = time.monotonic_ns()
-                    positive = [row for row in observed if row["surface_id"] not in ignore
-                                and row.get("app_id") == APP and row.get("frame_seq", 0) > 0
-                                and row.get("presented") and not row.get("opening") and not row.get("last_error")]
+                    positive = [row for row in observed if row["window"] not in ignore
+                                and row.get("app_id") == APP and row.get("frames", 0) > 0
+                                and row.get("rect") is not None]
                     if positive:
                         frame = positive[0]
                         break
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(f"no new {APP} presented surface before deadline; see payload/probe.log and compositor.log")
+                        raise RuntimeError(f"no new {APP} window with a drawn frame before deadline; see payload/probe.log and compositor.log")
                     lower = query_before
                     time.sleep(POLL_SECONDS)
                 while True:
@@ -398,9 +409,9 @@ def main() -> None:
                 if (payload / "probe.log").exists():
                     shutil.copy2(payload / "probe.log", out / f"app-{index}.log")
                 deadline = time.monotonic() + 8
-                while any(row["surface_id"] == frame["surface_id"] for row in frames(sock)):
+                while any(row["window"] == frame["window"] for row in windows(sock)):
                     if time.monotonic() > deadline:
-                        raise RuntimeError("probe surface did not close after owned process cleanup")
+                        raise RuntimeError("the probe's window did not close after owned process cleanup")
                     time.sleep(POLL_SECONDS)
             with (out / "compositor-frames.csv").open() as trace:
                 recorded = list(csv.DictReader(trace))

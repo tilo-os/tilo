@@ -582,11 +582,13 @@ impl DeskAuthority {
         }
     }
 
-    /// The desk as the loop shows it now, for the broker's next decision.
+    /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
+    /// it holds on the announcement rather than on a clock.
     pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
         *self.tree.lock_recover() = tree;
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+        tilo_identity_host::policy_change::announce();
     }
 
     /// How many times the desk was published; equal values mean the desk
@@ -641,6 +643,13 @@ impl WorkspaceAuthority for DeskAuthority {
     /// this beside the rest of it.
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.journal.clone()
+    }
+
+    /// Every write the broker's checks read here is announced: the desk on [`Self::publish`],
+    /// the workspaces' governance by their owner, the device fleet and identity registry by
+    /// their stores, and an agent's run ending by its door.
+    fn announces_policy_changes(&self) -> bool {
+        true
     }
 }
 

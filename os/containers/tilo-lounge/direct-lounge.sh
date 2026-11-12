@@ -87,6 +87,7 @@ start_lounge() {
     TILO_ROOMS_ROLES_FILE="$roles" \
     TILO_ROOMS_FETCH_PROXY=0 \
     TILO_ROOMS_CHAT_CHANNELS=general \
+    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
     TILO_ROOMS_PERSON_STORAGE_GB=10 \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
   local lounge_pid=$!
@@ -105,7 +106,7 @@ start_lounge() {
   info=$("$relay_bin" page-host "http://127.0.0.1:$plain_port") \
     || lounge_fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" "$info" >> "$site_log" 2>&1 &
+    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do

@@ -229,6 +229,12 @@ pub struct PageSidebar {
     list_top: f64,
     max_scroll: f64,
     add_rect: Rect,
+    /// Where the add button's label painted this frame; empty when the
+    /// button was too narrow for the words and shows its glyph alone.
+    add_label_rect: Rect,
+    /// Whether the last frame's add button showed its glyph alone because its
+    /// label did not fit inside it.
+    add_icon_only: bool,
 
     scroll: f64,
     drag: DragController<usize>,
@@ -276,6 +282,8 @@ impl PageSidebar {
             list_top: 0.0,
             max_scroll: 0.0,
             add_rect: Rect::ZERO,
+            add_label_rect: Rect::ZERO,
+            add_icon_only: false,
             scroll: 0.0,
             drag: DragController::vertical(),
             press_idx: None,
@@ -338,11 +346,35 @@ impl PageSidebar {
     }
 
     /// Show a bottom "add" button carrying `label` (e.g. "Import…", "New slide").
+    ///
+    /// A rail too narrow for the words shows the button's glyph alone and keeps
+    /// `label` as its name, for the tooltip and the accessibility tree (HIG: an
+    /// icon-only button is a square). A control never paints its label past its
+    /// own edge.
     #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
         self.show_add = !self.read_only;
         self
+    }
+
+    /// The add button's rectangle as last laid out; empty when the rail shows
+    /// no add button or has not laid one out yet.
+    #[must_use]
+    pub fn add_button_rect(&self) -> Rect {
+        if self.show_add {
+            self.add_rect
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// Where the add button's label painted in the last frame; empty when the
+    /// button showed its glyph alone because the words did not fit inside it.
+    /// A non-empty box always lies within [`Self::add_button_rect`].
+    #[must_use]
+    pub fn add_label_rect(&self) -> Rect {
+        self.add_label_rect
     }
 
     /// Set false when the host already draws the panel chrome around the list.
@@ -972,7 +1004,7 @@ impl PageSidebar {
     }
 
     fn draw_add_button(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -993,24 +1025,41 @@ impl PageSidebar {
         let (tw, th) = tr.measure_style(&self.add_label, None, &style);
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         let gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let inset = f64::from(theme.tokens.spacing.s2);
         let cluster = icon + gap + f64::from(tw);
-        let x0 =
-            (r.x0 + (r.width() - cluster) / 2.0).max(r.x0 + f64::from(theme.tokens.spacing.s2));
-        crate::icons::Icon::Plus.draw(
-            scene,
-            base,
-            Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
-            c.text_primary,
-        );
-        let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
-        tr.draw_style(
-            scene,
-            &self.add_label,
-            c.text_primary,
-            base.pre_translate((x0 + icon + gap, ty).into()),
-            None,
-            &style,
-        );
+        // A control never paints its label outside itself. A rail narrower than
+        // its words shows the glyph alone (HIG: an icon-only button is a
+        // square) and keeps the label as its name, for its tooltip and the
+        // accessibility tree, instead of running the text past its edge.
+        let labelled = cluster <= r.width() - 2.0 * inset;
+        self.add_icon_only = !labelled;
+        if labelled {
+            let x0 = r.x0 + (r.width() - cluster) / 2.0;
+            let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
+            crate::icons::Icon::Plus.draw(
+                scene,
+                base,
+                Rect::from_center_size(Point::new(x0 + icon / 2.0, r.center().y), (icon, icon)),
+                c.text_primary,
+            );
+            tr.draw_style(
+                scene,
+                &self.add_label,
+                c.text_primary,
+                base.pre_translate((x0 + icon + gap, ty).into()),
+                None,
+                &style,
+            );
+            self.add_label_rect = Rect::new(x0 + icon + gap, ty, x0 + cluster, ty + f64::from(th));
+        } else {
+            crate::icons::Icon::Plus.draw(
+                scene,
+                base,
+                Rect::from_center_size(r.center(), (icon, icon)),
+                c.text_primary,
+            );
+            self.add_label_rect = Rect::ZERO;
+        }
     }
 
     fn draw_menu(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1100,6 +1149,16 @@ impl Widget for PageSidebar {
     }
     fn name(&self) -> &'static str {
         "PageSidebar"
+    }
+    /// An add button that could not fit its label shows the glyph alone, so
+    /// the words the person cannot read there are its tooltip: over the button
+    /// only, beside the rail's column rather than under it.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        (self.show_add && self.add_icon_only && self.add_rect.contains(point))
+            .then(|| (self.add_rect, self.add_label.clone()))
+    }
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        crate::widget::tooltip::TooltipSide::Beside
     }
     fn test_id(&self) -> Option<&str> {
         Some("page_sidebar")

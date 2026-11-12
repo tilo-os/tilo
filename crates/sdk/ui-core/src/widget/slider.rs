@@ -1,3 +1,4 @@
+use crate::i18n::widget_text;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
@@ -1456,7 +1457,7 @@ impl Widget for Slider {
         let name = self
             .accessible_name
             .as_ref()
-            .map(|n| crate::i18n!(n))
+            .map(|n| widget_text(n))
             .filter(|n| !n.is_empty());
         let mut node = AccessNode::new(Role::Slider)
             // The id it was given names it, so two sliders under one

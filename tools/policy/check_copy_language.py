@@ -64,9 +64,14 @@ A sentence built around a value is copy as much as a plain one: a `format!`
 whose template reads as English and whose result reaches one of those calls —
 as an argument, or through the local it is stored in — fails, because a German
 window needs the catalogue's own sentence with the value in it (Fluent
-variables and plural branches). The test is syntactic, on purpose: a sentence
-that travels through a chain of app helpers is a migration to do, not a
-checker to build.
+variables and plural branches). A word reaches a call the same way through a
+wrapper or a conversion (`Some("Move")`, `"Move".to_string()`, `"Move".into()`),
+through a default (`origin.unwrap_or("No secure page")`) and through a local
+(`let label = "Waiting for the first screen update";`), and an action's own
+label is what its menu row and the action directory show, so a literal assigned
+to `.type_mut().label` counts too. The test is syntactic, on purpose: a
+sentence that travels through a chain of app helpers is a migration to do, not
+a checker to build.
 
 The toolkit's own crates are outside that sweep: a widget's demo and example
 code paints sample content, not a window's copy.
@@ -509,6 +514,21 @@ BINDING = re.compile(
     r"(?::[^=;\n]+)?=(?!=)"
 )
 
+# A literal a constructor receives can pass through a wrapper or a conversion on
+# the way: `&"Move"`, `Some("Move")`, `String::from("Move")`, and then
+# `"Move".to_string()`, `.into()`, `.as_str()`. It is painted just the same.
+WRAPPER = re.compile(r"^\s*(?:&\s*)?(?:(?:Some|String::from|String::from_utf8_lossy|"
+                     r"Cow::Borrowed|ToOwned::to_owned)\s*\(\s*)*$")
+CONVERSION = re.compile(r"^(?:\s|\)|,|\.(?:into|to_string|to_owned|as_str|as_ref)\(\))*$")
+# A call that hands back a default when there is nothing better, so the literal
+# in it is the words the constructor gets, as a branch of an `if` is.
+DEFAULT_CALLS = ("unwrap_or(", "unwrap_or_else(|", "unwrap_or_else(||",
+                 ".or(", "or_else(|", "or_else(||")
+
+# An action's label, assigned rather than set: it names the action in menus and
+# in the action directory, so an English literal here is copy like any other.
+ACTION_LABEL = re.compile(r"\.type_mut\(\)\.label\s*=(?!=)")
+
 
 def english_words(value: str) -> bool:
     """A literal that reads as English words rather than an id or a key."""
@@ -554,6 +574,26 @@ def arrow_before(code: str, offset: int) -> bool:
     return offset >= 1 and code[offset - 1 : offset + 1] == "=>"
 
 
+def wrapped(code: str, begin: int, start: int) -> bool:
+    """`code[begin:start]` only wraps the literal: `&`, `Some(`, `String::from(`."""
+    return bool(WRAPPER.match(code[begin:start]))
+
+
+def converted(code: str, start: int, end: int) -> bool:
+    """`code[start:end]` only converts the literal on its way out: `.into()`,
+    `.to_string()`, `.as_str()`."""
+    return bool(CONVERSION.match(code[start:end]))
+
+
+def fallback(code: str, begin: int, start: int, end: int) -> bool:
+    """The literal is a default the constructor gets when nothing better is
+    there (`origin.unwrap_or("No secure page")`), the way a branch of an `if`
+    is: `code[begin:start]` ends in that call and only its brackets follow."""
+    if not converted(code, start, end):
+        return False
+    return code[begin:start].rstrip().endswith(DEFAULT_CALLS)
+
+
 def painted_literals(code: str, starts: list[int],
                      by_start: dict[int, rust_source.Literal],
                      begin: int, end: int) -> list[rust_source.Literal]:
@@ -561,9 +601,10 @@ def painted_literals(code: str, starts: list[int],
 
     The argument itself, and what a closure or a conditional inside it hands
     back: `map_or_else(|| "Search", |named| …)` and `if open { "Shown" } else
-    { "Hidden" }` both reach the label as surely as the literal argument does.
-    A literal that only feeds a call (`|word| say(word, "Search")`) is not
-    painted, and does not count.
+    { "Hidden" }` both reach the label as surely as the literal argument does,
+    and so does a default (`origin.unwrap_or("No secure page")`). A literal
+    that only feeds a call (`|word| say(word, "Search")`) is not painted, and
+    does not count.
     """
     found = []
     at = bisect.bisect_left(starts, begin)
@@ -571,8 +612,10 @@ def painted_literals(code: str, starts: list[int],
         literal = by_start[starts[at]]
         after = next_significant(code, literal.end)
         if (not code[begin : literal.start].strip()
+                or wrapped(code, begin, literal.start)
                 or after == "}"
-                or (arrow_before(code, literal.start) and after in ",}")):
+                or (arrow_before(code, literal.start) and after in ",}")
+                or fallback(code, begin, literal.start, end)):
             found.append(literal)
         at += 1
     return found
@@ -642,9 +685,9 @@ def copy_bindings(code: str, starts: list[int],
     """Sentences of words built around a value, by the name they are stored in,
     so a constructor handed that name counts as handing it the sentence.
 
-    Only a value that is the sentence (a `format!`, or a `match`/`if` that
-    picks one) counts. A sentence built inside a call — an error in
-    `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
+    Only a value that is the sentence (a `format!`, a `match`/`if` that picks
+    one, or a plain literal) counts. A sentence built inside a call — an error
+    in `ok_or_else(|| format!(…))?` — is an outcome the surface shows in its own
     words, not a value a constructor gets handed.
     """
     found: dict[str, list[rust_source.Literal]] = {}
@@ -657,12 +700,38 @@ def copy_bindings(code: str, starts: list[int],
                 words = words[len(prefix):].lstrip()
                 break
         if not words.startswith(("format!", "match ", "if ")):
+            literal = (stored_literal(code, starts, by_start, kept, binding.end(),
+                                      statement_end(code, binding.end()))
+                       if binding.group(1) else None)
+            if literal is not None and english_words(literal.value):
+                found.setdefault(name, []).append(literal)
             continue
         for literal in format_template(code, starts, by_start, binding.end(),
                                        statement_end(code, binding.end())):
             if kept[literal.start] == "x" and english_words(literal.value):
                 found.setdefault(name, []).append(literal)
     return found
+
+
+def stored_literal(code: str, starts: list[int],
+                   by_start: dict[int, rust_source.Literal], kept: str,
+                   begin: int, end: int) -> rust_source.Literal | None:
+    """The literal a `let` stores as it stands in `[begin, end)`, or None.
+
+    A local holds the words for as long as it lives (`let label = "Waiting for
+    the first screen update";`), so a constructor handed the name paints them.
+    A field assignment is not read this way: a struct's `title` is as often a
+    person's own content as it is copy (`note.title = "Quiet hours"`).
+    """
+    at = bisect.bisect_left(starts, begin)
+    if at >= len(starts):
+        return None
+    literal = by_start[starts[at]]
+    if literal.start >= end or kept[literal.start] != "x":
+        return None
+    if not wrapped(code, begin, literal.start) or not converted(code, literal.end, end):
+        return None
+    return literal
 
 
 def named_in(code: str, begin: int, end: int, name: str) -> bool:
@@ -694,7 +763,9 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
             continue
         text = path.read_text(errors="replace")
         builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
-        if not builders and not any(call in text for call, _ in TEXT_CONSTRUCTORS):
+        labels = builder_unit and ACTION_LABEL.search(text) is not None
+        if (not builders and not labels
+                and not any(call in text for call, _ in TEXT_CONSTRUCTORS)):
             continue
         code, literals = rust_source.lex(text)
         marked = list(code)
@@ -720,8 +791,23 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
                     begin += 1
                 painted(begin, end)
                 start = code.find(builder, start + len(builder))
+        bindings = (copy_bindings(code, starts, by_start, kept)
+                    if window or labels else {})
+        if labels:
+            for field in ACTION_LABEL.finditer(code):
+                begin = field.end()
+                end = statement_end(code, begin)
+                painted(begin, end)
+                for literal in format_template(code, starts, by_start, begin, end):
+                    if kept[literal.start] == "x" and english_words(literal.value):
+                        hits.append(literal)
+                for name, stored in bindings.items():
+                    if not named_in(code, begin, end, name):
+                        continue
+                    for literal in stored:
+                        if kept[literal.start] == "x":
+                            hits.append(literal)
         if window:
-            bindings = copy_bindings(code, starts, by_start, kept)
             for call, index in TEXT_CONSTRUCTORS:
                 start = code.find(call)
                 while start >= 0:

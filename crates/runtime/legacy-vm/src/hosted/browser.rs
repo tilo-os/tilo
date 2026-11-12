@@ -35,11 +35,15 @@
 //!   hand-off and never before: nothing of a workspace's identity is in the
 //!   image or in the template a VM is cloned from.
 //! - **stderr** is the session's log, nothing else.
+//! - **[`STORE`]** in its environment, when the workspace keeps its profile:
+//!   a folder of the workspace's own files, mounted at the same path, which
+//!   the session restores its profile (cookies, storage) from as it starts
+//!   and writes it back to as it ends.
 //!
 //! The session ends after [`Limits::idle_stop`] without page activity, or at
 //! [`Limits::lifetime`] (its device's certificate lasts that long). It is
-//! asked to end with `SIGTERM`, so Chromium writes its profile to the VM's
-//! disk; the VM then sleeps like any idle VM, and the profile wakes with it.
+//! asked to end with `SIGTERM`, so it writes its profile back first; the VM
+//! then sleeps like any idle VM.
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -61,6 +65,9 @@ use super::network::Endpoint;
 
 /// The browser session's entry, as the guest image ships it.
 pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
+
+/// Names, in the session's environment, the folder it keeps its profile in.
+pub const STORE: &str = "TILO_BROWSER_STORE";
 
 /// How long the guest agent is given to start a session it was asked for.
 pub const READY_PATIENCE: Duration = Duration::from_secs(120);
@@ -360,15 +367,20 @@ impl Session {
     pub fn start(
         link: &AgentLink,
         material: &str,
+        store: Option<&std::path::Path>,
         life: Arc<Life>,
         log: PathBuf,
         clock: super::vm::Clock,
     ) -> Result<Self, SessionError> {
         let stream = link.connect(AGENT_PORT)?;
+        let mut env = vec![(MARK.to_owned(), "1".to_owned())];
+        if let Some(store) = store {
+            env.push((STORE.to_owned(), store.display().to_string()));
+        }
         let launch = Launch {
             argv: vec![SESSION.to_owned()],
             cwd: None,
-            env: vec![(MARK.to_owned(), "1".to_owned())],
+            env,
             stdio: Stdio::Relay,
             display: Display::None,
         };
@@ -558,6 +570,8 @@ pub trait Starts: Send + Sync {
 /// The session started through the guest agent of the workspace's VM.
 pub struct Launcher {
     link: AgentLink,
+    /// Where the session keeps its profile, when the workspace keeps one.
+    store: Option<PathBuf>,
     life: Arc<Life>,
     log: PathBuf,
     clock: super::vm::Clock,
@@ -565,9 +579,16 @@ pub struct Launcher {
 
 impl Launcher {
     #[must_use]
-    pub fn new(link: AgentLink, life: Arc<Life>, log: PathBuf, clock: super::vm::Clock) -> Self {
+    pub fn new(
+        link: AgentLink,
+        store: Option<PathBuf>,
+        life: Arc<Life>,
+        log: PathBuf,
+        clock: super::vm::Clock,
+    ) -> Self {
         Self {
             link,
+            store,
             life,
             log,
             clock,
@@ -580,6 +601,7 @@ impl Starts for Launcher {
         Session::start(
             &self.link,
             material,
+            self.store.as_deref(),
             Arc::clone(&self.life),
             self.log.clone(),
             Arc::clone(&self.clock),

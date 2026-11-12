@@ -268,7 +268,7 @@ impl GitClientState {
     /// named by an action. Answers why not when there is none.
     pub(super) fn open_repository_at(&mut self, path: &std::path::Path) -> Result<(), String> {
         if self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
+            return Err(crate::i18n::t("git-remote-busy"));
         }
         if self.bind_repository(path) {
             self.last_error = None;

@@ -308,7 +308,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 folder: here.clone(),
             }
             .bound_asking(&["folder"]);
-            copy_to.type_mut().label = "Copy to folder…".into();
+            copy_to.type_mut().label = t("files-action-copy-to-folder");
             resource.actions.push(copy_to);
             if importable_under(&entry.path, &context.import_mounts) {
                 let mut import = FilesEffect::ImportOnce {

@@ -916,7 +916,7 @@ impl Widget for BarGauge {
         use crate::a11y::{AccessNode, Role};
         // `label` names it; `value` is the caller's readout when present
         // (e.g. "3.2 GB"), else the fraction as a percentage. Both are
-        // display strings, not FTL keys → no `i18n!`.
+        // display strings, not FTL keys, so no lookup.
         let pct = pct(self.frac);
         let value = if self.value.is_empty() {
             format!("{pct}%")

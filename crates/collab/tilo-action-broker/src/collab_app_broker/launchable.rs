@@ -1021,7 +1021,7 @@ mod tests {
                 serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
             )
             .err(),
-            Some(ActionHostError::ConfirmationRequired),
+            Some(ActionHostError::confirmation_required()),
             "removing a note asks, as a delete verb does"
         );
     }
@@ -1076,7 +1076,7 @@ mod tests {
 
         assert_eq!(
             invoke(&state, &agent, "5", "new-window", None).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
         );
         assert_eq!(
             invoke(
@@ -1087,7 +1087,7 @@ mod tests {
                 Some(Confirmation::Confirmed)
             )
             .err(),
-            Some(ActionHostError::ConfirmationRequired),
+            Some(ActionHostError::confirmation_required()),
             "an agent never confirms by its own word"
         );
         assert!(app.try_recv().is_err(), "nothing ran");
@@ -1131,7 +1131,7 @@ mod tests {
         request.invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             call(&request).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
         );
         let mut other_binding = state.witness_binding("agent:scribe", &workspace, &request);
         other_binding.action = "empty-trash".into();
@@ -1140,7 +1140,7 @@ mod tests {
         ));
         assert_eq!(
             call(&request).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
         );
     }
 
@@ -1396,7 +1396,7 @@ mod tests {
         );
         assert_eq!(
             invoke(&state, &owner, &target.provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "the app's own contract admits what it offers"
         );
     }
@@ -2108,7 +2108,7 @@ mod tests {
         );
         assert_eq!(
             invoke(&state, &owner, &provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "the manifest's confirmation is asked for before the launch"
         );
         assert!(
@@ -2209,7 +2209,7 @@ mod tests {
 
         assert_eq!(
             invoke(&state, &owner, &provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired)
+            Err(ActionHostError::confirmation_required())
         );
         assert_eq!(
             invoke(

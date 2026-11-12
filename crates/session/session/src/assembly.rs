@@ -501,6 +501,10 @@ pub struct Session {
     /// settings last said it.
     #[cfg(target_os = "linux")]
     pub(crate) language: crate::i18n::Language,
+    /// The person's region formats, as the session's own surfaces and the
+    /// tilolang hosts it runs last read them.
+    #[cfg(target_os = "linux")]
+    pub(crate) formats: crate::formats::Formats,
     /// The person's warmth and when it shows, and the panel following the
     /// light in the room while they asked for it.
     #[cfg(target_os = "linux")]

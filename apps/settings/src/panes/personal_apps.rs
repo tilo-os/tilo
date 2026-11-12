@@ -216,8 +216,13 @@ impl DefaultAppsArea {
                         app: app.package_id.clone(),
                     })
                     .bound();
-                    choose.type_mut().label =
-                        format!("Open {} with {}", resource_label(&kind), app.display_name);
+                    choose.type_mut().label = t_args(
+                        "settings-app-open-with",
+                        &[
+                            ("kind", ArgValue::Text(resource_label(&kind))),
+                            ("app", ArgValue::Text(app.display_name.clone())),
+                        ],
+                    );
                     row = row.row(
                         LiveRow::new(
                             format!("{id}/{}", app.package_id),

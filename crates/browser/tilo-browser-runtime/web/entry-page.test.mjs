@@ -85,7 +85,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
-  globalThis.__entryPageFixture = {page, runtime, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost,
     boot: async options => {
       diagnostics = options.diagnostics;
@@ -113,32 +113,34 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, listeners, session: stored, failure};
+  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, listeners, session: stored, failure};
 }
 
-test('the GPU is set up once the host lets the page in, not while it asks', async () => {
+test('the GPU device opens as the page starts, while the host is asked, once', async () => {
   const steps = [];
   const {prepared, failure} = await fixture({boot: async ({onStep}, page) => {
+    steps.push(globalThis.__entryPageFixture.prepared.length);
     onStep('join');
-    steps.push(document.documentElement.dataset.arrival);
     onStep('open');
     onStep('open');
     return page;
   }});
-  assert.deepEqual(steps, ['join']);
-  assert.deepEqual(prepared, ['join'], 'prepared once, as the page moved from join to open');
+  assert.deepEqual(steps, [1], 'the device was asked for before the page asked the host');
+  assert.equal(prepared.length, 1, 'and only once, however the page moves on');
   assert.equal(failure, null);
   assert.equal(document.documentElement.dataset.entry, 'open');
 });
 
-test('a page the host refuses compiles no renderer for the next page to wait on', async () => {
-  const {prepared, failure} = await fixture({boot: async ({onStep}) => {
+test('a page the host refuses mounts nothing, so it compiles no renderer for the next page to wait on', async () => {
+  const {prepared, failure, mounted} = await fixture({boot: async ({onStep}) => {
     onStep('join');
     throw new AdmissionError('no-access', 'You don’t have access to this workspace.');
   }});
   assert.equal(failure?.code, 'no-access');
   assert.equal(document.documentElement.dataset.entry, 'refused');
-  assert.deepEqual(prepared, []);
+  // The device alone: the renderer's pipelines compile as a mount draws.
+  assert.equal(prepared.length, 1);
+  assert.deepEqual(mounted, []);
 });
 
 test('the account choice says it is the account choice, and resolves to the account taken', async () => {

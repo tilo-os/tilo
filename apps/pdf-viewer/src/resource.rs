@@ -772,7 +772,7 @@ impl PdfMarkup {
                         "pdf-search-signed",
                         &[
                             ("page", signature.page.to_string().into()),
-                            ("date", signature.date.clone().into()),
+                            ("date", crate::dates::shown(&signature.date).into()),
                         ],
                     ),
                 )

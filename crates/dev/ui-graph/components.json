@@ -3289,7 +3289,7 @@
         },
         {
           "name": "header",
-          "doc": "The rail's title above the thumbnails: \"Pages\".",
+          "doc": "The rail's title above the thumbnails; \"Pages\" in the window's language when unset.",
           "type": {
             "option": "text"
           }

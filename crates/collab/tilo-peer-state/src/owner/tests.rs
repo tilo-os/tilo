@@ -1,8 +1,9 @@
+use crate::KeptRecord;
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
-    DocumentRead, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId, RecordWrites, WorkspaceId,
-    open_file,
+    DocumentRead, History, Holding, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId,
+    RecordWrites, WorkspaceId, open_file,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -639,7 +640,9 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                     "a pending checkpoint is reported only to a reader of the record"
                 );
             }
-            Ok(DocumentRead::Unchanged(_)) => panic!("no revision was offered"),
+            Ok(DocumentRead::Unchanged(_) | DocumentRead::Changes(_)) => {
+                panic!("no revision was offered")
+            }
             Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
         }
     }
@@ -707,7 +710,12 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
     };
     let holds = |reader, known| {
         joined.owner.with_current(joined.workspace, |view| {
-            view.holds_revision(reader, APP, "", known, joined.now)
+            let history = History {
+                open: &mut |_| Err("the record is not sealed".into()),
+                kept: &mut KeptRecord::default(),
+            };
+            view.document_revision(reader, (APP, ""), joined.now, history)
+                .map(|revision| revision.map(|revision| revision == known))
         })
     };
     crate::owner::document_read::reset_captures();
@@ -1339,6 +1347,56 @@ fn retained_replay_reuses_exact_committed_publication() {
     );
 }
 
+/// A reader that keeps a sealed record opened opens each write once: a read again opens nothing,
+/// and a reader holding the revision is told it is unchanged.
+#[test]
+fn a_kept_sealed_record_opens_each_write_once() {
+    let joined = enrolled();
+    let reader = member().verifying_key().to_bytes();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let mut decryptions = 0;
+    let mut kept = KeptRecord::default();
+    let mut read = |holding: Holding<'_>, kept: &mut KeptRecord| {
+        joined.owner.with_current(joined.workspace, |view| {
+            let open = &mut |op: &collab_types::SignedOp| {
+                decryptions += 1;
+                let ciphertext =
+                    collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+                keys.open_content(
+                    op.artifact,
+                    &op.encryption.ok_or("not sealed")?,
+                    &ciphertext,
+                )
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| error.to_string())
+            };
+            view.read_document_with_history(
+                reader,
+                (APP, ""),
+                holding,
+                1024 * 1024,
+                joined.now,
+                History { open, kept },
+            )
+        })
+    };
+    let Ok(DocumentRead::Captured(first)) = read(Holding::default(), &mut kept) else {
+        panic!("a first read captures the history");
+    };
+    let holding = Holding {
+        revision: Some(first.revision),
+        heads: &first.heads,
+    };
+    assert!(
+        matches!(read(holding, &mut kept), Ok(DocumentRead::Unchanged(revision)) if revision == first.revision)
+    );
+    assert!(
+        matches!(read(Holding::default(), &mut kept), Ok(DocumentRead::Captured(again)) if again.bytes == first.bytes)
+    );
+    assert_eq!(decryptions, 1, "the kept record opened its one write once");
+}
+
 #[test]
 fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner() {
     let joined = enrolled();
@@ -1370,10 +1428,13 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
                 view.read_document_with_history(
                     [0x77; 32],
                     (APP, ""),
-                    None,
+                    Holding::default(),
                     1024 * 1024,
                     joined.now,
-                    &mut opener
+                    History {
+                        open: &mut opener,
+                        kept: &mut KeptRecord::default(),
+                    },
                 )
                 .is_err(),
                 "a stranger cannot open history"
@@ -1381,10 +1442,13 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
             view.read_document_with_history(
                 reader,
                 (APP, ""),
-                None,
+                Holding::default(),
                 1024 * 1024,
                 joined.now,
-                &mut opener,
+                History {
+                    open: &mut opener,
+                    kept: &mut KeptRecord::default(),
+                },
             )
         })
         .unwrap();
@@ -1412,12 +1476,15 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     drop(joined.owner);
     let reopened = open_file(&path).unwrap();
     assert!(matches!(reopened.with_current(workspace, |view| {
-        view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
-            1024 * 1024, now, &mut |op| {
+        let holding = Holding { revision: Some(captured.revision), heads: &[] };
+        view.read_document_with_history(reader, (APP, ""), holding, 1024 * 1024, now, History {
+            open: &mut |op| {
                 keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
                     &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
                     .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
-            })
+            },
+            kept: &mut KeptRecord::default(),
+        })
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
     assert_eq!(record_on_disk(&path), before);
 }

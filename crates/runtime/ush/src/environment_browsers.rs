@@ -37,13 +37,15 @@ impl BrowserHost {
     }
 
     /// Open `asked`'s workspace's Browser, or attach to the session already
-    /// running, waiting while the host has no room.
-    pub fn open(&self, asked: &OpenBrowser) -> Result<OpenedBrowser, String> {
+    /// running, waiting while the host has no room. The session keeps its
+    /// profile in `store`.
+    pub fn open(&self, asked: &OpenBrowser, store: PathBuf) -> Result<OpenedBrowser, String> {
         let request = Request::OpenBrowser {
             browser: control::OpenBrowser {
                 workspace: asked.workspace.clone(),
                 account: asked.account.clone(),
                 size: self.size,
+                store: Some(store),
                 material: asked.material.clone(),
             },
         };

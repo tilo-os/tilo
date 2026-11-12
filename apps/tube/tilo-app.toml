@@ -55,8 +55,8 @@ mode = "host"
 secret = "via-host"
 
 [sandbox.services]
-collab = "optional@19"
-tilo-fs = "optional@19"
+collab = "optional@20"
+tilo-fs = "optional@20"
 
 [entrypoint]
 bin             = "bin/tube"

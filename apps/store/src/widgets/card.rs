@@ -15,6 +15,7 @@
 //! the catalogue offers for the app. Everything is stock `ui::widget`
 //! composition, so the theme owns every colour, radius and size.
 
+use crate::resource::CATALOG;
 use ui::TextRole;
 use ui::tilo_actions::ActionBinding;
 use ui::widget::{Avatar, AvatarSize, Button, Column, Container, ControlSize, Row, Text, Widget};
@@ -135,7 +136,7 @@ pub fn store_card(
 /// developer when no build of it fits this system.
 pub fn provenance(item: &StoreItem) -> String {
     if let Some(bot) = &item.bot {
-        return format!("{}, version {}", ui::i18n!("store-bot-label"), bot.version);
+        return format!("{}, version {}", CATALOG.t("store-bot-label"), bot.version);
     }
     let kind = match &item.source {
         StoreSource::Tilo { .. } => "Tilo app",
@@ -148,7 +149,7 @@ pub fn provenance(item: &StoreItem) -> String {
         }
     };
     if item.awaiting_developer {
-        return ui::i18n!("store-waiting-for-developer");
+        return CATALOG.t("store-waiting-for-developer");
     }
     let version = visible_version(item);
     if version.is_empty() {

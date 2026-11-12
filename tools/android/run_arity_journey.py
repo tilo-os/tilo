@@ -60,7 +60,7 @@ def ocr_result(path, rect, height=64, scale=1.0, mode=11):
     image = ctypes.c_void_p(lept.pixRead(os.fsencode(path)))
     api = tess.TessBaseAPICreate()
     text = None
-    box = ctypes.c_void_p(lept.boxCreate(round(rect["x"]), round(rect["y"]), min(round(rect["w"]), 400), height))
+    box = ctypes.c_void_p(lept.boxCreate(round(rect[0]), round(rect[1]), min(round(rect[2]), 400), height))
     cropped = ctypes.c_void_p(lept.pixClipRectangle(image, box, None))
     padded = ctypes.c_void_p(lept.pixAddBorderGeneral(cropped, 20, 20, 20, 20, 0))
     scaled = ctypes.c_void_p(lept.pixScale(padded, scale, scale))
@@ -137,19 +137,19 @@ class Journey:
         return wait_for(self.frame, "APK mapped and presented")
 
     def frame(self):
+        """The APK's window once its client drew a frame, as the desk reports it."""
         ids = {t["tile"]["Foreign"]["surface_id"] for t in self.tabs()
                if "Foreign" in t["tile"]}
-        frames = self.request("foreign_frames")["foreign_frames"]["frames"]
-        return next((f for f in frames if f["surface_id"] in ids
-                     and f.get("presented") and f.get("frame_seq", 0) > 0
-                     and not f.get("last_error")), None)
+        rows = self.request("windows")["answer"]["windows"]
+        return next((f for f in rows if f.get("window") in ids
+                     and f.get("frames", 0) > 0 and f.get("rect")), None)
 
     def snapshot(self, name):
         path = self.output / (name + ".png")
         require_ok(self.request("snapshot", path=str(path)))
         rect = wait_for(self.frame, "OCR surface")["rect"]
         text = ocr_result(path, rect, height=42, mode=7)
-        expression_rect = {**rect, "y": rect["y"] + 43}
+        expression_rect = [rect[0], rect[1] + 43, rect[2], rect[3]]
         text += ocr_result(path, expression_rect, height=20, scale=2.0, mode=7)
         (self.output / (name + ".txt")).write_text(text)
         return " ".join(re.sub(r"\s+", "", line) for line in text.splitlines())

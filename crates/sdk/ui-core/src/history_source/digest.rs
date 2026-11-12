@@ -6,6 +6,7 @@
 //! briefs for tone, but it is never the source of grouping, attribution, or
 //! counts.
 
+use crate::i18n::{widget_format, widget_text};
 use crate::time::SystemTime;
 use std::collections::HashSet;
 use tilo_sort::CompactSort as _;
@@ -157,7 +158,8 @@ impl ActivityDigest {
                 let detail = if title == group.title(recent) {
                     group_detail
                 } else {
-                    let count = crate::i18n!("history-group-changes", "count" => group.len());
+                    let count =
+                        widget_format("history-group-changes", &[("count", group.len().into())]);
                     if group_detail.is_empty() {
                         count
                     } else {
@@ -219,15 +221,15 @@ fn digest_outcome_title(
     };
     let (general, about) = outcome_keys(&group.families);
     match (about, subject) {
-        (Some(key), Some(resource)) => crate::i18n!(key, "resource" => resource),
-        _ => crate::i18n!(general),
+        (Some(key), Some(resource)) => widget_format(key, &[("resource", resource.into())]),
+        _ => widget_text(general),
     }
 }
 
 /// The outcome title that names no resource, for changes whose own wording
 /// would only show identifiers.
 fn general_outcome_title(families: &[OpFamily]) -> String {
-    crate::i18n!(outcome_keys(families).0)
+    widget_text(outcome_keys(families).0)
 }
 
 /// A brief's detail line minus the ` · ` parts that carry identifiers.

@@ -67,6 +67,7 @@ browser-service-forget-fence-failed = Das ausgewählte Konto konnte zum Vergesse
 
 browser-service-forget-retry = Vergessen dieses Kontos erneut versuchen
 browser-service-forget-retry-failed = Das Konto konnte nicht gelöscht werden. Gespeicherte Zugangsdaten wurden nicht widerrufen; versuche erneut, dieses Konto zu vergessen.
+browser-service-open = { $name } öffnen
 browser-engine-failed = Schließe Browser und öffne ihn erneut. Startet er weiterhin nicht, aktualisiere Browser im Store oder installiere ihn neu.
 
 ## Toolbar
@@ -439,6 +440,7 @@ browser-page-menu-name = Seitenmenü
 browser-quit-downloads-running = Downloads laufen noch
 browser-quit-cancelling-downloads = Downloads werden vor dem Beenden abgebrochen…
 browser-section-passwords = Passwörter
+browser-section-no-secure-page = Keine sichere Seite
 browser-section-address-autofill = Adress-Autofill
 browser-a11y-search-engine = Suchmaschine
 browser-a11y-clear-on-quit = Daten beim Schließen des Browsers löschen
@@ -450,4 +452,7 @@ browser-save-login = Anmeldung für { $site } speichern?
 browser-section-saved-accounts = Gespeicherte Konten
 browser-section-forms = Formulare auf dieser Seite
 browser-action-keep-page = Seite so lassen, wie sie ist
+browser-action-close-picture-in-picture = Bild im Bild schließen
+browser-action-close-reader-view = Leseansicht schließen
+browser-action-resume-history = Verlauf in diesem Fenster fortsetzen
 browser-action-let-leave = Freigeben: { $request }

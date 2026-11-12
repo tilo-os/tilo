@@ -8,6 +8,7 @@
 //! warning `Warning`, a caution `Danger`; something important has no status
 //! hue of its own and takes the neutral wash.
 
+use crate::i18n::widget_text;
 use vello::kurbo::Rect;
 
 use crate::icons::Icon;
@@ -77,7 +78,7 @@ impl CalloutKind {
     /// The name a person reads on the callout and in the slash menu.
     #[must_use]
     pub fn label(self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             Self::Note => "block-callout-note",
             Self::Tip => "block-callout-tip",
             Self::Important => "block-callout-important",

@@ -166,7 +166,7 @@ impl ActionHost for StubHost {
             tilo_actions::ConfirmationPolicy::Phrase { .. }
         ) && request.confirmation != Some(witnessed(&request))
         {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
         self.callers.lock().unwrap().push(caller.clone());
         self.invoked.lock().unwrap().push(request);

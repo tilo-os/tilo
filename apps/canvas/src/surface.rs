@@ -26,7 +26,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
+    AppModel, Edits, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -190,6 +190,9 @@ pub struct CanvasSurface {
     finding: Rc<Cell<bool>>,
     /// What a click is reading off a picture of the artwork.
     sampling: Option<Sampling>,
+    /// What that reading came to, when it is a write: applied by the frame's
+    /// settle, never by its paint.
+    read: Option<Invoke<Artwork>>,
     /// Views whose pictures the frame loop is rendering, answered once
     /// they came.
     due: Vec<views::Due>,
@@ -266,6 +269,7 @@ impl CanvasSurface {
             pictures: crate::background::Pictures::default(),
             finding: Rc::default(),
             sampling: None,
+            read: None,
             due: Vec::new(),
             tools,
             tool,
@@ -770,6 +774,9 @@ impl CanvasSurface {
         let patch =
             view_ops::colour_patch(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
         self.sampling = Some(Sampling::Colour(patch.request()));
+        // The picture is asked for now, of the artwork the person clicked:
+        // where the thread can wait for it, the colour is taken up here and
+        // the frame's settle writes what it comes to.
         self.take_sampled();
     }
 
@@ -777,19 +784,31 @@ impl CanvasSurface {
     /// the colour, the wand selects the area, the bucket fills it. A canvas
     /// that cannot draw a picture of itself says why beside the title
     /// rather than ignoring the click.
-    fn take_sampled(&mut self) {
+    ///
+    /// What it reads is a write, so it is not made here: the frame that
+    /// takes the reading up writes it in its
+    /// [`settle`](Widget::settle) pass, before it reads the document again.
+    /// Answers whether it took a reading up, so the frame that did syncs and
+    /// shows what came of it.
+    fn take_sampled(&mut self) -> bool {
         let Some(sampling) = self.sampling.as_mut() else {
-            return;
+            return false;
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let Some(read) = sampling.poll(&mut self.tools.renderer.borrow_mut(), text, &self.art)
         else {
-            return;
+            return false;
         };
         self.sampling = None;
         let (found, fill, mode) = match read {
-            Err(why) => return self.tools.notice.set(Some(why)),
-            Ok(Sampled::Colour(colour)) => return self.tools.pick(colour),
+            Err(why) => {
+                self.tools.notice.set(Some(why));
+                return true;
+            }
+            Ok(Sampled::Colour(colour)) => {
+                self.tools.pick(colour);
+                return true;
+            }
             Ok(Sampled::Area { found, fill, mode }) => (found, fill, mode),
         };
         let action = if fill {
@@ -803,8 +822,9 @@ impl CanvasSurface {
             Some(area::found(&found, mode))
         };
         if let Some(action) = action {
-            self.dispatch(&action);
+            self.read = Some(action);
         }
+        true
     }
 
     /// How a new area meets the selection, from the held keys.
@@ -860,6 +880,9 @@ impl CanvasSurface {
             fill,
             mode,
         });
+        // The picture is asked for now, of the artwork the person clicked:
+        // where the thread can wait for it, the area is found here and the
+        // frame's settle fills or selects it.
         self.take_sampled();
     }
 
@@ -3046,7 +3069,6 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
-        self.take_sampled();
         self.take_due();
         scene.push_layer(
             Fill::NonZero,
@@ -3267,6 +3289,10 @@ impl Widget for CanvasSurface {
         // asking for frames alone does not declare an unfinished placeholder.
         let renderer = self.tools.renderer.borrow();
         self.finding.get()
+            // A click waits for the picture it reads before it writes what
+            // it finds.
+            || self.sampling.is_some()
+            || self.read.is_some()
             || renderer.pictures.decoding()
             || renderer.detail_pending()
             || renderer.settling()
@@ -3282,6 +3308,8 @@ impl Widget for CanvasSurface {
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
             || self.sampling.is_some()
+            // A reading is owed the write its frame makes.
+            || self.read.is_some()
             || !self.due.is_empty()
             || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
@@ -3328,6 +3356,38 @@ impl Widget for CanvasSurface {
             | Tool::Wand
             | Tool::Bucket => CursorIcon::Crosshair,
         })
+    }
+
+    /// Between frames: take up a click's reading once the picture it reads
+    /// came. The frame that does syncs and writes it, so the person sees the
+    /// colour or the area in the frame the picture became available in, never
+    /// a reading of a picture that was not there yet.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // A reading taken up here, or one the click already had because the
+        // thread could wait for its picture, is this frame's to write.
+        let taken = self.take_sampled();
+        taken || self.read.is_some()
+    }
+
+    /// Write what the frame's update took up, through the one door every
+    /// canvas edit goes through, before this frame reads the document again:
+    /// what a click read and what it writes reach the artwork in one frame.
+    fn settle(&mut self, edits: &mut Edits<'_>, _path: &ui::automerge::ObjId) {
+        let Some(action) = self.read.take() else {
+            return;
+        };
+        if self.read_only {
+            return;
+        }
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        if let Err(refused) = dispatcher.submit_now(edits, action) {
+            self.tools.notice.set(Some(CATALOG.t_args(
+                "canvas-write-refused",
+                &[("why", refused.to_string().into())],
+            )));
+        }
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

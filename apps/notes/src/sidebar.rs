@@ -21,6 +21,7 @@
 //! Ctrl+Shift+N inside the selection) are handled one level up in
 //! `NotesApp`, so they work whichever pane has focus.
 
+use crate::metadata::CATALOG;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
@@ -308,7 +309,7 @@ pub(crate) fn note_menu_items() -> Vec<MenuItem> {
         if command.row == menu_row::DELETE {
             items.push(MenuItem::separator());
         }
-        let label = ui::i18n!(command.message);
+        let label = CATALOG.t(command.message);
         let Some(icon) = Icon::from_name(command.icon) else {
             continue;
         };
@@ -328,7 +329,7 @@ pub(crate) fn note_menu_commands() -> Vec<ToolbarAction> {
     note_commands()
         .into_iter()
         .map(|command| {
-            ToolbarAction::new(command.id, command.icon, ui::i18n!(command.message))
+            ToolbarAction::new(command.id, command.icon, CATALOG.t(command.message))
                 .in_menu()
                 .destructive_if(command.destructive)
         })
@@ -355,11 +356,11 @@ pub(crate) fn note_context_menu() -> ContextMenu {
 /// The menu on empty sidebar space: a new top-level note, or an import.
 fn empty_area_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
-        MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
+        MenuItem::icon_action(Icon::FilePlus, CATALOG.t("notes-empty-action"), || {}),
+        MenuItem::icon_action(Icon::CloudDownload, CATALOG.t("notes-import-title"), || {}),
         MenuItem::icon_action(
             Icon::CloudDownload,
-            ui::i18n!("notes-notion-menu-import"),
+            CATALOG.t("notes-notion-menu-import"),
             || {},
         ),
     ]
@@ -583,12 +584,12 @@ impl PageSidebar {
                     .depth(depths.depth(&page))
                     .action(
                         Icon::Plus,
-                        format!("{} {title}", ui::i18n!("notes-a11y-new-child-under")),
+                        format!("{} {title}", CATALOG.t("notes-a11y-new-child-under")),
                         move || make_note(&plus_door, &plus_wanted, Some(page), false),
                     )
                     .action(
                         Icon::MoreHorizontal,
-                        format!("{} {title}", ui::i18n!("notes-a11y-more-actions-for")),
+                        format!("{} {title}", CATALOG.t("notes-a11y-more-actions-for")),
                         // The list opens the page menu on the row once it has
                         // the request: a row's control cannot reach it.
                         move || more_wanted.borrow_mut().menu = Some(page),
@@ -596,7 +597,7 @@ impl PageSidebar {
                 Box::new(row)
             },
         )
-        .with_accessible_name(ui::i18n!("notes-title"))
+        .with_accessible_name(CATALOG.t("notes-title"))
         .with_tree(Rc::clone(&marks))
         .with_indent_guides()
         .filling()
@@ -1017,7 +1018,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             commands
                 .iter()
-                .map(|command| ui::i18n!(command.message))
+                .map(|command| CATALOG.t(command.message))
                 .collect::<Vec<_>>()
         );
     }
@@ -1144,7 +1145,7 @@ mod tests {
             let name = Widget::accessibility(tree.tree())
                 .and_then(|node| node.name)
                 .expect("the page tree is named by its heading");
-            (name, ui::i18n!("notes-title"))
+            (name, CATALOG.t("notes-title"))
         })
         .join()
         .expect("sidebar thread");
@@ -1232,7 +1233,7 @@ mod tests {
             assert_eq!(node.role, ui::a11y::Role::Tree);
             assert_eq!(
                 node.name.as_deref(),
-                Some(ui::i18n!("notes-title").as_str())
+                Some(CATALOG.t("notes-title").as_str())
             );
             assert_eq!(node.children.len(), 1, "the tree exposes its rows only");
             assert_eq!(node.children[0].name.as_deref(), Some("Project plan"));
@@ -1484,13 +1485,13 @@ mod tests {
                     .map(|item| item.name.clone().unwrap())
                     .collect::<Vec<_>>(),
                 vec![
-                    ui::i18n!("notes-menu-new-child"),
-                    ui::i18n!("notes-menu-rename"),
-                    ui::i18n!("notes-menu-duplicate"),
-                    ui::i18n!("notes-menu-copy-link"),
-                    ui::i18n!("notes-menu-export"),
-                    ui::i18n!("notes-menu-insert-image"),
-                    ui::i18n!("notes-menu-delete")
+                    CATALOG.t("notes-menu-new-child"),
+                    CATALOG.t("notes-menu-rename"),
+                    CATALOG.t("notes-menu-duplicate"),
+                    CATALOG.t("notes-menu-copy-link"),
+                    CATALOG.t("notes-menu-export"),
+                    CATALOG.t("notes-menu-insert-image"),
+                    CATALOG.t("notes-menu-delete")
                 ]
             );
             assert!(

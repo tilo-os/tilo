@@ -53,6 +53,8 @@ mod action_directory;
 pub use action_directory::*;
 mod surface_delta;
 pub use surface_delta::*;
+mod catalogue;
+pub use catalogue::*;
 pub mod audio_output;
 #[cfg(feature = "client")]
 mod client;

@@ -1,6 +1,7 @@
 //! The code scanner: the viewfinder with a scan guide, the decoded code's
 //! outline, its result card beside or below the guide, and the recent scans.
 
+use crate::CATALOG;
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -116,7 +117,7 @@ impl CameraApp {
             if code.is_some() {
                 self.draw_detected_overlay(scene, t, tr, theme, full, layout.hint);
             } else {
-                let hint = ui::i18n!("Point the camera at a QR code or barcode");
+                let hint = CATALOG.t("Point the camera at a QR code or barcode");
                 let local = theme.on_ground(theme.tokens.colors.media.scrim);
                 let mut ctx = PaintCtx::new(scene, t, tr, &local);
                 let size = ctx.measure_role(&hint, TextRole::Label, None);
@@ -626,7 +627,7 @@ impl CameraApp {
         let local = on_panel(theme);
         let entries = self.scan_history();
         let now = super::now_secs();
-        let heading = ui::i18n!("Recent scans");
+        let heading = CATALOG.t("Recent scans");
         let heading_h = f64::from(local.text(TextRole::Subheading).line_height_px());
         let header = heading_h + 2.0 * f64::from(spacing.s3);
         // Measure the rows that fit, then size the panel to them.

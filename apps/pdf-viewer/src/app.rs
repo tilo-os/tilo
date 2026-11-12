@@ -5230,7 +5230,7 @@ impl Widget for PdfApp {
                             .with_description(crate::t_args(
                                 "pdf-a11y-signed",
                                 &[
-                                    ("date", signature.date.clone().into()),
+                                    ("date", crate::dates::shown(&signature.date).into()),
                                     ("page", signature.page.to_string().into()),
                                 ],
                             ))
@@ -5278,6 +5278,14 @@ impl Widget for PdfApp {
                 .with_hashed_key("pdf.content")
                 .with_children(content_children),
         ];
+        // The rail's import button: its label when the rail has the room for
+        // it, its name when it stands as the glyph alone.
+        if self.show_rail {
+            let add = self.page_sidebar.add_button_rect();
+            if add.width() > 0.0 {
+                window_children.insert(1, button(&crate::t("pdf-rail-import"), "pdf.import", add));
+            }
+        }
         if let Some(menu) = self.context_menu.as_ref()
             && let Some(menu_node) = menu.widget.accessibility()
         {
@@ -5468,6 +5476,11 @@ impl Widget for PdfApp {
             return activates && self.open_workspace_document(record);
         }
 
+        if target == "pdf.import" {
+            self.request_import_via_portal();
+            return true;
+        }
+
         let effect = match target {
             "pdf.open" => PdfEffect::OpenPdf { path: None },
             "pdf.signature.use" => PdfEffect::UseTool { tool: Tool::Sign },
@@ -5485,6 +5498,12 @@ impl Widget for PdfApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The rail's import button, when it stands as its glyph alone, is named
+    /// by the words the rail had no room to paint (see `ui::widget::PageSidebar`).
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.page_sidebar.tooltip_target_at(point)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -8765,6 +8784,42 @@ pub(crate) mod tests {
             assert_eq!(other.signer_name, "Ada Lovelace");
             assert_eq!(other.sig_strokes, vec![vec![(0.1, 0.5), (0.9, 0.4)]]);
         }
+    }
+
+    /// A day a signature record stores is read as the window reads dates, in
+    /// the panel and in what assistive technology hears — never as the
+    /// record's own `YYYY-MM-DD`.
+    #[test]
+    fn the_signatures_panel_reads_stored_days_in_the_windows_language() {
+        let (mut app, mut st) = app_with_state();
+        app.place_signature(&mut Edits::lend(&mut st.doc), 1, (200.0, 300.0));
+        let placed = app
+            .signatures
+            .first()
+            .cloned()
+            .expect("a signature landed on the page");
+        app.focus_sidebar(SidebarTab::Signatures, placed.id.clone());
+
+        let tree = Widget::accessibility(&app).expect("reader semantics");
+        let heard = std::cell::RefCell::new(Vec::new());
+        any_access_node(&tree, &|node: &ui::a11y::AccessNode| {
+            let mut heard = heard.borrow_mut();
+            heard.extend(node.name.clone());
+            heard.extend(node.description.clone());
+            false
+        });
+        let heard = heard.borrow().join("\n");
+        assert!(
+            heard.contains(&format!(
+                "Signed {} on page",
+                crate::dates::shown(&placed.date)
+            )),
+            "the panel reads {placed:?} as the window reads dates"
+        );
+        assert!(
+            !heard.contains(&format!("Signed {} on page", placed.date)),
+            "the panel never speaks the record's ISO spelling"
+        );
     }
 
     // ----------------------------------------------------------------

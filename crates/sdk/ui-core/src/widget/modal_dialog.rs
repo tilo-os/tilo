@@ -25,6 +25,7 @@
 //! is the dialog's close control, published as a view action so agents and scripts
 //! close the dialog as a person does.
 
+use crate::i18n::widget_text;
 use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath};
 #[cfg(test)]
@@ -2558,7 +2559,7 @@ impl Widget for ModalDialog<dyn Widget> {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The title is the accessible name (FTL-resolved).
-        let title = crate::i18n!(&self.title);
+        let title = widget_text(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
             .with_optional_name(name)
@@ -2599,7 +2600,7 @@ impl Widget for ModalDialog<dyn Widget> {
                     state.disabled = !enabled;
                     node.children.push(
                         AccessNode::new(Role::Button)
-                            .with_name(crate::i18n!(&action.label))
+                            .with_name(widget_text(&action.label))
                             .with_key(index)
                             .with_state(state)
                             .with_bounds(bounds)

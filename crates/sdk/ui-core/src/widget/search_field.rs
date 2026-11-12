@@ -17,6 +17,7 @@
 //! Composes the toolkit's own [`TextInput`] so caret, selection, IME, and
 //! CRDT binding are shared.
 
+use crate::i18n::widget_text;
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 
@@ -354,7 +355,7 @@ impl SearchField {
             reason = "a field's width in logical pixels is far inside f32's range"
         )]
         let fitted = text_renderer.elide_to_width_style(
-            &crate::i18n!(&self.placeholder),
+            &widget_text(&self.placeholder),
             room as f32,
             &theme.text(TextRole::Body),
         );
@@ -418,7 +419,7 @@ impl SearchField {
         };
         let mut description = Vec::new();
         if !self.placeholder.is_empty() {
-            description.push(crate::i18n!(&self.placeholder));
+            description.push(widget_text(&self.placeholder));
         }
         if let Some(token) = &self.scope_token {
             description.push(token.clone());

@@ -233,6 +233,16 @@ impl Widget for PlayerApp {
         vec![&mut self.host as &mut (dyn Widget + '_)]
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.state.borrow_mut().interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(self.state.borrow().accessibility())
     }

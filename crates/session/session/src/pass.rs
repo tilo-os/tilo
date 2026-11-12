@@ -65,6 +65,9 @@ impl Session {
         if let Some(plane) = &self.action_plane {
             plane.link.serve(&mut services);
         }
+        // What the answers wrote (an agent's record of its work) reaches the workspace in this
+        // pass, not in the next one's.
+        self.shared.records.write();
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and
@@ -128,6 +131,8 @@ impl Session {
         let pass = Instant::now();
         // The person's language, before this pass resolves any of its words.
         self.follow_language();
+        // The dates, clocks and weeks they write, as their region now says them.
+        self.follow_formats();
         // Add folders: answered whether the identity ceremony is over, and the review the person
         // left opens once it is.
         self.follow_folder_import();
@@ -400,22 +405,41 @@ impl Session {
 
     /// Run until `stop` holds or the backend is done.
     ///
+    /// A run asked to last a measured interval (`TILO_RUN_SECONDS`, as the frame instrumentation
+    /// documents it) ends by itself, cleanly, once it is over: the trace and the summary of the
+    /// run are written on the way out.
+    ///
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         // Everything from here to the first frame is what the person waits for after the desk is
         // built.
         tilo_startup_metrics::mark("render-worker-start");
-        while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
+        let measured = tilo_frame_metrics::run_seconds_from_env()
+            .and_then(|seconds| std::time::Instant::now().checked_add(seconds));
+        let measured_over = || measured.is_some_and(|over| std::time::Instant::now() >= over);
+        while !self.ended
+            && !self.compositor.closed()
+            && !measured_over()
+            && !stop(&self.compositor)
+        {
             // Whatever comes first: a client, a device, a due frame of the compositor's own, or an
             // instant something of the session's needs a pass for. With nothing due, the loop waits
-            // for the person.
+            // for the person — or for the end of a measured run.
             let timeout = match (self.compositor.next_wait(), self.next_deadline()) {
                 (Some(frame), Some(due)) => {
                     Some(frame.min(due.saturating_duration_since(std::time::Instant::now())))
                 }
                 (frame, due) => frame.or_else(|| {
                     due.map(|due| due.saturating_duration_since(std::time::Instant::now()))
+                }),
+            };
+            let timeout = match (timeout, measured) {
+                (Some(due), Some(over)) => {
+                    Some(due.min(over.saturating_duration_since(std::time::Instant::now())))
+                }
+                (due, over) => due.or_else(|| {
+                    over.map(|over| over.saturating_duration_since(std::time::Instant::now()))
                 }),
             };
             self.step(timeout)?;

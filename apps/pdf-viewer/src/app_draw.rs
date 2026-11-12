@@ -830,6 +830,7 @@ impl PdfApp {
             &content,
             self.last_mouse,
             false,
+            self.interaction,
         );
         // The click handler reads these exact rects back
         // (`empty_open_button_rect`, `workspace_document_at`); nothing to
@@ -2503,11 +2504,12 @@ impl PdfApp {
                 .get(i + 1)
                 .is_some_and(|next| self.selected_sig.as_deref() == Some(next.id.as_str()));
             let page = crate::t_args("pdf-a11y-page", &[("page", s.page.to_string().into())]);
+            let signed = crate::dates::shown(&s.date);
             let hovered = row.contains(self.last_mouse);
             let face = ListRowFace::new(&s.signer)
                 .leading(RowLeading::Icon(Icon::PenTool))
                 .secondary(&page)
-                .meta(&s.date)
+                .meta(&signed)
                 .selected(selected)
                 .actions(&delete)
                 .interaction(ui::widget::Interaction {

@@ -400,7 +400,10 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
                     },
                     selected.then_some(("already_selected", "This camera is already selected")),
                 );
-                spec.type_mut().label = format!("Use {device}");
+                spec.type_mut().label = crate::CATALOG.t_args(
+                    "camera-action-use-device",
+                    &[("device", ui::i18n::ArgValue::Text(device.clone()))],
+                );
                 let label = if selected {
                     format!("{device} (selected)")
                 } else {
@@ -434,7 +437,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
         },
     );
     if ctx.recording {
-        record.type_mut().label = "Stop recording".into();
+        record.type_mut().label = crate::CATALOG.t("camera-action-stop-recording");
     }
     row.operation(record)
 }

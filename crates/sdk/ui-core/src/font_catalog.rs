@@ -157,13 +157,12 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
-    // A build materializes the pinned catalog into the machine's font cache
-    // (`tools/font-catalog.py`) and bakes *that* path in. A binary built on
-    // another machine therefore names a directory this one does not have, and
-    // every frame it renders is set in the host's faces — nearly right, and
-    // wrong in a way only a screenshot review notices. The cache is keyed by
-    // what it was prepared from, so any prepared catalog whose manifest is
-    // this build's is the catalog this build expects.
+    // A build prepared its catalog beside its own profile directory and baked *that* path in. A
+    // binary built on another machine therefore names a directory this one does not have, and
+    // every frame it renders is set in the host's faces — nearly right, and wrong in a way only a
+    // screenshot review notices. Catalogs are published under the name of what they were
+    // prepared from, so any prepared catalog whose manifest is this build's is the catalog this
+    // build expects, wherever on this machine it was materialized (`tools/font-catalog.py`).
     let paths = &crate::host::environment().paths;
     for cache in paths.font_artifact_cache.iter().cloned().chain(
         paths

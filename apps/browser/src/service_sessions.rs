@@ -42,7 +42,10 @@ impl Selection {
             session_id: self.id.clone(),
         }
         .bound();
-        open.type_mut().label = format!("Open {}", self.label());
+        open.type_mut().label = CATALOG.t_args(
+            "browser-service-open",
+            &[("name", ui::i18n::ArgValue::Text(self.label().to_owned()))],
+        );
         ui::tilo_actions::ResourceSpec::new(
             format!("browser.service.{}", self.id),
             "browser.service",

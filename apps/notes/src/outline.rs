@@ -5,6 +5,7 @@
 //! row reveals that block through [`MainPanel::reveal_block`], so the caret
 //! and the body move together.
 
+use crate::metadata::CATALOG;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -47,7 +48,7 @@ fn items(headings: &[Heading]) -> Vec<NavItem> {
         let mut rows = Vec::new();
         while let Some(heading) = remaining.next_if(|next| next.level > parent_level) {
             let label = if heading.text.trim().is_empty() {
-                ui::i18n!("notes-outline-untitled")
+                CATALOG.t("notes-outline-untitled")
             } else {
                 heading.text.trim().to_owned()
             };
@@ -79,7 +80,7 @@ impl NotesOutline {
         let pick = Rc::clone(&chosen);
         Self {
             list: NavList::new(Vec::new())
-                .with_accessible_name(ui::i18n!("notes-outline"))
+                .with_accessible_name(CATALOG.t("notes-outline"))
                 .on_view("notes.outline", move |id| *pick.borrow_mut() = Some(id)),
             headings: Vec::new(),
             chosen,
@@ -116,10 +117,10 @@ impl NotesOutline {
             vec![
                 NavSection::new(
                     "notes.outline",
-                    ui::i18n!("notes-outline"),
+                    CATALOG.t("notes-outline"),
                     items(&headings),
                 )
-                .empty_caption(ui::i18n!("notes-outline-empty")),
+                .empty_caption(CATALOG.t("notes-outline-empty")),
             ]
         });
         self.structure_dirty |= headings.len() != self.headings.len();

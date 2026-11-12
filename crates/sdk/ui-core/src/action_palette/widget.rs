@@ -4,6 +4,7 @@ use super::{
     ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, PresenceCtx, Rect,
     Scene, Size, Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
 };
+use crate::i18n::widget_text;
 use crate::widget::SearchField;
 
 /// What names the palette's field and what its description adds, whichever
@@ -15,7 +16,7 @@ pub(crate) fn field_announcement(
     question: Option<&str>,
 ) -> (String, Option<String>) {
     match question
-        .map(|question| crate::i18n!(question))
+        .map(|question| widget_text(question))
         .filter(|question| !question.is_empty())
     {
         Some(question) => (question, None),

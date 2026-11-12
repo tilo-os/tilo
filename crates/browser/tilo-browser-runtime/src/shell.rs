@@ -875,7 +875,13 @@ impl BrowserShell {
             tilo_session_core::presence::Step::Bring(tilo_session_core::presence::Target::App(
                 app,
             )) => {
-                self.launch(&app);
+                // Their app, where no window here shows their record by the name it is noted
+                // under: a window of that app here already is where they are, as a native desk
+                // brings it forward. Following never opens a second window beside it; it opens
+                // the app only where none stands.
+                if !self.handle.focus_app(&app) {
+                    self.launch(&app);
+                }
                 true
             }
             tilo_session_core::presence::Step::Gone => {

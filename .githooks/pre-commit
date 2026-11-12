@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Compilation runs in CI to keep the pre-commit hook fast.
+# Compilation runs in CI to keep the pre-commit hook fast; the component catalogue is the one
+# generated file that exists only as a compiled answer, so its step compiles the toolkit, and
+# only for a commit that stages a widget source.
 set -euo pipefail
 # The policy scripts need Python 3.11 or newer (tomllib). On macOS the python3 first on PATH is
 # often the system's 3.9, which fails every commit; put a newer interpreter's directory first.
@@ -179,6 +181,65 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
   else
     note "sdk: an app's surface changed and this tree has no generator built; run 't fix sdk-types' and stage sdk/"
     fail=1
+  fi
+fi
+
+# The component catalogue (`crates/dev/ui-graph/components.json`) is the toolkit's described
+# widgets as data: each widget's doc text and props, generated from the widget itself. The
+# crates below the toolkit read it at build time (tilo-view builds a builder per component from
+# it, tilolang its `ui` package), so it is committed, and a widget whose description changed
+# leaves it stale. Regenerating it is not a judgement call: do it here with this tree's own
+# generator and stage what it wrote. The toolkit's test holds the same invariant, so a tree
+# that cannot build now leaves the file as it is rather than holding up the commit.
+widget_sources=$(grep -vE '(_tests\.rs|/tests\.rs|/tests/)' <<< "$lock_staged_names" \
+  | grep -E '^crates/sdk/ui-core/src/.*\.rs$' || true)
+if [ -n "$widget_sources" ]; then
+  catalogue=crates/dev/ui-graph/components.json
+  # The generator reads the tree, so a widget source with unstaged edits would be generated
+  # into this commit: it is left alone, as rustfmt leaves such a file alone.
+  if ! git diff --quiet -- crates/sdk/ui-core/src; then
+    note "component catalogue: crates/sdk/ui-core/src has unstaged edits; stage the whole tree \
+and commit again, or regenerate it with 'cargo run -p tilo-ui --example component-catalogue > $catalogue'"
+  else
+    # The sources and catalogue already generated in an earlier commit need no second build: a
+    # fixup, or a rebase replaying a commit, is the same tree and the same answer.
+    sources_id=$(GIT_INDEX_FILE="$full_index" git ls-files -s -- crates/sdk/ui-core/src \
+      | git hash-object --stdin)
+    catalogue_id=$(git rev-parse -q --verify ":$catalogue" || true)
+    verified_at="$(git rev-parse --path-format=absolute --git-dir)/component-catalogue-verified"
+    if [ "$(cat "$verified_at" 2>/dev/null)" != "$sources_id $catalogue_id" ]; then
+      # No binary is built for this: the generator is the toolkit itself, so the one command
+      # that writes the catalogue compiles it first.
+      cat_run=()
+      if command -v cargo >/dev/null 2>&1; then
+        cat_run=(cargo run --locked -q -p tilo-ui --example component-catalogue)
+      fi
+      cat_generated=""
+      if [ "${#cat_run[@]}" -gt 0 ]; then
+        cat_generated=$("${cat_run[@]}" 2>/dev/null || true)
+      fi
+      if [ -n "$cat_generated" ]; then
+        if [ "$cat_generated" != "$(cat "$root/$catalogue")" ]; then
+          if git diff --quiet -- "$catalogue"; then
+            printf '%s\n' "$cat_generated" > "$root/$catalogue"
+            GIT_INDEX_FILE="$full_index" git add -- "$catalogue"
+            catalogue_id=$(git rev-parse -q --verify ":$catalogue" || true)
+            note "$catalogue: regenerated from the staged widget sources and staged"
+          else
+            note "$catalogue is stale and has unstaged edits: stage the whole file and commit again"
+            fail=1
+          fi
+        fi
+        # Only a catalogue that is now the generated one is remembered: the next commit of the
+        # same sources builds nothing, a commit that left it stale is checked again.
+        if [ "$cat_generated" = "$(cat "$root/$catalogue")" ]; then
+          printf '%s %s\n' "$sources_id" "$catalogue_id" > "$verified_at"
+        fi
+      else
+        note "component catalogue: no generator could be run; \
+crates/sdk/ui-core/src/widget changes may need 'cargo run -p tilo-ui --example component-catalogue > $catalogue'"
+      fi
+    fi
   fi
 fi
 

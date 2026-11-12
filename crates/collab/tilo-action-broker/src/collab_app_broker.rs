@@ -121,8 +121,9 @@ use std::time::Duration;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
+use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use collab_types::inbound::OpAdmission;
 use collab_types::presence::PresencePayload;
@@ -2559,8 +2560,85 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
-type ActionCatalogueSnapshot = Option<Arc<str>>;
-type ActionCatalogueSubscriber = (String, BrokerActor, watch::Sender<ActionCatalogueSnapshot>);
+/// The catalogue one audience may see, each surface's actions shared by its
+/// followers.
+type CatalogueRows = Vec<(runtime_collab::CatalogueSurfaceId, Arc<[PublishedAction]>)>;
+type ActionCatalogueSubscriber = (String, BrokerActor, Weak<CatalogueFollower>);
+
+fn catalogue_rows(surfaces: Vec<runtime_collab::BrokerActionSurface>) -> CatalogueRows {
+    surfaces
+        .into_iter()
+        .map(|surface| (surface.id(), Arc::from(surface.actions)))
+        .collect()
+}
+
+/// One connection following the catalogue: what it holds, and the change
+/// it is sent next. Changes made while it has not read compose into one.
+struct CatalogueFollower {
+    following: Mutex<CatalogueFollowing>,
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct CatalogueFollowing {
+    publication: runtime_collab::CataloguePublication,
+    pending: Option<runtime_collab::CatalogueChange>,
+    /// Its audience's authorization failed: it is sent nothing more.
+    ended: bool,
+}
+
+impl CatalogueFollower {
+    /// A follower that is sent `rows` whole first.
+    fn new(rows: &CatalogueRows) -> Arc<Self> {
+        let follower = Arc::new(Self {
+            following: Mutex::new(CatalogueFollowing::default()),
+            changed: tokio::sync::Notify::new(),
+        });
+        follower.follow(rows);
+        follower
+    }
+
+    /// Queue the change from what it holds to `rows`.
+    fn follow(&self, rows: &CatalogueRows) {
+        let mut following = self.following.lock_recover();
+        let change = following.publication.next(rows);
+        if change.is_empty() {
+            return;
+        }
+        following.pending = Some(match following.pending.take() {
+            Some(pending) => pending.then(change),
+            None => change,
+        });
+        drop(following);
+        self.changed.notify_one();
+    }
+
+    /// Send nothing more, not even a change not read yet: a failed
+    /// authorization must never let a slow reader consume stale discovery.
+    fn end(&self) {
+        let mut following = self.following.lock_recover();
+        following.ended = true;
+        following.pending = None;
+        drop(following);
+        self.changed.notify_one();
+    }
+
+    /// The next change, once there is one; `Err` once it has ended.
+    async fn next(&self) -> Result<runtime_collab::CatalogueChange, ()> {
+        loop {
+            {
+                let mut following = self.following.lock_recover();
+                if following.ended {
+                    return Err(());
+                }
+                if let Some(change) = following.pending.take() {
+                    return Ok(change);
+                }
+            }
+            self.changed.notified().await;
+        }
+    }
+}
 
 /// Exact pinned host and route, minted only alongside a broker-allocated Unix pair.
 /// This scope is never accepted from the wire or exposed as a public constructor.
@@ -4468,24 +4546,24 @@ impl AppBrokerState {
             .map_err(BrokerError::failed)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue projection applies one ordered authorization and serialization pass"
-    )]
     #[cfg(test)]
-    fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor))
+    fn action_catalogue(
+        &self,
+        cluster_id: &str,
+        actor: &str,
+    ) -> Result<Vec<runtime_collab::BrokerActionSurface>, String> {
+        self.action_catalogue_for(cluster_id, &BrokerActor::person(actor))
     }
 
     #[allow(
         clippy::too_many_lines,
-        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
+        reason = "catalogue projection and policy filtering remain adjacent so a published action cannot bypass the actor check"
     )]
-    fn action_catalogue_json_for(
+    fn action_catalogue_for(
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<runtime_collab::BrokerActionSurface>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let membership = self
             .membership
@@ -4611,48 +4689,54 @@ impl AppBrokerState {
                     .collect::<Vec<_>>();
                 Ok::<_, String>((published, applications, task_steps))
             })??;
-        let mut surfaces = published
-            .into_iter()
-            .filter_map(|surface| {
-                let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
-                (!surface.actions.is_empty()).then(|| {
-                    serde_json::json!({
-                        "peer_id": surface.peer_id,
-                        "provider": provider,
-                        "app_id": surface.app_id,
-                        "cluster_id": surface.route.cluster_id,
-                        "record_id": surface.route.record_id,
-                        "live": surface.live,
-                        "actions": surface.actions,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        for (provider, app_id, actions) in task_steps {
-            if actions.is_empty() {
-                continue;
+        // A row's display state is no follower's: a change of it alone sends nothing.
+        let stateless = |mut action: PublishedAction| {
+            action.state = tilo_actions::ActionState::default();
+            action
+        };
+        let mut surfaces: Vec<runtime_collab::BrokerActionSurface> = Vec::new();
+        let mut offer = |surface: runtime_collab::BrokerActionSurface| {
+            if !surface.actions.is_empty() {
+                surfaces.push(surface);
             }
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "provider": provider,
-                "app_id": app_id,
-                "cluster_id": cluster_id,
-                "record_id": "",
-                "live": true,
-                "actions": actions.iter().map(PublishedAction::from).collect::<Vec<_>>(),
-            }));
+        };
+        for surface in published {
+            let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: surface.peer_id,
+                provider,
+                app_id: surface.app_id,
+                cluster_id: surface.route.cluster_id,
+                record_id: surface.route.record_id,
+                live: surface.live,
+                actions: surface.actions.into_iter().map(stateless).collect(),
+            });
+        }
+        for (provider, app_id, actions) in task_steps {
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: 0,
+                provider: Some(provider.to_owned()),
+                app_id,
+                cluster_id: cluster_id.to_owned(),
+                record_id: String::new(),
+                live: true,
+                actions: actions
+                    .iter()
+                    .map(|descriptor| stateless(PublishedAction::from(descriptor)))
+                    .collect(),
+            });
         }
         for app in applications {
             let package_id = app.package_id;
             let display_name = app.display_name;
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "provider": tilo_actions::remote::workspace_provider(cluster_id),
-                "app_id": package_id,
-                "cluster_id": cluster_id,
-                "record_id": "",
-                "live": true,
-                "actions": [PublishedAction {
+            offer(runtime_collab::BrokerActionSurface {
+                peer_id: 0,
+                provider: Some(tilo_actions::remote::workspace_provider(cluster_id)),
+                app_id: package_id.clone(),
+                cluster_id: cluster_id.to_owned(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![PublishedAction {
                     state: tilo_actions::ActionState::default(),
                     resource: format!("app.{package_id}"),
                     semantic_identity: None,
@@ -4662,22 +4746,16 @@ impl AppBrokerState {
                     resource_label: display_name,
                     keywords: Vec::new(),
                     icon: None,
-                    description: Some(
-                        "Launch this application into the current workspace".into(),
-                    ),
+                    description: Some("Launch this application into the current workspace".into()),
                     operation_kind: tilo_actions::OperationKind::Effect,
                     params: Vec::new(),
                     contract: tilo_actions::ActionContract::default(),
                     view: None,
                     input: PublishedInput::None,
                 }],
-            }));
+            });
         }
-        serde_json::to_string(&serde_json::json!({
-            "version": 1,
-            "surfaces": surfaces,
-        }))
-        .map_err(|error| error.to_string())
+        Ok(surfaces)
     }
 
     /// Invalidate retained discovery only after a real service-surface mutation.
@@ -4700,32 +4778,30 @@ impl AppBrokerState {
             .map(|subscribers| {
                 subscribers
                     .iter()
-                    .map(|(peer, (cluster, actor, tx))| {
-                        (*peer, cluster.clone(), actor.clone(), tx.clone())
+                    .map(|(peer, (cluster, actor, follower))| {
+                        (*peer, cluster.clone(), actor.clone(), follower.clone())
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let mut audiences: HashMap<(String, BrokerActor), ActionCatalogueSnapshot> = HashMap::new();
+        let mut audiences: HashMap<(String, BrokerActor), Option<CatalogueRows>> = HashMap::new();
         let mut disconnected = Vec::new();
-        for (peer, cluster, actor, tx) in subscribers {
-            let snapshot = audiences
+        for (peer, cluster, actor, follower) in subscribers {
+            let Some(follower) = follower.upgrade() else {
+                disconnected.push(peer);
+                continue;
+            };
+            let rows = audiences
                 .entry((cluster.clone(), actor.clone()))
                 .or_insert_with(|| {
-                    self.action_catalogue_json_for(&cluster, &actor)
+                    self.action_catalogue_for(&cluster, &actor)
                         .ok()
-                        .map(Arc::<str>::from)
-                })
-                .clone();
-            if let Some(snapshot) = snapshot {
-                if tx.send(Some(snapshot)).is_err() {
-                    disconnected.push(peer);
-                }
+                        .map(catalogue_rows)
+                });
+            if let Some(rows) = rows {
+                follower.follow(rows);
             } else {
-                // Invalidate an unread prior snapshot before removing this
-                // audience. A failed current authorization must never let
-                // a slow reader consume stale discovery state.
-                tx.send_replace(None);
+                follower.end();
                 disconnected.push(peer);
             }
         }
@@ -5838,7 +5914,7 @@ impl AppBrokerState {
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself.
         if requires_store_witness(app, &offered.action) && !witnessed {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
@@ -5851,7 +5927,7 @@ impl AppBrokerState {
                 return Ok(None);
             }
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
             .and_then(|token| {
@@ -9097,43 +9173,35 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
 
 struct ActionCatalogueStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
-    reader: Rc<AsyncMutex<ActionCatalogueReader>>,
-}
-
-struct ActionCatalogueReader {
-    rx: watch::Receiver<ActionCatalogueSnapshot>,
-    initial: bool,
-}
-
-impl ActionCatalogueReader {
-    async fn next(&mut self) -> Result<Arc<str>, ()> {
-        if self.initial {
-            self.initial = false;
-        } else {
-            self.rx.changed().await.map_err(|_| ())?;
-        }
-        let snapshot = self.rx.borrow_and_update().clone();
-        snapshot.ok_or(())
-    }
+    follower: Arc<CatalogueFollower>,
 }
 
 impl ActionCatalogueStreamServer {
-    /// The catalogue as it stands now, then each time it changes.
+    /// The whole catalogue, then each change to it, as JSON.
     #[allow(
         clippy::future_not_send,
         reason = "the stream is served on the connection's single-threaded local set"
     )]
-    async fn next(&self) -> Result<Arc<str>, BrokerError> {
+    async fn next(&self) -> Result<String, BrokerError> {
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-        let snapshot = self
-            .reader
-            .lock()
-            .await
+        let change = self
+            .follower
             .next()
             .await
             .map_err(|()| BrokerError::disconnected("action catalogue stream closed".into()))?;
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-        Ok(snapshot)
+        let json = serde_json::to_string(&change)
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
+        if change.reset {
+            // The session's normal tracing filter passes only errors. Its
+            // flight recorder captures stderr; report numeric metadata
+            // without exporting any authorized catalogue contents.
+            eprintln!(
+                "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+                json.len()
+            );
+        }
+        Ok(json)
     }
 }
 
@@ -14031,22 +14099,33 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn catalogue_test_channel() -> (
-        watch::Sender<ActionCatalogueSnapshot>,
-        watch::Receiver<ActionCatalogueSnapshot>,
-    ) {
-        watch::channel(Some(Arc::<str>::from("{}")))
+    fn catalogue_test_follower() -> Arc<CatalogueFollower> {
+        CatalogueFollower::new(&Vec::new())
     }
 
     #[cfg(test)]
-    fn current_catalogue(
-        receiver: &mut watch::Receiver<ActionCatalogueSnapshot>,
-    ) -> ActionCatalogueSnapshot {
-        receiver.borrow_and_update().clone()
+    /// Apply the change `follower` is sent next, if one is queued.
+    fn read_catalogue(
+        follower: &CatalogueFollower,
+        held: &mut runtime_collab::ActionCatalogue,
+    ) -> bool {
+        let Some(change) = follower.following.lock().unwrap().pending.take() else {
+            return false;
+        };
+        held.apply(&change).unwrap();
+        true
+    }
+
+    #[cfg(test)]
+    fn offers(held: &runtime_collab::ActionCatalogue, resource: &str) -> bool {
+        held.surfaces()
+            .iter()
+            .flat_map(|surface| &surface.actions)
+            .any(|action| action.resource == resource)
     }
 
     #[test]
-    fn catalogue_publication_computes_once_per_exact_audience_and_keeps_only_latest_state() {
+    fn catalogue_publication_computes_once_per_audience_and_sends_only_what_changed() {
         let CountingCatalogueFixture {
             state,
             calls,
@@ -14054,40 +14133,59 @@ pub mod tests {
             ..
         } = counting_catalogue_state("owner");
         let actor = BrokerActor::person("owner");
-        let (first_tx, mut first_rx) = catalogue_test_channel();
-        let (second_tx, mut second_rx) = catalogue_test_channel();
+        let (reading, slow) = (catalogue_test_follower(), catalogue_test_follower());
         state.action_catalogue_subscribers.lock().unwrap().extend([
-            (1, (cluster.clone(), actor.clone(), first_tx)),
-            (2, (cluster.clone(), actor, second_tx)),
+            (
+                1,
+                (cluster.clone(), actor.clone(), Arc::downgrade(&reading)),
+            ),
+            (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
         ]);
+        let publish = |peer: u64, resource: Option<&str>| {
+            let mut surfaces = state.surfaces.lock().unwrap();
+            match resource {
+                Some(resource) => {
+                    surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
+                }
+                None => surfaces.remove(&peer),
+            };
+            drop(surfaces);
+            state.publish_action_catalogue();
+        };
+        publish(11, Some("files.entry:first"));
+        publish(12, Some("files.entry:second"));
+        let mut held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&reading, &mut held));
+        assert_eq!(held.surfaces().len(), 2);
 
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(11, catalogue_surface(11, &cluster, "files.entry:first"));
-        state.publish_action_catalogue();
-        state
-            .surfaces
-            .lock()
-            .unwrap()
-            .insert(12, catalogue_surface(12, &cluster, "files.entry:second"));
-        state.publish_action_catalogue();
+        publish(12, Some("files.entry:renamed"));
+        publish(11, None);
+        let change = reading.following.lock().unwrap().pending.clone().unwrap();
+        assert!(!change.reset);
+        assert_eq!(change.surfaces.len(), 1, "only the changed surface travels");
+        assert_eq!(change.surfaces[0].surface.peer_id, 12);
+        assert_eq!(change.removed.len(), 1);
+        assert!(read_catalogue(&reading, &mut held));
+        assert!(offers(&held, "files.entry:renamed"));
+        assert!(!offers(&held, "files.entry:first") && !offers(&held, "files.entry:second"));
 
+        let mut slow_held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&slow, &mut slow_held));
+        assert_eq!(
+            slow_held.surfaces(),
+            held.surfaces(),
+            "a slow reader is sent one change for everything it missed"
+        );
+        state.publish_action_catalogue();
+        assert!(
+            !read_catalogue(&reading, &mut held),
+            "an unchanged catalogue sends nothing"
+        );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "each synchronous publication computes one snapshot for a shared exact audience"
+            5,
+            "each publication computes one catalogue for a shared exact audience"
         );
-        for receiver in [&mut first_rx, &mut second_rx] {
-            let latest: serde_json::Value =
-                serde_json::from_str(&current_catalogue(receiver).unwrap()).unwrap();
-            assert_eq!(latest["surfaces"].as_array().unwrap().len(), 2);
-            assert!(
-                !receiver.has_changed().unwrap(),
-                "a slow reader retains no obsolete complete catalogue"
-            );
-        }
     }
 
     #[test]
@@ -14111,24 +14209,43 @@ pub mod tests {
         other.set_owner("same");
         let other_cluster = other.id().to_string();
         tree.lock().unwrap().workspaces.push(other);
-        let (person_tx, mut person_rx) = catalogue_test_channel();
-        let (agent_tx, mut agent_rx) = catalogue_test_channel();
-        let (other_tx, mut other_rx) = catalogue_test_channel();
+        let person = catalogue_test_follower();
+        let agent = catalogue_test_follower();
+        let other = catalogue_test_follower();
         state.action_catalogue_subscribers.lock().unwrap().extend([
-            (1, (cluster.clone(), BrokerActor::person("same"), person_tx)),
-            (2, (cluster, BrokerActor::agent("same"), agent_tx)),
-            (3, (other_cluster, BrokerActor::person("same"), other_tx)),
+            (
+                1,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("same"),
+                    Arc::downgrade(&person),
+                ),
+            ),
+            (
+                2,
+                (cluster, BrokerActor::agent("same"), Arc::downgrade(&agent)),
+            ),
+            (
+                3,
+                (
+                    other_cluster,
+                    BrokerActor::person("same"),
+                    Arc::downgrade(&other),
+                ),
+            ),
         ]);
 
         state.publish_action_catalogue();
 
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
-        let person = current_catalogue(&mut person_rx).unwrap();
-        let agent = current_catalogue(&mut agent_rx).unwrap();
-        let other = current_catalogue(&mut other_rx).unwrap();
-        assert!(person.contains("files.entry:owner"));
-        assert!(!agent.contains("files.entry:owner"));
-        assert!(!other.contains("files.entry:owner"));
+        let catalogue = |follower: &CatalogueFollower| {
+            let mut held = runtime_collab::ActionCatalogue::default();
+            read_catalogue(follower, &mut held);
+            offers(&held, "files.entry:owner")
+        };
+        assert!(catalogue(&person));
+        assert!(!catalogue(&agent));
+        assert!(!catalogue(&other));
     }
 
     #[test]
@@ -14145,18 +14262,19 @@ pub mod tests {
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let (tx, mut rx) = catalogue_test_channel();
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(1, (cluster, BrokerActor::person("owner"), tx));
-        state.publish_action_catalogue();
-        assert!(
-            current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner")
+        let follower = catalogue_test_follower();
+        state.action_catalogue_subscribers.lock().unwrap().insert(
+            1,
+            (
+                cluster,
+                BrokerActor::person("owner"),
+                Arc::downgrade(&follower),
+            ),
         );
+        state.publish_action_catalogue();
+        let mut held = runtime_collab::ActionCatalogue::default();
+        assert!(read_catalogue(&follower, &mut held));
+        assert!(offers(&held, "files.entry:owner"));
 
         {
             let mut tree = tree.lock().unwrap();
@@ -14164,44 +14282,28 @@ pub mod tests {
             tree.workspaces[0].dismiss("owner");
         }
         state.publish_action_catalogue();
-        assert!(
-            !current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner")
-        );
+        assert!(read_catalogue(&follower, &mut held));
+        assert!(!offers(&held, "files.entry:owner"));
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
-    async fn catalogue_stream_starts_with_latest_state_and_rejects_invalidated_pending_state() {
-        let (initial_tx, initial_rx) = watch::channel(Some(Arc::<str>::from("initial")));
-        let mut initial_reader = ActionCatalogueReader {
-            rx: initial_rx,
-            initial: true,
-        };
-        assert_eq!(&*initial_reader.next().await.unwrap(), "initial");
-        drop(initial_tx);
+    async fn catalogue_stream_starts_whole_and_ending_drops_an_unread_change() {
+        let follower = catalogue_test_follower();
         assert!(
-            initial_reader.next().await.is_err(),
-            "a closed stream with no pending state disconnects"
+            follower.next().await.unwrap().reset,
+            "first the whole catalogue"
         );
-
-        let (tx, rx) = watch::channel(Some(Arc::<str>::from("initial")));
-        tx.send(Some(Arc::<str>::from("newer"))).unwrap();
-        let mut reader = ActionCatalogueReader { rx, initial: true };
-        assert_eq!(&*reader.next().await.unwrap(), "newer");
-
-        tx.send(Some(Arc::<str>::from("unread"))).unwrap();
-        tx.send_replace(None);
-        drop(tx);
+        let unread = catalogue_test_follower();
+        unread.end();
         assert!(
-            reader.next().await.is_err(),
-            "projection failure invalidates an unread stale snapshot"
+            unread.next().await.is_err(),
+            "an ended follower is sent no unread change"
         );
     }
 
     #[test]
-    fn catalogue_projection_failure_invalidates_and_removes_its_audience() {
+    fn catalogue_projection_failure_ends_and_removes_its_audience() {
         let CountingCatalogueFixture {
             state,
             calls,
@@ -14214,36 +14316,45 @@ pub mod tests {
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let (tx, mut rx) = catalogue_test_channel();
-        let (second_tx, mut second_rx) = catalogue_test_channel();
-        let (closed_tx, closed_rx) = catalogue_test_channel();
-        drop(closed_rx);
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(1, (cluster.clone(), BrokerActor::person("owner"), tx));
-        state.action_catalogue_subscribers.lock().unwrap().insert(
-            2,
-            (cluster.clone(), BrokerActor::person("owner"), second_tx),
-        );
-        state
-            .action_catalogue_subscribers
-            .lock()
-            .unwrap()
-            .insert(3, (cluster, BrokerActor::person("owner"), closed_tx));
+        let first = catalogue_test_follower();
+        let second = catalogue_test_follower();
+        let closed = catalogue_test_follower();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (
+                1,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&first),
+                ),
+            ),
+            (
+                2,
+                (
+                    cluster.clone(),
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&second),
+                ),
+            ),
+            (
+                3,
+                (
+                    cluster,
+                    BrokerActor::person("owner"),
+                    Arc::downgrade(&closed),
+                ),
+            ),
+        ]);
+        drop(closed);
         state.publish_action_catalogue();
-        assert!(
-            current_catalogue(&mut rx)
-                .unwrap()
-                .contains("files.entry:owner"),
-            "the current authorized catalogue is initially available"
-        );
-        assert!(
-            current_catalogue(&mut second_rx)
-                .unwrap()
-                .contains("files.entry:owner")
-        );
+        for follower in [&first, &second] {
+            let mut held = runtime_collab::ActionCatalogue::default();
+            assert!(read_catalogue(follower, &mut held));
+            assert!(
+                offers(&held, "files.entry:owner"),
+                "the current authorized catalogue is initially available"
+            );
+        }
         assert!(
             !state
                 .action_catalogue_subscribers
@@ -14255,8 +14366,11 @@ pub mod tests {
 
         failed.store(true, std::sync::atomic::Ordering::Relaxed);
         state.publish_action_catalogue();
-        assert!(rx.borrow_and_update().is_none());
-        assert!(second_rx.borrow_and_update().is_none());
+        for follower in [&first, &second] {
+            let following = follower.following.lock().unwrap();
+            assert!(following.ended);
+            assert!(following.pending.is_none());
+        }
         let subscribers = state.action_catalogue_subscribers.lock().unwrap();
         assert!(!subscribers.contains_key(&1));
         assert!(!subscribers.contains_key(&2));
@@ -14423,15 +14537,17 @@ pub mod tests {
             .route
             .cluster_id
             .clone();
-        let owner_catalogue = state
-            .action_catalogue_json(&action_cluster, "owner")
-            .expect("owner catalogue");
-        assert!(owner_catalogue.contains("files.entry:/tmp/report"));
-        let denied_catalogue = state
-            .action_catalogue_json(&action_cluster, "stranger")
-            .expect("filtered catalogue");
+        let offered = |actor: &str| {
+            state
+                .action_catalogue(&action_cluster, actor)
+                .expect("catalogue")
+                .iter()
+                .flat_map(|surface| &surface.actions)
+                .any(|action| action.resource == "files.entry:/tmp/report")
+        };
+        assert!(offered("owner"));
         assert!(
-            !denied_catalogue.contains("files.entry:/tmp/report"),
+            !offered("stranger"),
             "denied actions must be absent from discovery, not merely refused later"
         );
 
@@ -14624,9 +14740,11 @@ pub mod tests {
         assert_eq!(archived[0].actions[0].action, "new-window");
         assert!(
             !state
-                .action_catalogue_json(&archived[0].route.cluster_id, "owner")
+                .action_catalogue(&archived[0].route.cluster_id, "owner")
                 .expect("live-only direct catalogue")
-                .contains("new-window"),
+                .iter()
+                .flat_map(|surface| &surface.actions)
+                .any(|action| action.action == "new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
     }

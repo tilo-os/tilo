@@ -8,7 +8,18 @@ use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
 use ui::collaboration::CollabRequest;
-use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
+use ui::collaboration::{
+    ActionCatalogue, BrokerActionSurface, CatalogueChange, ExportedAction, ExportedInput,
+};
+
+/// The catalogue a follower holds once it was sent `surfaces`.
+pub(super) fn catalogue_of(surfaces: &[BrokerActionSurface]) -> ActionCatalogue {
+    let mut catalogue = ActionCatalogue::default();
+    catalogue
+        .apply(&CatalogueChange::snapshot(surfaces))
+        .expect("a snapshot applies to any catalogue");
+    catalogue
+}
 use uuid::Uuid;
 
 #[test]
@@ -715,34 +726,42 @@ impl World {
         if self.tilolang {
             surfaces.extend(programs::surfaces());
         }
+        // A conversation keeps every message it holds: one whose `record-work`
+        // the catalogue already offers, beside the one this run answers. Only
+        // the latter may be republished late, so the run's wait for it can be
+        // told from a workspace whose Chat publishes nothing at all.
+        let conversation = |record: &'static str, message: &str| BrokerActionSurface {
+            peer_id: CHAT_RECORD_PEER,
+            provider: None,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: Uuid::from_u128(1).to_string(),
+            record_id: record.into(),
+            live: true,
+            actions: vec![ExportedAction {
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                resource: format!("chat.messages/messages/{message}"),
+                resource_kind: "chat.messages".into(),
+                resource_label: "The conversation".into(),
+                ..descriptor(
+                    "record-work",
+                    "Record work",
+                    tilo_actions::OperationKind::Document,
+                    vec![
+                        ActionParam::required("message", ParamType::Text, "The message"),
+                        ActionParam::required("work", ParamType::Object, "How the work goes"),
+                        ActionParam::optional("say", ParamType::Text, "The reply's words"),
+                    ],
+                    Availability::Available,
+                    vec![],
+                )
+            }],
+        };
         if let Some(message) = &self.chat {
-            surfaces.push(BrokerActionSurface {
-                peer_id: CHAT_RECORD_PEER,
-                provider: None,
-                app_id: "so.tilo.chat".into(),
-                cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: "chat-1".into(),
-                live: true,
-                actions: vec![ExportedAction {
-                    state: tilo_actions::ActionState::default(),
-                    semantic_identity: None,
-                    resource: format!("chat.messages/messages/{message}"),
-                    resource_kind: "chat.messages".into(),
-                    resource_label: "The conversation".into(),
-                    ..descriptor(
-                        "record-work",
-                        "Record work",
-                        tilo_actions::OperationKind::Document,
-                        vec![
-                            ActionParam::required("message", ParamType::Text, "The message"),
-                            ActionParam::required("work", ParamType::Object, "How the work goes"),
-                            ActionParam::optional("say", ParamType::Text, "The reply's words"),
-                        ],
-                        Availability::Available,
-                        vec![],
-                    )
-                }],
-            });
+            surfaces.push(conversation("chat-1", message));
+            if self.chat_late.is_some() {
+                surfaces.push(conversation("chat-2", "earlier"));
+            }
         }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
@@ -1156,7 +1175,7 @@ impl ui::collaboration::PeerTransport for Broker {
                 // loop must take it up after a view step.
                 if republish {
                     let catalogue = CollabEvent::ActionCatalogue {
-                        surfaces: self.world.borrow().surfaces(),
+                        change: CatalogueChange::snapshot(&self.world.borrow().surfaces()),
                     };
                     match self.world.borrow().republish_after_polls {
                         0 => self.events.push(catalogue),
@@ -1457,8 +1476,29 @@ fn paced_fixture(
 /// The catalogue that publishes Chat's message late, when `world` publishes it so.
 fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
     let polls = world.chat_late?;
-    let surfaces = world.surfaces();
-    Some((polls, CollabEvent::ActionCatalogue { surfaces }))
+    let change = CatalogueChange::snapshot(&world.surfaces());
+    Some((polls, CollabEvent::ActionCatalogue { change }))
+}
+
+/// The surfaces the agent reads at its first turn. When Chat republishes this
+/// run's message late, every other message it holds is published already: what
+/// is missing is the reply this run records on.
+fn first_catalogue(world: &World) -> Vec<BrokerActionSurface> {
+    let mut surfaces = world.surfaces();
+    let answered = world
+        .chat
+        .as_ref()
+        .filter(|_| world.chat_late.is_some())
+        .map(|message| format!("chat.messages/messages/{message}"));
+    surfaces.retain(|surface| {
+        answered.as_ref().is_none_or(|resource| {
+            !surface
+                .actions
+                .iter()
+                .any(|action| &action.resource == resource)
+        })
+    });
+    surfaces
 }
 
 fn execution_fixture(
@@ -1518,9 +1558,7 @@ fn execution_fixture(
         spend: None,
     };
     bind_context(&mut run);
-    let mut surfaces = world.borrow().surfaces();
-    surfaces
-        .retain(|surface| world.borrow().chat_late.is_none() || surface.app_id != "so.tilo.chat");
+    let surfaces = first_catalogue(&world.borrow());
     let session = Session {
         cfg: Config {
             agent_id: "agent-1".into(),
@@ -1550,7 +1588,7 @@ fn execution_fixture(
         managed: false,
         task_deadline: None,
         native_task: None,
-        broker_surfaces: surfaces,
+        broker_catalogue: catalogue_of(&surfaces),
         next_broker_request: 1,
         awaiting_companions: Vec::new(),
         record: None,
@@ -1614,6 +1652,8 @@ mod pictures;
 mod programs;
 #[path = "agent_loop/tests/spending.rs"]
 mod spending;
+#[path = "agent_loop/tests/turn_records.rs"]
+mod turn_records;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
@@ -1824,154 +1864,6 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String,
             _ => None,
         })
         .collect()
-}
-
-/// An agent started for a turn reads the catalogue before Chat republished the message it
-/// answers: the turn waits for the republication, and its reply is recorded all the same.
-#[test]
-fn a_turn_waits_for_its_message_to_be_published() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            chat_late: Some(2),
-            ..World::default()
-        },
-        vec![turn(&[finish("Wrote it.", true)], 24)],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    assert_eq!(
-        records.first().map(|first| first["work"]["state"].clone()),
-        Some(Value::from("taken")),
-        "the reply was told the run started once the message was published"
-    );
-    assert_eq!(records.last().unwrap()["say"], "Wrote it.");
-}
-
-/// The turn a run answers is recorded in its conversation: the reply is
-/// told it was taken at once, of every step, and — once, at the end — what
-/// the run said.
-#[test]
-fn a_run_records_its_turn_in_the_conversation() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![turn(
-            &[
-                invoke("append-paragraph", &serde_json::json!({"text": "Rain"})),
-                finish("Wrote it.", true),
-            ],
-            24,
-        )],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let first = records.first().expect("the reply was told the run started");
-    assert_eq!(first["message"], "asked", "on the reply to the message");
-    assert_eq!(first["work"]["state"], "taken");
-    // How the run was planned is the run's own record, never the reply's.
-    for record in &records {
-        let work = &record["work"];
-        assert!(
-            work.get("route").is_none() && work.get("why").is_none(),
-            "{work}"
-        );
-        assert!(
-            work.get("did").is_none_or(|did| did == "Append paragraph"),
-            "{work}"
-        );
-    }
-    let last = records.last().unwrap();
-    assert_eq!(last["work"]["state"], "provider_complete");
-    assert_eq!(last["say"], "Wrote it.", "the reply's words, once");
-    let steps = last["work"]["trace"].as_array().unwrap();
-    assert_eq!(steps.len(), 1, "one step: {steps:?}");
-    assert_eq!(steps[0]["label"], "Append paragraph");
-    assert_eq!(steps[0]["resource"], "word-processor.document");
-    assert_eq!(steps[0]["outcome"], "applied");
-}
-
-/// A model or transport error ends the turn with what went wrong, and the conversation is told
-/// so: the reply's work ends `refused` carrying the reason, which is the row the page draws
-/// with a Retry. Nothing is silent.
-///
-/// The model is scripted (`Scripted`, the test transport): the run's first turn fails in
-/// transport, exactly as a provider that drops the stream does.
-#[test]
-fn a_run_whose_model_fails_records_the_failure_on_its_reply() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            ..World::default()
-        },
-        vec![vec![TurnEvent::Finished(Err(
-            "provider stream reset".into()
-        ))]],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let last = records.last().expect("the failed turn was recorded");
-    assert_eq!(
-        last["work"]["state"], "refused",
-        "the reply's work says the turn ended without an answer: {last:?}"
-    );
-    assert!(
-        last["say"].as_str().is_some_and(|say| !say.is_empty()),
-        "the reply says what happened, in the run's words: {last:?}"
-    );
-    assert!(
-        matches!(
-            terminal(&sent),
-            runtime_collab::TaskRunUpdate::Failed { .. }
-        ),
-        "the run tells the host it failed"
-    );
-}
-
-/// A run the person stops ends its turn: the reply says it was stopped, in
-/// the run's words, and the run tells the host it was cancelled.
-#[test]
-fn a_run_the_person_stops_ends_its_turn() {
-    let mut f = fixture(
-        "write a paragraph",
-        World {
-            chat: Some("asked".into()),
-            cancel_after_steps: Some(1),
-            cancel_delay: Duration::from_millis(100),
-            ..World::default()
-        },
-        vec![
-            turn(
-                &[invoke(
-                    "append-paragraph",
-                    &serde_json::json!({"text": "One"}),
-                )],
-                16,
-            ),
-            turn(&[finish("Done", true)], 16),
-        ],
-    );
-    f.session.run_task(&f.run).unwrap();
-    let sent = f.sent.borrow();
-    let records = recorded(&sent, "record-work");
-    let last = records.last().expect("the turn was recorded");
-    assert_eq!(last["work"]["state"], "provider_cancelled");
-    assert!(
-        last["say"].as_str().is_some_and(|say| !say.is_empty()),
-        "the reply says why it stopped: {last:?}"
-    );
-    assert!(matches!(
-        terminal(&sent),
-        runtime_collab::TaskRunUpdate::Cancelled { .. }
-    ));
 }
 
 /// The terminal task report.

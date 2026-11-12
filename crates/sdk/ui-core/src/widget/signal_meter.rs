@@ -11,6 +11,7 @@
 //! paints immediately (a list row's leading column, the quick settings
 //! panel); [`SignalMeter`] is the retained widget, one icon square in size.
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -71,7 +72,7 @@ impl SignalLevel {
     /// The meter's name: "Strong signal", in the interface language.
     #[must_use]
     pub fn name(self) -> String {
-        crate::i18n!(match self {
+        widget_text(match self {
             Self::Unknown => "signal-meter-unknown",
             Self::Weak => "signal-meter-weak",
             Self::Fair => "signal-meter-fair",

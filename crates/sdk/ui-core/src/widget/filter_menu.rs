@@ -21,6 +21,7 @@
 //! The menu has no layout node: the parent calls [`FilterMenu::draw_overlay`] after its main draw
 //! pass, as with [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -302,7 +303,7 @@ impl<T: Clone> FilterMenu<T> {
         self.dirty = true;
         self.list.set_header(self.field_height());
         let empty = (!self.inline && self.visible.is_empty())
-            .then(|| crate::i18n!("filter-menu-no-matches"));
+            .then(|| widget_text("filter-menu-no-matches"));
         self.list.set_status(empty);
     }
 
@@ -562,7 +563,7 @@ impl<T: Clone> FilterMenu<T> {
             QueryView {
                 text,
                 selection: &selection,
-                placeholder: &crate::i18n!(self.spec.placeholder),
+                placeholder: &widget_text(self.spec.placeholder),
                 show_caret: leaving.is_none(),
             },
             filter_rect.inset((-6.0, 0.0)),
@@ -630,7 +631,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         if self.accessibility_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)
-                    .with_name(crate::i18n!(self.spec.access_name))
+                    .with_name(widget_text(self.spec.access_name))
                     .with_state(AccessState {
                         expanded: Some(false),
                         hidden: true,
@@ -657,7 +658,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
-                .with_name(crate::i18n!(self.spec.access_name))
+                .with_name(widget_text(self.spec.access_name))
                 .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
                 .with_state(AccessState::new().expanded(true))
                 .with_children(items),

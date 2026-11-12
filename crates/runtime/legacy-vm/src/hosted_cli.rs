@@ -28,6 +28,10 @@ usage: tilo-legacy hosted <command>
                          privileged tilo-hosted-jail helper and its root-owned
                          configuration (default /etc/tilo/hosted-jail.json);
                          --unjailed is for development only: no network.
+                         A jailed host keeps a template of each VM size in use
+                         under STATE/templates, booted once with the session's
+                         and Chromium's files in its page cache, and starts
+                         each new VM as a copy-on-write clone of it.
                          When FILE appears (written by whatever watches the
                          cloud's notice that it takes this host back), every
                          VM is suspended onto STATE and no more are woken.
@@ -65,7 +69,8 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
-  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--material JSON]
+  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
+               [--material JSON]
                          open or attach the browser session in a workspace's
                          VM, and say what it took
   browser-stop --run DIR WORKSPACE
@@ -145,6 +150,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                         workspace: flags.need("--workspace")?.to_string(),
                         account: flags.need("--account")?.to_string(),
                         size: vm_size(&flags)?,
+                        store: flags.get("--store").map(PathBuf::from),
                         material: flags.get("--material").unwrap_or("{}").to_string(),
                     },
                 },
@@ -265,6 +271,9 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
                 .get("--relay-endpoint")
                 .map(legacy_vm::hosted::network::Endpoint::parse)
                 .transpose()?,
+            // New VMs are clones of a template of their size, kept beside
+            // them: only a jailed VM can be one.
+            templates: Some(flags.path("--state")?.join("templates")),
         },
     };
     // SAFETY: the handler only stores to an atomic.

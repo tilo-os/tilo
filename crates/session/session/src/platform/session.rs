@@ -1641,6 +1641,7 @@ impl Session {
             ),
             warmth,
             language: crate::i18n::Language::new(),
+            formats: crate::formats::Formats::new(),
             night_light,
             auto_brightness,
             keyboard_preference: options.config.on_screen_keyboard,

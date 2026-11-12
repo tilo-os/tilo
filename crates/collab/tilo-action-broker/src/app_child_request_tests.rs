@@ -128,7 +128,7 @@ fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
         tilo_actions::remote::RemoteActionMessage::Receipt(
             tilo_actions::remote::InvocationReceipt {
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired { .. },
                 },
                 ..
             }

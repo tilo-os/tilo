@@ -172,8 +172,8 @@ impl Session {
                     CollabEvent::TaskActionInvocationResult { .. } | CollabEvent::Document { .. },
                 )
                 | None => {}
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
+                Some(CollabEvent::ActionCatalogue { change }) => {
+                    self.apply_broker_catalogue(&change);
                 }
                 Some(event) => deferred.push(event),
             }

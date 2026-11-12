@@ -395,6 +395,7 @@ files-menu-cut = Ausschneiden
 files-menu-copy = Kopieren
 files-menu-properties = Eigenschaften…
 files-menu-paste = Einfügen
+files-action-copy-to-folder = In Ordner kopieren…
 files-menu-new-folder = Neuer Ordner
 files-menu-new-file = Neue Datei  ›
 files-menu-move-trash = In den Papierkorb verschieben

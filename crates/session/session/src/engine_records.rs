@@ -160,6 +160,11 @@ impl EngineRecords {
         for (workspace, app) in due {
             self.0.read(&workspace, &app);
         }
+        self.write();
+    }
+
+    /// Write into the engine what the session wrote since the last write.
+    pub(crate) fn write(&self) {
         self.0.write(false);
     }
 }

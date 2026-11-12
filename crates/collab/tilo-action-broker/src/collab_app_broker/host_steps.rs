@@ -93,7 +93,7 @@ impl AppBrokerState {
             .authorize_action(workspace, &run, &requirement)
             .map_err(|reason| {
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
-                    ActionHostError::ConfirmationRequired
+                    ActionHostError::confirmation_required()
                 } else {
                     ActionHostError::Refused { reason }
                 }
@@ -310,7 +310,7 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             witnessed,
         ) {
-            return Err(abandon(ActionHostError::ConfirmationRequired));
+            return Err(abandon(ActionHostError::confirmation_required()));
         }
         let admitted = self
             .admit_host_action(
@@ -340,7 +340,7 @@ impl AppBrokerState {
                 request.confirmation.as_ref(),
                 witnessed,
             ) {
-                return Err(ActionHostError::ConfirmationRequired);
+                return Err(ActionHostError::confirmation_required());
             }
             if by_turn {
                 // The turn still goes, and still lets this agent take this step.
@@ -1518,7 +1518,7 @@ mod identity_admin_tests {
         ] {
             assert_eq!(
                 invoked(&state, &person, &request(step, None)),
-                Err(ActionHostError::ConfirmationRequired),
+                Err(ActionHostError::confirmation_required()),
                 "{step} needs the person's confirmation"
             );
         }
@@ -1789,7 +1789,7 @@ mod settings_records_tests {
         assert_eq!(minutes(), 1);
         assert_eq!(
             invoked(&state, &person, &lock_after(0, None)),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "never locking asks first"
         );
         assert_eq!(minutes(), 1);

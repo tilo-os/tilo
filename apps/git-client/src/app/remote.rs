@@ -60,7 +60,7 @@ impl GitClientState {
 
     pub(super) fn repository_busy(&mut self) -> bool {
         if self.remote_job.is_some() {
-            self.last_error = Some(ui::i18n!("git-remote-busy"));
+            self.last_error = Some(crate::i18n::t("git-remote-busy"));
             return true;
         }
         false
@@ -73,7 +73,7 @@ impl GitClientState {
         reply: Option<EffectReply>,
     ) -> Result<(), String> {
         if self.remote_job.is_some() {
-            return Err(ui::i18n!("git-remote-busy"));
+            return Err(crate::i18n::t("git-remote-busy"));
         }
         let path = self
             .repo()
@@ -114,7 +114,7 @@ impl GitClientState {
         let result = match job.receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
+            Err(TryRecvError::Disconnected) => Err(crate::i18n::t("git-remote-worker-stopped")),
         };
         self.last_error = result.as_ref().err().cloned();
         // libgit2 operations are not cancellable: the worker's actual outcome

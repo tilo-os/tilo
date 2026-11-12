@@ -734,13 +734,6 @@ export async function startEntryPage({mode}) {
   const notes = {open: opening, draw: drawing};
   const arrive = step => {
     if (root.arrival === 'done' && step !== 'stopped') return;
-    // The GPU is set up once the host let the page in, while the page
-    // opens the workspace. A page that is refused (or left before it got
-    // in) compiles nothing: the browser does not cancel a torn-down page's
-    // pipeline compiles, and the next page's queue behind them on the same
-    // compile threads. Under a software rasteriser that is a minute of CPU
-    // and held the next page's first frame past 45 s.
-    if (step === 'open' && root.arrival !== 'open') prepareGpu();
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
     if (step === 'stopped') firstRun?.unavailable({code: 'refused'});
@@ -915,6 +908,16 @@ export async function startEntryPage({mode}) {
   // for the answer before it mounts anything, so a browser that cannot draw
   // still opens no window.
   const renderer = rendererUnavailable();
+  // The WebGPU device opens as the page starts too, while the host is asked
+  // to let it in: a busy GPU process (a software rasteriser on a loaded
+  // machine) took seconds to answer for the adapter and the device, and
+  // asked only once the page was let in, that was seconds of a page doing
+  // nothing before its desktop could draw. Opening a device compiles
+  // nothing. The renderer's pipelines compile only as the first desktop
+  // draws, once the host let the page in, because the browser does not
+  // cancel a torn-down page's pipeline compiles: a refused page's held the
+  // next page's first frame past 45 s under a software rasteriser.
+  prepareGpu();
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
     document.documentElement.dataset.pairingCode = code;
@@ -1278,10 +1281,7 @@ export async function startEntryPage({mode}) {
     }
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
-    if (!embed && page.peer && takeOpenOwn()) {
-      void ensureOwnWorkspace(page).then(own => openWorkspace({choice: ownChoice(own), page, status}),
-        error => console.warn('signed in: opening your workspace', error));
-    }
+    if (!embed && page.peer && openOwnAsked()) void openOwnAfterSignIn({page, status});
     // What the kept profile says of linked accounts, or that none is kept:
     // either way a linked account's picture may be worn now, and never
     // over one the person uploaded.
@@ -2052,16 +2052,48 @@ function namedOwnWorkspace(origin, user, {create = true, store = globalThis.loca
 let hostedOwn = null;
 /** Resolves to `hostedOwn`, or null, once asked for. */
 let hostedOwnMade = null;
-/** Set for the one load after an agent signed this tab in: open the
- * person's own workspace once paired. */
+/** Set once an agent signed this tab in, until the person's own workspace
+ * is in front: a load that ends before it opened (the tab loaded again, the
+ * host did not answer) leaves it set, so the next one opens it. */
 const OPEN_OWN = 'tilo-open-own-workspace';
-const takeOpenOwn = () => {
-  try {
-    const set = globalThis.sessionStorage?.getItem(OPEN_OWN) === '1';
-    if (set) globalThis.sessionStorage.removeItem(OPEN_OWN);
-    return set;
-  } catch { return false; }
+const openOwnAsked = () => {
+  try { return globalThis.sessionStorage?.getItem(OPEN_OWN) === '1'; } catch { return false; }
 };
+const openOwnDone = () => {
+  try { globalThis.sessionStorage?.removeItem(OPEN_OWN); } catch { /* Nothing was kept to forget. */ }
+};
+/** How many times a signed-in tab asks for the person's own workspace while
+ * its host does not answer: the session reconnects in between (a connection
+ * that closed under the request is answered on the next), and the wait
+ * doubles from a second each time. */
+const OPEN_OWN_TRIES = 6;
+
+/**
+ * Open the person's own workspace in a tab an agent just signed in: it
+ * paired through the home workspace (`page`), so the host makes or finds the
+ * person's own and this device enters it, then the page loads it. A host
+ * that did not answer or asks to wait is asked again; a refusal is the
+ * host's answer, and the tab stays where it is.
+ */
+async function openOwnAfterSignIn({page, status}) {
+  for (let attempt = 1; ; attempt++) {
+    let own;
+    try {
+      own = await ensureOwnWorkspace(page);
+    } catch (error) {
+      console.warn('signed in: opening your workspace', error);
+      const transient = error?.code === 'unanswered' || error?.code === 'rate_limited';
+      if (!transient || attempt >= OPEN_OWN_TRIES) { openOwnDone(); return; }
+      const asked = Number.isFinite(error?.retryAfter) ? error.retryAfter * 1000 : 0;
+      await new Promise(resolve => setTimeout(resolve, Math.max(1000 * 2 ** (attempt - 1), asked)));
+      continue;
+    }
+    // The load that opened it: the person's own workspace is in front.
+    if (own.id === page.peer?.workspace) { openOwnDone(); return; }
+    await openWorkspace({choice: ownChoice(own), page, status});
+    return;
+  }
+}
 /** The workspace switcher's choice of the person's own hosted workspace. */
 /**
  * The person's own workspace on the host of the page's peer, with this

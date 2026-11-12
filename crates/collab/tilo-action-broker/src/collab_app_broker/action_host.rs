@@ -618,7 +618,7 @@ pub(super) fn refusal(reason: String) -> ActionHostError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
     {
-        ActionHostError::ConfirmationRequired
+        ActionHostError::confirmation_required()
     } else if reason.contains("not allowed") {
         ActionHostError::NotPermitted
     } else if reason.contains("no longer publishes")
@@ -1987,7 +1987,7 @@ impl AppBrokerState {
                             .confirmation_for_argument(argument.as_deref()),
                         request.confirmation.as_ref(),
                     ) {
-                        return Err(ActionHostError::ConfirmationRequired);
+                        return Err(ActionHostError::confirmation_required());
                     }
                 }
                 Ok(workspace.clone())
@@ -3081,7 +3081,7 @@ impl AppBrokerState {
             },
         };
         if !confirmed {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.spend_once_grants(&workspace.id().to_string(), &spent);
         Ok(())
@@ -3931,7 +3931,7 @@ mod device_pairing_tests {
         let unconfirmed = fixture.invoke(&request(device_pairing::APPROVE, None));
         assert_eq!(
             unconfirmed,
-            Err(tilo_actions::remote::ActionHostError::ConfirmationRequired),
+            Err(tilo_actions::remote::ActionHostError::confirmation_required()),
             "approval needs the person's confirmation"
         );
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");

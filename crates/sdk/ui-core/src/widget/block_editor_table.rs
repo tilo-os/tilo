@@ -24,6 +24,7 @@
 //! track per column, fixed row height); the widget paints the grid lines, header band, row
 //! banding and the insert, delete and resize affordances on top.
 
+use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -712,7 +713,7 @@ impl Table {
         let label_transform = transform * Affine::translate((c.x - 20.0, c.y - 9.0));
         text_renderer.draw_text(
             scene,
-            &crate::i18n!("block-table-add-cell"),
+            &widget_text("block-table-add-cell"),
             14.0,
             theme.text_primary,
             label_transform,

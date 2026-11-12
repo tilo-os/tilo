@@ -33,6 +33,7 @@
 //! +------------------------------------+
 //! ```
 
+use crate::metadata::CATALOG;
 use std::collections::HashMap;
 use ui::widget::DrawChild;
 #[cfg(test)]
@@ -74,8 +75,8 @@ struct EmptyLabels {
 impl EmptyLabels {
     fn new() -> Self {
         Self {
-            title: ui::i18n!("notes-empty-title"),
-            action: ui::i18n!("notes-empty-action"),
+            title: CATALOG.t("notes-empty-title"),
+            action: CATALOG.t("notes-empty-action"),
         }
     }
 
@@ -542,9 +543,9 @@ impl MainPanel {
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
                 .with_text_role(TextRole::LargeTitle)
-                .with_placeholder(ui::i18n!("notes-title-placeholder"))
+                .with_placeholder(CATALOG.t("notes-title-placeholder"))
                 .with_id("note_title")
-                .with_accessible_name(ui::i18n!("notes-a11y-page-title")),
+                .with_accessible_name(CATALOG.t("notes-a11y-page-title")),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
@@ -2642,14 +2643,13 @@ impl Widget for MainPanel {
         if self.page_id.is_none() && !self.empty_adds {
             // Nothing to press: the empty notebook says only that it is.
             return Some(
-                AccessNode::new(Role::StaticText)
-                    .with_name(crate::metadata::CATALOG.t("notes-empty-title")),
+                AccessNode::new(Role::StaticText).with_name(CATALOG.t("notes-empty-title")),
             );
         }
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
-                .with_name(crate::metadata::CATALOG.t("notes-empty-action"))
-                .with_description(crate::metadata::CATALOG.t("notes-a11y-first-note"))
+                .with_name(CATALOG.t("notes-empty-action"))
+                .with_description(CATALOG.t("notes-a11y-first-note"))
                 .with_action_target("notes.first_note")
                 .with_state(
                     AccessState::new()
@@ -2666,7 +2666,7 @@ impl Widget for MainPanel {
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)
-                .with_name(crate::metadata::CATALOG.t("notes-a11y-note-title"))
+                .with_name(CATALOG.t("notes-a11y-note-title"))
                 .with_value(self.title_label.current_text())
                 .with_action_target("notes.page-title")
                 .with_bounds(self.title_rect)
@@ -2679,8 +2679,8 @@ impl Widget for MainPanel {
         if let Some(thumb) = self.scroll_thumb() {
             children.push(
                 AccessNode::new(Role::Slider)
-                    .with_name(crate::metadata::CATALOG.t("notes-scroll-position"))
-                    .with_description(crate::metadata::CATALOG.t("notes-scroll-help"))
+                    .with_name(CATALOG.t("notes-scroll-position"))
+                    .with_description(CATALOG.t("notes-scroll-help"))
                     .with_value(format!(
                         "{:.0}",
                         self.scroll_y / self.scroll_metrics().max_scroll() * 100.0
@@ -2696,8 +2696,8 @@ impl Widget for MainPanel {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name(crate::metadata::CATALOG.t("notes-a11y-header"))
-                .with_description(crate::metadata::CATALOG.t("notes-a11y-header-description"))
+                .with_name(CATALOG.t("notes-a11y-header"))
+                .with_description(CATALOG.t("notes-a11y-header-description"))
                 .with_children(children),
         )
     }

@@ -27,8 +27,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Admission, BridgeError> {
         match self.start(request.clone(), wait, record).await {
             Ok(admission) => return Ok(admission),
-            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
-            }
+            Err(BridgeError::Host(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired { .. },
+            )) => {}
             Err(error) => return Err(error),
         }
         // The person confirms the action as the directory is at this

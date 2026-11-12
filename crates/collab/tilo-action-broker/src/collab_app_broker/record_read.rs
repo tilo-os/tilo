@@ -112,7 +112,7 @@ impl RecordChanges for BrokerRecordChanges {
             .ok_or(ActionHostError::NotPermitted)?;
         match answer {
             Answer::Allow => {}
-            Answer::Ask => return Err(ActionHostError::ConfirmationRequired),
+            Answer::Ask => return Err(ActionHostError::confirmation_required()),
             Answer::Deny => {
                 return Err(ActionHostError::Refused {
                     reason: RECORD_CHANGE_REFUSED.into(),

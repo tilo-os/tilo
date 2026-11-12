@@ -10,7 +10,6 @@
 //! [`NoCustody`], where that variant cannot occur, and the toolkit fills in
 //! its own custody type.
 
-use crate::BrokerActionSurface;
 use crate::route::{ChannelAccessState, RouteSpec};
 use collab_types::DocumentMutation;
 use collab_types::SignedOp;
@@ -173,8 +172,10 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
     },
+    /// The next change to the action catalogue this endpoint follows, to
+    /// apply to its [`crate::ActionCatalogue`].
     ActionCatalogue {
-        surfaces: Vec<BrokerActionSurface>,
+        change: crate::CatalogueChange,
     },
     /// Private admission/status or refusal, never a document publication permit.
     LocalDocumentActionReported {

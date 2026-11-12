@@ -729,7 +729,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
+async fn an_app_publishes_its_action_surface_as_a_change() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = Workspace::new(&[14]);
@@ -740,23 +740,17 @@ async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
                 ..runtime_collab::SurfaceDelta::default()
             })
             .unwrap();
+            assert_eq!(
+                endpoint
+                    .call(Operation::Publish {
+                        channel,
+                        publication: Publication::Surface(reset),
+                    })
+                    .await,
+                Ok(Reply::Done)
+            );
             for publication in [
-                Publication::Actions("[]".into()),
-                Publication::Surface(reset),
-            ] {
-                assert_eq!(
-                    endpoint
-                        .call(Operation::Publish {
-                            channel,
-                            publication: publication.clone(),
-                        })
-                        .await,
-                    Ok(Reply::Done),
-                    "{publication:?}"
-                );
-            }
-            for publication in [
-                Publication::Actions("not actions".into()),
+                Publication::RetiredActions("[]".into()),
                 Publication::Surface("{}".into()),
             ] {
                 assert!(
@@ -767,7 +761,7 @@ async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
                         })
                         .await
                         .is_err(),
-                    "{publication:?} does not decode"
+                    "{publication:?} is refused"
                 );
             }
         })

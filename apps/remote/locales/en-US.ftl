@@ -36,6 +36,7 @@ remote-describe-forget-host-key = Remove this device's stale SSH host-key pin; r
 
 ## Window and accessibility copy
 remote-a11y-window = Remote
+remote-waiting-first-frame = Waiting for the first screen update
 
 ## Facts, property labels and section titles
 remote-action-trust-host-key = Explicitly trust { $algorithm } { $fingerprint } for this device only after out-of-band verification.

@@ -1231,7 +1231,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
     }
 
     /// An icon-only face has an empty label key. Under the expanded
-    /// pseudo-locale `i18n!("")` came back as `⟦⟧`, painting a bracket pair
+    /// pseudo-locale `widget_text("")` came back as `⟦⟧`, painting a bracket pair
     /// beside the glyph; the resolved label must stay empty.
     fn icon_only_face_paints_no_label_under_the_pseudo_locale() {
         use crate::i18n::{I18nManager, PseudoLocale};

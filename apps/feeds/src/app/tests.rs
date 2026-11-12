@@ -1259,7 +1259,7 @@ fn article_links_reject_local_files() {
     reader.take_toast();
     assert_eq!(
         reader.shell().toast_text(),
-        Some(ui::i18n!("feeds-open-link-invalid").as_str())
+        Some(crate::i18n::t("feeds-open-link-invalid").as_str())
     );
 }
 

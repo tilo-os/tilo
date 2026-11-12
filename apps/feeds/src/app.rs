@@ -1416,11 +1416,11 @@ impl Core {
                 _ => false,
             })
         else {
-            self.set_toast(ui::i18n!("feeds-open-link-invalid"));
+            self.set_toast(crate::i18n::t("feeds-open-link-invalid"));
             return;
         };
         self.open_link_rx = Some(ui::portal::send_open_uri(url.as_str()));
-        self.set_toast(ui::i18n!("feeds-open-link-started"));
+        self.set_toast(crate::i18n::t("feeds-open-link-started"));
     }
 
     fn drain_open_link(&mut self) {
@@ -1436,7 +1436,10 @@ impl Core {
         };
         self.open_link_rx = None;
         if let LaunchOutcome::Failed(error) = outcome {
-            self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
+            self.set_toast(format!(
+                "{}: {error}",
+                crate::i18n::t("feeds-open-link-failed")
+            ));
         }
     }
 

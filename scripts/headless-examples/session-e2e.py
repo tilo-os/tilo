@@ -82,6 +82,7 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -334,7 +335,10 @@ class Session:
         return self.control_json("windows", "--json")
 
     def frames(self) -> list[dict]:
-        return self.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+        """The open windows that show one, each with where it stands (`rect`) and how many frames
+        its client drew (`frames`): a window showing the same thing keeps its count, so a rise
+        between two reads is a frame it drew."""
+        return [w for w in self.windows() if w.get("window") is not None]
 
     def provision(self, model: TestOnlyFixedReplyModel) -> None:
         """Give the session's person the test-only model as their provider, as Settings' "Add
@@ -346,7 +350,8 @@ class Session:
 # --- what the checks share ---------------------------------------------------------------
 
 def presented(session: Session) -> set[str]:
-    return {f["app_id"] for f in session.frames() if f.get("presented") and f.get("pixels_ready")}
+    """The apps whose window is drawn: mapped on an output, with a frame its client drew."""
+    return {f["app_id"] for f in session.frames() if f.get("rect") and f.get("frames", 0) > 0}
 
 
 def windows_by_app(session: Session) -> dict[str, dict]:
@@ -379,8 +384,9 @@ def read_content(session: Session, name: str) -> str | None:
 
 
 def window_frame(session: Session, name: str) -> int | None:
-    """The last frame the window of tilolang `name` presented, by its sequence number."""
-    return next((f["frame_seq"] for f in session.frames() if f.get("app_id") == app_id(name)), None)
+    """The frames the window of tilolang `name` drew: its count rises as it draws again."""
+    return next((f.get("frames", 0) for f in session.frames() if f.get("app_id") == app_id(name)),
+                None)
 
 
 def holds(session: Session, name: str, text: str) -> bool | None:
@@ -483,9 +489,7 @@ def check_audio(session: Session) -> dict:
 
 
 def check_open(session: Session) -> dict:
-    """The four apps opened at once, onto the canvas, each with a first frame, first try."""
-    session.invoke("actions", "workspace.show-canvas")
-    wait_for("canvas shown", lambda: session.state_dump()["chrome"].get("canvas", {}).get("shown"))
+    """The four apps opened at once, onto the desktop, each with a first frame, first try."""
     answers: dict[str, Any] = {}
 
     def open_app(name: str) -> None:
@@ -746,11 +750,16 @@ def check_dev(session: Session) -> dict:
 CHECKS = ["audio", "open", "canvas", "repl", "ask", "restart", "dev"]
 
 
-def build_session(out: Path) -> Path:
-    """The nested-session build of this tree, compiled on the arm builder."""
+def build_session(out: Path, remote: str | None = None) -> Path:
+    """The nested-session build of this tree, compiled on the arm builder.
+
+    Through `remote` (a command prefix, e.g. a remote-exec wrapper), the build runs where
+    this machine cannot: a program that forwards the builder's environment, not this one's,
+    carries the app list in its own."""
     target = out / "nested-session"
-    subprocess.run(["bash", REPO / "dist/dev/nested-session-build.sh", target],
-                   cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
+    command = ["bash", str(REPO / "dist/dev/nested-session-build.sh"), str(target)]
+    argv = [*shlex.split(remote), "env", f"TILO_NESTED_APPS={NATIVE}", *command] if remote else command
+    subprocess.run(argv, cwd=REPO, check=True, env={**os.environ, "TILO_NESTED_APPS": NATIVE})
     return target
 
 
@@ -780,6 +789,9 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--build", action="store_true", help="build the nested session of this tree first")
+    parser.add_argument("--remote-exec", default=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"),
+                        help="command prefix the session's build runs through (default "
+                             "$TILO_NESTED_SESSION_BUILD_EXEC)")
     parser.add_argument("--out", type=Path, default=REPO / "target/session-e2e")
     parser.add_argument("--keep", action="store_true", help="leave the session running at the end")
     parser.add_argument("--only", help="comma list of checks to run (default: all, in order)")
@@ -789,7 +801,7 @@ def main() -> int:
     for stale in out.glob("*.log"):
         stale.unlink()
     began = time.monotonic()
-    build = build_session(out) if args.build else Path(
+    build = build_session(out, args.remote_exec) if args.build else Path(
         os.environ.get("TILO_NESTED_SESSION_BUILD", REPO / "target/nested-session")).resolve()
     if not (build / "bin/tilo-session").is_file():
         print(f"session-e2e: no nested-session build at {build} (pass --build, or set "

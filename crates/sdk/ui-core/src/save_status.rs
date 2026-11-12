@@ -20,6 +20,7 @@
 //! surface from its root, fed and routed with no app code (tilo-app's
 //! `framework::Saves`).
 
+use crate::i18n::{widget_format, widget_text};
 use std::cell::RefCell;
 
 use crate::time::{Duration, Instant};
@@ -164,7 +165,7 @@ impl SaveStatusSurface {
         // failure, is worth confirming.
         if self.state == Some(SaveState::Saved) && (noticed || recovered) {
             self.passing
-                .show((crate::i18n!("save-status-saved"), ToastKind::Success));
+                .show((widget_text("save-status-saved"), ToastKind::Success));
         } else {
             self.passing.dismiss();
         }
@@ -207,7 +208,7 @@ impl SaveStatusSurface {
                     self.passing.dismiss();
                 } else {
                     self.passing
-                        .show_progress((crate::i18n!("save-status-stalled"), ToastKind::Warning));
+                        .show_progress((widget_text("save-status-stalled"), ToastKind::Warning));
                 }
                 self.stage = stage;
             }
@@ -270,13 +271,16 @@ impl SaveStatusSurface {
         }
         self.notified = true;
         let title = match document.map(str::trim).filter(|title| !title.is_empty()) {
-            Some(document) => crate::i18n!("save-status-not-saved-named", "document" => document),
-            None => crate::i18n!("save-status-not-saved"),
+            Some(document) => widget_format(
+                "save-status-not-saved-named",
+                &[("document", document.into())],
+            ),
+            None => widget_text("save-status-not-saved"),
         };
         Some(SaveNotice {
             title,
-            body: crate::i18n!("save-status-not-saved-notice", "app" => app),
-            action: crate::i18n!("save-status-retry"),
+            body: widget_format("save-status-not-saved-notice", &[("app", app.into())]),
+            action: widget_text("save-status-retry"),
         })
     }
 
@@ -336,16 +340,16 @@ impl SaveStatusSurface {
             ToolbarAction::new(
                 SAVE_RETRY_ACTION,
                 "rotate-cw",
-                crate::i18n!("save-status-retry"),
+                widget_text("save-status-retry"),
             )
         };
         if let Some(reason) = &self.failure {
-            let text = format!("{}: {reason}", crate::i18n!("save-status-failed"));
+            let text = format!("{}: {reason}", widget_text("save-status-failed"));
             return Some(ToolbarNotice::new(text, ToastKind::Error).action(retry()));
         }
         if self.gave_up() {
             return Some(
-                ToolbarNotice::new(crate::i18n!("save-status-not-saved"), ToastKind::Error)
+                ToolbarNotice::new(widget_text("save-status-not-saved"), ToastKind::Error)
                     .action(retry()),
             );
         }

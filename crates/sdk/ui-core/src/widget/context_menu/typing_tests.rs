@@ -1,6 +1,7 @@
 //! A context menu takes typing: a query narrows its rows with the shared
 //! ranking, Enter runs the best match, and a sentence none answers is asked.
 
+use crate::i18n::widget_format;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -129,7 +130,13 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_and_never_reported_as_a_row() 
     assert_eq!(menu.shown_rows(), &[send_at], "only sending it");
     assert_eq!(
         menu.items()[send_at].label(),
-        Some(crate::i18n!("menu-ask-typed", "text" => "summarise this for Ana").as_str())
+        Some(
+            widget_format(
+                "menu-ask-typed",
+                &[("text", "summarise this for Ana".into())]
+            )
+            .as_str()
+        )
     );
     dispatch(&mut menu, &named_key(NamedKey::Enter));
     assert!(ran.borrow().is_empty(), "no row ran");

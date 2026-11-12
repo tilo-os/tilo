@@ -793,7 +793,12 @@ def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, pa
     argv = ["actions", "invoke", rows[0]["provider"], rows[0]["id"], "--wait=20000"]
     if args is not None:
         argv += ["--args-json", json.dumps(args)]
-    answer = vm.control_json(*argv, timeout=90)
+    try:
+        answer = vm.control_json(*argv, timeout=90)
+    except VmError:
+        if vm.vm in run_of:
+            run_of[vm.vm].write(f"invoke-{action}-{vm.vm}.txt", invoke_excerpt(vm))
+        raise
     state = (answer.get("receipt") or {}).get("update", {}).get("state")
     expect(state == "succeeded", f"{action} did not succeed on {vm.vm}: {json.dumps(answer)[:800]}")
     return answer
@@ -936,7 +941,7 @@ def open_window(vm: TiloVm, ws: dict) -> object:
 # branched, so a and b inherit it. Read back only when a window does not travel.
 SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::shared_desktop=debug,"
             "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug,"
-            "tilo_network_actor=debug")
+            "tilo_network_actor=debug,tilo_action_broker=debug,tilo_session::agent_door=debug")
 
 
 def log_sync(vm: TiloVm) -> None:
@@ -978,6 +983,16 @@ def sync_excerpt(vm: TiloVm) -> str:
                         "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
                         "| grep -av 'has no live plane' "
                         "| tail -n 400 | cut -c1-500", timeout=120, check=False)
+    return text or "(nothing)"
+
+
+def invoke_excerpt(vm: TiloVm) -> str:
+    """What the person's session said lately of the actions it was asked to run."""
+    text = vm.root_exec("journalctl -m --since '-3min' --no-pager -o short-iso "
+                        "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
+                        "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
+                        "| grep -av 'has no live plane\\|GPU budget' "
+                        "| tail -n 500 | cut -c1-600", timeout=120, check=False)
     return text or "(nothing)"
 
 

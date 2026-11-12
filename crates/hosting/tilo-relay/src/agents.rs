@@ -293,7 +293,7 @@ impl ActionHost for RelayWitness {
                     Confirmation::Witnessed(token),
                 )),
                 Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
-                Err(_) => Err(ActionHostError::ConfirmationRequired),
+                Err(_) => Err(ActionHostError::confirmation_required()),
             });
         });
         answer
@@ -666,7 +666,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
                 Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
-                Err(_) => Err(ActionHostError::ConfirmationRequired),
+                Err(_) => Err(ActionHostError::confirmation_required()),
             });
         });
         Some(answer)

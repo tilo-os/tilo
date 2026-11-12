@@ -1,5 +1,6 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
+use crate::i18n::{widget_format, widget_text};
 use crate::icons;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -2760,7 +2761,7 @@ impl TabBar {
         let Some(holder) = self.held_ids.get(&t.id) else {
             return;
         };
-        let label = crate::i18n!("tab-held-by", "name" => holder.name.clone());
+        let label = widget_format("tab-held-by", &[("name", holder.name.clone().into())]);
         let color = theme.tokens.colors.presence.of_rgb(holder.rgb);
         super::tooltip::draw_person_tooltip_on(
             scene,
@@ -4389,7 +4390,7 @@ impl Widget for TabBar {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Maps to an AT tablist: the *active* tab's title as `value`, each tab as
         // a synthetic `Tab` child (`TabDescriptor` data, not Widget children).
-        // Titles are runtime strings, not FTL keys, so no `i18n!` wrap.
+        // Titles are runtime strings, not FTL keys, so no lookup.
         let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
         let value = active_idx
             .and_then(|i| self.tabs.get(i))
@@ -4461,7 +4462,7 @@ impl Widget for TabBar {
                     ])
                 };
                 let mut node = if self.modified_ids.contains(&t.id) {
-                    node.with_description(crate::i18n!("tab-modified"))
+                    node.with_description(widget_text("tab-modified"))
                 } else {
                     node
                 };

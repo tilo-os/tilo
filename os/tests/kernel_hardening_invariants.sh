@@ -1186,8 +1186,6 @@ case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
 case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
 case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
 case("hosted-guest-accepts-anything", scope("registry.tilo.so/tilo/hosted-guest", accept))
-case("hosted-browser-guest-accepts-anything",
-     scope("registry.tilo.so/tilo/hosted-browser-guest", accept))
 # A namespace scope governs every Tilo repository without one of its own.
 case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
 # Only the listed public registries and local transports may accept anything,
@@ -1238,8 +1236,8 @@ policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 policy["default"] = [{"type": "reject"}]
 docker = policy["transports"]["docker"]
 for name in list(docker):
-    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "hosted-browser-guest",
-                                  "tilo-vm", "tilo-ci", "tilo-dev"):
+    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "tilo-vm", "tilo-ci",
+                                  "tilo-dev"):
         del docker[name]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")
 PY

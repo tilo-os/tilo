@@ -1,27 +1,26 @@
 # syntax=docker/dockerfile:1.7
-# The hosted VM guests: the Linux environments on a host that serves other
-# people's workspaces (Firecracker, crates/runtime/legacy-vm/src/hosted).
+# The hosted VM guest: the one root filesystem every workspace VM on a host that
+# serves other people's workspaces boots (Firecracker,
+# crates/runtime/legacy-vm/src/hosted). It runs the workspace's Linux programs
+# and its Browser.
 #
-# Two variants build from this one file, and both are a root *filesystem*, not a
-# disk and not an installed system: no systemd, no bootloader, no kernel
-# inside. tools/ci/publish/hosted-guest.sh exports the container's filesystem
-# into a raw ext4 (`rootfs.ext4`), which every VM's disk starts as a reflinked
-# copy of, and that the guest grows to its size at boot. PID 1 is
-# os/hosted-guest/hosted-init, which mounts what a guest needs, grows the
-# filesystem and hands over to the guest agent (crates/runtime/legacy-agent) —
-# a VM must answer within a few hundred milliseconds of being restored.
+# It is a root *filesystem*, not a disk and not an installed system: no systemd,
+# no bootloader, no kernel inside. tools/ci/publish/hosted-guest.sh exports the
+# container's filesystem into a raw ext4 (`rootfs.ext4`), which every VM's disk
+# starts as a reflinked copy of, and that the guest grows to its size at boot.
+# PID 1 is os/hosted-guest/hosted-init, which mounts what a guest needs, grows
+# the filesystem and hands over to the guest agent (crates/runtime/legacy-agent)
+# — a VM must answer within a few hundred milliseconds of being restored.
 #
-#   `--target workspace` (the default, the last stage): the Linux VM a
-#   workspace's own programs run in. Debian because the tenant gets a
-#   distribution they know: `apt install` works, and so does everything else
-#   they would do on their own machine. It carries the compilers and the
-#   language runtimes.
-#
-#   `--target browser`: the browser environment (docs/hosted-browser.md), which
-#   runs one Tilo session in place of a person's computer: the headless session
-#   drawing on the CPU (the hosts have no GPU), Browser as the signed tapp a
-#   device installs, and the Chromium engine runtime it requires. It has no
-#   compiler and no language runtime; its stages say what it holds.
+# Fedora 44, the userland every Tilo binary is built for, so the session and
+# Browser run as built: one userland and one build path. The tenant gets a
+# distribution they know: `dnf install` works, and so does everything else
+# they would do on their own machine. It carries the compilers and the language
+# runtimes, and one Tilo session in place of a
+# person's computer (docs/hosted-browser.md): the headless session drawing on
+# the CPU (the hosts have no GPU), Browser as the signed tapp a device installs,
+# and the Chromium engine runtime it requires. The session runs as its own
+# unprivileged user, never the tenant's.
 ARG BASE_REF
 # The build context holding the guest agent, built by this repository's CI
 # (hosted-guest.sh agent). The three names below are also what
@@ -41,17 +40,17 @@ COPY --from=github-assets / /
 # agent with the init that runs it. Neither the agent nor the init is a service:
 # nothing else is started, and there is no manager to start it with.
 FROM ${BASE_REF} AS guest-base
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+ENV LANG=C.UTF-8
+RUN dnf install -y --setopt=install_weak_deps=False \
       ca-certificates \
       e2fsprogs \
-      iproute2 \
-      passwd \
+      hostname \
+      iproute \
+      shadow-utils \
       tini \
       util-linux \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5
 RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
  && install -d -o tilo -g tilo /home/tilo/.local/bin /home/tilo/.local/share
 COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
@@ -65,13 +64,13 @@ RUN set -eu; \
       *) echo "agent: $agent_says"; exit 1 ;; \
     esac
 
-# ---- The browser guest's payload --------------------------------------------
+# ---- The session's payload ----------------------------------------------------
 # Browser and its engine runtime, and the app store, arranged exactly as a
 # device arranges them (os/scripts/pack-apps.sh, tilo-install). Python, binutils
 # and the libraries the shared runtime loads on first use live in this stage
-# only: the root filesystem the hypervisor boots holds none of them.
+# only.
 #
-#   session          hosted-guest.sh browser-session: /usr as the session's
+#   session          hosted-guest.sh session: /usr as the session's
 #                    components install it (os/components.toml)
 #   compiled         os/image/compile.sh's tree: the thin-app runtime, Browser's
 #                    binary and the packing tools
@@ -82,21 +81,24 @@ ARG CHROMIUM_RUNTIME_VERSION
 ARG RUNTIME_RELEASE=2026.07
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} RUNTIME_RELEASE=${RUNTIME_RELEASE}
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN dnf install -y --setopt=install_weak_deps=False \
       binutils \
-      libglib2.0-0t64 \
-      libgstreamer-plugins-base1.0-0 \
-      libgstreamer1.0-0 \
+      findutils \
+      glib2 \
+      gsettings-desktop-schemas \
+      gstreamer1 \
+      gstreamer1-plugins-base \
+      libxkbcommon \
       python3 \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5
 # The repository the pack scripts read: the app manifests and their budgets,
 # the fonts' catalog, and the tools.
 COPY os/ /build/os/
 COPY apps/browser/ /build/apps/browser/
 COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
 COPY crates/sdk/ui-core/assets/fonts/ /build/crates/sdk/ui-core/assets/fonts/
+COPY crates/sdk/ui-core/src/webview/chromium/runtime.rs /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs
 COPY tools/ /build/tools/
 COPY --from=compiled / /out/
 COPY --from=chromium-engine / /run/tilo-chromium/
@@ -177,157 +179,109 @@ RUN mkdir -p /etc/tilo \
       > /etc/tilo/runtime-bundle-trusted-publishers.txt \
  && test "$(grep -c . /etc/tilo/runtime-bundle-trusted-publishers.txt)" = 2
 
-# ---- The browser guest -------------------------------------------------------
-# What a device has of Tilo, on a root filesystem that holds nothing else: the
-# session and Browser (above), and the libraries the session draws with and the
-# engine runs against. No compiler, no shell tools, no node, no Rust, no Python.
-FROM guest-base AS browser
+# ---- The guest -------------------------------------------------------------------
+# A workspace's own programs: node, Rust, a C toolchain, git, python, and the
+# archivers everything unpacks. Its Browser: the session and Browser (above), and
+# the libraries the session draws with and the engine runs against.
+FROM guest-base AS workspace
 ARG CHROMIUM_RUNTIME_VERSION
-# Mesa's software Vulkan driver is how the session draws: the hosts have no GPU,
+# The tenant's tools first. Then Mesa's software Vulkan driver, which is how the
+# session draws: the hosts have no GPU,
 # so every frame is rasterized on the CPU (wgpu takes lavapipe's adapter). The
 # rest is what the session's Wayland/X11 client stack and CEF's libcef.so record
 # in DT_NEEDED, and what Chromium needs for offscreen rendering (NSS, cups,
 # fonts, audio) — the check below fails the build, naming the library, when a
 # list falls short.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      dbus \
-      fontconfig \
-      fonts-dejavu-core \
-      libasound2t64 \
-      libatk1.0-0t64 \
-      libatspi2.0-0t64 \
-      libatomic1 \
-      libcairo2 \
-      libcups2t64 \
-      libdbus-1-3 \
-      libdrm2 \
-      libegl1 \
-      libexpat1 \
-      libfontconfig1 \
-      libfreetype6 \
-      libgbm1 \
-      libgl1 \
-      libgl1-mesa-dri \
-      libglib2.0-0t64 \
-      libglvnd0 \
-      libglx0 \
-      libharfbuzz-icu0 \
-      libharfbuzz0b \
-      libice6 \
-      libinput10 \
-      libnspr4 \
-      libnss3 \
-      libopengl0 \
-      libpango-1.0-0 \
-      libpangocairo-1.0-0 \
-      libpcre2-8-0 \
-      libpixman-1-0 \
-      libseat1 \
-      libselinux1 \
-      libsm6 \
-      libstdc++6 \
-      libudev1 \
-      libunwind8 \
-      libvulkan1 \
-      libwayland-client0 \
-      libwayland-egl1 \
-      libwayland-server0 \
-      libx11-6 \
-      libx11-xcb1 \
-      libxcb-cursor0 \
-      libxcb-image0 \
-      libxcb-keysyms1 \
-      libxcb-randr0 \
-      libxcb-render0 \
-      libxcb-shape0 \
-      libxcb-shm0 \
-      libxcb-sync1 \
-      libxcb-xfixes0 \
-      libxcb-xkb1 \
-      libxcb1 \
-      libxcomposite1 \
-      libxcursor1 \
-      libxdamage1 \
-      libxext6 \
-      libxfixes3 \
-      libxi6 \
-      libxinerama1 \
-      libxkbcommon-x11-0 \
-      libxkbcommon0 \
-      libxrandr2 \
-      libxrender1 \
-      libxres1 \
-      libxtst6 \
-      mesa-libgallium \
-      mesa-vulkan-drivers \
-      zlib1g \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
-# The session, its fonts and its interface declaration (as the check arranged
-# them), then the store and the runtimes from the payload stage, then the script
-# the guest agent starts a session with and the proof that it does.
-COPY --from=session /usr/ /usr/
-COPY --from=browser-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=browser-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=browser-payload /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=browser-payload /etc/tilo/runtime-bundle-trusted-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
-COPY --chmod=0755 os/hosted-browser-guest/browser-session /usr/libexec/tilo/browser-session
-COPY --chmod=0755 os/hosted-browser-guest/smoke.sh /usr/libexec/tilo/browser-guest-smoke
-# Everything the guest starts must load on this root filesystem: the session and
-# its surface apps, the launcher, the store's tools, the engine host and CEF
-# itself. A missing library fails the build here, by name.
-RUN set -eu; \
-    binaries="$(find /usr/bin /usr/libexec/tilo -maxdepth 1 -type f -perm -u+x)"; \
-    engine="/usr/lib/tilo-runtime/$CHROMIUM_RUNTIME_VERSION/lib/chromium"; \
-    missing="$(LD_LIBRARY_PATH="$engine" ldd $binaries "$engine/tilo-chromium-host" "$engine/libcef.so" \
-               | awk '/not found/ { print $1 }' | sort -u)"; \
-    if [ -n "$missing" ]; then \
-      printf 'the browser guest has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
-      exit 1; \
-    fi; \
-    fc-cache -s >/dev/null; \
-    fc-list | grep -q . || { echo 'the guest resolves no font' >&2; exit 1; }
-# Start the session and the engine on this root filesystem, which is what a boot
-# would do: the build fails here rather than on a host's first environment.
-RUN /usr/libexec/tilo/browser-guest-smoke
-# What this image says it has, in the build log.
-RUN set -eu; \
-    du -shx / 2>/dev/null | sed 's/^/rootfs: /'; \
-    for unneeded in python3 node cargo rustc gcc cc; do \
-      if command -v "$unneeded" >/dev/null; then \
-        echo "the browser guest carries $unneeded" >&2; exit 1; \
-      fi; \
-    done
-
-# A directory the session owns, where a device's programs start.
-WORKDIR /home/tilo
-
-# ---- The workspace guest -----------------------------------------------------
-# The Linux VM a workspace's own programs run in: node, Rust, a C toolchain,
-# git, python, and the archivers everything unpacks. Nothing in it is a Tilo
-# component beyond the agent and the init above.
-FROM guest-base AS workspace
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN dnf install -y --setopt=install_weak_deps=False \
       curl \
+      findutils \
+      gcc \
+      gcc-c++ \
       git \
-      build-essential \
-      pkg-config \
-      libssl-dev \
-      python3 \
-      python3-pip \
-      python3-venv \
-      unzip \
-      xz-utils \
-      zstd \
+      gzip \
       jq \
       less \
-      procps \
-      openssh-client \
+      make \
+      openssh-clients \
+      openssl-devel \
+      pkgconf-pkg-config \
+      procps-ng \
+      python3 \
+      python3-pip \
       sudo \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+      tar \
+      unzip \
+      uv \
+      xz \
+      zstd \
+      alsa-lib \
+      at-spi2-atk \
+      at-spi2-core \
+      atk \
+      cairo \
+      cups-libs \
+      dbus-daemon \
+      dbus-libs \
+      dbus-tools \
+      dejavu-sans-fonts \
+      expat \
+      fontconfig \
+      freetype \
+      glib2 \
+      gstreamer1 \
+      gstreamer1-plugins-base \
+      harfbuzz \
+      harfbuzz-icu \
+      libICE \
+      libSM \
+      libX11 \
+      libX11-xcb \
+      libXcomposite \
+      libXcursor \
+      libXdamage \
+      libXext \
+      libXfixes \
+      libXi \
+      libXinerama \
+      libXrandr \
+      libXrender \
+      libXres \
+      libXtst \
+      libatomic \
+      libdrm \
+      libglvnd-egl \
+      libglvnd-glx \
+      libglvnd-opengl \
+      libinput \
+      libseat \
+      libselinux \
+      libstdc++ \
+      libunwind \
+      libwayland-client \
+      libwayland-egl \
+      libwayland-server \
+      libxcb \
+      libxkbcommon \
+      libxkbcommon-x11 \
+      mesa-dri-drivers \
+      mesa-libEGL \
+      mesa-libGL \
+      mesa-libgbm \
+      mesa-vulkan-drivers \
+      nspr \
+      nss \
+      pango \
+      pcre2 \
+      pipewire-libs \
+      pixman \
+      systemd-libs \
+      vulkan-loader \
+      xcb-util-cursor \
+      xcb-util-image \
+      xcb-util-keysyms \
+      zlib-ng-compat \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5
 # sudo without a password because the VM is theirs and nobody else is in it.
 RUN printf 'tilo ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/tilo \
  && chmod 0440 /etc/sudoers.d/tilo
@@ -382,6 +336,48 @@ RUN set -eu; \
     done; \
     rm -f /var/tmp/rustup-init
 
+# The session, its fonts and its interface declaration (as the check arranged
+# them), then the store and the runtimes from the payload stage, then the script
+# the guest agent starts a session with and the proof that it does.
+COPY --from=session /usr/ /usr/
+COPY --from=browser-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=browser-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=browser-payload /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=browser-payload /etc/tilo/runtime-bundle-trusted-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
+COPY --chmod=0755 os/hosted-guest/browser-session /usr/libexec/tilo/browser-session
+COPY --chmod=0755 os/hosted-guest/browser-smoke.sh /usr/libexec/tilo/browser-smoke
+# The session's own user: no sudo, no shell, and none of the tenant's files, so
+# a page that gets out of Chromium's sandbox lands in an account that can do
+# nothing to the VM. The tenant starts it (the agent runs everything as the
+# tenant) through the one rule below, which keeps its input, output and marks.
+RUN useradd --create-home --uid 1001 --user-group --shell /usr/sbin/nologin tilo-browser \
+ && printf '%s\n' \
+      'Defaults!/usr/libexec/tilo/browser-session !use_pty, env_keep += "TILO_HOSTED_BROWSER TILO_BROWSER_SESSION_CONFIG TILO_SESSION_ARGS"' \
+      'tilo ALL=(tilo-browser) NOPASSWD: /usr/libexec/tilo/browser-session' \
+      > /etc/sudoers.d/tilo-browser \
+ && chmod 0440 /etc/sudoers.d/tilo-browser
+# Everything the guest starts must load on this root filesystem: the session and
+# its surface apps, the launcher, the store's tools, the engine host and CEF
+# itself. A missing library fails the build here, by name.
+RUN set -eu; \
+    binaries="$(find /usr/bin /usr/libexec/tilo -maxdepth 1 -type f -perm -u+x)"; \
+    engine="/usr/lib/tilo-runtime/$CHROMIUM_RUNTIME_VERSION/lib/chromium"; \
+    missing="$(LD_LIBRARY_PATH="$engine" ldd $binaries "$engine/tilo-chromium-host" "$engine/libcef.so" \
+               | awk '/not found/ { print $1 }' | sort -u)"; \
+    if [ -n "$missing" ]; then \
+      printf 'the guest has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+      exit 1; \
+    fi; \
+    fc-cache -s >/dev/null; \
+    fc-list | grep -q . || { echo 'the guest resolves no font' >&2; exit 1; }
+# Start the session and the engine on this root filesystem, which is what a boot
+# would do: the build fails here rather than on a host's first Browser. Then
+# nothing the smoke made is kept: no identity of any device is in the image, so
+# none is in a template a workspace's VM is cloned from either.
+RUN /usr/libexec/tilo/browser-smoke \
+ && rm -rf /home/tilo-browser \
+ && install -d -m 0700 -o tilo-browser -g tilo-browser /home/tilo-browser
+
 # What this image says it has, in the build log: a guest whose node, rust or
 # agent went missing fails here rather than in somebody's workspace. node and
 # rust are asked as the tenant asks them — through the PATH the agent gives a
@@ -393,7 +389,8 @@ RUN set -eu; \
     npm --version | sed 's/^/npm: /'; \
     fnm --version | sed 's/^/fnm: /'; \
     su -s /bin/bash tilo -c 'cargo --version; rustc --version' | sed 's/^/rust: /'; \
-    python3 --version | sed 's/^/python: /'
+    python3 --version | sed 's/^/python: /'; \
+    uv --version | sed 's/^/uv: /'
 
 # A directory the tenant owns, at the paths their programs start in.
 WORKDIR /home/tilo

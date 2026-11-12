@@ -127,14 +127,14 @@ impl AgentParticipant {
             RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
                 RemoteActionMessage::ConfirmationResponse {
                     correlation,
-                    result: Err(ActionHostError::ConfirmationRequired),
+                    result: Err(ActionHostError::confirmation_required()),
                 }
             }
             // Nor does an agent confirm an action by its own word.
             RemoteActionMessage::Confirm { correlation, .. } => {
                 RemoteActionMessage::ConfirmResponse {
                     correlation,
-                    result: Err(ActionHostError::ConfirmationRequired),
+                    result: Err(ActionHostError::confirmation_required()),
                 }
             }
             // An agent keeps no content for others to put into.
@@ -379,7 +379,9 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
         DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
             Outcome::Rejected(ActionHostError::UnknownAction)
         }
-        DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
+        DoorError::ConfirmationRequired => {
+            Outcome::Rejected(ActionHostError::confirmation_required())
+        }
         DoorError::MissingArgument(_)
         | DoorError::UnexpectedArgument(_)
         | DoorError::InvalidArguments(_)

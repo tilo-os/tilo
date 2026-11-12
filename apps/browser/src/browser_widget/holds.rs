@@ -174,19 +174,10 @@ impl Held {
 
     /// The departure as the person's question carries it, by the names a
     /// reader reads it by: the page it leaves from, what it does, the method
-    /// and where it goes.
-    pub(crate) fn facts(&self) -> [(&'static str, String); 4] {
-        [
-            ("page", self.page.clone()),
-            ("kind", self.request.kind.as_str().to_owned()),
-            ("method", self.request.method.clone()),
-            ("destination", self.request.origin.clone()),
-        ]
-    }
-
-    /// The filled page, by the content address this window kept it under.
-    pub(crate) fn picture(&self) -> Option<&str> {
-        self.picture.as_deref()
+    /// and where it goes, and — when this window kept one — the picture of the
+    /// filled page, by its content address.
+    pub(crate) fn facts(&self) -> Vec<(&'static str, String)> {
+        facts(&self.page, &self.request, self.picture.as_deref())
     }
 
     /// Whether somebody answered it, to let it leave or to keep the page as
@@ -406,7 +397,9 @@ impl Holds {
 
 impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
-    /// action answers that it needs them, and their allow releases it.
+    /// action answers that it needs them — stating the departure it holds, so
+    /// the host holding their window asks them what leaves rather than a label
+    /// for it — and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
         let page = self.held_page();
         // The filled page is kept as content only for a hold that will wait
@@ -418,6 +411,7 @@ impl BrowserWidget {
             None => self.kept_hold_picture(request),
             Some(_) => None,
         };
+        let mut stated = departure_facets(&facts(&page, request, picture.as_deref()));
         let number = match self
             .holds
             .hold(request.clone(), page.clone(), picture, None)
@@ -438,17 +432,18 @@ impl BrowserWidget {
         self.forms.take_run(operation.invocation);
         self.holds
             .asked_by(HeldKey::of(request), operation.invocation);
+        // The number the window holds it under stands beside the departure,
+        // not among its parts: it is what answers the hold, and no part of
+        // what leaves, so a person asked what leaves is not shown it.
+        stated.push(ui::tilo_actions::ActionFacet::new(
+            HELD_FACET,
+            number.to_string(),
+        ));
         self.page_operation_result = Some(action_failed(
             operation.invocation,
             NEEDS_PERSON,
             format!("{}: the person has to allow this", request.describing()),
-            Some(serde_json::json!({
-                "held": number,
-                "kind": request.kind.as_str(),
-                "method": request.method,
-                "origin": request.origin,
-                "page": page,
-            })),
+            serde_json::to_value(stated).ok(),
         ));
         self.structure_dirty = true;
     }
@@ -666,4 +661,39 @@ fn shown_file(name: &str) -> Option<String> {
 /// address itself when it is no web address.
 fn origin_of(url: &str) -> String {
     crate::site_controls::origin(url).unwrap_or_else(|| url.to_owned())
+}
+
+/// The facet a hold's number is stated under in the answer of the page
+/// action whose run reached it: the number the window holds the departure
+/// under, which is what answers it. It stands beside the departure's facets,
+/// outside their prefix, so whoever reads what leaves does not read it.
+pub(crate) const HELD_FACET: &str = "browser.held";
+
+/// The parts of `request`'s departure from `page`, by the names a person's
+/// question reads them by: the page it leaves from, what it does, the method
+/// and where it goes, and — when this window kept one — the picture of the
+/// filled page.
+fn facts(page: &str, request: &HeldRequest, picture: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut facts = vec![
+        ("page", page.to_owned()),
+        ("kind", request.kind.as_str().to_owned()),
+        ("method", request.method.clone()),
+        ("destination", request.origin.clone()),
+    ];
+    if let Some(picture) = picture {
+        facts.push(("picture", picture.to_owned()));
+    }
+    facts
+}
+
+/// [`facts`] as the departure facets they are stated under wherever a
+/// departure leaves this window: on the hold it publishes, and in the answer a
+/// page action's run gives when what it reached waits for the person.
+fn departure_facets(facts: &[(&'static str, String)]) -> Vec<ui::tilo_actions::ActionFacet> {
+    facts
+        .iter()
+        .map(|(name, value)| {
+            ui::tilo_actions::remote::browser::departure_facet(name, value.clone())
+        })
+        .collect()
 }

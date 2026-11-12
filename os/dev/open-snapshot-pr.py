@@ -34,8 +34,6 @@ KERNEL_BUILDROOT_REF = re.compile(
     r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
 LEGACY_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/legacy-guest@sha256:([0-9a-f]{64})$")
 HOSTED_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/hosted-guest@sha256:([0-9a-f]{64})$")
-HOSTED_BROWSER_GUEST_REF = re.compile(
-    r"^registry\.tilo\.so/tilo/hosted-browser-guest@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -130,31 +128,19 @@ def legacy_guest_snapshot(args, parser) -> tuple[str, dict]:
     }
 
 
-def hosted_guest_contents(x86_ref: str, browser_x86_ref: str = "") -> str:
-    """Return the canonical os/hosted-guest-snapshot.env.
-
-    Both guests are pinned in this one file and published by a check of their
-    own, so each pin carries the other guest's line over as it stands: a ref
-    left out here keeps its absence rather than deleting the line.
-    """
+def hosted_guest_contents(x86_ref: str) -> str:
+    """Return the canonical os/hosted-guest-snapshot.env."""
     lines = [
-        "# The hosted VM guest images, pinned by digest and signed with the release",
-        "# key. Written by the pin-hosted-guest and pin-hosted-browser-guest checks;",
-        "# `tilo-legacy hosted fetch-guest` compiles the workspace guest in and fetches",
-        "# nothing else.",
+        "# The hosted VM guest image, pinned by digest and signed with the release",
+        "# key. Written by the pin-hosted-guest check; `tilo-legacy hosted fetch-guest`",
+        "# compiles it in and fetches nothing else.",
         "#",
-        "# The workspace guest: a Firecracker kernel and the root filesystem every",
-        "# workspace VM's disk starts from.",
+        "# A Firecracker kernel and the root filesystem every workspace VM's disk",
+        "# starts from: the workspace's Linux programs, and the headless session,",
+        "# Browser and the Chromium engine runtime its Browser runs in.",
     ]
     if x86_ref:
         lines.append(f"HOSTED_GUEST_X86_64_REF={x86_ref}")
-    lines.extend((
-        "# The browser guest: the same kernel and init, with a headless session,",
-        "# Browser and the Chromium engine runtime Browser requires. A workspace that",
-        "# opens Browser starts one of these instead.",
-    ))
-    if browser_x86_ref:
-        lines.append(f"HOSTED_BROWSER_GUEST_X86_64_REF={browser_x86_ref}")
     lines.append("")
     return "\n".join(lines)
 
@@ -162,18 +148,15 @@ def hosted_guest_contents(x86_ref: str, browser_x86_ref: str = "") -> str:
 def hosted_guest_snapshot(args, parser) -> tuple[str, dict]:
     if args.x86_ref and HOSTED_GUEST_REF.fullmatch(args.x86_ref) is None:
         parser.error("hosted guest ref must be an immutable hosted-guest sha256 reference")
-    if args.browser_x86_ref and HOSTED_BROWSER_GUEST_REF.fullmatch(args.browser_x86_ref) is None:
-        parser.error("browser guest ref must be an immutable hosted-browser-guest sha256 reference")
-    return hosted_guest_contents(args.x86_ref, args.browser_x86_ref), {
+    return hosted_guest_contents(args.x86_ref), {
         "label": "Hosted guest",
         "branch_prefix": "automation/hosted-guest-snapshot-",
-        "title": "build(os): pin the hosted VM guest images",
-        "summary": ("Automated promotion of the signed hosted VM guest images: the "
-                    "workspace guest, which holds the kernel each VM boots and the root "
-                    "filesystem its disk starts from, and the browser guest, which runs "
-                    "Browser's session and engine.\n\n"
-                    "After this merges, hosts fetch new guest images from them and start "
-                    "workspace and browser VMs from them."),
+        "title": "build(os): pin the hosted VM guest image",
+        "summary": ("Automated promotion of the signed hosted VM guest image: the kernel "
+                    "each workspace VM boots and the root filesystem its disk starts "
+                    "from, with the workspace's Linux programs and its Browser.\n\n"
+                    "After this merges, hosts fetch the new guest image and start "
+                    "workspace VMs from it."),
     }
 
 
@@ -231,11 +214,8 @@ def add_kinds(parser) -> None:
     # So is the hosted workspace VMs' guest, which holds a kernel and a root
     # filesystem under one digest.
     kind = kinds.add_parser("hosted-guest",
-                            help="the x86-64 hosted VM guest images, workspace and browser")
-    # Each pin names the guest it publishes and carries the other's line over as
-    # the file holds it.
+                            help="the x86-64 hosted VM guest image")
     kind.add_argument("--x86-ref")
-    kind.add_argument("--browser-x86-ref")
     kind.set_defaults(snapshot=hosted_guest_snapshot)
 
 

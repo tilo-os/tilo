@@ -645,7 +645,7 @@ impl Worker {
         if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }
-        Outcome::Rejected(ActionHostError::ConfirmationRequired)
+        Outcome::Rejected(ActionHostError::confirmation_required())
     }
 
     /// What the person is asked about running `descriptor` with `arguments`

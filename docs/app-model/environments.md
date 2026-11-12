@@ -393,13 +393,13 @@ that workspace environment's own, never in a guest sharing the host's kernel
   every connection from a socket of the host's and forwards nothing inwards,
   so the host routes and translates nothing, and in Kubernetes the pod's
   network policy applies to VM traffic too. Every VM has the same address
-  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A
-  browser environment is allowed one destination besides the internet: the
-  relay its session joins the workspace through
+  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A VM
+  is allowed one destination besides the internet: the relay its Browser
+  session joins the workspace through
   (`--relay-endpoint`/`TILO_VM_RELAY_ENDPOINT`, a public address or the
   stack's cluster address), and a relay on a local host's loopback is
-  reached at 10.0.2.4, which `pasta` maps there. A Linux VM has no such
-  destination. Firecracker's rate limiters bound each VM's bandwidth.
+  reached at 10.0.2.4, which `pasta` maps there. Firecracker's rate
+  limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
   account's ledger, billed per second with the sub-second rest carried to
@@ -436,9 +436,11 @@ that workspace environment's own, never in a guest sharing the host's kernel
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,
   ext4, cgroups, namespaces, overlayfs) and no modules, and `rootfs.ext4`, a
-  raw ext4 of Debian 13 with the tenant account (`tilo`, uid 1000, passwordless
-  sudo), git, a compiler, python, node and rust on `PATH` for every shell, and
-  the same guest agent the legacy VM runs. It has no systemd: PID 1 is
+  raw ext4 of Fedora 44 (the release every Tilo binary is built on; `dnf
+  install` adds packages) with the tenant account (`tilo`, uid 1000,
+  passwordless sudo), git, a compiler, python and uv, node and rust on `PATH`
+  for every shell, the headless session with Browser and Chromium, and the
+  same guest agent the legacy VM runs. It has no systemd: PID 1 is
   `hosted-init`, which mounts what a guest needs, grows the filesystem to the
   disk it was given, points DNS at the host's forwarder and hands over to the
   agent. Each VM's disk is a reflinked copy of `rootfs.ext4`. Hosts do not
@@ -446,26 +448,15 @@ that workspace environment's own, never in a guest sharing the host's kernel
   in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
   fetches only that digest under `/etc/containers/policy.json`'s
   `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
-- **Browser environments:** a hosted workspace's Browser runs in a microVM of
-  its own on the VM hosts, beside its Linux VM: size `browser` (2 vCPU / 2 GB /
-  8 GB disk), booted from the browser guest image
-  (`registry.tilo.so/tilo/hosted-browser-guest`, pinned beside the hosted
-  guest's digest, with Browser and an engine instead of a compiler). The relay
-  opens one directly when someone in the workspace opens Browser, and it is
-  placed as `<workspace>/browser` like any VM. It keeps nothing: a fresh disk
-  from the image every boot, never snapshotted, and its disk and state are
-  deleted when it stops after ten minutes without page activity, two hours
-  alive, or when the workspace closes it. Each host keeps two spares booted
-  with a session waiting for a workspace, so Browser opens in about a second,
-  and a spare that was handed to a workspace is never handed to another. No
-  plan admits it and no card is needed for it, while it takes its share of the
-  host's memory budget and the placer's view like any VM, and its machine's
-  time is not in an account's ledger (the relay counts the page actions). What
-  runs in it is a headless session that joins the workspace as a device; the
-  host starts it through the guest agent, and the exact contract — argv, the
-  `TILO_HOSTED_BROWSER` mark, one line of material on its stdin, `ready`,
-  `up` and `used` on its stdout — is documented in
-  [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs).
+- **Browser:** a hosted workspace's Browser runs in the same VM: the first
+  browser action wakes it (no card needed) and starts a headless session in
+  it, as the unprivileged `tilo-browser` user, which joins the workspace as a
+  device. Linux actions in that VM still need the plan and the card. New VMs
+  start as copy-on-write clones of a warm template of their size. The exact
+  contract — argv, the `TILO_HOSTED_BROWSER` mark, one line of material on
+  its stdin, `ready`, `up` and `used` on its stdout — is documented in
+  [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs),
+  and the whole of it in [`hosted-browser.md`](../hosted-browser.md).
 
 ## Members that take work
 

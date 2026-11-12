@@ -23,8 +23,6 @@ use ui::widget::Element;
 
 use crate::model::{Article, Feed, Fetched, Filter, Folder, Library, Outline, tag_key};
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
 /// How many tags the library publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;
 
@@ -286,7 +284,7 @@ impl ResourceApp for FeedsShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 
     #[cfg(feature = "samples")]

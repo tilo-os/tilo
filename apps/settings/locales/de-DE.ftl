@@ -2145,6 +2145,7 @@ settings-personal-apps-choice-follows = Deine bevorzugte App wird verwendet, sof
 settings-personal-apps-scope-caption = Standard-Apps eines Arbeitsbereichs werden dort verwaltet.
 settings-personal-apps-workspace-rules = App-Regeln dieses Arbeitsbereichs
 settings-personal-apps-open = Öffnen
+settings-app-open-with = { $kind } mit { $app } öffnen
 settings-printers-driverless = Drucker ohne zusätzlichen Treiber
 settings-region-preview-week = Wochenbeginn
 settings-region-shared-body = Apps verwenden diese Formate für Datum, Uhrzeit, Zahlen und Maße.

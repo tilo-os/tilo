@@ -10,6 +10,7 @@
 //! a button bound to it ran, through the window's dispatcher; a view, the
 //! published view action, through the window's controls.
 
+use crate::resource::CATALOG;
 use ui::tilo_actions::ControlInvocation;
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -48,7 +49,7 @@ impl StoreState {
                 entry(
                     StoreEffect::RefreshRemotes,
                     "refresh",
-                    ui::i18n!("store-remote-refresh"),
+                    CATALOG.t("store-remote-refresh"),
                 ),
             );
         }
@@ -57,9 +58,12 @@ impl StoreState {
         }
         let updates = self.update_ids().len();
         let updates_label = if updates == 0 {
-            ui::i18n!("store-view-updates")
+            CATALOG.t("store-view-updates")
         } else {
-            ui::i18n!("store-view-updates-count", "count" => ui::format::count(updates as u64))
+            CATALOG.t_args(
+                "store-view-updates-count",
+                &[("count", ui::format::count(updates as u64).into())],
+            )
         };
         let chosen = match &self.view {
             View::Home | View::Category(_) | View::Repository(_) => "home",
@@ -68,13 +72,13 @@ impl StoreState {
             View::Bots => "bots",
         };
         let labels = [
-            ui::i18n!("store-view-home"),
+            CATALOG.t("store-view-home"),
             updates_label,
-            ui::i18n!("store-view-installed"),
-            ui::i18n!("store-view-bots"),
+            CATALOG.t("store-view-installed"),
+            CATALOG.t("store-view-bots"),
         ];
         base.views = Some(ToolbarViews {
-            name: ui::i18n!("store-views-label"),
+            name: CATALOG.t("store-views-label"),
             choices: VIEWS
                 .iter()
                 .zip(labels)
@@ -95,17 +99,17 @@ impl StoreState {
                     reported_size: None,
                 },
                 "box",
-                ui::i18n!("store-package-review"),
+                CATALOG.t("store-package-review"),
             ),
             entry(
                 StoreEffect::ShowRemotes,
                 "cloud",
-                ui::i18n!("store-remotes-title"),
+                CATALOG.t("store-remotes-title"),
             ),
             entry(
                 StoreEffect::ShowTrust,
                 "shield",
-                ui::i18n!("store-trust-title"),
+                CATALOG.t("store-trust-title"),
             ),
         ];
         let actions = occasional.into_iter().flatten().map(ToolbarAction::in_menu);

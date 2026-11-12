@@ -376,16 +376,17 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 /// Publish the actions under the service's own route.
 #[must_use]
 pub fn publication() -> CollabRequest {
-    CollabRequest::PublishActions {
-        actions: descriptors()
-            .iter()
-            .map(|descriptor| ExportedAction {
-                state: ui::tilo_actions::ActionState::default(),
-                view: None,
-                input: ExportedInput::None,
-                ..ExportedAction::from(descriptor)
-            })
-            .collect(),
+    let actions: Vec<ExportedAction> = descriptors()
+        .iter()
+        .map(|descriptor| ExportedAction {
+            state: ui::tilo_actions::ActionState::default(),
+            view: None,
+            input: ExportedInput::None,
+            ..ExportedAction::from(descriptor)
+        })
+        .collect();
+    CollabRequest::PublishActionSurface {
+        delta: ui::collaboration::SurfacePublication::next(None, &actions).0,
     }
 }
 
@@ -790,10 +791,10 @@ mod tests {
                 );
             }
         }
-        let CollabRequest::PublishActions { actions } = publication() else {
+        let CollabRequest::PublishActionSurface { delta } = publication() else {
             panic!("a publication publishes actions");
         };
-        assert_eq!(actions.len(), 2);
+        assert_eq!(delta.shapes.len(), 2);
     }
 
     #[test]

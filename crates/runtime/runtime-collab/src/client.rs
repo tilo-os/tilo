@@ -1003,12 +1003,12 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the host refuses the surface.
     pub async fn publish_actions(&self, actions: &[ExportedAction]) -> Result<(), NotAvailable> {
-        let json = serde_json::to_string(actions).map_err(|error| refused(error.to_string()))?;
-        self.publish(Publication::Actions(json)).await
+        let whole = crate::SurfacePublication::next(None, actions).0;
+        let json = serde_json::to_string(&whole).map_err(|error| refused(error.to_string()))?;
+        self.publish(Publication::Surface(json)).await
     }
 
-    /// [`Self::publish_actions`] as a delta against what this channel has
-    /// already published.
+    /// A change to what this channel has already published.
     ///
     /// # Errors
     ///

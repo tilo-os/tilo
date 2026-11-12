@@ -106,7 +106,7 @@ pub use search::{Found, ResourceSearch, stem_word};
 pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
-use crate::context::ActionContext;
+use crate::context::{ActionContext, ActionFacet};
 use crate::door::ActionAddress;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
@@ -580,7 +580,9 @@ impl InvocationState {
             // is a refusal to the caller, not a failure of the action.
             InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
                 ReceiptStatus::Rejected {
-                    error: ActionHostError::ConfirmationRequired,
+                    error: ActionHostError::ConfirmationRequired {
+                        departure: browser::departure_stated(error.details.as_ref()),
+                    },
                 }
             }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
@@ -626,8 +628,14 @@ pub enum ActionHostError {
     #[error("the caller may not invoke this action")]
     NotPermitted,
     /// The action requires a confirmation step this request did not carry.
+    ///
+    /// `departure` states the page departure the action's own run reached and
+    /// holds for the person, when it reached one ([`browser::DEPARTURE_FACET`]s):
+    /// what is about to leave, where, and the picture of the filled page, so
+    /// the question they are asked names it rather than a label for it. It is
+    /// empty for an action that asks before it runs anything.
     #[error("the action requires confirmation")]
-    ConfirmationRequired,
+    ConfirmationRequired { departure: Vec<ActionFacet> },
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
@@ -651,6 +659,15 @@ pub enum ActionHostError {
 }
 
 impl ActionHostError {
+    /// The refusal for want of the person's answer, for an action that
+    /// reached no page departure to name.
+    #[must_use]
+    pub const fn confirmation_required() -> Self {
+        Self::ConfirmationRequired {
+            departure: Vec::new(),
+        }
+    }
+
     /// Stable machine-readable code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -658,7 +675,7 @@ impl ActionHostError {
             Self::Unavailable { .. } => "remote_actions_unavailable",
             Self::UnknownAction => "unknown_action",
             Self::NotPermitted => "not_permitted",
-            Self::ConfirmationRequired => "action_confirmation_required",
+            Self::ConfirmationRequired { .. } => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
             Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
@@ -685,15 +702,28 @@ pub const STALE_REVISION_REASON: &str = "the target changed since that revision;
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionHostError")]
 enum WireHostError {
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
     UnknownAction,
     NotPermitted,
-    ConfirmationRequired,
-    InvalidRequest { reason: String },
+    ConfirmationRequired {
+        /// Written even when there is no departure: a refusal is encoded by
+        /// position too, and a part left out is one its reader still expects.
+        #[serde(default)]
+        departure: Vec<ActionFacet>,
+    },
+    InvalidRequest {
+        reason: String,
+    },
     UnknownInvocation,
     InvocationConflict,
-    NotCancellable { reason: String },
-    Refused { reason: String },
+    NotCancellable {
+        reason: String,
+    },
+    Refused {
+        reason: String,
+    },
 }
 
 impl From<ActionHostError> for WireHostError {
@@ -702,7 +732,9 @@ impl From<ActionHostError> for WireHostError {
             ActionHostError::Unavailable { reason } => Self::Unavailable { reason },
             ActionHostError::UnknownAction => Self::UnknownAction,
             ActionHostError::NotPermitted => Self::NotPermitted,
-            ActionHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            ActionHostError::ConfirmationRequired { departure } => {
+                Self::ConfirmationRequired { departure }
+            }
             ActionHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             ActionHostError::StaleRevision => Self::InvalidRequest {
                 reason: STALE_REVISION_REASON.to_owned(),
@@ -724,7 +756,9 @@ impl From<WireHostError> for ActionHostError {
             WireHostError::Unavailable { reason } => Self::Unavailable { reason },
             WireHostError::UnknownAction => Self::UnknownAction,
             WireHostError::NotPermitted => Self::NotPermitted,
-            WireHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            WireHostError::ConfirmationRequired { departure } => {
+                Self::ConfirmationRequired { departure }
+            }
             WireHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
             WireHostError::UnknownInvocation => Self::UnknownInvocation,
             WireHostError::InvocationConflict => Self::InvocationConflict,
@@ -818,7 +852,7 @@ pub trait ActionHost {
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         let _ = (caller, request);
-        Pending::ready(Err(ActionHostError::ConfirmationRequired))
+        Pending::ready(Err(ActionHostError::confirmation_required()))
     }
 
     /// Where this host's callers put content into their workspace's content
@@ -1242,7 +1276,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         ),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
-            confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
+            confirmation::unanswered(correlation, ActionHostError::confirmation_required()),
         ),
         // Uploads over a session are kept by a host that keeps them open
         // between steps ([`HostedContentPuts`]); a stateless one has none.
@@ -1609,6 +1643,52 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
             update
+        );
+    }
+
+    /// A run that reached something only the person may allow is refused for
+    /// want of their answer, and that refusal carries what the run stated
+    /// about it: the page departure it holds, as it travels to the host that
+    /// asks them.
+    #[test]
+    fn a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated() {
+        let departure = vec![
+            browser::departure_facet("page", "https://visa.example/apply"),
+            browser::departure_facet("kind", "submit"),
+            browser::departure_facet("method", "POST"),
+            browser::departure_facet("destination", "https://visa.example"),
+            browser::departure_facet("picture", "tilo.content:5f2b"),
+        ];
+        let invocation = InvocationId::new();
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Failed {
+                invocation,
+                error: ActionFailure {
+                    code: CONFIRMATION_REQUIRED_CODE.into(),
+                    message: "the person has to allow this".into(),
+                    details: serde_json::to_value(&departure).ok(),
+                    retryable: false,
+                },
+            },
+        );
+        let receipt = state.receipt();
+        let ReceiptStatus::Rejected {
+            error: ActionHostError::ConfirmationRequired { departure: stated },
+        } = &receipt.status
+        else {
+            panic!("a run waiting on the person is a refusal: {receipt:?}");
+        };
+        assert_eq!(*stated, departure);
+        // The refusal travels with it, so a host in another process asks the
+        // person about what leaves and not about a name for it.
+        let error = ActionHostError::ConfirmationRequired {
+            departure: stated.clone(),
+        };
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ActionHostError>(wire).unwrap(),
+            error
         );
     }
 

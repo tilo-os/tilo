@@ -454,7 +454,7 @@ async fn destructive_governance_waits_for_the_person() {
     ban.confirmation = Some(Confirmation::Confirmed);
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), ban).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let remove = request(
         &workspace,
@@ -463,7 +463,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), remove).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let end = request(
         &workspace,
@@ -472,7 +472,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&owner), end).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(

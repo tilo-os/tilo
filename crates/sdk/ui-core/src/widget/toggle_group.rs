@@ -18,6 +18,8 @@
 //! [`ToggleGroup::from_state`] binds the choice to typed view state instead of a callback;
 //! [`ToggleGroup::vertical`] stacks icon segments into a tool rail, each label (with its
 //! [`Segment::with_hint`] shortcut) its tooltip and its accessible name.
+
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -2682,7 +2684,7 @@ impl Widget for ToggleGroup {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Segment labels are runtime strings (host-provided), not FTL
-        // keys, so no `i18n!` wrap.
+        // keys, so no lookup.
         let value = if self.chosen.is_some() {
             None
         } else {
@@ -2721,7 +2723,7 @@ impl Widget for ToggleGroup {
         let name = self
             .accessible_name
             .as_ref()
-            .map(|name| crate::i18n!(name))
+            .map(|name| widget_text(name))
             .or_else(|| self.caption.clone());
         let mut state = AccessState::new()
             .focusable(self.is_focusable())

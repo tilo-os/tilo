@@ -1164,13 +1164,17 @@ fn asked_of_desk(
                 Vec::new()
             } else {
                 // Where each window is drawn, read off the frame's own layout: a row says what a
-                // tool aiming at that window aims at.
+                // tool aiming at that window aims at. How many frames it drew is read off the
+                // compositor, where the client's commits arrive.
                 let rect_of = |id: u64| compositor.window_rect(id);
+                let frames_of = |id: u64| compositor.window_frames(id);
                 match &ctx.scope {
-                    None => desk.handle.read(|tree| window_rows(tree, rect_of)),
+                    None => desk
+                        .handle
+                        .read(|tree| window_rows(tree, rect_of, frames_of)),
                     Some(scope) => desk
                         .handle
-                        .read(|tree| window_rows(&within(tree, scope), rect_of)),
+                        .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of)),
                 }
             };
             json!({"answer": {"windows": rows}})
@@ -2019,7 +2023,7 @@ fn action_refusal(error: &ActionHostError) -> Json {
         // it at all; an action the person may not run is another answer.
         ActionHostError::NotPermitted => "not_allowed",
         ActionHostError::StaleRevision => "stale_cursor",
-        ActionHostError::ConfirmationRequired => "needs_confirmation",
+        ActionHostError::ConfirmationRequired { .. } => "needs_confirmation",
         other => other.code(),
     };
     refusal(code, &error.to_string())
@@ -2567,16 +2571,19 @@ mod tests {
         tree.set_active_group(StripId(1), 10);
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
-        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)));
+        let frames = |id: u64| if id == 7 { 41 } else { 0 };
+        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)), frames);
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
         assert_eq!(rows[0]["rect"], json!([14, 96, 946, 984]));
         assert_eq!(rows[0]["active"], json!(true));
+        assert_eq!(rows[0]["frames"], json!(41));
         assert_eq!(rows[1]["window"], Json::Null);
         assert_eq!(rows[1]["rect"], Json::Null);
+        assert_eq!(rows[1]["frames"], json!(0));
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, |_| None);
+        let closed = window_rows(&tree, |_| None, frames);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
     }

@@ -7,6 +7,7 @@
 //! toolkit. A press invokes the effect that browses the tag or opens the
 //! note, the same operation a command-palette entry does.
 
+use crate::metadata::CATALOG;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -247,7 +248,7 @@ impl NoteHeader {
                 .with_no_padding()
                 .with_gap(rhythm.related);
             links = links.push(Box::new(
-                Text::new(&ui::i18n!("notes-linked-from"))
+                Text::new(&CATALOG.t("notes-linked-from"))
                     .with_id("notes.linked-from")
                     .with_role(TextRole::Subheading)
                     .dimmed(),

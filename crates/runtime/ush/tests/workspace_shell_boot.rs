@@ -96,6 +96,7 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
             self_exe: env_path("TILO_LEGACY_BIN"),
             jail,
             relay: None,
+            templates: None,
         },
     };
     let socket = config.socket();

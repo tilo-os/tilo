@@ -19,6 +19,7 @@
 //! The list is a [`SuggestionList`] anchored at the `@`, painted in the
 //! window's top layer.
 
+use crate::i18n::widget_text;
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -444,10 +445,10 @@ pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completi
 fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggestion {
     let detail = match candidate.kind {
         ParticipantKind::Person => None,
-        ParticipantKind::Agent => Some(crate::i18n!("widget-mention-agent")),
-        ParticipantKind::Shortcut => Some(crate::i18n!("widget-mention-shortcut")),
-        ParticipantKind::App => Some(crate::i18n!("widget-mention-app")),
-        ParticipantKind::Bot => Some(crate::i18n!("widget-mention-bot")),
+        ParticipantKind::Agent => Some(widget_text("widget-mention-agent")),
+        ParticipantKind::Shortcut => Some(widget_text("widget-mention-shortcut")),
+        ParticipantKind::App => Some(widget_text("widget-mention-app")),
+        ParticipantKind::Bot => Some(widget_text("widget-mention-bot")),
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
         identity: candidate.id.clone(),

@@ -447,6 +447,16 @@ impl Apps {
         state.connectors = Some(connectors);
     }
 
+    /// The person's region formats changed: every tilolang host running here is told, so the
+    /// instances it runs write the dates, clocks and weeks their windows show again in the new
+    /// ones ([`crate::formats`]).
+    pub fn formats_changed(&self) {
+        let hosts = self.state.borrow().hosts.clone();
+        if let Some(hosts) = hosts {
+            hosts.formats_changed();
+        }
+    }
+
     /// Whether `app`'s windows hold none of its data, their instances run in a tilolang host:
     /// a tilolang app whose model no service of the session runs, in a session with doors and a
     /// launcher to start hosts through.

@@ -613,21 +613,23 @@ impl Widget for NativeView {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         match &self.accessibility {
-            NativeViewAccessibility::Toolkit { name } => Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name(name)
-                    .with_description(
-                        self.mount_error
-                            .as_deref()
-                            .unwrap_or("Native platform view"),
-                    )
-                    .with_state(
+            NativeViewAccessibility::Toolkit { name } => {
+                let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group).with_name(name);
+                // A view that mounted says nothing beyond its name; one that
+                // did not says why.
+                let node = match self.mount_error.as_deref() {
+                    Some(error) => node.with_description(error),
+                    None => node,
+                };
+                Some(
+                    node.with_state(
                         crate::a11y::AccessState::new()
                             .focusable(self.enabled)
                             .focused(self.focused)
                             .disabled(!self.enabled),
                     ),
-            ),
+                )
+            }
             NativeViewAccessibility::PlatformOwned => None,
         }
     }

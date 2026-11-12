@@ -1804,6 +1804,14 @@ impl Compositor {
         self.data.state.window_rect(id)
     }
 
+    /// The frames the client of the window whose [`WindowInfo::id`] is `id` committed since it
+    /// opened: a window that keeps showing the same thing keeps its count, so two reads that agree
+    /// say the window drew nothing between them.
+    #[must_use]
+    pub fn window_frames(&self, id: u64) -> u64 {
+        self.data.state.committed_frames(id)
+    }
+
     /// The foreign-toplevel identifier of the mapped window whose [`WindowInfo::id`] is `id` : what
     /// a capture names a window by, and how what the desk knows of a window reaches what it shows.
     #[must_use]

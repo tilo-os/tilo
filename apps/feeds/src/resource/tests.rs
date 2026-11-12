@@ -1070,15 +1070,15 @@ fn the_catalog_resolves_the_link_messages() {
     for (key, value) in [
         (
             "feeds-open-link-invalid",
-            ui::i18n!("feeds-open-link-invalid"),
+            crate::i18n::t("feeds-open-link-invalid"),
         ),
         (
             "feeds-open-link-started",
-            ui::i18n!("feeds-open-link-started"),
+            crate::i18n::t("feeds-open-link-started"),
         ),
         (
             "feeds-open-link-failed",
-            ui::i18n!("feeds-open-link-failed"),
+            crate::i18n::t("feeds-open-link-failed"),
         ),
     ] {
         assert_ne!(key, value);

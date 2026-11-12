@@ -157,7 +157,10 @@ mod tests {
         );
         ui::i18n::I18nManager::add_resource("de-DE", "app-title = Titel".to_owned());
         assert_eq!(t("tilolang-sort"), "Sortieren");
-        assert_eq!(ui::i18n!("window-toolbar-more"), "Weitere Aktionen");
+        assert_eq!(
+            ui::i18n::widget_text("window-toolbar-more"),
+            "Weitere Aktionen"
+        );
         ui::i18n::I18nManager::set_locale("en-US");
         assert_eq!(t("tilolang-sort"), "Sort");
     }

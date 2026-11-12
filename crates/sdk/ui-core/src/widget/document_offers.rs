@@ -8,6 +8,7 @@
 //! and a caption under it — so the list reads exactly like the app's other
 //! lists, and each row's rect is handed back for the press that opens it.
 
+use crate::i18n::widget_text;
 use vello::kurbo::{Point, Rect};
 
 use crate::icons::Icon;
@@ -91,7 +92,7 @@ pub fn paint(
         return painted;
     }
     let theme = ctx.theme;
-    let heading = crate::i18n!("widget-documents-in-workspace");
+    let heading = widget_text("widget-documents-in-workspace");
     let (_, heading_h) =
         ctx.text
             .measure_style(&heading, Some(to_f32(rect.width())), &heading_style(theme));

@@ -358,17 +358,24 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     if host_pids(session_pid) != hosts:
         raise Failed(f"{tasks}'s second window's instance runs elsewhere: hosts {hosts} became "
                      f"{host_pids(session_pid)}")
-    def shot(name: str) -> list[bytes]:
-        """Each window in front in turn, as it shows then: the strip shows one at a time."""
+    def shot(name: str | None) -> list[bytes]:
+        """Each window in front in turn, as it shows then: the strip shows one at a time. Without a
+        `name` nothing is captured: the pass only brings each window forward."""
         seen = []
         for i, window in enumerate(windows):
             focus(session, window)
             time.sleep(1.0)
+            if name is None:
+                continue
             rect = next(w["rect"] for w in session.windows() if w.get("tab") == window["tab"])
             path = out / f"tasks-window-{i}-{name}.png"
             session.control_cmd("snapshot", str(path))
             seen.append(window_pixels(png_rgb(path), rect))
         return seen
+    # A window brought forward stands where the strip's pan puts it, and the strip already holds the
+    # window it has just opened in view: this pass settles where each stands, so the two captures
+    # below compare what the windows show and not where the strip settled.
+    shot(None)
     before = shot("before")
     if shot("still") != before:
         raise Failed(f"{tasks}'s windows change while nothing happens: nothing could tell an edit")

@@ -6,6 +6,7 @@
 //! notebook's own call: the bar's one "+" is the strip's, which opens a new tab. Outside a Tilo
 //! session both headers stay in the window.
 
+use crate::metadata::CATALOG;
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::NotesApp;
@@ -35,7 +36,7 @@ impl NotesApp {
             navigation: None,
             location: note.map(|(title, anchor)| ToolbarLocation {
                 label: title.to_owned(),
-                placeholder: ui::i18n!("notes-title-placeholder"),
+                placeholder: CATALOG.t("notes-title-placeholder"),
                 anchor: Some(anchor),
                 // Unsaved work is marked by the window's framework, from the
                 // record's save.
@@ -71,7 +72,7 @@ impl NotesApp {
             };
             // window-bar: list-new, New note heads the page tree it adds to
             self.shell
-                .set_sidebar_header(ui::i18n!("notes-title"), tree_actions);
+                .set_sidebar_header(CATALOG.t("notes-title"), tree_actions);
             // window-bar: fallback, the bar holds the note's actions while it hosts the window
             self.shell.set_content_header("", actions);
             if !hosted {
@@ -122,6 +123,7 @@ impl NotesApp {
 #[cfg(test)]
 mod tests {
     use super::NotesApp;
+    use crate::metadata::CATALOG;
     use ui::framework::testing::TestApp;
 
     /// Notes in its window bar at `size`, on `scenario`'s note.
@@ -231,13 +233,13 @@ mod tests {
         assert_eq!(
             bar_actions(&mut open),
             vec![
-                (ui::i18n!("notes-menu-new-child"), true),
-                (ui::i18n!("notes-menu-rename"), true),
-                (ui::i18n!("notes-menu-duplicate"), true),
-                (ui::i18n!("notes-menu-copy-link"), true),
-                (ui::i18n!("notes-menu-export"), true),
-                (ui::i18n!("notes-menu-insert-image"), true),
-                (ui::i18n!("notes-menu-delete"), true),
+                (CATALOG.t("notes-menu-new-child"), true),
+                (CATALOG.t("notes-menu-rename"), true),
+                (CATALOG.t("notes-menu-duplicate"), true),
+                (CATALOG.t("notes-menu-copy-link"), true),
+                (CATALOG.t("notes-menu-export"), true),
+                (CATALOG.t("notes-menu-insert-image"), true),
+                (CATALOG.t("notes-menu-delete"), true),
             ],
             "an open note's commands are the rows of the window's More menu, and nothing \
              stands in the row beside the strip's own \"+\""
@@ -271,7 +273,7 @@ mod tests {
             declared
                 .actions
                 .iter()
-                .all(|action| action.name != ui::i18n!("notes-affordance-new-note")),
+                .all(|action| action.name != CATALOG.t("notes-affordance-new-note")),
             "the bar holds no New note: {:?}",
             declared.actions
         );

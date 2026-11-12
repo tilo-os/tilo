@@ -302,6 +302,62 @@ class CopyLanguageTests(unittest.TestCase):
                 "constructor directly or through the local it is stored in; a "
                 "property's name and a section's title are copy as well")
 
+    def test_a_wrapped_converted_or_defaulted_word_is_painted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn sheet(origin: Option<&str>, open: bool) -> Node {",
+                "    Node::new(Role::Dialog)",
+                '        .with_name(String::from("Move"))',
+                '        .with_label("Shown".to_string())',
+                '        .with_description(origin.unwrap_or("No secure page"))',
+                '        .with_hint(pick(word, "Grid"))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Move", "Shown", "No secure page"],
+                "a word reaches the label the same through a wrapper or a "
+                "conversion, and the default of an `unwrap_or` is the words the "
+                "constructor gets; a word only fed to a call is still not painted")
+
+    def test_a_plain_local_and_an_action_label_are_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn pane(scene: &mut Scene, name: String) {",
+                '    let label = "Waiting for the first screen update";',
+                "    Node::new(Role::Canvas).draw_text(scene, label);",
+                "}",
+                "fn actions(mut record: E, mut open: E, mut keep: E) {",
+                '    record.type_mut().label = "Stop recording".into();',
+                '    open.type_mut().label = format!("Open {}", name);',
+                '    keep.type_mut().label = crate::i18n::t("demo-name");',
+                "}",
+                "fn note() {",
+                "    let mut story = Note::default();",
+                '    story.title = "Quiet hours";',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Waiting for the first screen update", "Stop recording", "Open {}"],
+                "a local holds the words it is given, and an action's own label "
+                "is what the menu and the action directory show; a field that "
+                "holds a person's own content is not copy")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

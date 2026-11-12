@@ -18,6 +18,7 @@
 //! and never split or extended automatically. Named ranges nest one level
 //! ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for concurrent naming.
 
+use crate::i18n::widget_format;
 use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
@@ -114,7 +115,7 @@ impl OpFamily {
             OpFamily::Governance => "history-group-access-changes",
             OpFamily::Deletion => "history-group-deletions",
         };
-        crate::i18n!(key, "count" => count)
+        widget_format(key, &[("count", count.into())])
     }
 }
 
@@ -193,7 +194,7 @@ impl HistoryGroup {
         let count = if let [only] = self.families.as_slice() {
             only.count(self.len())
         } else {
-            crate::i18n!("history-group-changes", "count" => self.len())
+            widget_format("history-group-changes", &[("count", self.len().into())])
         };
         self.over_span(count)
     }
@@ -201,7 +202,10 @@ impl HistoryGroup {
     /// `count` followed by how long the range took, when that is worth saying.
     fn over_span(&self, count: String) -> String {
         match self.span_label() {
-            Some(span) => crate::i18n!("history-group-over", "count" => count, "span" => span),
+            Some(span) => widget_format(
+                "history-group-over",
+                &[("count", count.into()), ("span", span.into())],
+            ),
             None => count,
         }
     }
@@ -227,7 +231,7 @@ impl HistoryGroup {
     ) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
-            let count = crate::i18n!("history-group-changes", "count" => self.len());
+            let count = widget_format("history-group-changes", &[("count", self.len().into())]);
             parts.push(self.over_span(count));
         }
         // What the app says the band amounts to is what it is read by, so
@@ -246,7 +250,10 @@ impl HistoryGroup {
         {
             // Same spelling as a row's own summary: a group that wrote its
             // counts with a different minus sign reads as a different unit.
-            parts.push(crate::i18n!("history-group-chars", "inserted" => ins, "deleted" => del));
+            parts.push(widget_format(
+                "history-group-chars",
+                &[("inserted", ins.into()), ("deleted", del.into())],
+            ));
         } else if !summarised
             && self.name.is_none()
             && self.len() > 1
@@ -254,12 +261,18 @@ impl HistoryGroup {
         {
             // No character counts to aggregate (a run of governance acts, say):
             // name the first thing that happened rather than padding the row.
-            parts.push(crate::i18n!("history-group-from", "summary" => first.summary.as_str()));
+            parts.push(widget_format(
+                "history-group-from",
+                &[("summary", first.summary.as_str().into())],
+            ));
         }
         if let Some(by) = &self.named_by
             && self.name.is_some()
         {
-            parts.push(crate::i18n!("history-group-named-by", "name" => by.name.as_str()));
+            parts.push(widget_format(
+                "history-group-named-by",
+                &[("name", by.name.as_str().into())],
+            ));
         }
         parts
     }
@@ -284,13 +297,22 @@ impl HistoryGroup {
         }
         let mins = secs / 60;
         if mins < 60 {
-            return Some(crate::i18n!("history-span-minutes", "count" => mins));
+            return Some(widget_format(
+                "history-span-minutes",
+                &[("count", mins.into())],
+            ));
         }
         let hours = mins / 60;
         if hours < 24 {
-            return Some(crate::i18n!("history-span-hours", "count" => hours));
+            return Some(widget_format(
+                "history-span-hours",
+                &[("count", hours.into())],
+            ));
         }
-        Some(crate::i18n!("history-span-days", "count" => hours / 24))
+        Some(widget_format(
+            "history-span-days",
+            &[("count", (hours / 24).into())],
+        ))
     }
 
     /// Every group in this subtree, self first, then children. Used by the
@@ -665,12 +687,22 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
 
 /// "Alice and Bob", in the desktop's language.
 pub fn authors_pair(first: &str, second: &str) -> String {
-    crate::i18n!("history-authors-two", "first" => first, "second" => second)
+    widget_format(
+        "history-authors-two",
+        &[("first", first.into()), ("second", second.into())],
+    )
 }
 
 /// "Alice, Bob + 4", in the desktop's language.
 pub fn authors_more(first: &str, second: &str, rest: usize) -> String {
-    crate::i18n!("history-authors-more", "first" => first, "second" => second, "rest" => rest)
+    widget_format(
+        "history-authors-more",
+        &[
+            ("first", first.into()),
+            ("second", second.into()),
+            ("rest", rest.into()),
+        ],
+    )
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@
 //! what they show in place as it lands. Every change (a package job, a view,
 //! a block, a report edit) goes through the Store's published actions.
 
+use crate::resource::CATALOG;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -369,7 +370,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
             // Add a bot is the door, which the Store's button prepares.
             spec.unavailable(
                 "added_by_the_workspace",
-                ui::i18n!("store-bot-add-elsewhere"),
+                CATALOG.t("store-bot-add-elsewhere"),
             )
         } else if let Some((code, reason)) = item.unavailable_action(action) {
             spec.unavailable(code, reason)
@@ -399,11 +400,11 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
-        crate::StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
+        crate::StoreTrust::TrustedAttestor => CATALOG.t("store-package-local-trust"),
         crate::StoreTrust::PublisherSigned => {
             "Signature verified, no independent review".to_string()
         }
-        crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+        crate::StoreTrust::ConfiguredRemote => CATALOG.t("store-remote-trust"),
         crate::StoreTrust::Flathub => "Flathub distribution, no Tilo review".to_string(),
     }
 }
@@ -588,7 +589,7 @@ pub struct StoreState {
 
 impl StoreState {
     pub fn new() -> Self {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         Self {
             dispatcher: None,
             worker: None,
@@ -623,7 +624,7 @@ impl StoreState {
             operation_error: None,
             local_refusal: None,
             flatpak_available: false,
-            flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
+            flatpak_error: Some(CATALOG.t("store-flatpak-checking")),
             flatpak_checking: true,
             unanswered_repositories: Vec::new(),
             expired_repositories: Vec::new(),
@@ -766,7 +767,7 @@ impl StoreState {
             return Err("invalid app identity".into());
         }
         let path = ui::registry::block::person_list_path()
-            .ok_or_else(|| ui::i18n!("store-block-unavailable"))?;
+            .ok_or_else(|| CATALOG.t("store-block-unavailable"))?;
         let mut list = BlockList::load();
         if block {
             if list.blockers(app).contains(&&ui::registry::Blocker::Person) {
@@ -777,16 +778,16 @@ impl StoreState {
             list.unblock(app, &ui::registry::Blocker::Person)
                 .map_err(|error| match error {
                     ui::registry::UnblockError::NotTheBlocker(_) => {
-                        ui::i18n!("store-unblock-not-yours")
+                        CATALOG.t("store-unblock-not-yours")
                     }
                     ui::registry::UnblockError::NotBlocked => {
-                        ui::i18n!("store-unblock-not-blocked")
+                        CATALOG.t("store-unblock-not-blocked")
                     }
                 })?;
         }
         list.save_person(&path).map_err(|error| {
             tracing::warn!(%error, "could not write the block list");
-            ui::i18n!("store-block-unavailable")
+            CATALOG.t("store-block-unavailable")
         })?;
         self.set_blocks(list);
         Ok(())
@@ -911,28 +912,28 @@ impl StoreState {
     /// The page's title in the window bar: where the person is.
     fn page_title(&self) -> String {
         if self.safety_open {
-            ui::i18n!("store-trust-title")
+            CATALOG.t("store-trust-title")
         } else if self.remotes_open {
-            ui::i18n!("store-remotes-title")
+            CATALOG.t("store-remotes-title")
         } else if let Some(id) = &self.focused_detail {
             self.item(id)
                 .or_else(|| self.remote_results.iter().find(|item| &item.id == id))
-                .map_or_else(|| ui::i18n!("store-view-home"), |item| item.name.clone())
+                .map_or_else(|| CATALOG.t("store-view-home"), |item| item.name.clone())
         } else if !self.query.trim().is_empty() {
-            ui::i18n!("store-search-title")
+            CATALOG.t("store-search-title")
         } else {
             match &self.view {
-                View::Home => ui::i18n!("store-view-home"),
+                View::Home => CATALOG.t("store-view-home"),
                 View::Category(category) => crate::catalogue::category_label(category),
-                View::Updates => ui::i18n!("store-updates-title"),
-                View::Installed => ui::i18n!("store-view-installed"),
-                View::Bots => ui::i18n!("store-view-bots"),
+                View::Updates => CATALOG.t("store-updates-title"),
+                View::Installed => CATALOG.t("store-view-installed"),
+                View::Bots => CATALOG.t("store-view-bots"),
                 View::Repository(remote) => self
                     .remotes
                     .iter()
                     .find(|source| source.resource_id() == *remote)
                     .map_or_else(
-                        || ui::i18n!("store-remotes-title"),
+                        || CATALOG.t("store-remotes-title"),
                         |source| source.title.clone(),
                     ),
             }
@@ -1262,10 +1263,10 @@ impl StoreState {
                 ui::attention::publish(
                     ui::attention::Notice::needs(
                         store_owner(),
-                        ui::i18n!("store-operation-failed"),
+                        CATALOG.t("store-operation-failed"),
                         ui::attention::Action::new(
                             SHOW_OPERATION,
-                            ui::i18n!("store-error-refresh"),
+                            CATALOG.t("store-error-refresh"),
                         ),
                     )
                     .because(error),
@@ -1405,7 +1406,7 @@ impl ui::widget::Collaborative for StoreState {
         };
         let result = match result {
             Ok((_, ui::tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok((
-                ui::i18n!("store-launch-opened").as_str().to_owned(),
+                CATALOG.t("store-launch-opened").as_str().to_owned(),
                 output.value.clone(),
             )),
             Ok((_, ui::tilo_actions::InvocationUpdate::Failed { error, .. })) => {
@@ -1736,11 +1737,11 @@ impl StoreState {
         ) {
             return Ok(cx.choose_file(
                 ui::portal::PickRequest::open(
-                    &ui::i18n!("store-package-choose"),
-                    &ui::i18n!("store-package-review"),
+                    &CATALOG.t("store-package-choose"),
+                    &CATALOG.t("store-package-review"),
                 )
                 .filter(
-                    ui::portal::FileFilter::new(&ui::i18n!("store-package-file-type"))
+                    ui::portal::FileFilter::new(&CATALOG.t("store-package-file-type"))
                         .glob("*.tapp"),
                 ),
                 {
@@ -1790,7 +1791,7 @@ impl StoreState {
                     .and_then(|version| version.root_hash_hex.as_deref())
                     != Some(root.as_str())
             {
-                return Err(ui::i18n!("store-runtime-changed"));
+                return Err(CATALOG.t("store-runtime-changed"));
             }
             self.active_operation = Some((item.id.clone(), action));
             self.operation_error = None;
@@ -1809,7 +1810,7 @@ impl StoreState {
                             .opens(item.id.clone()),
                     )
                     .unit(ui::jobs::Unit::Steps)
-                    .phase(ui::i18n!("store-job-continues")),
+                    .phase(CATALOG.t("store-job-continues")),
             );
             self.operation_jobs
                 .insert(item.id.clone(), OperationJob { job });
@@ -1856,7 +1857,7 @@ impl StoreState {
                     .ok_or_else(|| "Unknown or disabled Flatpak repository.".to_string())?;
                 let title = source.title.clone();
                 self.reserve_job()?;
-                self.status_line = crate::resource::STORE_CATALOG.t_args(
+                self.status_line = crate::resource::CATALOG.t_args(
                     "store-remote-loading",
                     &[("name", ui::i18n::ArgValue::Text(title))],
                 );
@@ -1912,7 +1913,7 @@ impl StoreState {
                 if reported_size
                     .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
                 {
-                    let error = ui::i18n!("store-package-size-refused");
+                    let error = CATALOG.t("store-package-size-refused");
                     self.local_refusal = Some(error.clone());
                     self.set_operation_error(Some(error.clone()));
                     return Err(error);
@@ -1926,14 +1927,14 @@ impl StoreState {
                         crate::package_import::Input::Content(
                             self.package_content
                                 .clone()
-                                .ok_or_else(|| ui::i18n!("store-package-unavailable"))?,
+                                .ok_or_else(|| CATALOG.t("store-package-unavailable"))?,
                             hash,
                         )
                     }
-                    _ => return Err(ui::i18n!("store-package-source-required")),
+                    _ => return Err(CATALOG.t("store-package-source-required")),
                 };
                 self.imported_review = None;
-                self.status_line = ui::i18n!("store-package-reviewing");
+                self.status_line = CATALOG.t("store-package-reviewing");
                 self.structure_dirty = true;
                 return Ok(Job::admitted(Request::ImportPackage(input), Finish::Status));
             }
@@ -1944,9 +1945,9 @@ impl StoreState {
                     .as_ref()
                     .is_none_or(|(id, expected, _)| id != &app || expected != &root)
                 {
-                    return Err(ui::i18n!("store-package-review-required"));
+                    return Err(CATALOG.t("store-package-review-required"));
                 }
-                self.status_line = ui::i18n!("store-package-installing");
+                self.status_line = CATALOG.t("store-package-installing");
                 self.structure_dirty = true;
                 return Ok(Job::admitted(
                     Request::InstallImported { app, root },
@@ -2094,7 +2095,7 @@ impl StoreState {
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
         // A blocked app is opened, installed or updated from nowhere.
         if self.blocks.is_blocked(app) {
-            return Err(ui::i18n!("store-blocked-refused"));
+            return Err(CATALOG.t("store-blocked-refused"));
         }
         if action.requires_flatpak_host() && !self.flatpak_available {
             return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
@@ -2528,7 +2529,7 @@ impl StoreState {
             statuses.push(EffectStatus::unavailable(
                 StoreEffect::INSTALL_IMPORTED_PACKAGE,
                 "package_review_required",
-                ui::i18n!("store-package-review-required"),
+                CATALOG.t("store-package-review-required"),
             ));
         }
         if !self.flatpak_available {
@@ -2670,7 +2671,7 @@ impl StoreState {
             .remotes
             .iter()
             .find(|remote| remote.resource_id() == id && remote.user_managed)
-            .ok_or_else(|| ui::i18n!("store-remote-managed-change"))?;
+            .ok_or_else(|| CATALOG.t("store-remote-managed-change"))?;
         let name = remote.name.clone();
         validate_remote_name(&name)?;
         self.reserve_job()?;
@@ -2779,8 +2780,8 @@ fn remote_enabled_effect(remote: &crate::flathub_client::Remote) -> StoreEffect 
 }
 
 fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
-    crate::resource::STORE_CATALOG.ensure();
-    ui::i18n!(if remote.user_managed {
+    crate::resource::CATALOG.ensure();
+    CATALOG.t(if remote.user_managed {
         "store-remote-user"
     } else {
         "store-remote-system"
@@ -2795,7 +2796,7 @@ impl StoreState {
         };
         let first = first.id.clone();
         let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
-        self.status_line = crate::resource::STORE_CATALOG.t_args(
+        self.status_line = crate::resource::CATALOG.t_args(
             "store-update-all-starting",
             &[(
                 "count",
@@ -2824,7 +2825,7 @@ impl StoreState {
 }
 
 fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
-    crate::resource::STORE_CATALOG.t_args(
+    crate::resource::CATALOG.t_args(
         "store-remote-state",
         &[
             (
@@ -2833,7 +2834,7 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
             ),
             (
                 "state",
-                ui::i18n::ArgValue::Text(ui::i18n!(if remote.disabled {
+                ui::i18n::ArgValue::Text(CATALOG.t(if remote.disabled {
                     "store-remote-disabled"
                 } else {
                     "store-remote-enabled"
@@ -2845,7 +2846,7 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
 
 fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     let scope = remote_scope_label(remote);
-    let title = crate::resource::STORE_CATALOG.t_args(
+    let title = crate::resource::CATALOG.t_args(
         "store-remote-title",
         &[
             ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
@@ -2868,7 +2869,7 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 }
 
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
-    ui::i18n!(match action {
+    CATALOG.t(match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-action-open",
         ActionKind::FlatpakInstall => "store-action-install",
         ActionKind::RuntimeInstall => "store-runtime-install",
@@ -3107,7 +3108,7 @@ mod tests {
             ),
             "{relative}"
         );
-        let size_refused = ui::i18n!("store-package-size-refused");
+        let size_refused = CATALOG.t("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),
             status_line: String::new(),
@@ -4101,7 +4102,7 @@ mod tests {
         .unwrap();
         assert!(
             app.harness().controls().iter().any(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-flatpak-unavailable").as_str())
                     && control.disabled
             }),
             "the actual catalogue button reports the observation failure and refuses installation"
@@ -4122,7 +4123,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             flatpak["primary_action"],
-            ui::i18n!("store-flatpak-unavailable")
+            CATALOG.t("store-flatpak-unavailable")
         );
     }
 
@@ -4330,7 +4331,7 @@ mod tests {
         app.flatpak_error = Some(error.into());
         assert_eq!(
             app.package_label(ActionKind::NeedsFlatpakHost),
-            ui::i18n!("store-flatpak-unavailable")
+            CATALOG.t("store-flatpak-unavailable")
         );
         let row = app.live_row("app:id.chess").unwrap().into_resource();
         let action = row
@@ -4443,7 +4444,7 @@ mod tests {
             .controls()
             .into_iter()
             .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-remote-enable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-remote-enable").as_str())
             })
             .unwrap();
         assert!(!control.disabled);
@@ -4457,7 +4458,7 @@ mod tests {
             .controls()
             .into_iter()
             .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-remote-disable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-remote-disable").as_str())
             })
             .unwrap();
         assert!(!control.disabled);
@@ -5478,7 +5479,7 @@ mod tests {
         let frame = frame_composition(app.compose(&Theme::dark()), 900.0);
         let page = frame.inspection_json().unwrap();
         assert!(
-            page.contains(&ui::i18n!("store-progress-continues")),
+            page.contains(&CATALOG.t("store-progress-continues")),
             "the page says why there is no Stop: {page}"
         );
     }
@@ -5526,7 +5527,7 @@ mod tests {
                 .expect("failure has a semantic notice");
             assert_eq!(
                 error.name.as_deref(),
-                Some(ui::i18n!("store-operation-failed").as_str())
+                Some(CATALOG.t("store-operation-failed").as_str())
             );
             assert_eq!(error.live, Some(Politeness::Assertive));
             assert_eq!(error.description.as_deref(), Some("signature mismatch"));
@@ -5709,7 +5710,7 @@ mod tests {
                 .expect("the operation has a job row");
             assert!(!row.can_stop(), "no Stop the Store could not honour");
             // The row's second line says why, instead of repeating the title.
-            assert_eq!(row.phase(), ui::i18n!("store-job-continues"));
+            assert_eq!(row.phase(), CATALOG.t("store-job-continues"));
             assert_ne!(row.live_line(), row.title());
             app.set_worker_busy(true);
             app.set_worker_busy(false);

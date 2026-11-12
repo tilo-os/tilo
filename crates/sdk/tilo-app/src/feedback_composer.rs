@@ -693,7 +693,7 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
 
 /// Why an action did not run, as the person reads it where it is said.
 fn said(key: &str) -> String {
-    ui_core::i18n::I18nManager::lookup(key, None)
+    ui_core::i18n::widget_text(key)
 }
 
 fn error_label(error: &crate::feedback::Error) -> &'static str {

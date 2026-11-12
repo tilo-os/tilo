@@ -649,53 +649,62 @@ impl ChannelDirectory for OwnerDirectory {
     }
 
     /// The first second after `now` at which the workspace's channels can answer differently with
-    /// nothing written: a capability or a device certificate expiring.
+    /// nothing written ([`next_policy_change`]).
     fn next_policy_change(&self, workspace: ModelWorkspaceId, now: u64) -> Option<u64> {
-        let second = tilo_channels::schedule::second_at_or_after;
-        let (certificates, capabilities) = self
-            .owner
-            .with_current(workspace, |view| {
-                let document = view
-                    .peer()
-                    .admitted_workspace()
-                    .ok_or("no admitted workspace")?;
-                let governance = tilo_peer_state::workspace::governance_of(Some(document));
-                let certificates = governance
-                    .identities
-                    .values()
-                    .filter_map(|bytes| tilo_peer_state::workspace::identity_row(bytes).ok())
-                    .filter_map(|row| row.device_cert.expires_at_ns)
-                    .map(second);
-                let capabilities = governance
-                    .grants
-                    .iter()
-                    .filter_map(|(member, bytes)| {
-                        serde_json::from_slice::<tilo_action_policy::Grant>(bytes)
-                            .inspect_err(|error| {
-                                tracing::warn!(
-                                    %error,
-                                    %member,
-                                    "a grant does not read back; its deadline is unknown"
-                                );
-                            })
-                            .ok()
-                    })
-                    .filter_map(|grant| match grant.lifetime {
-                        tilo_action_policy::Lifetime::Until(ms) => Some(ms.div_ceil(1_000)),
-                        _ => None,
-                    });
-                Ok((
-                    certificates.collect::<Vec<_>>(),
-                    capabilities.collect::<Vec<_>>(),
-                ))
-            })
-            .ok()?;
-        certificates
-            .into_iter()
-            .chain(capabilities)
-            .filter(|at| *at > now)
-            .min()
+        next_policy_change(&self.owner, workspace, now)
     }
+}
+
+/// The first second after `now` at which who may read `workspace`'s records can change with
+/// nothing written: a capability or a device certificate expiring.
+pub fn next_policy_change(
+    owner: &NativeWorkspaceOwner,
+    workspace: ModelWorkspaceId,
+    now: u64,
+) -> Option<u64> {
+    let second = tilo_channels::schedule::second_at_or_after;
+    let (certificates, capabilities) = owner
+        .with_current(workspace, |view| {
+            let document = view
+                .peer()
+                .admitted_workspace()
+                .ok_or("no admitted workspace")?;
+            let governance = tilo_peer_state::workspace::governance_of(Some(document));
+            let certificates = governance
+                .identities
+                .values()
+                .filter_map(|bytes| tilo_peer_state::workspace::identity_row(bytes).ok())
+                .filter_map(|row| row.device_cert.expires_at_ns)
+                .map(second);
+            let capabilities = governance
+                .grants
+                .iter()
+                .filter_map(|(member, bytes)| {
+                    serde_json::from_slice::<tilo_action_policy::Grant>(bytes)
+                        .inspect_err(|error| {
+                            tracing::warn!(
+                                %error,
+                                %member,
+                                "a grant does not read back; its deadline is unknown"
+                            );
+                        })
+                        .ok()
+                })
+                .filter_map(|grant| match grant.lifetime {
+                    tilo_action_policy::Lifetime::Until(ms) => Some(ms.div_ceil(1_000)),
+                    _ => None,
+                });
+            Ok((
+                certificates.collect::<Vec<_>>(),
+                capabilities.collect::<Vec<_>>(),
+            ))
+        })
+        .ok()?;
+    certificates
+        .into_iter()
+        .chain(capabilities)
+        .filter(|at| *at > now)
+        .min()
 }
 
 /// The devices a workspace admits, by the publisher each of their sessions is known by, and when
