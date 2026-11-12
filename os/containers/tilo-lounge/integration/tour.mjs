@@ -424,9 +424,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await quiet(1500); await shoot('own-card');
     await key('Escape'); await quiet(500);
   });
-  // The workspace's own verb: "invite" alone leads with an app's invitation to one of its own
-  // things (a calendar event, a contact), which is not what the page's invite sheet is.
-  await step('invite', async () => { await search('invite people'); await shoot('search-invite'); await opened(); await quiet(); await shoot('invite'); });
+  // The workspace's own verb: "invite" alone leads with it, and Enter opens the invite sheet.
+  // An app's invitation to one of its own things (a calendar event with none selected) takes no
+  // row, so it can never stand where the row that works should be.
+  await step('invite', async () => { await search('invite'); await shoot('search-invite'); await opened(); await quiet(); await shoot('invite'); });
   agent?.stop();
   await tab.close().catch(() => {});
 };

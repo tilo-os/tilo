@@ -398,6 +398,13 @@ impl SearchHost for DeskHost {
         self.0.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
             sources: vec![tilo_desktop_search::Held::new(Plan)],
+            // A workspace app's row the workspace's action host publishes: an event's `Invite`,
+            // which has nothing to act on with no event selected.
+            published: vec![tilo_desktop_search::providers::PublishedActions::of(
+                "so.tilo.calendar",
+                "workspace",
+                &[unselected_event()],
+            )],
             ..SearchHostFeed::default()
         }
     }
@@ -405,6 +412,26 @@ impl SearchHost for DeskHost {
     fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
         false
     }
+}
+
+/// An event Calendar publishes with its `Invite` action, which cannot run while no event is
+/// selected: the row that used to stand ahead of the workspace's own invite.
+fn unselected_event() -> tilo_actions::ResourceSpec {
+    let mut invite = tilo_actions::ActionSpec::immediate_encoded(
+        "invite",
+        "Invite",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        tilo_actions::EncodedAction {
+            type_id: "test.invite".into(),
+            payload: Vec::new(),
+        },
+    );
+    invite.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
+        code: "selection_empty".into(),
+        reason: "Select an event first".into(),
+    };
+    tilo_actions::ResourceSpec::new("calendar.event:1", "calendar.event", "Standup")
+        .with_action(invite)
 }
 
 /// What the host finds beyond the desktop: a plan another workspace holds.
@@ -1200,6 +1227,45 @@ fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
     assert!(
         !desk.handle.search_open(),
         "and the search closes over what the host opens"
+    );
+}
+
+/// An app's action with nothing to act on now takes no row, so "invite" offers the workspace's own
+/// invite first and Enter carries it out: the card never stands on a row that can only say why it
+/// cannot run.
+#[test]
+fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
+    let mut desk = Desk::new(1, 450);
+    desk.with_host();
+    desk.handle.set_host_actions(vec![HostAction {
+        id: "invite-people".into(),
+        title: "Invite people".into(),
+        subtitle: Some("Bring someone into this workspace".into()),
+        icon: None,
+        destructive: false,
+        unasked: true,
+        source: None,
+    }]);
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    desk.type_search("invite");
+    let (_, rows) = desk.handle.search_rows();
+    let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+    assert_eq!(
+        titles.first().copied(),
+        Some("Invite people"),
+        "the row that runs comes first: {titles:?}"
+    );
+    assert!(
+        !titles.contains(&"Invite"),
+        "the event's Invite, with no event selected, takes no row: {titles:?}"
+    );
+    desk.key_search(NamedKey::Enter);
+    desk.settle();
+    assert_eq!(
+        desk.handle.take_host_choices(),
+        ["invite-people"],
+        "Enter carries out the row that stands first"
     );
 }
 
