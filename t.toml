@@ -4923,9 +4923,17 @@ default = false
 # agent fills the visa test page with page actions and is asked nothing, the
 # person allows a submission and refuses another, a click on the submit button is held; a key
 # without the scope is asked about its first page actions; a reviewer joins by invitation and reads
-# the run in History; the page actions past the plans file's free ones are refused until the
-# account is added to it; and the VM is held to its proofs - every renderer sandboxed, the session
-# as the image's unprivileged browser user, its device key, and what the page costs in memory.
+# the run in History; the page actions past the plans file's free ones are refused; the VM is held
+# to its proofs - every renderer sandboxed, the session as the image's unprivileged browser user,
+# its device key, and what the page costs in memory.
+#
+# Then the Linux half of the same VM: a Linux command without a card on file is refused with what
+# would let it through and runs nothing; the provider puts the account on file and the refused page
+# action runs; the workspace's Terminal makes, lists and reads a file in the VM and its run is a
+# structured record and a step of History named after the key that ran it; a key scoped to that one
+# workspace runs a command through the `tilo` command; the Linux session runs as the tenant, not as
+# the Browser's account, and neither reads the other's files; and a Linux GUI app has no window to
+# open in a workspace yet, which that step says.
 # What it found stays in /target/tilo-sh-local-vm.
 #
 # A workspace's VM runs at `default`, the size production places (4 vCPU, 8 GiB,

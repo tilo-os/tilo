@@ -26,10 +26,12 @@ agent take there, with the person's answering device held by the check
   h. a key minted with the scope unticked is asked about the page actions
      that act on the page, which is what the scope answers for;
   i. past the plans file's free page actions the next one is refused with
-     `no_payment_method` and a step to add a card; adding the account to the
-     plans file lets the next one through.
+     `no_payment_method` and a step to add a card (`--fill` ends there);
+  j. the provider puts the account on file, and the page action the allowance
+     refused runs (`--release`, which the step before a Linux command in the
+     same workspace's VM uses too: the card is the account's).
 
-usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
+usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill|--release]
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
@@ -497,7 +499,7 @@ async def fill_phase(report: dict[str, object]) -> int:
     report["unscoped_questions"] = 2
     await unscoped.aclose()
 
-    say("i. metering: the plans file's free page actions, then a card")
+    say("i. metering: the plans file's free page actions are used up")
     refused = "allowed"
     for _ in range(600):
         refused = await refusal_of(page.do("read-page"))
@@ -512,9 +514,9 @@ async def fill_phase(report: dict[str, object]) -> int:
         f"the refusal says a card continues, and how ({refused})",
     )
     report["metered_refusal"] = refused
-    add_account_to_plans()
-    allowed = await refusal_of(page.do("read-page"))
-    check(allowed == "allowed", f"with the account on file the next page action runs ({allowed})")
+    # The provider's card is added next, and the step that adds it holds what
+    # it releases: the Browser's next page action (`--release`) and a Linux
+    # command in the workspace's VM (integration/hosted-terminal.py).
 
     report["questions_asked"] = person.answered()
     write_json("questions.json", person.asked)
@@ -526,6 +528,29 @@ async def fill_phase(report: dict[str, object]) -> int:
             await client.aclose()
         except (ProtocolError, Refused):
             pass
+    return 0
+
+
+async def release_phase(report: dict[str, object]) -> int:
+    """The provider puts the account on file, and the page action the
+    allowance refused runs.
+
+    The card is the provider's, written into the plans file the relay reads
+    for every page action, so the window that was refused a moment ago is
+    served now. What the same card does for a Linux command in the workspace's
+    VM is the next step's (integration/hosted-terminal.py)."""
+    with open(os.path.join(OUT, "open.json")) as opened:
+        state = json.load(opened)
+    agent = AsyncTilo(key=state["key"], door=DOOR)
+    try:
+        aws = agent.workspace(state["workspace"])
+        add_account_to_plans()
+        page = Page(aws, str(state["window"]))
+        allowed = await refusal_of(page.do("read-page"))
+        check(allowed == "allowed", f"with the account on file the next page action runs ({allowed})")
+        report["released"] = True
+    finally:
+        await agent.aclose()
     return 0
 
 
@@ -543,10 +568,14 @@ async def main() -> int:
         status = await open_phase(report)
     elif phase == "--fill":
         status = await fill_phase(report)
+    elif phase == "--release":
+        status = await release_phase(report)
     else:
         status = await open_phase(report)
         if status == 0:
             status = await fill_phase(report)
+        if status == 0:
+            status = await release_phase(report)
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
     return status

@@ -43,8 +43,24 @@
 #      once; a key minted with the scope unticked is asked about the page
 #      actions that act on the page; a reviewer who joined by invitation reads
 #      the run in
-#      History, and page actions past the plans file's free ones are refused
-#      until the provider adds the account there.
+#      History, and page actions past the plans file's free ones are refused;
+#  13. a Linux command in that workspace's VM, from an agent's run, while the
+#      provider's plans file names no card for the account: refused at once,
+#      in words that say what would let it through, having run nothing
+#      (integration/hosted-terminal.py);
+#  14. the provider puts the account on file, and the Browser's page action
+#      the allowance refused runs;
+#  15. the workspace's Terminal, as the person's own key runs it: a file
+#      made, `ls` and `uname` answered in the VM, the run kept as a structured
+#      record of its session and as a step of History named after that key;
+#  16. an agent's key, scoped to that one workspace, running a command there
+#      through the `tilo` command (the MCP behind it), and its own step of
+#      History;
+#  17. the Linux session runs as the VM's tenant, not as the account its
+#      Browser session runs as, and neither reads the other's files;
+#  18. a Linux GUI app in a hosted workspace: the VM runs no display server,
+#      so there is no app window to open there yet, and this says so rather
+#      than pretending one opened.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively (the outputs a check hands
@@ -59,9 +75,9 @@
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
 # the t check beside tilo-enroll), from the root of theirs kept in
 # WORK/startup/root, through the relay address the VM host names.
-# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10`, comma separated)
-# to chase one of them without the rest; the stack is brought up either way and
-# each step's own seconds are printed beside it.
+# TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
+# separated) to chase one of them without the rest; the stack is brought up
+# either way and each step's own seconds are printed beside it.
 #
 #   check.sh --flow signin|visa|entry|passkey
 #
@@ -211,9 +227,11 @@ report=$work/report.json
 # TILO_SH_ONLY names the steps to run, comma separated (`1`, `2-6`, `7`): what
 # a step that failed is chased with, instead of the whole check around it.
 # Naming none runs them all. A step that reads what an earlier one made is run
-# with that one: the visa run (2-6) and the hosted Browser (8-12) read the key
-# and the person the startup made in 1, so naming either runs 1 as well. The
-# stack is brought up either way.
+# with that one: the visa run (2-6) and the hosted Browser and its Linux
+# commands (8-18) read the key and the person the startup made in 1, and the
+# Linux commands read the workspace the open made in 10, so naming any of them
+# wants those too (`TILO_SH_ONLY=10,13-18`). The stack is brought up either
+# way.
 only=${TILO_SH_ONLY:-}
 runs_step() {
   [[ -z $only ]] && return 0
@@ -242,7 +260,7 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
-if runs_any 1 2 3 4 5 6 8 9 10 11 12; then
+if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
   startup_identity
 fi
 
@@ -346,6 +364,12 @@ if [[ $hosted == 1 ]]; then
       HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
       sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
   }
+  # A Linux command in that workspace's VM, as its people and their agents
+  # run them (integration/hosted-terminal.py).
+  hosted_terminal() { # PHASE
+    HOSTED_TERMINAL_CLI=$tilo HOSTED_TERMINAL_DOOR=$door \
+      sdk_python "$here/integration/hosted-terminal.py" "$door" "$key" "$work/hosted" "$1"
+  }
   launch=$SECONDS
   if runs_step 10; then
     step '10. a key opens Browser in a hosted workspace, in its VM'
@@ -417,6 +441,50 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     set -e
     [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
     echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
+  fi
+
+  # The Linux half of a workspace's VM: the commands its people and their
+  # agents run there, what the plans file lets run, and the account they run
+  # as. They read the workspace the Browser opened above, so that both halves
+  # are held to the same VM a customer gets.
+  if runs_step 13; then
+    step '13. a Linux command in a workspace without a card on file is refused'
+    hosted_terminal --refused || fail "the plans rule did not hold for a Linux command (see $work/hosted/refused.json)"
+    echo "ok: a Linux command without a card is refused, saying where a card is added"
+  fi
+
+  if runs_step 14; then
+    step '14. the provider puts the account on file, and the page action it refused runs'
+    set +e
+    hosted_run --release 2>&1 | tee "$work/hosted-release.log"
+    release_status=${PIPESTATUS[0]}
+    set -e
+    [[ $release_status == 0 ]] || fail "the account on file did not release the Browser's page action (see $work/hosted-release.log)"
+    echo "ok: the card on file releases the Browser's next page action"
+  fi
+
+  if runs_step 15; then
+    step "15. the workspace's Terminal runs a command in its VM"
+    hosted_terminal --terminal || fail "the workspace's Terminal did not run a command in its VM (see $work/hosted/terminal-run.json)"
+    echo "ok: the Terminal ran in the VM, recorded as the run it became and in History"
+  fi
+
+  if runs_step 16; then
+    step "16. an agent's key runs a command in the VM through the tilo command"
+    hosted_terminal --agent || fail "the agent's command did not run in the VM (see $work/hosted/terminal.json)"
+    echo "ok: a key scoped to the workspace ran a command through the tilo command, and History names it"
+  fi
+
+  if runs_step 17; then
+    step '17. the Linux session and the Browser session are isolated'
+    hosted_terminal --isolated || fail "the tenant's commands and the Browser's session are not held apart (see $work/hosted/isolation.json)"
+    echo "ok: the Linux session runs as the tenant, and neither account reads the other's files"
+  fi
+
+  if runs_step 18; then
+    step '18. a Linux GUI app in a hosted workspace: none is wired yet'
+    hosted_terminal --gui || fail "the VM's display was not what this step holds it to (see $work/hosted/gui.json)"
+    echo 'ok: the workspace has no Linux desktop, so it has no app window to open yet (Browser it does)'
   fi
 fi
 
