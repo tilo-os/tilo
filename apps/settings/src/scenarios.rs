@@ -500,6 +500,12 @@ fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>
         can_host,
         kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
         browser: None,
+        agent: None,
+        issued_ms: None,
+        expires_ms: None,
+        last_active_ms: None,
+        online: false,
+        workspace: None,
     };
     vec![
         device(
