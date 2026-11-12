@@ -572,6 +572,13 @@ impl Instance {
         self.out.push(ToUi::Activate);
     }
 
+    /// Have the window read in `locale` (`de-DE`), the language the instance's words now come in:
+    /// its own chrome relabels with the next frame it is sent, and every view is drawn again.
+    pub fn speak(&mut self, locale: String) {
+        self.out.push(ToUi::Speak(locale));
+        self.formats_changed = true;
+    }
+
     /// What search hits and agents asked the window to show, until it shows them.
     #[must_use]
     pub fn open_requests(&self) -> Rc<RefCell<Vec<crate::effects::OpenEffect>>> {

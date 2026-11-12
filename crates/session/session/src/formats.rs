@@ -3,7 +3,7 @@
 //!
 //! The session's own date and clock formatters read them through [`ui::format::region`], which
 //! is read once and kept; a change is read again here, and every tilolang host running in this
-//! session's apps is told on its door ([`crate::apps::Apps::formats_changed`]), so the instances
+//! session's apps is told on its door ([`crate::apps::Apps::locale_changed`]), so the instances
 //! write what their windows show again in the formats the person chose. Their windows' dates,
 //! clocks and "this week" read the same day their desk's calendar starts a week on.
 
@@ -48,7 +48,7 @@ impl Session {
             return;
         }
         if let Some(apps) = self.shared.launch.clone() {
-            apps.formats_changed();
+            apps.locale_changed();
         }
     }
 }

@@ -240,8 +240,13 @@ impl InstanceRecord {
     /// The record, its history verbs speaking `locale` (`en-US`, `de-DE`).
     #[must_use]
     pub fn speaking(mut self, locale: impl Into<String>) -> Self {
-        self.words = HostWords::new(locale);
+        self.speak(locale);
         self
+    }
+
+    /// The record's history verbs speak `locale` from now on.
+    pub fn speak(&mut self, locale: impl Into<String>) {
+        self.words = HostWords::new(locale);
     }
 
     /// The words the record's history verbs speak in.
