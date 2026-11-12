@@ -63,6 +63,13 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   animates here (each app's workspace is one this device holds) and every
   window's frame count (`windows` reports `frames`, what its client committed)
   stands still, so one that woke woke for work nobody asked for.
+- **today**: Today's card lists the tasks typed into Tasks' own window, which it
+  reads from Tasks' record. Its "Morning cleanup" is a control the desk names for
+  the window — a tool or a screen reader presses it by name — and pressed with one
+  task done in Tasks it runs: either it files "Morning: 1 done" in Notes and clears
+  the done task from Tasks, or it asks the person's leave first, which a headless
+  session has nobody to give (the request is refused unasked, as every app's change
+  of another app is).
 - **routes**: a second start of the same session installs the collaboration
   probe in place of Today (whose surface declares that it reads Notes' kinds)
   and Tasks (which declares no read). The probe runs as each app's own launched

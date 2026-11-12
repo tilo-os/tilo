@@ -26,7 +26,9 @@ app gets on a real system:
              with Ctrl+Enter), is a second window of the same process and its instance runs
              in the same host; a task typed into either window shows in the other at once
   today      Today's Tasks card reads Tasks' own record: the tasks typed into Tasks' Today
-             show in Today's window, which holds none of them itself (today-*.png)
+             show in Today's window, which holds none of them itself (today-*.png), and its
+             "Morning cleanup" is a control the desk names, pressed by name here: it runs on one
+             task done in Tasks, and asks the person before changing Tasks and Notes
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
@@ -418,19 +420,56 @@ def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
     return {"before": str(out / "today-before.png")}
 
 
+def named(session: Session) -> list[str]:
+    """The controls the desk names now, by the names a tool presses them by."""
+    return [target["name"] for target in session.targets()]
+
+
 def check_today(session: Session, out: Path, before: bytes) -> dict:
     """Today's Tasks card, which held nothing before Tasks held a task, shows the tasks typed
-    into Tasks' Today since: Today reads them from Tasks' own record, live. The card's rows move
-    a good part of the window; a focus ring or a caret moves next to none of it."""
-    def moved(now: bytes) -> float:
-        width = 4  # a snapshot holds RGBA pixels
-        changed = sum(1 for i in range(0, min(len(now), len(before)), width)
-                      if now[i:i + width] != before[i:i + width])
-        return changed / max(1, len(before) // width)
-    share = until("Tasks' tasks in Today's card", lambda: (lambda part: part if part > 0.05 else None)(
-        moved(today_shown(session, out, "after"))), 30, 1.0)
+    into Tasks' Today since: Today reads them from Tasks' own record, live, and its window names
+    them as its own controls. Its "Morning cleanup" is a control of that window too, pressed here
+    as a tool or an assistive technology presses it: with a task done in Tasks it clears that task
+    and files "Morning: 1 done" in Notes, or asks the person's leave to change those two apps —
+    a headless session has nobody to answer, and an app's change of another app is refused
+    unasked (`docs/architecture/apps.md`)."""
+    today = app_id("today")
+    held = ["Water the plants", "Call the plumber"]
+    # What Today's window offers by name: the card's rows, read off Tasks' record, and the
+    # cleanup its header shows.
+    focus(session, next(w for w in session.windows() if w.get("app_id") == today))
+    until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
+        title in shown for title in held) else None)(named(session)), 30)
+    session.wait_target("Morning cleanup")
+    named_before = named(session)
+    # The cleanup, pressed on Today's window: the app runs it, which either files its note in
+    # Notes and clears a done task, or asks the person's leave for the two apps it changes.
+    session.click_named("Morning cleanup")
+
+    def ran():
+        if "Morning: 1 done" in named(session):
+            return "answered"
+        # The app's own log reaches the session's with escape sequences in it, so the line is
+        # matched for its words and the app it names, not by its fields.
+        asked = [line for line in session.log().splitlines()
+                 if "another app's door refused a change asked of it" in line and today in line]
+        return "consent" if asked else None
+    how = until("Today's cleanup to run", ran, 30)
+    if how == "consent":
+        for title in held:
+            if title not in named(session):
+                raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
+        if "Morning: 1 done" in named(session):
+            raise Failed("the note is named without the change it describes")
+    # What the person sees of it, as the pictures the desk drew before and after.
+    after = today_shown(session, out, "after")
+    width = 4  # a snapshot holds RGBA pixels
+    moved = sum(1 for i in range(0, min(len(after), len(before)), width)
+                if after[i:i + width] != before[i:i + width]) / max(1, len(before) // width)
     return {"before": str(out / "today-before.png"), "after": str(out / "today-after.png"),
-            "moved": round(share, 3)}
+            "note": "Morning: 1 done" if how == "answered" else None,
+            "asked_consent": how == "consent", "controls": len(named_before),
+            "moved": round(moved, 3)}
 
 
 def invoke_found(session: Session, found: dict, args: dict | None = None) -> dict:
