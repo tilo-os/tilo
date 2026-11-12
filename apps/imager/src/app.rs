@@ -75,19 +75,12 @@ use ui::framework::{
 use ui::tilo_resource::Effect as _;
 use ui::widget::DrawChild;
 
-const DROP_TITLE: &str = "Choose a disk image";
-const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
 struct SourceCheckActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
 impl Drop for SourceCheckActivity {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
-
-const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
-const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
-const PLAIN_BODY: &str =
-    "Setup options are only available for Tilo images. This image is written unchanged.";
 
 /// What a control on the wizard asked for. Controls only record the
 /// request; the wizard applies it with the document in hand.
@@ -1066,17 +1059,18 @@ impl ImagerApp {
 
     fn source_body(&self) -> Column {
         let sink = Rc::clone(&self.commands);
-        let mut body = page::body("Choose an image").push(Box::new(
-            DropZone::new("imager.drop", DROP_TITLE)
-                .message(DROP_MESSAGE)
-                .icon(Icon::Download)
-                .with_action(self.button("imager.browse", "imager-browse", Command::PickFile))
-                .on_files_view(move |files| {
-                    if let Some(file) = files.into_iter().next() {
-                        sink.borrow_mut().push(Command::Dropped(file));
-                    }
-                }),
-        ));
+        let mut body =
+            page::body(&crate::setup::strings::t("imager-page-choose-image")).push(Box::new(
+                DropZone::new("imager.drop", crate::setup::strings::t("imager-drop-title"))
+                    .message(crate::setup::strings::t("imager-drop-message"))
+                    .icon(Icon::Download)
+                    .with_action(self.button("imager.browse", "imager-browse", Command::PickFile))
+                    .on_files_view(move |files| {
+                        if let Some(file) = files.into_iter().next() {
+                            sink.borrow_mut().push(Command::Dropped(file));
+                        }
+                    }),
+            ));
         if let Some(source) = &self.source
             && !self.source_listed(source)
         {
@@ -1094,7 +1088,9 @@ impl ImagerApp {
             )));
         }
         let releases: Vec<Box<dyn Widget>> = if self.releases().is_empty() {
-            vec![Box::new(Text::new(NO_RELEASES).dimmed())]
+            vec![Box::new(
+                Text::new(&crate::setup::strings::t("imager-no-releases")).dimmed(),
+            )]
         } else {
             (0..self.releases().len())
                 .filter_map(|index| self.release_row(index))
@@ -1209,8 +1205,8 @@ impl ImagerApp {
     /// The drives to write to. Rescan is the window bar's
     /// ([`window_bar`]); the step's title stays the wizard's.
     fn drive_body(&self) -> Column {
-        let body = page::body("Choose a drive").push(Box::new(Text::new(
-            &self.required_capacity().map_or_else(
+        let body = page::body(&crate::setup::strings::t("imager-page-choose-drive")).push(
+            Box::new(Text::new(&self.required_capacity().map_or_else(
                 || crate::setup::strings::t("installer-media-capacity-checking"),
                 |required| {
                     crate::setup::strings::t_args(
@@ -1218,12 +1214,13 @@ impl ImagerApp {
                         &[("required", fmt_size(required).into())],
                     )
                 },
-            ),
-        )));
+            ))),
+        );
         let visible = self.visible_targets();
         if visible.is_empty() {
             return body.push(Box::new(
-                EmptyState::new(EMPTY_DRIVES).with_icon(Icon::HardDrive),
+                EmptyState::new(crate::setup::strings::t("imager-empty-drives"))
+                    .with_icon(Icon::HardDrive),
             ));
         }
         let required = self.required_capacity();
@@ -1263,7 +1260,7 @@ impl ImagerApp {
     }
 
     fn customize_body(&self) -> Column {
-        let mut body = page::body("Prepare the setup");
+        let mut body = page::body(&crate::setup::strings::t("imager-page-prepare-setup"));
         if let Some(source) = &self.source {
             body = body.push(Box::new(
                 Text::new(&CATALOG.t_args(
@@ -1287,7 +1284,9 @@ impl ImagerApp {
             ));
         }
         if !self.needs_manual_customization() {
-            return body.push(Box::new(Text::new(PLAIN_BODY).dimmed()));
+            return body.push(Box::new(
+                Text::new(&crate::setup::strings::t("imager-plain-body")).dimmed(),
+            ));
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
@@ -1340,23 +1339,30 @@ impl ImagerApp {
     }
 
     /// The erase warning: louder for a fixed or system disk.
-    fn confirm_warning(&self) -> (String, &'static str) {
+    fn confirm_warning(&self) -> (String, String) {
+        let t = crate::setup::strings::t;
         let device = self
             .target()
-            .map_or_else(|| "the drive".to_string(), TargetDrive::dev_path);
+            .map_or_else(|| t("imager-drive-unnamed"), TargetDrive::dev_path);
         let system = self.target().is_some_and(|d| d.is_system);
         let internal = self.target().is_some_and(|d| !d.removable);
         let title = if system {
-            "This is your system disk".to_string()
+            t("imager-confirm-system-disk")
         } else if internal {
-            format!("Everything on the internal disk {device} is erased")
+            crate::setup::strings::t_args(
+                "imager-confirm-internal-disk",
+                &[("device", ArgValue::Text(device))],
+            )
         } else {
-            format!("Everything on {device} is erased")
+            crate::setup::strings::t_args(
+                "imager-confirm-disk",
+                &[("device", ArgValue::Text(device))],
+            )
         };
         let message = if system {
-            "Everything on it, the running system included, is erased. This cannot be undone."
+            t("imager-confirm-system-consequence")
         } else {
-            "This cannot be undone."
+            t("imager-confirm-consequence")
         };
         (title, message)
     }
@@ -1389,16 +1395,17 @@ impl ImagerApp {
             return page::body(&t(heading))
                 .push(Box::new(Text::new(&t(body)).with_role(TextRole::Body)));
         }
-        let title = match self.action {
-            Action::Install => "Review and install",
-            Action::Flash => "Review and write",
+        let title_key = match self.action {
+            Action::Install => "imager-page-review-install",
+            Action::Flash => "imager-page-review-write",
         };
+        let title = crate::setup::strings::t(title_key);
         let review = self
             .review_rows()
             .into_iter()
             .map(|(label, value)| Property::new(label, value))
             .collect();
-        let mut body = page::body(title).push(Box::new(PropertyList::new(review)));
+        let mut body = page::body(&title).push(Box::new(PropertyList::new(review)));
         if self.offers_write_setup() {
             body = body.push(page::form_block(crate::write_setup::form(
                 &self.profile,
@@ -1413,7 +1420,7 @@ impl ImagerApp {
         let consequence = if self.writer().is_available() || self.shot_confirmation_ready {
             consequence
         } else {
-            "This computer can't write drives yet."
+            crate::setup::strings::t("imager-writer-unavailable")
         };
         body.push(Box::new(
             page::related().push(Box::new(Banner::error(warning).with_message(consequence))),
@@ -1715,9 +1722,9 @@ impl ImagerApp {
             self.select_source(&source);
             Ok(Effected::done())
         } else {
-            let message = "That file is not a readable disk image.";
-            self.set_status(message);
-            Err(message.into())
+            let message = crate::setup::strings::t("imager-image-unreadable");
+            self.set_status(&message);
+            Err(message)
         }
     }
     fn download_release(&mut self, index: usize, release: TiloRelease) {
@@ -2465,12 +2472,21 @@ impl ImagerApp {
             .map(|s| s.name.clone())
             .unwrap_or_default();
         let mut message = if outcome.phase == JobPhase::Success {
-            format!("Done — {name} {} and verified", self.action.past())
+            crate::setup::strings::t_args(
+                match self.action {
+                    Action::Install => "imager-install-done",
+                    Action::Flash => "imager-write-done",
+                },
+                &[("name", ArgValue::Text(name))],
+            )
         } else {
             outcome.error.clone().unwrap_or_else(|| {
-                format!(
-                    "{} failed. Reconnect the drive, then review and retry.",
-                    self.action.title()
+                crate::setup::strings::t_args(
+                    match self.action {
+                        Action::Install => "imager-install-failed",
+                        Action::Flash => "imager-write-failed",
+                    },
+                    &[("name", ArgValue::Text(name))],
                 )
             })
         };

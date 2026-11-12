@@ -2138,12 +2138,13 @@ impl ImportApp {
     }
 
     fn selection_card(&self) -> Section {
+        let not_chosen = crate::setup::strings::t("imager-import-not-chosen");
         let source = self
             .source
             .as_ref()
-            .map_or_else(|| "Not chosen yet".to_string(), |path| shown_path(path));
+            .map_or_else(|| not_chosen.clone(), |path| shown_path(path));
         let destination = self.destination_parent.as_ref().map_or_else(
-            || "Not chosen yet".to_string(),
+            || not_chosen.clone(),
             |parent| {
                 self.source
                     .as_ref()
@@ -2563,7 +2564,7 @@ impl ImportApp {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut body = page::body("Add folders to Tilo");
+        let mut body = page::body(&crate::setup::strings::t("imager-import-page"));
         if let Err(error) = durable_copy_available() {
             body = body.push(Box::new(
                 Section::new(vec![Box::new(

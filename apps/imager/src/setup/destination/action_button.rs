@@ -14,12 +14,18 @@
 //!   * a disabled action leaves the focus order, so keyboard navigation
 //!     skips what cannot be used.
 
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::widget::{Button, ButtonRole, Checkbox, ControlSize, Element, Widget};
 
 use crate::setup::destination::control::{Control, is_activation_key};
 
 pub struct ActionButton {
+    /// The catalogue message that names this action.
+    key: String,
+    /// What that message's placeables hold (`Return to { $host }`).
+    args: Vec<(String, ArgValue)>,
+    /// `key` resolved in the window's language, which is what it shows.
     label: String,
     /// The published action the control runs when used.
     control: Control,
@@ -38,10 +44,13 @@ pub struct ActionButton {
 }
 
 impl ActionButton {
-    /// A secondary button firing `control` when used.
-    pub fn new(label: &str, control: Control) -> Self {
+    /// A secondary button firing `control` when used. `key` is the catalogue
+    /// message naming it, so a German window shows a German button.
+    pub fn new(key: &str, control: Control) -> Self {
         let mut button = Self {
-            label: label.to_string(),
+            key: key.to_string(),
+            args: Vec::new(),
+            label: String::new(),
             control,
             test_id: None,
             checked: None,
@@ -53,6 +62,17 @@ impl ActionButton {
         };
         button.compose();
         button
+    }
+
+    /// What the message's placeables hold.
+    #[must_use]
+    pub fn with_args(mut self, args: &[(&str, ArgValue)]) -> Self {
+        self.args = args
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
+        self.compose();
+        self
     }
 
     /// The step's main action.
@@ -112,12 +132,22 @@ impl ActionButton {
     }
 
     fn id(&self) -> &str {
-        self.test_id.as_deref().unwrap_or(self.label.as_str())
+        self.test_id.as_deref().unwrap_or(self.key.as_str())
     }
 
     /// Build the toolkit control for the current settings.
     fn compose(&mut self) {
         let control = self.control.clone();
+        self.label = if self.args.is_empty() {
+            crate::setup::strings::t(&self.key)
+        } else {
+            let args: Vec<(&str, ArgValue)> = self
+                .args
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.clone()))
+                .collect();
+            crate::setup::strings::t_args(&self.key, &args)
+        };
         let id = self.id().to_owned();
         self.inner = if let Some(checked) = self.checked {
             let id = self.id().to_owned();
@@ -215,7 +245,7 @@ mod tests {
 
     fn assert_key_fires(key: NamedKey) {
         let (control, presses) = Control::detached(DestinationEffect::Back);
-        let mut button = ActionButton::new("Back", control);
+        let mut button = ActionButton::new("installer-preview-back", control);
         button.set_focus(true);
         let mut doc = AutoCommit::new();
         let mut taffy = TaffyTree::new();
@@ -242,7 +272,8 @@ mod tests {
         // Phase `button_semantics_are_named_focusable_and_activatable`.
         {
             let (control, presses) = Control::detached(DestinationEffect::Reboot);
-            let mut button = ActionButton::new("Reboot now", control).with_test_id("reboot");
+            let mut button =
+                ActionButton::new("installer-action-reboot", control).with_test_id("reboot");
             button.set_focus(true);
             let node = button.accessibility().expect("button semantics");
             assert_eq!(node.role, ui::a11y::Role::Button);
@@ -272,7 +303,7 @@ mod tests {
             let (control, presses) = Control::detached(DestinationEffect::SetRecoveryPromise {
                 acknowledged: false,
             });
-            let mut button = ActionButton::new("I will save my recovery key", control)
+            let mut button = ActionButton::new("installer-action-recovery-promise", control)
                 .with_test_id("recovery_ack")
                 .checkbox(true);
             let node = button.accessibility().expect("checkbox semantics");
@@ -293,7 +324,8 @@ mod tests {
         // Phase `the_inventory_names_the_published_action`.
         {
             let (control, _) = Control::detached(DestinationEffect::Reboot);
-            let button = ActionButton::new("Reboot now", control).with_test_id("reboot");
+            let button =
+                ActionButton::new("installer-action-reboot", control).with_test_id("reboot");
             let bindings = ui::widget::controls::control_action_bindings(&button);
             assert_eq!(bindings.len(), 1);
             assert_eq!(bindings[0].control_id, "reboot");

@@ -107,7 +107,7 @@ impl Default for DownloadPresentation {
     fn default() -> Self {
         Self {
             phase: None,
-            title: "Full Tilo download".into(),
+            title: crate::setup::strings::t("imager-setup-internal-download-title"),
             details: "Choose Download Tilo after reviewing this setup.".into(),
             summary: "Download Tilo when you have reviewed this setup.".into(),
             pending: false,
@@ -655,45 +655,56 @@ fn presentation_from_facts(
 ) -> DownloadPresentation {
     let consumption: (String, String);
     let (title, summary) = match phase {
-        WorkerPhase::Authenticating => ("Downloading Tilo", "Checking the Tilo release."),
-        WorkerPhase::Acquiring | WorkerPhase::Preparing => {
-            ("Downloading Tilo", "Checking what was already downloaded.")
-        }
-        WorkerPhase::Downloading => ("Downloading Tilo", "Downloading and checking Tilo."),
+        WorkerPhase::Authenticating => (
+            crate::setup::strings::t("imager-download-title-downloading"),
+            "Checking the Tilo release.".to_owned(),
+        ),
+        WorkerPhase::Acquiring | WorkerPhase::Preparing => (
+            crate::setup::strings::t("imager-download-title-downloading"),
+            "Checking what was already downloaded.".to_owned(),
+        ),
+        WorkerPhase::Downloading => (
+            crate::setup::strings::t("imager-download-title-downloading"),
+            "Downloading and checking Tilo.".to_owned(),
+        ),
         WorkerPhase::Ready => (
-            "Download ready",
-            "Download verified. Installation has not started.",
+            crate::setup::strings::t("imager-download-title-ready"),
+            "Download verified. Installation has not started.".to_owned(),
         ),
         WorkerPhase::Paused => (
-            "Download paused",
-            "Paused. Resuming checks what was already downloaded first.",
+            crate::setup::strings::t("imager-download-title-paused"),
+            "Paused. Resuming checks what was already downloaded first.".to_owned(),
         ),
         WorkerPhase::Cancelled => (
-            "Download cancelled",
-            "Cancelled. Downloaded data may remain until you discard it.",
+            crate::setup::strings::t("imager-download-title-cancelled"),
+            "Cancelled. Downloaded data may remain until you discard it.".to_owned(),
         ),
-        WorkerPhase::Failed => ("Download failed", "The download did not finish."),
+        WorkerPhase::Failed => (
+            crate::setup::strings::t("imager-download-title-failed"),
+            "The download did not finish.".to_owned(),
+        ),
         WorkerPhase::Released => (
-            "Kept for later",
-            "The verified download is kept on this computer. Installation has not started.",
+            crate::setup::strings::t("imager-download-title-released"),
+            "The verified download is kept on this computer. Installation has not started."
+                .to_owned(),
         ),
         WorkerPhase::Discarded => (
-            "Unfinished download data discarded",
-            "Unfinished download data was removed. Completed parts may remain.",
+            crate::setup::strings::t("imager-download-title-discarded"),
+            "Unfinished download data was removed. Completed parts may remain.".to_owned(),
         ),
         WorkerPhase::Consuming => {
             consumption = (
                 crate::setup::strings::t("imager-setup-internal-download-consuming"),
                 crate::setup::strings::t("imager-setup-internal-download-consuming-detail"),
             );
-            (consumption.0.as_str(), consumption.1.as_str())
+            (consumption.0.clone(), consumption.1.clone())
         }
         WorkerPhase::Consumed => {
             consumption = (
                 crate::setup::strings::t("imager-setup-internal-download-consumed"),
                 crate::setup::strings::t("imager-setup-internal-download-consumed-detail"),
             );
-            (consumption.0.as_str(), consumption.1.as_str())
+            (consumption.0.clone(), consumption.1.clone())
         }
     };
     let mut details = summary.to_string();
