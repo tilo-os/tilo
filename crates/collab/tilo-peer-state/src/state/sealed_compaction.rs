@@ -139,6 +139,148 @@ impl PeerPublicationMut<'_> {
     }
 }
 
+impl PeerPublication<'_> {
+    /// The writes of `record` of `app`'s sealed history that `compaction`, a compaction this
+    /// device drafted, folds of its own author's: what the record holds of them only inside it
+    /// once it is admitted here.
+    pub fn folded_by(self, (app, record): (&str, &str), compaction: &SignedOp) -> Vec<SignedOp> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Ok(wrapper) = SealedCompaction::parse(compaction) else {
+            return Vec::new();
+        };
+        self.peer
+            .core
+            .documents
+            .get(&route)
+            .map(|document| {
+                document
+                    .sealed
+                    .iter()
+                    .filter(|write| {
+                        write.author == compaction.author
+                            && write.kind != OpKind::Compaction
+                            && wrapper.covers(write)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl PeerPublicationMut<'_> {
+    /// Take `message`, a compaction of a sealed record whose history here does not line up
+    /// with the writes it covers, as the record's key holder: its history becomes the
+    /// compaction, then every write of the history and of `held` it does not cover. A device
+    /// that compacted its own copy while its host took another member's compaction holds its
+    /// writes inside its own compaction, which the host refuses; `held` are this device's
+    /// writes it folded so, kept beside the record, and the history they make is the one the
+    /// host holds.
+    ///
+    /// The compaction is decided like any write it receives, and the history it leaves must
+    /// hold every change the record held before: `open` opens both, so nothing the record
+    /// held is lost to a compaction that left it out.
+    ///
+    /// # Errors
+    /// The compaction is refused as a write, a change of the record would be lost, or the
+    /// history it leaves exceeds the record's bound; this peer is unchanged then.
+    pub fn rebase_sealed(
+        self,
+        origin: super::TransportOrigin,
+        message: NeighbourMsg,
+        held: &[SignedOp],
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        now: SystemTime,
+    ) -> Result<crate::admission::AdmissionReport, String> {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } = &message
+        else {
+            return Err("only a document compaction rebases a record".into());
+        };
+        if envelope.kind != OpKind::Compaction {
+            return Err("only a document compaction rebases a record".into());
+        }
+        let route = Route {
+            app: app_id.clone(),
+            record: record_id.clone(),
+        };
+        let signature = envelope.signature;
+        let compaction = SealedCompaction::parse(envelope).map_err(err)?;
+        let document = self
+            .peer
+            .core
+            .documents
+            .get(&route)
+            .ok_or("a rebase of a record this state does not hold")?;
+        let before = changes(document, open)?;
+        let mut kept: Vec<SignedOp> = Vec::new();
+        for write in document.sealed.iter().chain(held) {
+            if write.kind != OpKind::Compaction
+                && !compaction.covers(write)
+                && !kept.iter().any(|held| held.signature == write.signature)
+            {
+                kept.push(write.clone());
+            }
+        }
+        // Decided as the first write of the record, as a replica holding none of it takes the
+        // compaction its store keeps.
+        let mut candidate = self.peer.clone();
+        if let Some(document) = candidate.core.documents.get_mut(&route) {
+            document.sealed = super::backend::SealedLog::default();
+        }
+        let report = candidate
+            .receive_from_report(origin, message, now)
+            .map_err(|error| error.to_string())?;
+        let document = candidate
+            .core
+            .documents
+            .get_mut(&route)
+            .ok_or("the rebased record is gone")?;
+        let mut history = document.sealed.to_vec();
+        if history.first().map(|first| &first.signature) != Some(&signature) {
+            return Err("the compaction did not found the rebased record".into());
+        }
+        history.extend(kept);
+        let history: super::backend::SealedLog = history.into();
+        if history.len() > super::MAX_SEALED_OPS || history.bytes() > super::MAX_SEALED_BYTES {
+            return Err("the rebased record exceeds its sealed history bound".into());
+        }
+        document.sealed = history;
+        let floors = &mut document.channel.last_seq_per_author;
+        for (author, seq) in &compaction.covers {
+            let floor = floors.entry(*author).or_default();
+            *floor = (*floor).max(*seq);
+        }
+        let after = changes(document, open)?;
+        if !before.is_subset(&after) {
+            return Err("the compaction leaves out changes this record holds".into());
+        }
+        *self.peer = candidate;
+        Ok(report)
+    }
+}
+
+/// Every change `document` reads as with its sealed history opened.
+fn changes(
+    document: &super::Document,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+) -> Result<std::collections::BTreeSet<automerge::ChangeHash>, String> {
+    let opened = open_sealed(document, open)?;
+    let mut read = AutoCommit::load(&opened.document).map_err(err)?;
+    Ok(read
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect())
+}
+
 /// `document`'s cleartext base with every write of its sealed history opened
 /// and merged over it, saved. A replica without the key admits sealed writes
 /// in arrival order, not causal order: they merge until nothing more applies.
