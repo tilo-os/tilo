@@ -25,6 +25,11 @@ package set its own tree resolves (t's `publish-rpms`), and the images of that t
 install from the published set, so nothing signs an image built from a set that is
 not published. Main builds and tests the set and publishes nothing.
 
+The snapshot is one index of both architectures and every consumer verifies both, so
+a release needs a build node of each connected to t: without one, t plans
+`image-rpms-aarch64` (or `-x86_64`) as "no node for its platform" and everything that
+publishes from the set is skipped. `t status` lists the nodes there are.
+
 ## Fast validation versus release gates
 
 Pull requests use the cheapest lane that proves the affected boundary:
