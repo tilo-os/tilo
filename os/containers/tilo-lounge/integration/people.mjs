@@ -1603,12 +1603,22 @@ try {
     // invitation, not from the link alone.
     const c = await followLink('C', made);
     invited = c;
-    const people = listedNow.members === 1 ? '1 person' : `${listedNow.members} people`;
-    for (const expected of [`${ownName} invites you to`, listedNow.name, people,
+    for (const expected of [`${ownName} invites you to`, listedNow.name,
       'Commenter — you can add comments, but not edit shared work.']) {
       if (!c.card.includes(expected)) {
         await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
       }
+    }
+    // How many people: the host's own count as it verified the invitation.
+    // The Lounge is shared with the run's other flows, whose people come and
+    // go meanwhile, so the card's number is held to the host's count before
+    // the link was opened and after the card showed, not to one of them.
+    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+    const counted = Number(c.card.match(/\b(\d+) people\b/)?.[1] ?? (/\b1 person\b/.test(c.card) ? 1 : NaN));
+    const fewest = Math.min(listedNow.members, listedAfter?.members ?? listedNow.members);
+    const most = Math.max(listedNow.members, listedAfter?.members ?? listedNow.members);
+    if (!(counted >= fewest && counted <= most)) {
+      await failed(`the invitation card counts ${Number.isNaN(counted) ? 'nobody' : counted} people, where the host counted ${fewest === most ? fewest : `${fewest} to ${most}`} while it showed: ${c.card.slice(0, 400)}`, c.tab);
     }
     if (!c.buttons.includes('Join') || !c.buttons.includes('Not now')) {
       await failed(`the invitation card offers neither Join nor Not now: ${JSON.stringify(c.buttons)}`, c.tab);
