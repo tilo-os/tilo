@@ -48,7 +48,17 @@ const failed = async message => {
     writeFileSync(`${out}/${name}.log`, (tab.log ?? []).join('\n'));
     const shot = await tab.screenshot().catch(() => null);
     if (shot) writeFileSync(`${out}/${name}-failed.png`, shot);
-    console.error(`--- ${name} said:\n${(tab.log ?? []).slice(-30).join('\n')}`);
+    // What the page threw or called an error, wherever in its log it is, then
+    // what it said last: a warning repeated on every frame pushes the one
+    // error that stopped a page out of any last few lines.
+    const log = tab.log ?? [];
+    const errors = log.filter(line => /^(EXC|ERROR) /.test(line)).slice(-10);
+    const repeated = new Map();
+    for (const line of log) repeated.set(line, (repeated.get(line) ?? 0) + 1);
+    const last = [...new Set(log.slice(-200).reverse())].slice(0, 30).reverse()
+      .map(line => (repeated.get(line) > 1 ? `${line} (×${repeated.get(line)})` : line));
+    if (errors.length) console.error(`--- ${name} threw:\n${errors.join('\n')}`);
+    console.error(`--- ${name} said:\n${last.join('\n')}`);
   }
   console.error(`FAIL: ${message}`);
   finish(1);
