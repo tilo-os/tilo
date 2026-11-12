@@ -141,7 +141,7 @@ fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
         .iter()
         .map(|(locale, _)| locale.as_str())
         .collect();
-    let language = (!spec.language.is_empty()).then(|| spec.language.as_str());
+    let language = (!spec.language.is_empty()).then_some(spec.language.as_str());
     base.for_window(language, &shipped)
 }
 

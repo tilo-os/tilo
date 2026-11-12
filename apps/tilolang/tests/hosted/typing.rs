@@ -27,7 +27,15 @@ fn changes(session: &Session) -> usize {
 /// A person at a Notes window of the notebook the record `chunks` holds, as one opens it again
 /// after closing it: what a window kept of a workspace they had open before.
 fn notes_over(route: &RouteSpec, chunks: Chunks) -> Session {
-    let mut session = Session::brokered(route, NOTES, "ada", chunks, None, Window::in_harness);
+    let mut session = Session::brokered(
+        route,
+        NOTES,
+        "ada",
+        "en-US",
+        chunks,
+        None,
+        Window::in_harness,
+    );
     session.settle();
     session
 }

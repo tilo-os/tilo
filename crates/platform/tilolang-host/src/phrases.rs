@@ -164,7 +164,7 @@ impl Phrases {
         let mut catalogue = self.catalogue.borrow_mut();
         let translation = catalogues
             .iter()
-            .find(|(locale, _)| locale == self.locale)
+            .find(|(locale, _)| locale.as_str() == self.locale.as_str())
             .or_else(|| {
                 catalogues
                     .iter()

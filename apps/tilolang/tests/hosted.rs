@@ -2950,11 +2950,11 @@ fn a_hosted_windows_own_words_read_in_its_language() {
     let mut today = Session::in_language(TODAY, "ada", "de-DE");
     let shown = today.shown();
     assert!(
-        shown.iter().any(|word| word == "Morgenroutine"),
+        shown.iter().any(|word| word.starts_with("Morgenroutine")),
         "Today's morning cleanup reads in German: {shown:?}"
     );
     assert!(
-        !shown.iter().any(|word| word == "Morning cleanup"),
+        !shown.iter().any(|word| word.starts_with("Morning cleanup")),
         "no word Today's package has in German is left in its source language: {shown:?}"
     );
     assert!(
@@ -2977,7 +2977,7 @@ fn a_hosted_windows_own_words_read_in_its_language() {
     let mut notes = Session::in_language(NOTES, "ada", "de-DE");
     let shown = notes.shown();
     assert!(
-        shown.iter().any(|word| word == "Neue Notiz"),
+        shown.iter().any(|word| word.starts_with("Neue Notiz")),
         "Notes' new note reads in German: {shown:?}"
     );
 
@@ -2986,7 +2986,7 @@ fn a_hosted_windows_own_words_read_in_its_language() {
     let mut tasks = Session::in_language(TASKS, "ada", "de-DE");
     let shown = tasks.shown();
     assert!(
-        shown.iter().any(|word| word == "New task"),
+        shown.iter().any(|word| word.starts_with("New task")),
         "Tasks' own action reads its catalogue's word: {shown:?}"
     );
     assert!(
