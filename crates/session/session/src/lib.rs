@@ -299,6 +299,8 @@ mod projection;
 #[cfg(target_os = "linux")]
 mod projection_video;
 #[cfg(target_os = "linux")]
+mod published_workspace;
+#[cfg(target_os = "linux")]
 mod questions;
 #[cfg(target_os = "linux")]
 pub mod quick_settings;

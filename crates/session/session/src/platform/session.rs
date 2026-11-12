@@ -1709,6 +1709,7 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
+            published_workspace: crate::published_workspace::Published::none(),
             published_steps: Some(std::sync::Arc::clone(&session_actions)),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,

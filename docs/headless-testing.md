@@ -1,288 +1,226 @@
-# Headless testing: screenshots, recordings, remote control
+# Headless testing: captures, control, and a desktop with no display
 
-This guide covers everything you need to test the tilo shell (and individual apps in a follow-up) **without opening a window**. Every command below writes PNG / H.264 / JSON to disk; nothing requires a display server attached to your terminal.
+This guide covers testing Tilo **without opening a window**: a session on the offscreen backend, the control socket that drives it, the Python harnesses that put the tree's own apps on its desk, and the ways to measure what the frame loop does. Every command below writes PNG and JSON to disk; nothing needs a display server attached to your terminal.
 
-Three layers, each useful on its own:
+Four layers, each useful on its own:
 
-1. **`shots` — scenarios → PNG / H.264** (run pre-written interactions, capture per-step output)
-2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
-3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
+1. **`tilo-session --backend headless`** — the real session binary, painting into an off-screen texture instead of a display, publishing the same sockets and files a login session does.
+2. **`tilo-control` / `TILO_TEST_CONTROL`** — JSON over a unix socket: click, drag, type, invoke an action, snapshot, read the desk.
+3. **`scripts/headless-examples/`** — short Python harnesses that spawn a session, drive it and put it down.
+4. **`tilo-app dev` and `scripts/agent-loop/session.py`** — an app rebuilt on every source change, in a session of its own.
 
-Native application publication also has compositor-free integration fixtures:
+The session binary is `tilo-session` (`crates/session/session`, bin `tilo-session`). There is no `shell` crate: its desktop is the session's, its scenarios are `crates/session/session/tests/`, and what it published for the login is now published by the compositor and the session.
 
-```bash
-cargo test --locked -p shell --lib shell::in_process::tests::authorized_
-cargo test --locked -p tilo-action-broker --lib collab_app_broker::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+## What a session publishes
+
+A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_DIR/tilo-session/`:
+
+| Path | Written by | Read by |
+|---|---|---|
+| `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `spawn-headless.sh` |
+| `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which joins that workspace; `scripts/agent-loop/session.py`, which waits for it |
+| `agent.sock` | the session's agent door, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
+| `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
+| `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
+| `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |
+
+`wayland-display` and `workspace-id` belong to the session the login's programs reach: a second session in the same runtime directory (a nested one beside a live desktop) publishes neither, and is reached through the socket name it printed on stdout. The display file, the workspace file and the doors go when the session does.
+
+The session prints what it bound, so a harness reads the answer rather than guessing a path:
+
+```
+WAYLAND_DISPLAY=wayland-1
+TILO_AGENT_DOOR=/run/user/1000/tilo-session/agent.sock
+TILO_TEST_CONTROL=/run/user/1000/tilo-session/test-control.sock
+TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 ```
 
-The Browser and Store fixtures provision a disposable identity and run the actual
-identity service, collaboration broker, original application factory and directory
-RPC. Browser retains its primary document, browsing history and address book. All
-three are records of Browser in the launch workspace, so publication must wait for their initial
-joins to become ready. Store must publish `inspect-catalogue` through the same authorized context.
-No application action is invoked.
+A session started as a real login also exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=tilo:GNOME`, `XDG_SESSION_DESKTOP=tilo` and `XDG_SESSION_TYPE=wayland` to the systemd user manager and D-Bus activation (`crates/session/session/src/env.rs`). A nested or headless run exports nothing: it must never repoint the surrounding desktop's user manager at its own socket.
 
-This qualifies matching-workspace publication. It does not qualify an application
-spanning a foreground workspace and the person's own store: a certification for
-the workspace cannot authorize their store. The broker's cross-workspace rejection stays
-covered independently. Installed control-socket timeouts require separate runtime
-evidence; an empty query alone does not establish absent publication.
+## Layer 1: a session with no display
 
-## Layer 1: `shots` — pre-written scenarios
-
-Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.
+The same binary and the same code paths as a login; the backend paints into a wgpu off-screen texture. Nothing appears on your desktop, and no `DISPLAY` or `WAYLAND_DISPLAY` is needed.
 
 ```bash
-# Inventory the catalogue (currently ~22 scenarios — palette typing, workspace switch, etc.):
-cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --list-scenarios
+# A session of its own: a scratch home, XDG tree, runtime directory and
+# identity, plus the socket it answers on.
+scripts/headless-examples/spawn-headless.sh &
+SESSION=$!
+trap "kill $SESSION" EXIT
 
-# Capture every scenario in offscreen mode (default). Produces one PNG per scene
-# under `target/<dir>/`. Pixel-identical to a live run.
-cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
-
-# A single scenario, with explicit viewport:
-cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
-
-# H.264 video of a scenario (30 fps default; one second per scenario step).
-# Output is raw Annex-B NALU stream — playable by mpv / ffplay / vlc.
-cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
-
-# Interactive window mode (real winit window — useful for eyeballing while developing):
-cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode window --scenario palette_typing
+# From here on, tilo-control finds the socket by itself:
+target/debug/tilo-control windows
 ```
 
-Scenarios are defined in `crates/session/session/src/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
+`spawn-headless.sh` takes its runtime directory from `dist/dev/nested-session.sh --print-runtime`, so the rule that picks a short private one lives in one place. It refuses a socket a live session still answers on, sets `TILO_TEST_CONTROL`, and prints `READY <socket>` once usable. Its knobs: `TILO_HEADLESS_BINARY` (default `target/debug/tilo-session`), `TILO_HEADLESS_PROFILE` (keep the scratch profile across runs), `TILO_HEADLESS_TIMEOUT`.
 
-**No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
+By hand, one session is three lines:
 
-## Owner control with an existing identity
+```bash
+export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/test-control.sock
+cursor=$(mktemp -d)          # never /tmp itself: the runtime directory is the session's
+export XDG_RUNTIME_DIR=$cursor/run HOME=$cursor/home
+mkdir -p "$XDG_RUNTIME_DIR"
+target/debug/tilo-session --backend headless &
+```
 
-For semantic actions on an existing owner's headless session, launch
-`shell --host-desktop-session --backend headless --headless-owner-control`.
-The normal first-login, device-owner, administrator-group, lock and caller
-checks apply. No development control variable is needed. The endpoint is
+The session's own flags, as `tilo-session --help`'s header documents them: `--backend drm|headless|nested`, `--size WxH`, `--output [NAME=]WxH[@X][,][+X,Y]` (repeatable, for a multi-output arrangement), `--scale S` or `--panel-mm WxH`, `--connector NAME`, `--shell screen`, `--session-bus ADDRESS`, `--system-bus ADDRESS`, `--no-x11`, `--test-control PATH`, `--admin-control PATH`, `--headless-owner-control`, `--admit-repl PATH`, `--seed-apps`, and `-- COMMAND…` to run a program under it (the session then lives as long as that command).
+
+`--test-control` and `--seed-apps` are honoured by development builds only; a release build serves the control socket only when built with `--features dev-overrides`, which the dev image's session carries. Every harness here is a development build, and says so when it is not.
+
+Headless lays frames out and answers clients' frame callbacks but does not rasterize them: nobody is looking. `{"op":"snapshot"}` renders on demand. A viewer that streams frames attaches with `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the session with `TILO_HEADLESS_WATCH=1`.
+
+A headless session owns no seat. It starts no power service: no lid or power-key delegation, no suspend on idle, and neither offers nor admits Suspend, Restart or Shut down from the power menu, the palette or `session.*` actions. Lock stays, because it locks the session's own scene. Test idle suspend through `SessionManager` and `TILO_IDLE_SUSPEND_SECS`, which drive the state machine without an actuator.
+
+### Put `TMPDIR` somewhere with room
+
+`/tmp` is a tmpfs shared with everything else on the box, and a few concurrent `rustc` processes fill it. When they do, anything that asks for a temporary file fails — harnesses here allocate session roots through `tempfile` — and the error surfaces from inside that call as `Quota exceeded`, a bare exit 1, or empty output. It reads like a bug in whatever you were testing, which is the expensive part. Point it at real disk before a run that spawns sessions:
+
+```bash
+TMPDIR=$HOME/tmp scripts/headless-examples/full-loop.py
+```
+
+Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has a hard ~108-byte limit, and a deep temporary directory silently pushes the control socket past it.
+
+### Owner control with an existing identity
+
+For semantic actions on an existing owner's headless session, start
+`tilo-session --backend headless --headless-owner-control`. The normal
+first-login, device-owner, administrator-group, lock and caller checks apply, and
+no development control variable is needed. The endpoint is
 `$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock`, separate from the
 real seat's `admin-control.sock`; an existing live listener is never replaced.
-Headless sessions without the explicit flag retain their existing behavior.
 
-Use the normal action interface against that endpoint:
+That door serves the semantic half of the protocol only — `actions list`,
+`actions invoke`, `actions status`, `state-dump`, `windows`, `record-read`, the
+profile ops — and never synthetic input, snapshots or the test identity.
 
 ```bash
 tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock" actions list
 ```
 
-This endpoint accepts semantic owner commands, not the development input and
-capture protocol described below. A locked session still requires its normal
-unlock action. Physical cursor and display acceptance remains a real-seat test.
+A locked session still requires its normal unlock action, and physical cursor and display acceptance stay a real-seat test.
 
-## Layer 2: `TILO_TEST_CONTROL` — drive the live binary via a unix socket
+## Layer 2: `TILO_TEST_CONTROL` — drive a running session
 
-Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "click here, snapshot that" flows, integration tests where you want to assert against the live compositor's state.
+Best for ad-hoc interactive testing from a script or an agent, exploratory "click here, snapshot that" flows, and integration tests that assert against the live session.
 
 ### Enable the socket
 
 ```bash
-# Pick a socket path in your private runtime directory. Not /tmp: another
-# account could bind a shared name first and receive every command you send.
-# The compositor creates a missing parent 0700 and makes the socket 0600.
 export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/test-control.sock
-
-# Spawn the compositor. The env var enables the socket; nothing else changes.
-cargo run --bin shell -- --backend headless &
-# (`--backend headless` runs without a window — see Layer 3. For interactive
-# development you can also use the default winit backend; the socket works
-# either way.)
-
-# Confirm the socket bound:
-ls -la $TILO_TEST_CONTROL
+target/debug/tilo-session --backend headless &
+ls -la "$TILO_TEST_CONTROL"        # bound once it is there
 ```
 
-The compositor prints `tilo compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
+The socket is 0600 in a 0700 directory the session creates. `--test-control PATH` names another path; `TILO_TEST_CONTROL` is what the tools here read.
 
-### A headless session never touches the host's power
-
-A headless (or nested winit) session runs beside the desktop that owns the
-machine, and it reaches the same system logind. So only a `--backend drm`
-session starts the power service: headless and winit sessions do not take
-logind's lid/power-key delegation, never request suspend on idle whatever
-`power.auto_suspend` says, and neither offer nor admit Suspend, Restart,
-Shut down or Switch user from the power menu, the palette or
-`session.*` actions (`tilo::power` logs `session does not own the seat` at
-startup). Lock stays: it locks only the compositor's own scene. Test idle
-suspend through `SessionManager` and `TILO_IDLE_SUSPEND_SECS`, which exercise
-the state machine without an actuator.
-
-### Put `TMPDIR` somewhere with room
-
-`/tmp` is a 16 GB tmpfs shared with everything else on the box, and a
-few concurrent `rustc` processes will fill it. When they do, anything
-that asks for a temporary file fails — harnesses here allocate session
-roots through `tempfile` — and the error surfaces from inside that call
-as `Quota exceeded`, a bare exit 1, or simply empty output. It reads
-like a bug in whatever you were testing, which is the expensive part.
-
-Point it at real disk before a run that spawns sessions:
+### `tilo-control`
 
 ```bash
-TMPDIR=$HOME/tmp ./scripts/two-session-collab-demo.py --build
+cargo build -p tilo-control          # lands in target/debug; images ship /usr/bin/tilo-control
+alias qc='cargo run -q --bin tilo-control --'
+
+qc actions list Calculator --json            # inspect search results without opening the palette
+qc actions invoke applications dev.tilo.calculator
+qc actions status INVOCATION_ID --wait       # follow a pending receipt to its result
+qc list-targets                              # NAME (X, Y, W, H) per line
+qc click add_workspace                       # click_named
+qc click-at 400 300                          # click_at
+qc drag 100 100 300 200 12                   # drag with 12 motion steps
+qc key Enter                                 # a named key OR one character
+qc type "hello"                              # one press+release per character
+qc modifiers ctrl,shift                      # comma-separated set; empty clears all
+qc snapshot /tmp/state.png                   # PNG to disk
+qc windows                                   # open windows: workspace/strip, group, tab, app
+qc state-dump --pretty                       # the live desk + chrome as JSON, without history
+qc state-dump --history                      # … with effect receipts and audit trails
+qc watch on                                  # stream frames, for a headless session drawing nothing
+qc raw '{"op":"list_targets"}'               # escape hatch for unwrapped commands
 ```
 
-Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has
-a hard ~108-byte limit, and a deep temp directory silently pushes the
-control socket past it.
+Default socket: `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors surface as a non-zero exit and a structured `code: message` on stderr.
 
-### Easiest path: the `tilo-control` CLI
+### Wire protocol
 
-A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
-
-```bash
-cargo build -p tilo-control                 # lands in target/debug; images ship /usr/bin/tilo-control
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/control-cli
-
-qc actions list Calculator --json           # inspect search results without opening the palette
-qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
-qc actions list --json                      # inspect the running apps' exported actions
-qc list-targets                             # PNAME (X, Y, W, H) per line
-qc click add_workspace                      # click_named
-qc click-at 400 300                         # click_at
-qc drag 100 100 300 200 12                  # drag with 12 motion steps
-qc key Enter                                # named key OR single char
-qc type "hello"                             # one press+release per character
-qc modifiers ctrl,shift                     # comma-separated set; empty clears all
-qc snapshot /tmp/state.png                  # PNG to disk
-qc windows                                  # open windows: workspace/strip, group, tab, app
-qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON, without history
-qc state-dump --history                     # ... with effect receipts and audit trails
-qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
-```
-
-Default socket: `$TILO_TEST_CONTROL` env var, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
-
-### Select search results by identity
-
-Use `actions list QUERY --json` to inspect the same providers used by the palette.
-Enumeration starts asynchronous index refreshes; a cold query can be incomplete.
-Retry within a bounded deadline when the expected app is missing, and report it
-as unavailable if the deadline expires. Opening the palette is unnecessary.
-
-Titles are display text, not identities. For example, two results can both say
-“Open Calculator”:
-
-| Provider | ID | Meaning |
-|---|---|---|
-| `applications` | `dev.tilo.calculator` | Native Tilo Calculator |
-| `applications` | `org.gnome.Calculator` | Host GNOME Calculator |
-
-Inspect `kind`, `subtitle`, and the `(provider, id)` pair before choosing. Keep the
-selected pair and pass both to `actions invoke`; never substitute the first
-same-named result when the intended app is absent. `score` ranks results but does
-not establish application identity.
-
-After launch, enumerate again and inspect the app actions' `application`,
-`resource`, `operation`, `params`, and `contract` fields. Invoke the returned
-provider/ID with its declared arguments, adding `--wait` so the answer is the
-result and not the admission. To follow a pending receipt, use
-`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or desktop state to verify the
-effect. A descriptor alone does not prove execution; a visible tile alone does
-not prove the app has rendered. A packaged app is up when a process of it runs
-from the session's store — `/var/tilo-apps/<application id>/`, the only place
-its binary sits inside the sandbox — and the desk holds its window
-(`windows`); what it draws is proved by a control it offers (`list_targets`)
-pressed, and what that changes. `real_apps.Session.answering` waits for the
-first two and leaves the last to the check.
-
-Apps mounted inside the compositor are not processes of their own:
-`actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
-as its persisted tile kind. That kind alone proves the hosted app failed to
-render no more than a window does. Verify its exported `inspect-session`
-operation to completion, its laid-out `terminal` target and a private headless
-snapshot. Process startup additionally requires an open session with input
-available; rendering a missing-runtime explanation is not a working PTY. The
-separately discovered `applications:so.tilo.terminal` launches the packaged
-app, which `answering` covers.
-
-`scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
-invocation against an isolated compositor.
-
-### Native mounted host-service regression tests
-
-Use `ui::framework::testing::drive_live_window` to exercise a resource app's
-actual mounted native root without starting its window event loop. With
-`test-support`, attach a socket pair through
-`App::test_floating_service_connection` and
-`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
-call `App::test_pump_floating_service`. This runs production dispatch and
-response serialization rather than invoking the app's handler directly.
-For device-shell operations, assert the request ID and successful outcome on
-the original connection, repeat on that same connection, and verify that an
-idle pump does not replay the operation. Terminal's
-`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
-test covers forwarding through the mounted component's `AppWidget` capability.
-
-### Wire protocol (when you can't use the CLI)
-
-The socket accepts newline-delimited JSON. Every command returns one JSON response line.
+Newline-delimited JSON; every command answers one line.
 
 ```bash
 # List every clickable widget by name + rect:
-echo '{"op":"list_targets"}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"list_targets"}' | nc -U "$TILO_TEST_CONTROL"
 
 # Click a widget by name (resolved from the live widget tree):
-echo '{"op":"click_named","name":"add_workspace"}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"click_named","name":"add_workspace"}' | nc -U "$TILO_TEST_CONTROL"
 
 # Click at raw coordinates:
-echo '{"op":"click_at","x":400,"y":300}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"click_at","x":400,"y":300}' | nc -U "$TILO_TEST_CONTROL"
 
 # Drag from one point to another (default 8 intermediate motions):
-echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U "$TILO_TEST_CONTROL"
 
-# Set modifiers, then send a key:
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $TILO_TEST_CONTROL
-echo '{"op":"key","key":"k"}' | nc -U $TILO_TEST_CONTROL    # Ctrl+K opens the palette
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $TILO_TEST_CONTROL
+# Set modifiers, send a key, clear them:
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"key","key":"k"}' | nc -U "$TILO_TEST_CONTROL"    # Ctrl+K opens the palette
+echo '{"op":"key_down","key":"a"}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"key_up","key":"a"}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U "$TILO_TEST_CONTROL"
 
 # Type a string (one press+release per character):
-echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"type","text":"hello"}' | nc -U "$TILO_TEST_CONTROL"
+
+# Wheel and touchpad motion, as a device would send it (a notch up is a
+# positive `dy`), and the touch gestures a session's seat understands:
+echo '{"op":"scroll","dx":0,"dy":-30}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"swipe","fingers":3,"dx":0,"dy":-300}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"pinch","fingers":2,"scale":1.25}' | nc -U "$TILO_TEST_CONTROL"
 
 # Capture a PNG of the current state:
-echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U "$TILO_TEST_CONTROL"
 
-# Get the live workspace tree + chrome state as JSON. A workspace's
-# append-only history (effect receipts, task audit trails) is left out; add
-# "include_history":true to get it. `peers` is who is here: this session's own
-# row, and one row per workspace it takes part in with everyone present there,
-# as the roster every surface draws is read.
-echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
+# The live desk + chrome as JSON. A workspace's append-only history (effect
+# receipts, task audit trails) is left out; add "include_history":true to get
+# it. `peers` is who is here: this session's own row, and one row per
+# workspace it takes part in with everyone present there, as the roster every
+# surface draws is read.
+echo '{"op":"state_dump"}' | nc -U "$TILO_TEST_CONTROL"
 
 # Just the open windows, one row per tab:
-echo '{"op":"windows"}' | nc -U $TILO_TEST_CONTROL
-
-# Copy and paste as the compositor's own in-process widgets do. Both call
-# straight into `ui::text_selection`, the same functions the terminal, the
-# file explorer, notes, the editor and every piece of chrome call, so this
-# drives the compositor's side of a cross-process transfer through the
-# production path rather than around it. `primary` targets the middle-click
-# selection instead of the clipboard.
-echo '{"op":"clipboard_copy","text":"hello","primary":false}' | nc -U $TILO_TEST_CONTROL
-echo '{"op":"clipboard_paste","primary":false}' | nc -U $TILO_TEST_CONTROL
-# → {"clipboard":{"text":"hello"}}   (text is null when nothing is copied)
+echo '{"op":"windows"}' | nc -U "$TILO_TEST_CONTROL"
 
 # Pointer press and release as separate events. `click_at` bundles them,
 # which cannot express a drag-and-drop: the source client has to be *holding*
 # the button when it calls start_drag, and the drop happens on a release that
 # arrives after the pointer has travelled to another window.
-echo '{"op":"pointer_move","x":260,"y":140}' | nc -U $TILO_TEST_CONTROL
-echo '{"op":"pointer_button","pressed":true}' | nc -U $TILO_TEST_CONTROL
-echo '{"op":"pointer_button","pressed":false}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"pointer_move","x":260,"y":140}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"pointer_button","pressed":true}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"pointer_button","pressed":false}' | nc -U "$TILO_TEST_CONTROL"
 
-# Open the next window of an app in its own window group rather than as a tab
-# in the focused one, via the launcher's normal pending-placement note. Two
-# client windows are only on screen at the same time when they are in
-# separate groups — the precondition for dragging anything between them.
-echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $TILO_TEST_CONTROL
+# An action by address, no coordinates, through the same resolution,
+# availability, confirmation and argument binding the live host applies:
+echo '{"op":"actions_invoke","resource":"notes.notebook","action":"new-note","arguments":{"title":"Trip"}}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"actions_enumerate","query":"notes"}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"actions_status","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
+echo '{"op":"actions_cancel","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
+
+# Records an app publishes, read through the record door as this person reads
+# them, answered once they differ from `after` (the `revision` an earlier answer
+# gave) or `wait_ms` passes:
+echo '{"op":"record_read","app":"notes","records":["notebook"]}' | nc -U "$TILO_TEST_CONTROL"
+
+# The compositor's own memory report (see "Idle memory"):
+echo '{"op":"process_memory"}' | nc -U "$TILO_TEST_CONTROL"
+
+# Mint the throwaway identity a development login opens its desk with:
+echo '{"op":"provision_test_identity"}' | nc -U "$TILO_TEST_CONTROL"
 ```
 
-Full command reference: `crates/session/session/src/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+The full set is [`Op::ALL`] in `crates/session/session/src/test_control.rs`, where the `Op` enum and its comments are the source of truth:
+`actions_cancel`, `actions_enumerate`, `actions_invoke`, `actions_status`,
+`click_at`, `click_named`, `drag`, `key`, `key_down`, `key_up`, `list_targets`,
+`modifiers`, `pinch`, `pointer_button`, `pointer_move`, `process_memory`,
+`profile_start`, `profile_status`, `profile_stop`, `provision_test_identity`,
+`record_read`, `scroll`, `search_rows`, `snapshot`, `state_dump`, `swipe`,
+`type`, `unlock`, `watch`, `windows`.
 
 ### Response shapes
 
@@ -291,241 +229,66 @@ Successful query (list_targets):
   {"targets":[{"name":"add_workspace","rect":[1234,56,32,32]}, ...]}
 
 Successful action (click_*, drag, key, type, modifiers, snapshot,
-                   pointer_move, pointer_button, clipboard_copy,
-                   place_next_window):
+                   pointer_*, scroll, swipe, pinch):
   {"ok":{"frame":0}}
-
-Clipboard read (clipboard_paste):
-  {"clipboard":{"text":"hello"}}      // null text = nothing is copied
 
 Error:
   {"err":{"code":"unknown_target","message":"no addressable widget named ..."}}
-
-Error codes:
-  parse_error            — malformed JSON or unknown command
-  unknown_target         — click_named / drag with a name not in the registry
-  target_not_laid_out    — the named widget has no area yet
-  target_unpresented     — the named widget, or one it sits in, still shows a
-                           stand-in for content that has not drawn
-  no_frame_since         — no frame has been drawn since the one the press
-                           counts from
-  target_moved           — the target is no longer where it was read
-  desktop_in_transition  — the desktop is between two arrangements
-  invalid_path           — snapshot path is empty
-  not_implemented        — command parsed but execution deferred to a later phase
 ```
 
-A press is proven ready for the target it names and the widgets that target sits
-in, never for the desktop at large: a widget elsewhere asking for frames for its
-own reasons does not hold an unrelated target back. The desktop as a whole must
-still be settled — setup closed, no workspace, strip or window-group switch
-underway — because a rectangle read then is one the caller never saw.
-(`crates/session/compositor/src/`)
+Error codes: `parse_error` (malformed JSON or unknown command), `unknown_target`, `unavailable`, `unknown_action`, `unreadable`, `input_failed`, `stale_cursor`, `identity_exists`, `dev_image_only`, `provision_failed`.
 
-### Widget registry — how `click_named` finds things
+A press is proven ready for the target it names and the widgets that target sits in, never for the desktop at large: a widget elsewhere asking for frames for its own reasons does not hold an unrelated target back. The desktop as a whole must still be settled — setup closed, no workspace, strip or window-group switch underway — because a rectangle read then is one the caller never saw.
+
+### Widget targets — how `click_named` finds things
 
 Every widget in the tree exposes a name through either:
-- `Widget::test_id()` (opt-in) — currently registered: `command_palette_input`, `strip_switcher`, more landing per the ui plan
-- Path-based fallback: `Parent/Child[index]` — e.g. `OverlayHost/TopBarChrome/Button[0]`
 
-`list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.
+- `Widget::test_id()` (opt-in): a stable name, e.g. `command_palette_input`, `strip_switcher`;
+- a path fallback: `Parent/Child[index]`, e.g. `OverlayHost/TopBarChrome/Button[0]`.
 
-To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `crates/sdk/ui-core/src/action_palette.rs` for the pattern.
+`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/sdk/ui-core/src/action_palette.rs`.
 
-## Layer 3: `--backend headless` — display-free live binary
+## Layer 3: the example harnesses
 
-Best for: running the full compositor in CI, on a remote shell, or in distrobox without forwarding a display. Same code paths as the real binary; just paints into a wgpu off-screen texture instead of a window.
-
-```bash
-# Spawn headless. Note: no DISPLAY or WAYLAND_DISPLAY needed.
-env -u DISPLAY -u WAYLAND_DISPLAY \
-    TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/control.sock \
-    cargo run --bin shell --quiet -- --backend headless &
-
-# Click + snapshot:
-echo '{"op":"click_named","name":"add_workspace"}' | nc -U $XDG_RUNTIME_DIR/tilo-session/control.sock
-echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNTIME_DIR/tilo-session/control.sock
-
-# Kill when done:
-kill %1
-```
-
-To time what an agent waits for on this socket, run
-`scripts/perf/agent_rtt.py`. It measures actions list, state dump, a no-op
-invoke (accepted, and completed through `wait_ms`), throughput under
-concurrent clients and the same no-op through the MCP server. Give it
-`--socket PATH` for a running desktop, or `--spawn SHELL` to start a
-compositor through `spawn-headless.sh`. A spawned compositor is removed on
-exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set, and
-takes its runtime directory from `dist/dev/nested-session.sh --print-runtime`
-(the scratch profile's state names it), so its sockets sit where a session's
-do. A release build serves the socket only with `--features dev-overrides`.
-`scripts/perf/agent_task.py` times a whole task the way an agent in the
-login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
---connect` through the session's agent door, creates a note in Notes,
-writes its body, finds it by its title and reads it back, and the record
-splits the time between Tilo, the model and the agent loop. It needs a
-session where apps start, with Notes installed (a dev session on a machine;
-a builder starts no app). Its `--spawn` session starts headless on a scratch
-profile, mints the throwaway identity a development login opens its desk
-with, and serves the door (`TILO_AGENT_DOOR`) in that profile.
-
-Configure the headless viewport via env var (defaults to 1600×900):
-```bash
-TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
-```
-
-For multi-monitor behaviour, replace the one output with a real arrangement
-instead (the two variables are mutually exclusive):
-```bash
-# A named fixture: docked-laptop, laptop-beside-1080p, vertical-stack,
-# portrait-plus-4k, mixed-scale-offset
-TILO_HEADLESS_OUTPUTS=docked-laptop cargo run --bin shell -- --backend headless
-# Or a spec: WxH mode, then optional @SCALE, ~HZ, rDEGREES, +X+Y per output
-TILO_HEADLESS_OUTPUTS=2560x1600@2,1920x1080@1+2560+0 cargo run --bin shell -- --backend headless
-```
-Each output gets its own `wl_output`; snapshots cover the combined extent.
-`shots --outputs <fixture|spec>` renders the shell chrome across the same
-arrangement, and `tests/multi_output.rs` reads what clients see of it.
-
-Nobody looks at a headless session's frames by default, so it lays them out
-and answers clients' frame callbacks but does not rasterize them; `snapshot`
-renders on demand. A viewer that streams frames attaches with
-`{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
-session with `TILO_HEADLESS_WATCH=1`.
-
-While watched, headless requests the producer's retained-damage proof. A matching
-empty damage list first validates the previous image with the existing bounded
-screenshot renderer; later unchanged frames reuse that completed RGBA buffer
-without a render or readback. First and changed frames keep the dense path.
-Missing predecessors, unversioned scene edits, viewer detach/reattach and material
-or HDR frames redraw. A replacement backend starts uncached at its new size.
-Presentation remains synchronous; snapshots cannot race queued renderer work.
-This reduces watched headless work, not physical display input-to-photon latency.
-
-## One harness for app tests: `TestEnv`, `HeadlessApp` and `drive`
-
-An app's test has one shape whether it is a unit test in `ui-core`, a scenario
-the shell runs, or a script an agent sends: build an environment, mount the
-app, drive it, read the resources it wrote. The three pieces name that shape;
-none of them invents a second vocabulary for what a step is.
-
-**`TestEnv`** (`tilo_test_env`) is the machine around the app: a home in a
-temporary directory, a clock that starts at a fixed instant
-(`CAPTURE_LOCAL_TIME`) so a relative date renders the same every run, a network
-that is closed to external hosts until `allow_external` opens it, and
-`with_files` to put fixtures where the app looks for them. It reuses
-`TestHome`, so the record store, view store and local state a test already had
-keep working.
-
-**`HeadlessApp`** (`ui::headless::HeadlessApp`, behind `test-support`) mounts a
-component in one `FrameHarness` and exposes the door every collaborator,
-script and agent uses:
-
-```rust
-let mut app = HeadlessApp::mount(component)?;
-let outcome = app.drive(&[invokes("view"), invokes("edit")]);
-assert!(outcome.is_pass(), "{:?}", outcome.failure());
-assert_eq!(body(&host.records, &checkout), "edited");
-```
-
-`call`/`call_on` run one action and return its answer; `*_confirmed` answer a
-question the contract asks first. `resources()`/`publishes()` say what a caller
-may address. `drive` runs a list of steps. `MOUNT_VIEWPORT` is the window the
-mounted app lays out in.
-
-**`Step`** and **`Outcome`** are `ui::headless::driver`'s, re-exported — not a
-copy. The test harness, the `--headless-drive` spec and the shipped scenario
-format all speak one language, and `HeadlessApp::drive` *is*
-`driver::drive`, on the same `FrameHarness::perform_bound` the CLI uses: a
-scenario the compositor can replay is also one a test can write inline.
-
-`Outcome` is the state the app is in once the steps ran — the document, the
-inspection tree, the named targets and the published resources — plus one
-`StepRecord` per step that ran and `failure()`, the first step that did not
-pass. A step is `Action(Action)`, `Document(json)` or `Resource { id, action }`;
-an expected refusal is a pass, because `expect_error` on the invocation names
-the code the step asked the door for.
-
-Assert on the record, not the widget: the body the store holds, the history
-entry's author, the undo that reaches the starting state. A test that reads
-internal fields of the widget proves nothing a user, a script or an agent can
-observe.
-
-## End-to-end recipe — "click, snapshot, look"
-
-**The fastest path: run the example script.**
+`scripts/headless-examples/` holds short, stdlib-only scripts. Read them as templates; copy them into your own automation.
 
 ```bash
 ./scripts/headless-examples/full-loop.py
-# spawns compositor, opens palette, types "Files", snapshots two PNGs,
-# tears down. ~5 seconds. Output: /tmp/full-loop-palette.png + /tmp/full-loop-final.png
+# spawns a session, opens the palette, types "Files", writes two PNGs and
+# tears the session down.
 ```
 
-The script is ~100 lines of Python with stdlib only (`socket` + `json`). Read it as the canonical template for "spawn → drive → snapshot → exit." Copy-paste into your own automation; nothing in it is repo-specific except the binary path.
+- `spawn-headless.sh` — start a session on a scratch profile and wait for its socket
+- `_control.py`, `tilo_client.py` — the two-line client every script uses
+- `reaper.py` — takes a session down, process group and all
+- `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
+- `action-api-demo.py` — discovery and semantic invocation by `(provider, id)`
+- `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
+- `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py`, `agent-chat-e2e.py` — whole flows, each on a session of its own
+- `mcp-live-proof.py`, `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
+- `notes-persist-proof.py`, `notes-caret-proof.py`, `desk-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built
 
-For exploratory / partial flows, see `scripts/headless-examples/` (full walkthrough in `scripts/headless-examples/README.md`):
-- `list-targets.py` — enumerate clickable widgets
-- `click-and-snapshot.py` — click named widget + PNG
-- `keyboard-flow.py` — modifier+key+type combos
-- `drag-demo.py` — press-motions-release
-- `full-loop.py` — the end-to-end above
-- `spawn-headless.sh` — shell helper to start the compositor + wait for socket
+`scripts/headless-examples/README.md` says what each proof asserts.
 
-`scripts/two-session-collab-demo.py` stands up **two sessions of two
-different people** with separate states, identities, runtimes and launched
-apps, puts them in one workspace (one person invites the other with the desk's
-own invitation, and the other starts with it), and follows an edit from one
-side's app to the other's. Reach for it when the question is about
-collaboration rather than about one session's chrome. It needs the session
-built (`dist/dev/nested-session-build.sh`, or its own `--build`), and it runs
-where two sessions fit — a container, never the seat's own host.
+### Select search results by identity
 
-Who is here is read from a session's own state: its dump's `peers` carries the
-row of the seat it is at, and one workspace row per workspace it takes part in
-with everyone present there, as the roster every surface draws is read.
-Presence itself travels on the workspace's live plane, which a member that may act
-as a host relays, or else the device hosting the workspace
-(`crates/session/session/src/live.rs`): two people's own desktops in a workspace
-one of them hosts see each other without a site
-(`two_peoples_own_desktops_see_each_other_come_and_go_without_a_site` in
-`crates/session/session/tests/people.rs`).
+Use `actions list QUERY --json` to inspect the same providers the palette uses. Enumeration starts asynchronous index refreshes; a cold query can be incomplete. Retry within a bounded deadline when the expected app is missing, and report it as unavailable if the deadline expires. Opening the palette is unnecessary.
 
-If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
+Titles are display text, not identities. Two results can both say "Open Calculator":
 
-```bash
-# 1. Start the compositor (no display required):
-export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/e2e.sock
-env -u DISPLAY -u WAYLAND_DISPLAY \
-    cargo run --bin shell --quiet -- --backend headless &
-COMP_PID=$!
+| Provider | ID | Meaning |
+|---|---|---|
+| `applications` | `dev.tilo.calculator` | Native Tilo Calculator |
+| `applications` | `org.gnome.Calculator` | Host GNOME Calculator |
 
-# 2. Wait for the socket to be ready:
-until [ -S $TILO_TEST_CONTROL ]; do sleep 0.1; done
+Inspect `kind`, `subtitle` and the `(provider, id)` pair before choosing, keep the pair, and pass both to `actions invoke`; never substitute the first same-named result when the intended app is absent. `score` ranks results but does not establish identity.
 
-# 3. Drive the UI (socat closes the connection cleanly after EOF, unlike Ncat):
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
-echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
-echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
-echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
-
-# 4. Inspect the PNG:
-xdg-open /tmp/palette-with-query.png
-
-# 5. Tear down:
-kill $COMP_PID
-rm -f $TILO_TEST_CONTROL
-```
+After launch, enumerate again and inspect the app actions' `application`, `resource`, `operation`, `params` and `contract` fields. Invoke the returned pair with its declared arguments, adding `--wait` so the answer is the result and not the admission. To follow a pending receipt, use `actions status ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or the desk's state to verify the effect. A descriptor alone does not prove execution, and a visible tile alone does not prove the app has rendered. A packaged app is up when a process of it runs from the session's store — `/var/tilo-apps/<application id>/`, the only place its binary sits inside the sandbox — and the desk holds its window (`windows`); what it draws is proved by a control it offers (`list-targets`) pressed, and what that changes. `real_apps.Session.answering` waits for the first two and leaves the last to the check.
 
 ## A session with the tree's own apps
 
-The recipes above start the compositor alone: it lists no applications, so a
-click on Notes in the desk finds nothing to start. Showing a real app's window
-with real content needs a session that has the apps *installed* and starts them
-through `tilo-launcher` and its sandbox, as an image does. One harness does
-that, `scripts/headless-examples/real_apps.py`; the checks that drive apps
-(`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
+The recipes above start the session alone: it lists no applications, so a click on Notes in the desk finds nothing to start. Showing a real app's window with real content needs a session that has the apps *installed* and starts them through `tilo-launcher` and its sandbox, as an image does. One harness does that, `scripts/headless-examples/real_apps.py`; the checks that drive apps (`tilolang-e2e.py`, `canvas-e2e.py`) are built on it.
 
 ```bash
 # Once per tree: the session's programs, the apps, and the runtime they link.
@@ -538,40 +301,16 @@ python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/
 python3 scripts/headless-examples/real_apps.py --start --open file-explorer --open chat --keep
 ```
 
-The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec
-prefix, pass it in the program's own environment — `<prefix> env
-TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the
-harness does — because a builder runs with its environment, not this machine's.
+The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec prefix, pass it in the program's own environment — `<prefix> env TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the harness does — because a builder runs with its environment, not this machine's.
 
-`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone
-(`--software`: it never opens this machine's GPU and never touches a live
-desktop) on a private runtime directory and a throwaway identity. The session
-also starts its own surfaces — the lock screen, the quick settings panel and the
-on-screen keyboard, beside its executable — and its own sound server: `pipewire`,
-`pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to
-start without them rather than start as half a desktop. That sound is the
-session's own: its WirePlumber runs without the audio and Bluetooth monitors, so
-the only output is the session's null sink and the machine's cards and Bluetooth
-stay the host's. The apps it
-installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
-with the session's own key and installed through `tilo-install` into the
-session's store — the same path the image's `/usr/share/tilo-apps` is built
-through. `--open APP` launches it through the desktop's own launcher
-(`applications so.tilo.<app>`) and waits until a process of it runs from the
-session's store with its window on the desk; `--shot` writes a PNG of the whole
-desktop. `--keep` leaves the session running
-and prints its ready JSON — the control socket, the runtime directory and the
-state directory — so `tilo-control` drives it from anywhere:
+`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone (`--software`: it never opens this machine's GPU) on a private runtime directory and a throwaway identity. The session also starts its own surfaces — the lock screen, the quick settings panel and the on-screen keyboard, beside its executable — and its own sound server: `pipewire`, `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to start without them rather than start as half a desktop. That sound is the session's own: its WirePlumber runs without the audio and Bluetooth monitors, so the only output is the session's null sink and the machine's cards and Bluetooth stay the host's. The apps it installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed with the session's own key and installed through `tilo-install` into the session's store — the same path the image's `/usr/share/tilo-apps` is built through. `--open APP` launches it through the desktop's own launcher (`applications so.tilo.<app>`) and waits until a process of it runs from the session's store with its window on the desk; `--shot` writes a PNG of the whole desktop. `--keep` leaves the session running and prints its ready JSON — the control socket, the runtime directory and the state directory — so `tilo-control` drives it from anywhere:
 
 ```bash
 TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control actions list
 kill -TERM -<pid>   # the session's own process group: its apps, services and bus too
 ```
 
-Never start an app binary by hand and never run `tilo-launcher` outside a
-session: an app launched that way has no window to show (`no runtime host
-found`), and the launcher refuses one that is not in a session's scope. From
-Python, mount the same harness instead of a second one:
+Never start an app binary by hand and never run `tilo-launcher` outside a session: an app launched that way has no window to show (`no runtime host found`), and the launcher refuses one that is not in a session's scope. From Python, mount the same harness instead of a second one:
 
 ```python
 from real_apps import Session, prepare
@@ -584,39 +323,109 @@ with Session(state) as session:                    # fresh desktop, headless
     session.snapshot(out / "notes.png")
 ```
 
-## Measuring the frame loop
+`session.click_named(name)` presses an app's own control, `session.wait_target(name)` waits for one to be laid out, `session.windows()` reads the desk, `session.type(text)` and `session.key(...)` type, `session.actions()` and `session.invoke(provider, id)` read and invoke what the apps publish. There is no `foreign_frames` op and `list_targets` names dedupe across surfaces, so readiness is the process plus the window, never a frame op.
 
-The compositor carries per-tick instrumentation — cadence, per-phase
-durations, input-to-present latency — behind env vars, and a harness that
-drives a measured run:
+## An app under development: `tilo-app dev`
+
+`tilo-app dev APP_DIR` builds an app, installs it into a private dev session and restarts it on every source change, so an agent (or a person) can drive the app it is writing. It joins the workspace the session publishes in `workspace-id`, on the display from `wayland-display`.
+
+`scripts/agent-loop/session.py` wraps that for an agent: `start` puts a headless session and a `tilo-app dev` on a private home, runtime profile and identity; `mcp` is the MCP endpoint for that session on stdio; `usage` and `report` say what each connection cost and what the agent made, from the app's own `history`, `inspect` and `look` actions.
 
 ```bash
-# 8s idle run on the headless backend; prints the frame-time distribution.
+scripts/agent-loop/session.py start apps/canvas
+scripts/agent-loop/session.py mcp canvas     # in the model harness's MCP config
+scripts/agent-loop/session.py usage canvas --calls
+scripts/agent-loop/session.py stop canvas
+```
+
+The agent's only door is the ordinary one: `tilo-runtime-mcp` over the app's published actions, and the app's window as a person uses it. Everything lives under `target/agent-loop/APP` (state, logs) and a private directory in `$XDG_RUNTIME_DIR`; the real home, settings, identity and workspaces are never read or written.
+
+## Per-app screenshots and drives
+
+Apps built on the shared `ui` toolkit accept `--shots PATH` (and an optional `--viewport WIDTHxHEIGHT`) and write a PNG without opening a window:
+
+```bash
+./target/debug/notes --shots /tmp/notes.png
+./target/debug/file-explorer --shots /tmp/files.png
+```
+
+They run a single `sync → build_layout → compute_layout → apply_layout → draw` cycle through `ui::offscreen` — no event loop.
+
+`--shots` renders one cold-start frame and delivers no input, so it cannot answer "does what the user did survive a restart?". Every `ui` app also accepts `--headless-drive '<json>'`, which stands the real widget tree up over a real Taffy tree and feeds it the same `WindowEvent` values winit would, through the same `Widget::handle_event` a live click goes through — no window, no GPU.
+
+```bash
+# What can I address? (test_id, else the Parent/Child[index] path fallback)
+./target/debug/notes --headless-drive '{"targets":"/tmp/targets.json"}'
+
+# Click two of them, then write the app's document out as JSON.
+./target/debug/notes --headless-drive '{
+  "actions":[{"click_named":"Toolbar/Button[1]"},{"type":"cpu"}],
+  "dump":"/tmp/after.json"}'
+```
+
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/dev/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+
+`invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
+
+```json
+{"invoke": {"resource": "notes.notebook", "action": "new-note", "args": {"title": "Trip"}}}
+{"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
+```
+
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the door refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/sdk/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+
+The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`ui::headless`) mounts a component in one `FrameHarness`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the harness, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
+
+Assert on the record, not the widget: the body the store holds, the history entry's author, the undo that reaches the starting state. A test that reads internal fields of the widget proves nothing a user, a script or an agent can observe.
+
+`Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs the whole installer wizard this way against a recording install backend.
+
+## Screenshots of every app
+
+`tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `wait_for_named`, `expect`, `perform`; no clicks or keys):
+
+```toml
+[[situation]]
+name = "week-with-events"
+title = "A calendar week with events"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { title = "Design review", start = "${MON+1}T10:00", end = "${MON+1}T11:00" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-week" }
+```
+
+Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken.
+
+Each situation runs the app once, headless, in a fresh profile (its own HOME, XDG directories and runtime directory, no display, no session bus), and takes four pictures: dark and light, wide (1280x800) and compact (420x800). An app without a plan is photographed as it opens.
+
+Each app's directory (`<out>/<app>/`, pictures named `<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and pictures) and `resources.json` (what its plan can invoke); `summary.json` at the top lists every situation that failed, with the end of its log, and `<situation>.log` beside the pictures has the whole log. With a build of the apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes one app or all, on the software renderer; on a laptop take the GPU lock:
+
+```bash
+flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
+    --out target/app-screenshots --apps "notes calendar"
+```
+
+## Measuring the frame loop
+
+The session carries per-tick instrumentation — cadence, per-phase durations, input-to-present latency — behind env vars, and a harness that drives a measured run:
+
+```bash
+# 8 s idle run on the headless backend; prints the frame-time distribution.
 scripts/perf/frame-loop-bench.py --seconds 8
 
-# Under load from a client that commits a new buffer every frame,
-# with a click injected every 50 ms so latency is measured.
+# Under load from a client that commits a new buffer every frame, with a
+# click injected every 50 ms so latency is measured.
 scripts/perf/frame-loop-bench.py --seconds 8 --load fullscreen --input-hz 20
 
-# The nested-Wayland backend, inside a headless `cage` so no window
-# appears on your desktop. This is the only local way to exercise the
-# render thread — the headless backend deliberately presents inline.
+# The nested-Wayland backend, inside a headless `cage` so no window appears
+# on your desktop. The only local way to exercise the render thread — the
+# headless backend deliberately presents inline.
 scripts/perf/frame-loop-bench.py --seconds 8 --backend nested --nested
 
 # Force a non-60 Hz cadence when no such panel is attached.
 scripts/perf/frame-loop-bench.py --seconds 8 --refresh-hz 144
-
-# Acceptance gate for the failure a user actually sees: a 144 Hz desktop is
-# driven with synthetic pointer motion while the native Chat app launches.
-# It fails on a launch/first-frame freeze, <120 painted fps, missing input
-# samples, or input-to-present p99 above 25 ms. Point the three store/tool
-# flags at an existing dev install; no RPM/image rebuild is involved.
-scripts/perf/frame-loop-bench.py --seconds 12 --refresh-hz 144 \
-  --input-hz 30 --launch-app dev.tilo.chat --gate \
-  --session-bin target/release/tilo-session \
-  --launcher-bin target/release/tilo-launcher \
-  --apps-data-dir "$HOME/.local/share/tilo-apps" \
-  --runtime-bundle-dir "$HOME/.local/share/tilo-runtime"
 
 # Diff two runs, or re-read a recorded trace after changing the warmup.
 scripts/perf/frame-loop-bench.py --compare before.stats.json after.stats.json
@@ -632,415 +441,38 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
 | `TILO_REFRESH_HZ` | force the presentation rate (diagnostic) |
 | `TILO_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
-| `TILO_PAINT_STATS=ticks` | the same, plus a `paint-tick: painted=… woke=…` line per loop iteration |
+| `TILO_PAINT_STATS=ticks` | the same, plus a `paint-tick: painted=… woke=…` line per iteration |
 | `TILO_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
 
-`TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
-written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+`TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are written by the normal exit path, so a `SIGKILL`ed session loses them.
 
-For a source-matched performance fixture, opt into `TILO_FRAME_CPU_TRACE` through
-its supported launch configuration. Use a new, separate file in the fixture
-owner's private directory; an existing file is refused instead of overwritten.
-This leaves the original frame CSV and its parsers unchanged;
-join the companion's `seq` and `start_us` to the original rows. It records no
-application payload, titles, paths or identities. No extra clock reads or writes
-occur when this option is absent.
+For a source-matched fixture, opt into `TILO_FRAME_CPU_TRACE` through its supported launch configuration, with a new, separate file in the fixture owner's private directory; an existing file is refused instead of overwritten. Join the companion's `seq` and `start_us` to the original rows. It records no application payload, titles, paths or identities. The companion measures calling-thread and aggregate process CPU separately for layout, scene construction, submission and the layout-start-to-submit-return interval; process CPU includes parallel renderer and other background threads, so a low thread CPU value alone cannot identify GPU waiting, host scheduling or TCG overhead. `present_async=1` means submit timings cover enqueueing, not the render worker's completion. `anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings; `anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket. Unavailable CPU or monotonic clocks are blank, not zero.
 
-The companion measures calling-thread and aggregate process CPU separately for
-layout, scene construction, submission and the layout-start-to-submit-return
-interval. The layout label includes the existing focus/output/accessibility
-reconciliation. Process
-CPU includes parallel renderer **and other background threads**. A low thread CPU
-value alone cannot identify GPU waiting, host scheduling or TCG overhead. Compare
-the paired guest/host CPU and scheduling counters as well. `present_async=1`
-means submit timings cover enqueueing, rather than the render worker's completion.
-Subtract the labelled wall phases from `paint_wall_us` to retain visibility of
-capture and control work between them; never call that residual GPU time.
+### What an agent waits for
 
-`anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings;
-`anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket.
-Subtract that offset from both monotonic endpoints to bound the tick start; retain
-rounding uncertainty as well as the bracket width.
-Correlate UTC with the collector's paired host/guest clock samples and retain
-their uncertainty. Guest and host monotonic epochs differ, and UTC can step.
-Unavailable CPU or monotonic clocks are blank, not zero. The companion flushes
-its first painted row and then once per second, retains no sample history, and
-stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
-no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
+`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke, throughput under concurrent clients and the same no-op through the MCP server. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `spawn-headless.sh` and removes it on exit.
 
-## Idle wakeups
+`scripts/perf/agent_task.py` times a whole task the way an agent in the login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp --connect` through the session's agent door, creates a note in Notes, writes its body, finds it by title and reads it back, and the record splits the time between Tilo, the model and the agent loop. It needs a session where apps start, with Notes installed.
 
-An idle desktop should leave the CPU asleep. The installed desktop is measured
-by VM acceptance: an idle session's compositor, its apps and the shared
-workspace's broker and shovels are sampled from `/proc` over a window, and
-`idle.wakeups_per_s.{shell,shell_threads,tilo-ush.four_apps}` record the context
-switches per second (voluntary: the thread blocked again) beside `idle.frames`
-and `idle.loop_ticks_per_s`, which say the loop parked and painted nothing. Its
-budgets are in `scripts/vm-acceptance/run.py` (`BUDGETS`), and the records are
-compared with the store as the vm-acceptance lane's. A loop that spins without
-blocking shows in CPU and in the loop's tick rate rather than in wakeups, so a
-check holds both.
+## Idle wakeups and idle memory
 
-Headless covers what headless runs. Services and out-of-process apps are held
-by per-thread probes in their own crates:
-`tilo_test_env::idle::{spawned_thread, assert_stays_asleep}` for one service
-thread of a unit test, `idle_wakeups(pid, settle, window)` for a process tree,
-and `sample_process` with `Wakeups::between` for a stretch the test drives
-itself.
+An idle desktop should leave the CPU asleep and hold little memory.
 
-A gate that runs inside the pull-request test shard shares the runner with
-other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
-counts only voluntary switches, one per wakeup, together with a CPU bound that
-catches a thread spinning without blocking. `assert_stays_asleep` counts the
-times the thread was scheduled in, not its context switches: a switch is
-counted a moment after the kernel marks the thread asleep, so a settle on the
-switch count can catch a park that is still being counted and report it
-inside the window.
+`scripts/vm-acceptance/run.py` measures the installed desktop: an idle session's compositor, its apps and the shared workspace's broker and shovels are sampled from `/proc` over a window, and `idle.wakeups_per_s.{shell,shell_threads,tilo-ush.four_apps}` record context switches per second beside `idle.frames` and `idle.loop_ticks_per_s`, which say the loop parked and painted nothing. Its budgets are in the same file (`BUDGETS`).
 
-## Idle memory
+Headless covers what headless runs. Services and out-of-process apps are held by per-thread probes in their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}` for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for a process tree, and `sample_process` with `Wakeups::between` for a stretch the test drives itself. `Wakeups::blocking_per_second` counts only voluntary switches, one per wakeup, together with a CPU bound that catches a thread spinning without blocking; `assert_stays_asleep` counts the times the thread was scheduled in, not its context switches.
 
-An idle desktop should hold little memory. `idle_memory::` in the shell's `it`
-target starts the production binary headless with a signed-in, empty desktop,
-watched so frames rasterise, waits past the trim that returns startup's freed
-heap (`heap_trim::STARTUP_SETTLED`), and fails when the compositor's anonymous
-RSS is above `IDLE_ANON_BUDGET_MIB`.
-
-```bash
-cargo test --locked -p shell --test it idle_memory:: -- --nocapture
-```
-
-It prints two breakdowns. The compositor's own, `raw '{"op":"process_memory"}'`
-on the control socket, sums `mincore` over `/proc/self/maps` per kind of
-mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`,
-`gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …),
-with glibc's in-use and free bytes and the threads by name. It is the one that
-works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
-vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
-test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
-pages per mapping, which CI's kernel has.
-
-Over budget, or with `TILO_IDLE_HEAP_PROFILE` set, it then starts a second
-idle desktop with `PPROF_ALLOC_SAMPLE_RATE` set and prints where that
-compositor's live Rust heap was allocated: per crate that asked for it and the
-largest stacks, from `raw '{"op":"heap_profile"}'`. Builds with
-`hosted-test-control` (test builds only, never production) install
-`pprof-alloc` as the global allocator; it passes calls straight to glibc
-unless the variable is set at startup, then samples one allocation per that
-many bytes (`shell::heap_profile`). A `TILO_IDLE_HEAP_PROFILE` other than `1`
-is a path for the gzipped pprof profile (`"path"` in the request does the
-same), so two builds compare with `pprof -top -diff_base old.pb.gz
-new.pb.gz`. Memory C libraries (lavapipe, LLVM, GStreamer) allocate with
-`malloc` is not in it: glibc's in-use total minus the profile's is theirs.
+The session's memory is read from its own socket: `raw '{"op":"process_memory"}'` sums `mincore` over `/proc/self/maps` per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …), with glibc's in-use and free bytes and the threads by name (`crates/session/compositor/src/memory_report.rs`). It is the one that works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so vm-acceptance R01 records the same report. Where a test runs on a kernel with smaps, `/proc/<pid>/smaps` beside it gives RSS, PSS and private dirty pages per mapping.
 
 ### Correlating app startup attempts
 
-The compositor's `tilo::launch_latency` events carry `launch_id` and
-`launch_generation`. The generation is a diagnostic timestamp fixed at that
-process's first launch observation; it changes on a compositor restart and is
-not a VM layer generation or an authority token. Group events by both fields,
-not by app name: several windows can launch the same app concurrently.
+The session's `tilo::launch_latency` events carry `launch_id` and `launch_generation`. The generation is a diagnostic timestamp fixed at that process's first launch observation; it changes on a session restart and is not a VM layer generation or an authority token. Group events by both fields, not by app name: several windows can launch the same app concurrently.
 
-With `tilo::launch_latency=info` enabled in the session's existing `RUST_LOG`
-filter, each attempt reports request, spawn, map, first presented frame, or
-retirement with its elapsed time and whether it spawned or mapped. Retirement
-can be placement cleanup and does not establish a process failure. The always
-recorded `app-spawn:` and `app-exit:` lines carry the same pair plus the launcher
-PID; `launch_id=None` explicitly means there was no staged window timing record.
-Existing `[app ... stderr] APP-STARTUP` and GPU lines retain their format.
+With `tilo::launch_latency=info` in the session's `RUST_LOG` filter, each attempt reports request, spawn, map, first presented frame or retirement with its elapsed time and whether it spawned or mapped. Retirement can be placement cleanup and does not establish a process failure. The always-recorded `app-spawn:` and `app-exit:` lines carry the same pair plus the launcher PID; `launch_id=None` means there was no staged window timing record. Flight-recorder replay time and a saved timeout card do not establish the timestamp or cause of a fresh failed launch. This telemetry records no document, workspace, credential or grant contents.
 
-Use the launcher PID and generation to relate these events to kernel-attested
-process-binding diagnostics, then confirm the exit status and direct process
-output. Flight-recorder replay time and a saved timeout card do not establish
-the timestamp or cause of a fresh failed launch. This telemetry records no
-document, workspace, credential or grant contents and changes no startup or
-authentication deadlines.
+## Liveness: is the loop turning?
 
-## Where to look in source
-
-| What | Where |
-|---|---|
-| `shots` binary | `crates/session/session/src/` |
-| Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
-| Presentation clock | `crates/session/compositor/src/pacing.rs` |
-| Render thread | `crates/session/compositor/src/` |
-| Load-generator client | `crates/session/session/src/` |
-| Scenario catalogue | `crates/session/session/src/scenario.rs::catalogue()` |
-| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
-| `TILO_TEST_CONTROL` protocol | `crates/session/session/src/test_control.rs` |
-| Widget registry walk | `crates/session/session/src/frame.rs::walk_widget` |
-| Backend trait | `crates/session/compositor/src/backend/mod.rs` |
-| Headless backend impl | `crates/session/compositor/src/backend/headless.rs` |
-
-## Per-app screenshots
-
-First-party apps using the shared launcher accept `--shots PATH` (and an
-optional `--viewport WIDTHxHEIGHT`) and write a PNG without opening a window.
-For example:
-
-```bash
-./target/debug/terminal --shots /tmp/terminal.png
-./target/debug/file-explorer  --shots /tmp/files.png
-./target/debug/browser --shots /tmp/browser.png
-```
-
-They flow through `quick_ui::offscreen::OffscreenRenderer` and run a single
-`sync → build_layout → compute_layout → apply_layout → draw` cycle — no event
-loop. Browser also offers focused deterministic chrome states and, with the
-Chromium engine runtime installed, `--shots-live` for the real engine-to-frame
-path.
-
-## Per-app interaction: `--headless-drive`
-
-`--shots` renders one cold-start frame and delivers no input, so it cannot
-answer "does what the user did survive a restart?". Every `ui` app also
-accepts `--headless-drive '<json>'`, which stands the real widget tree up over
-a real Taffy tree and feeds it the same `WindowEvent` values winit would —
-through the same `Widget::handle_event` a live click goes through — with no
-window and no GPU.
-
-```bash
-# What can I address? (test_id, else the Parent/Child[index] path fallback)
-./target/debug/monitor --headless-drive '{"targets":"/tmp/targets.json"}'
-
-# Click two of them, then write the app's CRDT document out as JSON.
-./target/debug/monitor --headless-drive '{
-  "actions":[{"click_named":"Toolbar/Button[1]"},{"type":"cpu"}],
-  "dump":"/tmp/after.json"}'
-```
-
-Actions: `click_named`, `click_at` (`[x, y]`), `key` (a named key or one
-character), `type`, `modifiers`, and `invoke`. Optional `viewport` (`[w, h]`),
-`dump` and `targets` paths. Exit codes: `0` all actions ran, `1` an action
-failed (the reason is on stderr — a missing target is an error, not a silent
-no-op), `3` persistence was unavailable.
-
-`invoke` performs one action the app publishes, by address — no coordinates —
-through the same resolution, availability, confirmation and strict argument
-binding the live host applies:
-
-```json
-{"invoke": {"resource": "installer.review", "action": "begin",
-            "confirmation_phrase": "/dev/vdb"}}
-{"invoke": {"resource": "installer", "action": "next",
-            "expect_error": "action_unavailable"}}
-```
-
-`args` is the typed argument object; `confirm: true` satisfies a `Confirm`
-contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
-step pass only when the door refuses with that code (`unknown_action`,
-`invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
-`action_failed`), so a scenario can prove a refusal as well as a success.
-An optional `"results":"target/drive-results.json"` retains the actual return
-from each explicit `invoke`, in order. The version 1 JSON envelope contains
-`author` and `entries`; each entry carries its resource/action `address` and
-one `status`: `completed` with the original typed `output` (`value` and
-`resources`), `accepted`, or `refused` with the door's `code` and `message`.
-`accepted` records admission, not background completion. An expected refusal
-still appears as `refused` when its scenario step passes. Arguments and
-confirmation phrases are not copied into this envelope; returned data and
-error messages may themselves be sensitive, so retention is opt-in.
-
-Retention admits at most 4,096 entries and 16 MiB of JSON. Exceeding a limit
-fails the scenario and records `retention_error` with the retained prefix;
-the last operation may already have run, and its omitted result must not be
-interpreted as a refusal. The journal stays failed for subsequent invocations.
-The file records invocations, not overall scenario success; check the exit status
-and audit report as well. Without `results`, the existing behavior is unchanged.
-
-For a framework resource's existing `render` action, the returned content
-address identifies the actual offscreen PNG in the ordinary ContentStore.
-Run with an explicit owned `--data-dir target/drive-profile` to keep those
-bytes after exit (`target/drive-profile/content/<first-two-hash-characters>/<hash>`).
-The default temporary profile is removed on exit. This is a render of the
-imported state, distinct from a seeded `--shots` fixture. The normal desktop's
-`tilo-control` already preserves returned action payloads; this option brings
-the standalone scenario driver to the same semantic result contract.
-
-An `invoke` that names `bind` keeps what the action answered, as
-`{"value": ..., "resources": [...]}`, and later steps use it with
-`{{name.path}}` in their `resource` or `args` (object keys and array indexes):
-a string that is exactly one placeholder becomes the bound value itself, a
-placeholder inside longer text its text, and a trailing `|last` keeps what
-follows the last `/` (the id at the end of an answered resource address,
-`{{folder.resources.0|last}}`). That is how a scenario opens the note it just
-created:
-
-```json
-[{"invoke": {"resource": "notes.notebook", "action": "new-note", "args": {"title": "Trip"}, "bind": "trip"}},
- {"invoke": {"resource": "notes.notebook", "action": "open-note", "args": {"page": "{{trip.value.page}}"}}}]
-```
-
-`capture` takes pictures once every action ran: one object or an array of
-them, each with a `path` and optionally a shipped `theme` (`dark`, `light`,
-...) and a `viewport` (`[w, h]`, logical pixels). Each capture switches theme
-and size when it names them, lets the window settle (entrances finished,
-requested images loaded, as a person sees it a moment later) and writes the
-frame as a PNG through the offscreen renderer `--shots` uses:
-
-```json
-{"actions": [{"invoke": {"resource": "...", "action": "...", "args": {}}}],
- "capture": [{"path": "out/week-dark-wide.png", "theme": "dark", "viewport": [1280, 800]},
-             {"path": "out/week-light-compact.png", "theme": "light", "viewport": [420, 800]}]}
-```
-
-With `"window_bar": true` the capture shows the app under the desktop's
-window bar, and `perform` on a `window-search-*` target drives the bar's
-search as an agent drives it on the desktop, so a capture can show it open:
-`window-search-open` (`activate`), `window-search-query` and
-`window-search-replacement` (`set_value`), `window-search-next` and
-`-previous`, `window-search-options` (`expand`), the options
-(`window-search-match-case`, `-whole-word`, `-regex`, `-text`, `-hex`),
-`window-search-replace`, `-replace-all` and `-close`. A part the search does
-not offer now (hex mode on plain text, the desktop's search) fails the step.
-
-```json
-{"window_bar": true,
- "actions": [{"perform": {"target": "window-search-open", "action": "activate"}},
-             {"perform": {"target": "window-search-options", "action": "expand"}},
-             {"perform": {"target": "window-search-hex", "action": "activate"}},
-             {"perform": {"target": "window-search-query", "action": "set_value", "value": "89 50"}},
-             {"perform": {"target": "window-search-replacement", "action": "set_value", "value": "FF D8"}}],
- "capture": [{"path": "out/search-hex-dark.png", "theme": "dark"}]}
-```
-
-`scenario` names one of the app's capture scenarios (what `--shots
---scenario <name>` takes; `--scenario <name>` beside `--headless-drive` is the
-same). The app is then built as that capture is: from the scenario's fixtures
-(its sample processes, forecast or library) instead of the device's live
-sources, with the scenario's edits applied and its scene staged, and only then
-do the actions run. Every action the app publishes can be invoked there, as in a
-drive of the app someone uses, and the work an invoked action starts runs; the
-window starts nothing on its own (no fetch, no projection drain), so what it
-shows stays the scenario's. `TestApp::drive(scenario)` is the same window in a
-Rust test, and `testing::unreachable_actions` invokes every action it publishes
-with sample arguments from each parameter's schema and names any the door could
-not address. With `window_bar` it is how a review shows the app's real
-content under the bar, from the one set of sample data the app's shots use:
-
-```json
-{"scenario": "detail", "window_bar": true,
- "capture": [{"path": "out/detail-dark-wide.png", "theme": "dark", "viewport": [1280, 800]}]}
-```
-
-`resources` writes the published resource tree after the actions ran: each
-resource's id, kind and label, its actions with their parameters (and why one
-is unavailable), and its children. It is what a scenario can `invoke`:
-
-```bash
-./target/debug/notes --headless-drive '{"resources":"/tmp/notes-resources.json"}'
-```
-
-### Screenshots of every app
-
-`tools/screenshots/run.py` photographs every app of the default collection in
-realistic situations, set up only through each app's actions. A plan per app,
-`tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line
-title and the steps that reach it, in this grammar (`invoke`,
-`wait_for_named`, `expect`, `perform`; no clicks or keys):
-
-```toml
-[[situation]]
-name = "week-with-events"
-title = "A calendar week with events"
-
-[[situation.steps]]
-invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { title = "Design review", start = "${MON+1}T10:00", end = "${MON+1}T11:00" } } }
-
-[[situation.steps]]
-invoke = { resource = "calendar.calendar", action = "show-week" }
-```
-
-Dates are written relative to the day of the run, so a week or an agenda has
-its content whenever the shots are taken: `${TODAY}`, `${TODAY+3}`, `${MON+2}`
-(this week's Wednesday).
-
-Each situation runs the app once, headless, in a fresh profile (its own HOME,
-XDG directories and runtime directory, no display, no session bus), and takes
-four pictures: dark and light, wide (1280x800) and compact (420x800). An app
-without a plan is photographed as it opens.
-
-Each app's directory (`<out>/<app>/`, pictures named
-`<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and
-pictures) and `resources.json` (what its plan can invoke); `summary.json` at
-the top lists every situation that failed, with the end of its log, and
-`<situation>.log` beside the pictures has the whole log. With a build of the
-apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes
-one app or all, on the software renderer; on a laptop take the GPU lock:
-
-```bash
-flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
-    --out target/app-screenshots --apps "notes calendar"
-```
-
-From Rust, `Driver::invoke_action` is the same call, and
-`Driver::deliver_external` delivers a `UserEvent::External` payload the way
-the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs
-the whole installer wizard this way against a recording install backend.
-
-The run persists through the app's real record store, so pointing
-`XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
-restart test.
-
-## Undo, through the driver
-
-`Driver` records undo boundaries the way the real host does, so a headless
-scenario can drive an edit and then assert it is undoable — including an edit
-made through an accessibility verb rather than a click.
-
-This did not always work, and the way it failed is worth knowing. An app that
-dispatches its edits through `tilo_actions` reports them via
-`Widget::take_committed_action`; the driver never drained it, so no boundary was
-recorded and any headless undo test was impossible to write honestly. (One was
-written and deleted for exactly that reason — it could not observe its subject.)
-Two further holes sat behind it: the boundary was recorded with no author while
-undo is author-scoped, so a user's own Ctrl+Z **skipped** their button-driven
-edit and reverted an older one instead; and only the root widget was drained,
-because no container forwards that call.
-
-All three are fixed in one place — `ui::undo::record_dispatched_action`, called
-by both `App` and `Driver` — so the two hosts cannot drift. If you simulate the
-host yourself in a unit test, use `record_committed_action_authored` (or that
-function) rather than the anonymous `record_committed_action`: the anonymous
-form produces an entry production no longer creates, so a test built on it
-passes while proving nothing.
-
-## What's still missing
-
-There is no known first-party app without the shared deterministic `--shots`
-path. Hardware- and service-backed states still need separate installed-image
-or live-provider evidence; a deterministic screenshot is visual evidence, not
-proof that an external device, network service, or codec works.
-
-## CI integration
-
-The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU
-forwarding) as long as the runner has a recent Mesa plus a software wgpu
-fallback. The compositor's `--backend headless` does the same thing for
-live-binary tests.
-
-## Desktop smoke gate
-
-`desktop_smoke::` in the shell `it` target (`crates/session/session/tests/session.rs`)
-is the required end-to-end gate: a real headless compositor restored over a
-session of several windows (in-process Tilo apps and Wayland clients), driven
-through the control socket the way a person drives it: the pointer over every
-window, edge, corner and the top bar and in and out of each client, typing into
-each window, resize, a new window, the palette and a search, workspace
-switches, lock and unlock. A second test runs the same scenario under CPU and
-memory pressure. Both take seconds once the shell tests are built.
-
-```bash
-cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
-```
-
-It is part of the shell test target, so `check.yml`'s test shards run it
-whenever a change reaches the shell.
-
-**Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
-compositor also binds `<control socket>.live`
-(`crates/session/compositor/src/`), answered on its own
-threads, so it still answers when the main loop is deadlocked, which the
-control socket itself cannot:
+A dev-build session also binds `<control socket>.live`, answered on its own threads, so it still answers when the main loop is deadlocked — which the control socket cannot:
 
 ```bash
 printf '{"op":"heartbeat","budget_ms":500}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
@@ -1048,50 +480,26 @@ printf '{"op":"heartbeat","budget_ms":500}\n' | socat - UNIX-CONNECT:"$TILO_TEST
 printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 ```
 
-A heartbeat asks the loop, through a calloop ping source, to acknowledge a
-wake. One it does not acknowledge within the budget is a stall, and the answer
-carries every thread's state and kernel wait channel. When the main thread is
-blocked it also carries the backtraces of the threads blocked in a system
-call; a main thread still working (slow, not stuck) is not interrupted, and
-neither is any thread that is running, faulting in a page or inside the
-allocator's memory calls, because a backtrace is captured by a signal handler
-that allocates, and a thread interrupted inside the allocator never comes back
-out. The harness (`tests/support/desktop.rs`) polls it every 50 ms from a
-monitor thread; a heartbeat overdue past the budget holds whichever call or
-wait the test is in until the report arrives (symbolizing the stacks can take
-many seconds under the pressure variant), then fails it with that report.
-Every control call has a hard deadline of its own, and a call that outlives it
-on a loop that kept acknowledging wakes is reported as slow. The same report
-is written to the compositor's stderr.
+A heartbeat asks the loop, through a calloop ping source, to acknowledge a wake. One it does not acknowledge within the budget is a stall, and the answer carries every thread's state and kernel wait channel; when the main thread is blocked it also carries the backtraces of the threads blocked in a system call. A main thread still working is not interrupted, and neither is a thread that is running, faulting in a page or inside the allocator, because a backtrace is captured by a signal handler that allocates.
 
-Each heartbeat is also a whole main-loop turn, which costs the loop the same
-whether or not anything changed. Twenty a second read 16-31% of a core on CI
-from a desktop that used none, so the scenario's closing idle check holds the
-monitor's pings (`Desktop::without_heartbeats`) while it measures, then asks for
-a heartbeat at once, so a loop that froze meanwhile still fails. Every run
-prints its idle reading by thread, with what woke the loop and what it painted
-(`TILO_PAINT_STATS`) in the window.
+Every build, release included, also runs the main-loop watchdog (`crates/session/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/session/session/tests/main_thread_reads.rs`) is the audit that keeps the loop's own threads off paths that read the desk.
 
-Every build, release included, also runs the main-loop watchdog
-(`crates/session/compositor/src/`). It needs no client: a
-thread of its own notices a compositor thread that has slept without running
-once, outside the loop's wait, for longer than any wait it makes is bounded
-at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to
-stderr (the session flight record and the journal) and exits with status 70,
-which hands DRM master and the VT back and ends the session at the greeter.
-A loop that is working, starved of CPU, idle, stopped, under a debugger or in
-the kernel's uninterruptible sleep is never ended, nor one sampled across a
-suspend. `main_loop_watchdog::` in the shell `it` target injects a
-deadlock (`{"op":"deadlock_main_loop"}`, development builds only) and asserts
-both the record and the exit.
+## Where to look in source
 
-Seat state is a second line of defence in a debug build. Smithay holds the
-seat's pointer and keyboard lock while it delivers an event, and calls
-`SeatHandler::focus_changed` and `cursor_image` under it, so a handler that
-asks the seat for the pointer location waits on itself. Handlers open a
-`compositor::seat_lock::Callback` scope, and the seat reads in
-`compositor::seat_lock` panic inside one, naming the read, instead of hanging.
+| What | Where |
+|---|---|
+| Session binary and its flags | `crates/session/session/src/main.rs` |
+| What the session publishes | `crates/session/compositor/src/lib.rs` (`listen`), `crates/session/session/src/published_workspace.rs`, `crates/session/session/src/env.rs` |
+| `TILO_TEST_CONTROL` protocol | `crates/session/session/src/test_control.rs` |
+| `tilo-control` | `crates/session/control-cli/` |
+| Liveness door and watchdog | `crates/session/liveness/src/` |
+| Headless backend | `crates/session/compositor/src/backend/headless.rs` |
+| Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
+| Memory report | `crates/session/compositor/src/memory_report.rs` |
+| App headless drive | `crates/sdk/ui-core/src/headless/` |
+| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
+| Example harnesses | `scripts/headless-examples/` |
 
-## Desktop UX journeys
+## What is still missing
 
-The [UX testing bench](ux-testing-bench.md) runs native macOS desktop journeys with interaction budgets, layout/contrast checks, scroll evidence and HTML reports.
+There is no known first-party app without the shared deterministic `--shots` path. Hardware- and service-backed states still need separate installed-image or live-provider evidence: a deterministic screenshot is visual evidence, not proof that an external device, network service or codec works.

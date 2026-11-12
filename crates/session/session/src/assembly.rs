@@ -442,6 +442,10 @@ pub struct Session {
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     pub(crate) active_workspace: Option<u64>,
+    /// The workspace in front as the login's own programs read it, which
+    /// they join ([`crate::published_workspace`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) published_workspace: crate::published_workspace::Published,
     /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
     #[cfg(target_os = "linux")]
     pub(crate) published_steps: Option<std::sync::Arc<crate::session_actions::SessionActions>>,

@@ -299,22 +299,26 @@ impl Session {
         // made by this turn's layout goes with it.
         self.shared.keep_desk();
         // The picture is the workspace in front's, which a change covering one workspace lands on.
-        let active = self
-            .shared
-            .handle
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
+        let active = self.shared.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| (workspace.slot.0, workspace.id()))
+        });
+        let active_slot = active.map(|(slot, _)| slot);
         self.shared
             .wallpapers
-            .set_active(active.map(|workspace| workspace.to_string()));
+            .set_active(active_slot.map(|workspace| workspace.to_string()));
+        // A command the person starts here joins the workspace in front: the file is written on
+        // the switch, never read for on a clock of its own.
+        self.published_workspace.follow(active.map(|(_, id)| id));
         // A workspace in front that changed is a switch the person made; its frames are timed until
         // the desk rests.
         if self
             .active_workspace
-            .is_some_and(|before| Some(before) != active)
+            .is_some_and(|before| Some(before) != active_slot)
         {
             self.compositor.workspace_switched();
         }
-        self.active_workspace = active;
+        self.active_workspace = active_slot;
         Ok(())
     }
 
