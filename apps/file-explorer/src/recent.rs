@@ -114,7 +114,6 @@ impl RecentRecord {
 
 #[resource(
     kind = "files.recent",
-    label = "Recent files",
     read_content = RecentRecord::read_document
 )]
 impl RecentRecord {

@@ -91,7 +91,6 @@ impl Record {
 
 #[resource(
     kind = "camera",
-    label = "Camera",
     search = Record::search,
     read_content = Record::read_document
 )]

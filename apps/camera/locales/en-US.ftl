@@ -8,10 +8,33 @@ camera-record-scan = Scanned { $raw }
 camera-title = Camera
 
 ## Actions
+
 camera-action-use-device = Use { $device }
 camera-action-stop-recording = Stop recording
 camera-action-register-capture = Hand off capture
 camera-action-record-scan = Record scanned code
+camera-effect-open-camera = Open Camera
+camera-effect-open-scanner = Open Scan
+camera-effect-open-document = Open Documents
+camera-effect-open-settings = Open Settings
+camera-effect-use-mode = Choose capture mode
+camera-effect-use-lens = Choose lens
+camera-effect-set-geotag = Tag location
+camera-effect-set-default-lens = Default lens
+camera-effect-retry-camera = Refresh cameras
+camera-effect-use-camera = Use camera
+camera-effect-import-image = Scan an image
+camera-effect-choose-scan-setting = Scan setting
+camera-effect-capture-page = Capture page
+camera-effect-rotate-page = Rotate page
+camera-effect-recognize-text = Recognize text
+camera-effect-copy-text = Copy text
+camera-effect-export-pdf = Export PDF
+camera-effect-crop-page = Crop page
+camera-effect-move-page-earlier = Move page earlier
+camera-effect-move-page-later = Move page later
+camera-effect-remove-page = Remove page
+camera = Camera
 
 ## What the window names
 camera-screen-camera = Camera
