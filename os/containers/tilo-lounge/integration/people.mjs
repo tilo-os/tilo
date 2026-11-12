@@ -1080,7 +1080,11 @@ try {
     const corner = JSON.parse(await canvasTopLeft(tab));
     return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
   };
-  const history = await a.tab.evaluate('history.length');
+  // Where the browser's own history stood, in this very document: the desk
+  // adds entries of its own as the person opens and moves between windows
+  // (Back goes through Tilo), and the browser navigating on its own would
+  // leave this document or step back from the newest entry.
+  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
 
   // The window menu, from a secondary click in the window's own bar: what the
   // desktop can do to that window, and choosing a row does it. Asked before
@@ -1364,17 +1368,26 @@ try {
     console.log('ok: the search chord opens the search and Escape closes it');
     mark('the search chord and Escape');
 
-    // None of it reached the browser.
-    const browser = {
-      scrollY: await a.tab.evaluate('window.scrollY'),
-      scrollX: await a.tab.evaluate('window.scrollX'),
-      scale: await a.tab.evaluate('globalThis.visualViewport?.scale ?? 1'),
-      history: await a.tab.evaluate('history.length'),
-    };
-    report.browser = {...browser, historyAtArrival: history};
-    if (browser.scrollY !== 0 || browser.scrollX !== 0) failed(`the page scrolled: ${JSON.stringify(browser)}`);
-    if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
-    if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
+    // None of it reached the browser: the page neither scrolled nor zoomed,
+    // and the browser did not navigate. The entries the desk added for the
+    // windows opened are its own and all in this document; the browser
+    // taking a key or click as Back, or following a link, would have left it
+    // or stepped back from the newest.
+    const browser = JSON.parse(await a.tab.evaluate(`JSON.stringify({
+      scrollY: window.scrollY,
+      scrollX: window.scrollX,
+      scale: globalThis.visualViewport?.scale ?? 1,
+      sameDocument: globalThis.__gateArrived === true,
+      entry: navigation.currentEntry.index,
+      newest: navigation.entries().length - 1,
+      otherDocuments: navigation.entries().slice(${arrivedAt}).filter(entry => !entry.sameDocument).length,
+    })`));
+    report.browser = {...browser, arrivedAt};
+    if (browser.scrollY !== 0 || browser.scrollX !== 0) await failed(`the page scrolled: ${JSON.stringify(browser)}`);
+    if (Math.abs(browser.scale - 1) > 0.001) await failed(`the page zoomed: ${JSON.stringify(browser)}`);
+    if (!browser.sameDocument || browser.entry !== browser.newest || browser.otherDocuments) {
+      await failed(`the browser navigated: ${JSON.stringify(report.browser)}`);
+    }
     console.log('ok: no wheel, key or click reached the browser');
     mark('no wheel, key or click reached the browser');
 
