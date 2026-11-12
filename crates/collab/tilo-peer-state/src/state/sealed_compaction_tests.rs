@@ -244,6 +244,16 @@ impl Author {
             .encode()
             .unwrap()
     }
+
+    /// [`Self::edit`] of a value held as bytes, as an app records what a file or a picture is.
+    fn edit_bytes(&mut self, key: &str, value: Vec<u8>) -> Vec<u8> {
+        let heads = self.0.get_heads();
+        self.0.put(ROOT, key, value).unwrap();
+        self.0.commit();
+        DocumentMutation::Incremental(self.0.save_after(&heads))
+            .encode()
+            .unwrap()
+    }
 }
 
 /// `key`'s next sealed write to `peer`'s record.
@@ -1580,6 +1590,60 @@ fn captured_history_folds_a_writer_sequence_written_twice() {
     restored.commit();
     assert_eq!(restored.get_changes(&heads)[0].seq(), 2);
     assert_eq!(f.host.durable().unwrap(), before);
+}
+
+/// A late joiner is sent a record's whole sealed history, and a key holder's whole-record
+/// checkpoint re-states what it already holds: a record's history outgrows one capture of it.
+/// What a joiner reads is bounded by what its caller allows, as a record held in the clear is,
+/// and its history is bounded where it is admitted. A fixed bound of one capture's own left a
+/// joiner refused for good while every caller allowed several times the record's size.
+#[test]
+fn a_late_joiner_reads_a_sealed_history_past_one_capture() {
+    /// Incompressible: a sealed history is as large as what it carries.
+    const WRITE: usize = 1024 * 1024;
+    /// Past what one capture hands out, and what a session reading a record allows.
+    const WRITES: usize = 9;
+    const ROOM: usize = 32 * 1024 * 1024;
+    let mut f = fixture();
+    let keys = f.keys();
+    let now = f.now;
+    let mut author = Author::new(&f.host);
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut value = vec![0_u8; WRITE];
+    for byte in &mut value {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state.to_le_bytes()[0];
+    }
+    for round in 0..WRITES {
+        let mut plaintext = value.clone();
+        plaintext[0] = u8::try_from(round).unwrap();
+        let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
+        let message = write(&f.host, &f.owner, &keys, &edit, now);
+        admit(&mut f.host, &f.owner, message, now);
+    }
+    let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
+    let read = |maximum: usize| {
+        let mut kept = KeptRecord::default();
+        joiner
+            .open_document(
+                f.authority.device_public_key,
+                (APP, RECORD),
+                now,
+                maximum,
+                Some(&mut |op| open(&keys, op)),
+                &mut kept,
+            )
+            .expect("a joiner reads its record")
+            .save()
+    };
+    let record = read(ROOM);
+    assert!(
+        record.len() > 8 * 1024 * 1024,
+        "the record outgrew one capture"
+    );
+    assert_eq!(read(ROOM), record, "the whole record either way");
 }
 
 #[test]

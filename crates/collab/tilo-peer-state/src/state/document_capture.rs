@@ -5,7 +5,9 @@ use automerge::transaction::Transactable as _;
 use automerge::{Automerge, ChangeHash};
 use collab_types::{Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
-/// The most bytes one capture hands out, whatever the caller allows.
+/// The most bytes one whole-record capture hands out, whatever the caller allows: a reader that
+/// keeps the record opened reads it under its own [`StatePeer::open_document`] allowance, which
+/// is the caller's.
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Opens one sealed operation of an encrypted record into its plaintext,
@@ -256,7 +258,11 @@ impl StatePeer {
     /// permission: the document itself when it is held in the clear; an encrypted record's
     /// retained sealed history opened through the embedding owner's channel keys (`open`) onto
     /// what `kept` opened of it before, once that history is known to cover every admitted write.
-    /// What it opens is at most `maximum` bytes.
+    /// What it opens is at most `maximum` bytes: a sealed record reads in the room its caller
+    /// allows, as one held in the clear does. Its sealed history is bounded where it is admitted
+    /// (`MAX_SEALED_BYTES`), so the room a caller allows covers a record whatever its history
+    /// holds; a fixed bound of the capture's own refused a late joiner's record for good while
+    /// every caller allowed several times its size.
     ///
     /// # Errors
     /// The reader may not read the record, it is not held, it is encrypted and nothing opens it,
@@ -278,9 +284,7 @@ impl StatePeer {
             }
         };
         match (document.encryption_required, open) {
-            (true, Some(open)) => {
-                open_history(document, open, maximum.min(MAX_CAPTURE_BYTES), kept)
-            }
+            (true, Some(open)) => open_history(document, open, maximum, kept),
             (true, None) => Err(PeerDocumentReadError::Encrypted),
             (false, _) => {
                 kept.forget();
