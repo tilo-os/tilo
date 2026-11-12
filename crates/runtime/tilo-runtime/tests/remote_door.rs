@@ -268,6 +268,7 @@ impl Arrivals for Door {
                     } else {
                         String::new()
                     },
+                    name: "Claude Code".into(),
                 },
             )
         });

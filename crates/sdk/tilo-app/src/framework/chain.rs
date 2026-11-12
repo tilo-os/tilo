@@ -1697,7 +1697,8 @@ impl<P: Chained> Chain<P> {
         self.state.waited()
     }
 
-    /// Apply `action` as the window's person to the part it changes. The
+    /// Apply `action` as the window's person, or whoever the invocation
+    /// carried out here is for ([`super::record::acting`]), to the part it changes. The
     /// part's number; `None` while that part is on its way from the
     /// workspace: the action waits for it, shows in [`Self::unwritten`]
     /// meanwhile, and is written once it is here, in the order asked.
@@ -1708,7 +1709,7 @@ impl<P: Chained> Chain<P> {
     pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
         self.state
-            .apply_as(action, &ActionInvoker::actor(me), &mut None)
+            .apply_as(action, &super::record::acting(me), &mut None)
             .map(|written| written.map(|(index, _)| index))
     }
 
@@ -1740,7 +1741,7 @@ impl<P: Chained> Chain<P> {
         let mut later: Option<Later> = Some(Box::new(then));
         let answer = match self
             .state
-            .apply_as(&action, &ActionInvoker::actor(me), &mut later)
+            .apply_as(&action, &super::record::acting(me), &mut later)
         {
             Ok(None) => return,
             Ok(Some((index, _))) => Ok(index),

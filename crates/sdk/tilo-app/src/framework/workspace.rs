@@ -65,6 +65,9 @@ struct Shared<P: Resource> {
 /// with what to do once it was applied or refused.
 struct Waiting<P: Resource> {
     action: P::Action,
+    /// Who it is by, as it was asked: it is applied later, outside the
+    /// invocation it was asked in.
+    invoker: ActionInvoker,
     then: Box<dyn FnOnce(Result<(), ActionError>)>,
     /// The window's refreshes it asked for: a few, so a record held
     /// throughout them waits for the window's next refresh of its own
@@ -120,7 +123,7 @@ impl<P: Resource> Shared<P> {
                 left.push(entry);
                 continue;
             }
-            match self.apply(&entry.action) {
+            match self.apply_as(&entry.action, &entry.invoker) {
                 Applied::Done(result) => (entry.then)(result),
                 Applied::Waits => left.push(entry),
             }
@@ -141,34 +144,34 @@ impl<P: Resource> Shared<P> {
         }
     }
 
+    /// Apply `action` as whoever acts here now ([`super::record::acting`]).
     fn apply(&self, action: &P::Action) -> Applied {
-        self.apply_as(action, None)
+        self.apply_as(action, &super::record::acting(&self.me))
     }
 
-    /// [`Self::apply`] as `invoker` (an agent, a script), which the change is
-    /// attributed to and which [`ActionCx::author`](tilo_resource::action)
-    /// answers inside the action; the person seated here when `None`.
-    fn apply_as(&self, action: &P::Action, invoker: Option<&ActionInvoker>) -> Applied {
+    /// [`Self::apply`] as `invoker` (the person, an agent, a script), which
+    /// the change is attributed to and which
+    /// [`ActionCx::author`](tilo_resource::action) answers inside the action.
+    fn apply_as(&self, action: &P::Action, invoker: &ActionInvoker) -> Applied {
         let encoded = match tilo_resource::encode::<P>(action) {
             Ok(encoded) => encoded,
             Err(error) => return Applied::Done(Err(error)),
         };
         let change = action.change_kind();
-        // Who the change is: the invoker's own actor when the host names one (an agent acting in
-        // a turn, attributed as it is at an app's record origin), else the person seated here.
-        let me = invoker
-            .and_then(|invoker| (!invoker.actor.is_empty()).then_some(invoker.actor.clone()));
-        let actor = me.as_deref().unwrap_or(&self.me);
+        // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
+        // is at an app's record origin), or the person seated here for an invoker naming nobody.
+        let invoker = if invoker.actor.is_empty() {
+            ActionInvoker::actor(&self.me)
+        } else {
+            invoker.clone()
+        };
+        let actor = invoker.actor.clone();
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
             .with_app(self.app_id, self.app_title)
-            .with_invoker(
-                invoker
-                    .cloned()
-                    .unwrap_or_else(|| ActionInvoker::actor(actor)),
-            )
+            .with_invoker(invoker)
             .with_change(change);
         let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
-            let writer = ui_core::history_source::authors::device_actor(actor, doc.get_actor());
+            let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
             tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -428,7 +431,7 @@ impl<P: Resource> WorkspaceRecord<P> {
         invoke: &Invoke<P>,
     ) -> Result<(), ActionError> {
         let action = self.admit(invoke)?;
-        match self.shared.apply_as(&action, Some(invoker)) {
+        match self.shared.apply_as(&action, invoker) {
             Applied::Done(result) => {
                 self.shared.refresh();
                 result
@@ -458,12 +461,14 @@ impl<P: Resource> WorkspaceRecord<P> {
             .waiting
             .try_borrow()
             .is_ok_and(|waiting| waiting.is_empty());
-        if first && let Applied::Done(result) = shared.apply(&action) {
+        let invoker = super::record::acting(&shared.me);
+        if first && let Applied::Done(result) = shared.apply_as(&action, &invoker) {
             shared.refresh();
             return then(result);
         }
         shared.waiting.borrow_mut().push(Waiting {
             action,
+            invoker,
             then: Box::new(then),
             woken: 0,
         });

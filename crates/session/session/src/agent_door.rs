@@ -746,6 +746,7 @@ impl Loop {
                 workspace,
                 agent,
                 person: person.to_owned(),
+                name: shown,
             });
             return;
         }
@@ -898,6 +899,7 @@ impl Loop {
             workspace: waiting.workspace.clone(),
             agent: waiting.proposed.clone(),
             person: person.to_owned(),
+            name: waiting.shown.clone(),
         }
     }
 
@@ -2597,6 +2599,7 @@ fn serve_admitted(
                 workspace,
                 person,
                 agent: seated,
+                ..
             } = &consent
             {
                 *agent.lock_recover() = Some((workspace.clone(), person.clone(), seated.clone()));

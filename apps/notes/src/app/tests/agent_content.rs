@@ -282,3 +282,31 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// What an agent appends is marked as the agent's, so every member sees it in the agent's
+/// colour; the person's own text stays theirs.
+#[test]
+fn an_agents_append_is_marked_as_the_agents() {
+    let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+    let page = made_by(&mut app, "agent:helper", "Plan");
+    call_by(
+        &mut app,
+        "agent:helper",
+        "append-to-note",
+        serde_json::json!({ "title": "Plan", "markdown": "The agent added this." }),
+    )
+    .unwrap();
+    let authors = app.read_document(|doc| {
+        crate::read::page_blocks(doc, page)
+            .into_iter()
+            .map(|block| (block.text, block.authors))
+            .collect::<Vec<_>>()
+    });
+    let (text, runs) = authors.last().expect("the appended block");
+    assert_eq!(text, "The agent added this.");
+    assert!(
+        runs.iter()
+            .any(|(range, author)| author == "agent:helper" && range.len() == text.len()),
+        "the appended text is the agent's: {authors:?}"
+    );
+}

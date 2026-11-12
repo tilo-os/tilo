@@ -133,10 +133,10 @@ impl<P: Resource> PersonRecord<P> {
     }
 
     /// Apply `action` now: one change of the record, attributed to the
-    /// person, recorded in its history and — for content the person made —
+    /// person (or to whoever the invocation carried out here is for), recorded in its history and — for content the person made —
     /// one undo step of theirs.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.apply_as(action, &ActionInvoker::actor(&self.shared.me))
+        self.apply_as(action, &super::record::acting(&self.shared.me))
     }
 
     /// [`Self::apply`] by `invoker`: the person, or software acting for
@@ -764,8 +764,7 @@ impl PersonState {
 
     /// Answer an undo or redo of an open record: how many steps it took.
     pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
-        let invoker = ui_core::invocation_scope::current_invoker()
-            .unwrap_or_else(|| ActionInvoker::actor(&self.me));
+        let invoker = super::record::acting(&self.me);
         self.answer_for(payload, &invoker)
     }
 

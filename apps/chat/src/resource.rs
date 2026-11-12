@@ -733,6 +733,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         }
         ChatEffect::SendDirectMessage { public_key, text } => {
             let state = cx.live().get();
+            name_sending_agent(cx, &state);
             let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
             if text.trim().is_empty() {
                 return Err(crate::i18n::t("chat-person-chat-empty"));
@@ -766,6 +767,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             opens,
         } => {
             let state = cx.live().get();
+            name_sending_agent(cx, &state);
             return chat.borrow().send_message(
                 crate::direct::SendMessage {
                     to,
@@ -792,6 +794,29 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         ));
     }
     chat.borrow_mut().answer_effect(effect)
+}
+
+/// An agent sending here names itself in the chat by the name the device that admitted it gave
+/// it, so every member reads what it writes by that name.
+fn name_sending_agent(cx: &EffectCx<Chat>, state: &Chat) {
+    let Some(invoker) = ui::invocation_scope::current_invoker() else {
+        return;
+    };
+    let Some(name) = invoker
+        .name
+        .as_deref()
+        .filter(|_| invoker.kind == tilo_actions::ActorKind::Agent)
+        .and_then(ui::tilo_resource::NonBlank::parse)
+    else {
+        return;
+    };
+    if state.agent_names.get(&invoker.actor).map(String::as_str) == Some(name.as_str()) {
+        return;
+    }
+    cx.submit(Chat::NAME_AGENT.with(crate::record::chat::NameAgent {
+        participant: invoker.actor,
+        name,
+    }));
 }
 
 impl ChatApp {
