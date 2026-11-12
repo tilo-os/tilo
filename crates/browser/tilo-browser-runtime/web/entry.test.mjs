@@ -109,6 +109,29 @@ test('a link waits for its resource to reach the page, then says it is not there
   await assert.rejects(untilViewable(arriving, {...target, view: 'gone'}, undefined, {timers}), {message: UNAVAILABLE});
 });
 
+// Catches a link to a run losing the whole page ("Something went wrong
+// opening Lounge") on a page that joined a desktop of forty windows: its
+// first frame took 16 s, and Console had not offered the run's view 10 s in.
+test('a link waits for its resource as long as the desktop has not drawn the frames to offer it', async () => {
+  const timers = {setTimeout: done => queueMicrotask(done)};
+  const target = {app: 'so.tilo.chat', record: '', resource: message};
+  let frames = 1;
+  let polls = 0;
+  // Long past the wait, with no frame drawn since: still asking, and the view
+  // the app offers once its window runs is the one opened.
+  const slow = {actions: () => { polls++; if (polls === 200) frames = 2; return polls < 400 ? [] : views; }};
+  assert.deepEqual(await untilViewable(slow, target, undefined, {timers, waitMs: 500, frames: () => frames}),
+    {action: 'reveal', args: {}});
+  assert.equal(polls, 400);
+  // A desktop that drew its frames and still offers no view: not there.
+  polls = 0;
+  frames = 10;
+  const missing = {actions: () => { polls++; if (polls === 2) frames = 13; return []; }};
+  await assert.rejects(untilViewable(missing, target, undefined, {timers, waitMs: 500, frames: () => frames}),
+    {message: UNAVAILABLE});
+  assert.equal(polls, 6);
+});
+
 test('an unbound desktop entry without a route is the person’s own desktop', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
   assert.deepEqual(initialRoute({link, location: {hash: '', href: 'https://tilo.so/'}, mode: 'desktop'}),
