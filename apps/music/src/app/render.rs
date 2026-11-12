@@ -1386,7 +1386,9 @@ impl Widget for Music {
             || self.live_search_pending.is_some()
             || self.search.needs_frame()
             || self.search.highlight.is_some()
-            || self.now_playing.in_flight(ui::time::now())
+            // Asked while a frame lays out: the frame's motions read at its
+            // instant, never at the clock ([`ui::motion::frame_now`]).
+            || self.now_playing.in_flight(ui::motion::frame_now())
             || self.page.rows_moving()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
@@ -1410,10 +1412,10 @@ impl Widget for Music {
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
             .chain(self.toast.deadline())
-            .chain(self.search.next_placeholder_step(ui::time::now()))
+            .chain(self.search.next_placeholder_step(ui::motion::frame_now()))
             // What is on its way from the catalogue steps on at its
             // deadlines; its answer wakes the window itself.
-            .chain(self.arriving_step_at(ui::time::now()))
+            .chain(self.arriving_step_at(ui::motion::frame_now()))
             .chain(
                 self.children()
                     .into_iter()
@@ -2329,7 +2331,7 @@ impl Music {
         self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
-        self.follow_now_playing(ctx.theme, ui::time::now());
+        self.follow_now_playing(ctx.theme, ui::motion::frame_now());
 
         // Body first so chrome draws on top (and chrome hits win). The window
         // ground is the framework's; nothing here fills it.

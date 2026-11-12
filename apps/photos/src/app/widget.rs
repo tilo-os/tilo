@@ -63,7 +63,9 @@ impl Photos {
     }
 
     pub(super) fn needs_animation_frame(&self) -> bool {
-        let now = ui::time::now();
+        // Asked while a frame lays out: its motions read at the frame's
+        // instant, never at the clock ([`ui::motion::frame_now`]).
+        let now = ui::motion::frame_now();
         self.chrome.inspector.is_animating()
             || (!self.places_motion_reduced
                 && (self
