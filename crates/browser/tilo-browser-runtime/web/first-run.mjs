@@ -49,10 +49,19 @@
  * step; another tab's change reaches this one as a `storage` event.
  */
 export const SETUP = 'tilo-setup';
-/** The steps a setup is kept at: on the start (`start`), following a code
- * (`waiting`), its code ran out (`expired`), the agent is in (`connected`),
- * the person's own workspace opening (`opening`), and over (`done`). */
-const SETUP_STEPS = new Set(['start', 'waiting', 'expired', 'connected', 'opening', 'done']);
+/** The steps a setup is kept at: kept for later (`later`: the person
+ * arrived by an invitation and joined that workspace first), on the start
+ * (`start`), following a code (`waiting`), its code ran out (`expired`), the
+ * agent is in (`connected`), the person's own workspace opening (`opening`),
+ * and over (`done`). */
+const SETUP_STEPS = new Set(['later', 'start', 'waiting', 'expired', 'connected', 'opening', 'done']);
+
+/** Whether this browser's person arrived by an invitation and has not set
+ * up their own Tilo yet: the workspace offers the setup once they used it a
+ * while, and the site itself opens on it. */
+export function setupLater(storage = globalThis.localStorage) {
+  return readSetup(storage)?.step === 'later';
+}
 /** How long the screen says the agent connected before it leaves. */
 export const CONNECTED_MS = 1600;
 /** How often the tab asks where its code is. */
@@ -267,7 +276,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const codes = {};
   for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0};
   let state = readSetup(storage) ?? {step: 'start'};
-  if (state.step === 'done') state = {step: 'start'};
+  if (state.step === 'done' || state.step === 'later') state = {step: 'start'};
   let closed = false;
   // What the screen shows now, kept with the setup for the next first paint.
   const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false};

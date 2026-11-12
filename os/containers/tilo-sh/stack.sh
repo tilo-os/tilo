@@ -445,7 +445,7 @@ start_mail() {
 # gets in to invite the others. The relay takes the file in within seconds.
 declare_owner() {
   local key=${1:-}
-  [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-stand-in:KEY)'
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
   [[ -f $state/secrets/roles.json ]] || die 'the stack has not run here yet: stack.sh up'
   python3 -I - "$state/secrets/roles.json" "$key" <<'PY'
 import json, os, sys

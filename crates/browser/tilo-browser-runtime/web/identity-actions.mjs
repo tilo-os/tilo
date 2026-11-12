@@ -195,7 +195,7 @@ export function createIdentityActions({
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
   invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
-  standIn = null, standInStore = null, profiled = () => {}, showAgentSetup = null,
+  standIn = null, standInStore = null, profiled = () => {}, showAgentSetup = null, setupDue = () => false,
 }) {
   const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
   const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
@@ -332,6 +332,15 @@ export function createIdentityActions({
       return;
     }
     try { session?.setItem(ASKED_KEY, '1'); } catch { /* asked once per page then */ }
+    // Someone who arrived by an invitation and never set up Tilo of their
+    // own is asked that first, now that they used the workspace: the setup
+    // gives them their own workspace with their agent in it, and keeps them.
+    if (showAgentSetup && setupDue()) {
+      offer({...CONNECT_AGENT, title: 'Set up with your agent'}, 'Want a workspace of your own?',
+        `Paste one line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, with your agent in a workspace of your own. Any time later: ${searchChord}, “${CONNECT_AGENT.title}”.`,
+        'setup');
+      return;
+    }
     const question = chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?';
     if (withPasskeys) {
       offer({...KEEP, title: 'Keep with passkey'}, question,

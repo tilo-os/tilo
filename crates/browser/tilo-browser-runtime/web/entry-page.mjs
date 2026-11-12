@@ -27,7 +27,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, openFirstRun, readSetup, setupDone} from './first-run.mjs';
+import {firstRun, MCP_URL, openFirstRun, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -1972,6 +1972,9 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     showAgentSetup: setupOrigin({peer, home})
       ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
       : null,
+    // Arrived by an invitation, not set up yet: once they used the workspace
+    // a while, the setup is what they are asked (first-run.inline.js).
+    setupDue: () => setupLater(),
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
