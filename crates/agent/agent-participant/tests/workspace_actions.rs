@@ -34,6 +34,9 @@ mod agent_mcp;
 #[cfg(test)]
 #[path = "workspace_actions/chat_post.rs"]
 mod chat_post;
+#[cfg(test)]
+#[path = "workspace_actions/chat_restart.rs"]
+mod chat_restart;
 mod common;
 #[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]

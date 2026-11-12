@@ -67,6 +67,8 @@ pub struct OnRelay {
     pub host_origin: String,
     /// The relay's own device, which a page joining its workspaces trusts.
     pub host: Device,
+    /// The person running the relay, whose device it is.
+    pub operator: SigningKey,
     pub hosted: Hosted,
     _site: test_http::Responder,
     /// Where the relay keeps its state.
@@ -187,9 +189,73 @@ pub async fn door_on_relay_limiting(
         web_entry,
         host_origin: hosted.web.origin.clone(),
         host,
+        operator,
         hosted,
         _site: site,
         state,
+    }
+}
+
+impl OnRelay {
+    /// The relay stopped and started again on the state it kept, as a deployment restarts it:
+    /// closed, or dropped as a killed process is when `killed`. The door before it is a new one
+    /// pointed at the restarted relay; it remembers no key approved before.
+    pub async fn restart(self, killed: bool) -> Self {
+        let Self {
+            issuer,
+            lobby,
+            web_entry,
+            host,
+            operator,
+            hosted,
+            _site: site,
+            state,
+            ..
+        } = self;
+        let Hosted {
+            relay, web, agents, ..
+        } = hosted;
+        drop(agents);
+        drop(web);
+        if killed {
+            drop(relay);
+        } else {
+            relay.shutdown().await;
+        }
+        let hosted = harness::hosted::start(
+            &operator,
+            &host,
+            state.path(),
+            Options {
+                plain: true,
+                web_entry: Some(web_entry.clone()),
+                ..Options::offering(common::catalogue, ModelChoice::Scripted)
+            },
+        )
+        .await;
+        let relay = hosted.web.plain_origin.clone().unwrap();
+        let door = Door::new(
+            &Config {
+                issuer: issuer.clone(),
+                web_entry: web_entry.trim_end_matches('/').to_owned(),
+                relay: relay.clone(),
+            },
+            Store::in_memory(),
+        )
+        .unwrap();
+        Self {
+            door,
+            issuer,
+            lobby,
+            relay,
+            web_entry,
+            host_origin: hosted.web.origin.clone(),
+            host,
+            operator,
+            hosted,
+            _site: site,
+            state,
+        }
     }
 }
 
