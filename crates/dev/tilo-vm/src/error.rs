@@ -346,7 +346,7 @@ impl CliError {
                 "use --target {target} without a positional target, or omit --target and use {name}"
             ),
             Self::Config { path, .. } => format!("fix or remove {path}; tilo-vm doctor re-checks it"),
-            Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot shell".into(),
+            Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot tilo-session".into(),
             Self::SlotName { .. } => {
                 "name the slot explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm slot create my-slot"
                     .into()

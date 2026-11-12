@@ -117,7 +117,7 @@ mounted image.
 
 The launcher never runs a build that speaks another version than the system
 serves. The store judges each app against the interfaces the system declares
-(`tilo_package_store::interfaces`) and the session shows what that says of a
+(`package_store::interfaces::unmet_at`) and the session shows what that says of a
 place; a launch from a terminal (`tilo-launcher
 run-installed`, the PATH shims, `exec-installed`) does the same, saying so on
 stderr: it updates a build that is behind (or recorded at a package format
