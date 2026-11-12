@@ -496,10 +496,11 @@ pub struct ContextMenu {
     /// the row and the menu stays open, so letting go elsewhere cancels it and
     /// what a command starts (a rename's field) never sees half a click.
     held: Option<usize>,
-    /// Where the menu was opened at the pointer, until the pointer moves
-    /// away from there. A host repeats a still pointer's position after a
-    /// rebuild ([`crate::pointer_replay`]); that repeat is not the person
-    /// pointing at a row, so it leaves the keyboard's row where it is.
+    /// Where the menu was opened at the pointer, in the window's own
+    /// logical coordinates, until the pointer moves away from there. A host
+    /// repeats a still pointer's position after a rebuild
+    /// ([`crate::pointer_replay`]); that repeat is not the person pointing
+    /// at a row, so it leaves the keyboard's row where it is.
     opened_under: Option<Point>,
     /// Set by `handle_event`, drained by [`ContextMenu::take_selection`].
     /// The `&mut self` + CRDT-friendly action channel: instead of forcing
@@ -1729,13 +1730,18 @@ impl Widget for ContextMenu {
                 // A held bar thumb follows the pointer; the bar's hover and
                 // the pointer's lane are the region's to track.
                 self.scroll_event(event, ctx);
+                let at = ctx.logical(position);
                 // Rows are hit where they are drawn while the menu arrives.
-                self.last_cursor = self.drawn.to_local(ctx.logical(position));
+                self.last_cursor = self.drawn.to_local(at);
                 // Hover follows the pointer once it moves; until then the
                 // row the menu opened on (or the keyboard moved to) stays.
+                // The pointer's own place is what is compared: the menu still
+                // arriving moves what it draws under a still pointer, and a
+                // host repeating that pointer's place is not the person
+                // pointing at a row.
                 if self
                     .opened_under
-                    .is_some_and(|at| at.distance(self.last_cursor) <= STILL_POINTER)
+                    .is_some_and(|opened| opened.distance(at) <= STILL_POINTER)
                 {
                     return;
                 }
