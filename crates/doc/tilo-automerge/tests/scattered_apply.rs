@@ -26,8 +26,7 @@ use tilo_automerge::ApplyIncoming;
     dead_code,
     reason = "this file replays histories against upstream; it forges no changes"
 )]
-mod upstream;
-use upstream::{Replica, Rng, agrees_with_upstream};
+use crate::upstream::{Replica, Rng, agrees_with_upstream};
 
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;

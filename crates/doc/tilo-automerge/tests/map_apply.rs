@@ -25,8 +25,9 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 
-mod upstream;
-use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
+use crate::upstream::{
+    History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts,
+};
 
 const KEYS: &[&str] = &["a", "b", "desktop", "k1", "k2", "k3", "zz"];
 
