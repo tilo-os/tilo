@@ -191,7 +191,9 @@ enum Step {
 /// The host: its storage, what wakes it, and its instances.
 pub struct TilolangHost {
     storage: Option<PathBuf>,
-    /// The person's words, which dates and clocks read in.
+    /// The words this host's own process speaks, which dates and clocks read in where a session
+    /// names no language for a window: every window's words are chosen from it and the languages
+    /// its package ships ([`hosted::Spec::language`]).
     phrases: Rc<Phrases>,
     /// The person's formats, which every instance's clock and dates read by: the session hands
     /// them over the door, and says again when they change in Settings.
@@ -583,6 +585,7 @@ impl TilolangHost {
         Ok(Stage::Joining {
             spec: Spec {
                 installed: request.installed,
+                language: request.language,
                 ..Spec::new(request.app, request.room, request.instance, request.person)
             },
             bundle: Arc::new(bundle),

@@ -116,6 +116,14 @@ pub struct InstanceRequest {
     /// before and after) and its window shows. A host without them answers a 24-hour clock.
     #[serde(default)]
     pub formats: RegionFormats,
+    /// The person's language (`de-DE`), the one their windows read in: the choice in their
+    /// settings, else the locale their device runs in, as their session resolved it. Each window
+    /// speaks it where its package ships it, and the package's source language otherwise
+    /// (`tilo_history::window_language`), so the host resolves every word the window paints in the
+    /// window's language rather than in its own process's. A session that names none (`""`) lets
+    /// the host's own environment speak.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub language: String,
     /// The record the window was asked to open, by its id, when its launch named one: the
     /// instance opens only the record its route names (the workspace's, or the person's own), so
     /// a window asked for another is refused rather than shown that one.
@@ -735,6 +743,7 @@ mod tests {
                 time: tilo_formats::TimeStyle::H12,
                 ..RegionFormats::default()
             },
+            language: "de-DE".into(),
             record: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),

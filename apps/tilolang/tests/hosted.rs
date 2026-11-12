@@ -62,6 +62,8 @@ const NOTES: &str = "so.tilo.lang.notes";
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
 const TASKS: &str = "so.tilo.lang.tasks";
+/// The day at a glance, over Tasks', Notes' and Chat's own places.
+const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -226,6 +228,7 @@ fn package_of(app: &str) -> &'static str {
         RICHBODY => "tests/richbody",
         SIGNED => "tests/signed",
         TASKS => "../tl/tasks",
+        TODAY => "../tl/today",
         other => panic!("no test package is {other}"),
     }
 }
@@ -495,16 +498,8 @@ impl Session {
         }));
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
         let wire = (Box::new(()) as Box<dyn std::any::Any>, Rc::default());
-        let mut session = Self::launch(
-            manager,
-            &route,
-            NOTES,
-            "ada",
-            chunks,
-            None,
-            wire,
-            Window::live,
-        );
+        let spec = Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada");
+        let mut session = Self::launch(manager, &route, spec, chunks, None, wire, Window::live);
         session.settle();
         session
     }
@@ -521,6 +516,14 @@ impl Session {
         })
     }
 
+    /// `person` at a harness window of the app `app`, at a desktop that speaks `language`
+    /// (`de-DE`): the language their session names for every window.
+    fn in_language(app: &str, person: &str, language: &'static str) -> Self {
+        let mut session = Self::opened_in_language(app, person, language, Window::in_harness);
+        session.settle();
+        session
+    }
+
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names.
     fn open(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
@@ -531,9 +534,19 @@ impl Session {
 
     /// [`Self::open`], before the window had a frame.
     fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        Self::opened_in_language(app, person, "en-US", window)
+    }
+
+    /// [`Self::opened`] at a desktop that speaks `language`.
+    fn opened_in_language(
+        app: &str,
+        person: &str,
+        language: &'static str,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-        Self::brokered(&route, app, person, chunks, None, window)
+        Self::brokered(&route, app, person, language, chunks, None, window)
     }
 
     /// [`Self::launch`] over a connection whose other end is the test's broker.
@@ -541,6 +554,7 @@ impl Session {
         route: &RouteSpec,
         app: &str,
         person: &str,
+        language: &'static str,
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
@@ -553,7 +567,8 @@ impl Session {
             joined: None,
         });
         let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
-        Self::launch(manager, route, app, person, chunks, storage, wire, window)
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language(language);
+        Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 
     /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
@@ -577,19 +592,28 @@ impl Session {
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::brokered(route, TASKS, "ada", chunks, storage, Window::in_harness)
+        Self::brokered(
+            route,
+            TASKS,
+            "ada",
+            "en-US",
+            chunks,
+            storage,
+            Window::in_harness,
+        )
     }
 
-    /// `person` at the window `window` makes of the hosted window of the app `app`, whose
-    /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
-    /// `wire` is what the broker's end holds and what the instance sends it, `chunks` the
-    /// workspace record the instance runs over, and `storage` where the package keeps what it
-    /// keeps (nothing: in memory), before the window had a frame.
+    /// The window `window` makes of the hosted window of the instance `spec`, whose package
+    /// [`package_of`] names, whose instance's connection is `manager`, on `route`; `wire` is what
+    /// the broker's end holds and what the instance sends it, `chunks` the workspace record the
+    /// instance runs over, and `storage` where the package keeps what it keeps (nothing: in
+    /// memory), before the window had a frame. The host's own process speaks the source language
+    /// throughout: the language the window reads in is the one the session handed over with
+    /// `spec`, never this one.
     fn launch(
         mut manager: CollaborationManager,
         route: &RouteSpec,
-        app: &str,
-        person: &str,
+        spec: Spec,
         chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
         (broker, sent): (Box<dyn std::any::Any>, Sent),
@@ -600,20 +624,21 @@ impl Session {
             cluster_id: route.cluster_id,
             record: None,
             record_kind: None,
-            handle: Some(person.to_owned()),
+            handle: Some(spec.person.clone()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::of(chunks, manager, route.clone(), person);
+        let record = InstanceRecord::of(chunks, manager, route.clone(), spec.person.clone());
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
-        let kept = host.kept(app).unwrap();
+        let kept = host.kept(&spec.app).unwrap();
+        let bundle = Arc::new(package(package_of(&spec.app)));
         let (ours, theirs) = Channel::pair().unwrap();
         let watched = ours.as_fd().try_clone_to_owned().unwrap();
         let hosted = Hosted::with_record(
-            Spec::new(app, route.cluster_id.to_string(), 1, person),
+            spec,
             record,
-            Arc::new(package(package_of(app))),
+            bundle,
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
             &Rc::new(Phrases::new("en-US")),
@@ -2911,4 +2936,61 @@ fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
                 _ => false,
             })
         })
+}
+
+/// A person whose desktop speaks German reads a hosted window's words in German: the instance runs
+/// in a host whose own process speaks the source language (a host is sandboxed with only the
+/// locale its launcher happened to carry, and cannot read the person's settings), and the language
+/// their session names is what the window speaks, so every word it paints — its app's own, an
+/// action's name, another app's place, the standard library's frames — comes from a catalogue in
+/// that language for every app.
+#[test]
+fn a_hosted_windows_own_words_read_in_its_language() {
+    // Today ships German: its own button, its title and its frames read in it.
+    let mut today = Session::in_language(TODAY, "ada", "de-DE");
+    let shown = today.shown();
+    assert!(
+        shown.iter().any(|word| word == "Morgenroutine"),
+        "Today's morning cleanup reads in German: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|word| word == "Morning cleanup"),
+        "no word Today's package has in German is left in its source language: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|word| word == "Heute"),
+        "Today's own page reads in German: {shown:?}"
+    );
+    // The places its page draws are the labels of the apps that hold them, in the language the
+    // window speaks: Notes' pinned place reads in German, Tasks' Today place — a package that
+    // ships its source language only — reads its own word, never a translation of another app's.
+    assert!(
+        shown.iter().any(|word| word == "Angeheftet"),
+        "Notes' place reads in German in Today's window: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|word| word == "Today"),
+        "Tasks' place reads the word its own catalogue gives: {shown:?}"
+    );
+
+    // Notes ships German too: its own new note reads in it, in a window of its own.
+    let mut notes = Session::in_language(NOTES, "ada", "de-DE");
+    let shown = notes.shown();
+    assert!(
+        shown.iter().any(|word| word == "Neue Notiz"),
+        "Notes' new note reads in German: {shown:?}"
+    );
+
+    // A window speaks one language: Tasks ships no German, so its window reads English there —
+    // and every word of it, the frames' included, is the English its catalogue holds.
+    let mut tasks = Session::in_language(TASKS, "ada", "de-DE");
+    let shown = tasks.shown();
+    assert!(
+        shown.iter().any(|word| word == "New task"),
+        "Tasks' own action reads its catalogue's word: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|word| word.contains("Aufgabe")),
+        "a window whose package ships no German reads no German: {shown:?}"
+    );
 }

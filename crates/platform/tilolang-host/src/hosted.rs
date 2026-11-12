@@ -96,6 +96,11 @@ pub struct Spec {
     /// The tilolang apps installed here, by id, each with the id its records are kept under: a
     /// package the app uses that is one of them is another app, read from its own record.
     pub installed: BTreeMap<String, String>,
+    /// The person's language (`de-DE`), the one their windows read in, as the session resolved it
+    /// (`InstanceRequest::language`): the window speaks it where the package ships it, and the
+    /// package's source language otherwise. Empty for a session that names none, whose host reads
+    /// its own process's language.
+    pub language: String,
 }
 
 impl Spec {
@@ -114,8 +119,30 @@ impl Spec {
             instance,
             person: person.into(),
             installed: BTreeMap::new(),
+            language: String::new(),
         }
     }
+
+    /// [`Self::new`] for the window `person` reads at, in the language `language` names.
+    #[must_use]
+    pub fn in_language(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
+    }
+}
+
+/// The words the window of `spec` reads in: the language the session named for the person, or,
+/// where it named none, the one this host's process runs in, against the languages `bundle`'s
+/// package ships (`tilo_history::window_language`). Every word the window paints — its app's own
+/// and the frames' — comes from a catalogue in that language.
+fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
+    let catalogues = bundle.catalogues();
+    let shipped: Vec<&str> = catalogues
+        .iter()
+        .map(|(locale, _)| locale.as_str())
+        .collect();
+    let language = (!spec.language.is_empty()).then(|| spec.language.as_str());
+    base.for_window(language, &shipped)
 }
 
 /// What a [`Surface`]'s resources are built from: the published records' revision, the
@@ -343,8 +370,9 @@ struct HostPlatform {
     /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
     /// is loaded as another app's.
     installed: BTreeMap<String, String>,
-    /// The words of the window's frames, in the language its package speaks: what its dates and
-    /// clocks read in, as the toolkit's own say them in a window.
+    /// The words of this window: its app's own and its frames', in the language the window speaks
+    /// (the person's where the package ships it), so what its dates and clocks read in is the same
+    /// language the toolkit's own say them in.
     phrases: Rc<Phrases>,
     /// The person's formats, which their clock and dates read by.
     formats: Formats,
@@ -747,14 +775,10 @@ impl Hosted {
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
         );
-        // The window speaks the language its package ships, the person's when it ships it: the
-        // frames' words and the history's sentences follow the app's own copy.
-        let catalogues = bundle.catalogues();
-        let shipped: Vec<&str> = catalogues
-            .iter()
-            .map(|(locale, _)| locale.as_str())
-            .collect();
-        let phrases = Rc::new(phrases.for_window(&shipped));
+        // The window speaks the person's language where its package ships it, and the package's
+        // source language otherwise: the frames' words, the app's own words and the history's
+        // sentences all follow that language, never the one this host's process runs in.
+        let phrases = Rc::new(window_phrases(phrases, &spec, &bundle));
         // The names the session sends for the apps installed here read in the language this
         // window speaks, whatever language the workspace's people are named in.
         collaboration::history_source::authors::set_names_language(phrases.locale());
@@ -2302,6 +2326,9 @@ impl Applier {
         host.set_clock(tilolang_tilo::host::system_time);
         host.load_bundle(bundle)
             .map_err(|error| error.to_string())?;
+        // A change made to the app's record at its origin reads in the language the app's window
+        // would read in: the person's, not this host process's.
+        let phrases = window_phrases(phrases, &spec, bundle);
         let activate = tilo_actions::remote::activate_spec(
             phrases.say("app-activate-window", &[]),
             phrases.say("app-activate-window-description", &[]),

@@ -65,6 +65,10 @@ Decisions made on the way:
   dates an app puts in its own sentences (`t.clock()`, a change's before and after) through
   `tilo-formats`, which the toolkit re-exports, and the session says again when they change in
   Settings: what an instance wrote of a time is written again, and its window shows it.
+- The person's language travels with the instance too. Every word a hosted window paints is
+  resolved by its instance, and the host is a sandbox without the person's settings and without
+  a guarantee of their locale in its environment: the language the session names with the
+  instance is what the window speaks, its app's catalogue and the frames' words alike.
 - The record store (`RecordStore`) stays with native apps. The tilolang host holds records
   through `InstanceRecord`, using the same history and save code.
 - One undo, one history: the history verbs every app publishes (Undo, Redo, History, Restore,
