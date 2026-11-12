@@ -1,10 +1,11 @@
 # Release pipeline
 
-Tilo releases four independent component families. A release tag for one family
+Tilo releases five independent component families. A release tag for one family
 does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
+| Relay, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set for both architectures when the tree's package set is new, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>` RPM snapshot |
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
