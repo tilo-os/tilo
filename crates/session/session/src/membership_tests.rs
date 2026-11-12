@@ -7,6 +7,7 @@ tilo_automerge_isolate::test_worker!();
 use std::collections::BTreeMap;
 
 use ed25519_dalek::SigningKey;
+use pollster::FutureExt as _;
 use tilo_action_policy::{Change, Grant, Role, Subject, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
@@ -202,6 +203,7 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
             person: desks.person.clone(),
             role: Role::Moderator,
         })
+        .block_on()
         .expect("the workspace takes the change");
     let written = desks
         .owner
@@ -323,6 +325,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     membership
         .commit(&set[0])
+        .block_on()
         .expect("the workspace takes the change");
     assert_eq!(
         role_of(&engine, &person),
@@ -347,6 +350,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     membership
         .commit(&removed[0])
+        .block_on()
         .expect("the workspace takes the removal");
     assert_eq!(
         role_of(&engine, &person),
@@ -377,6 +381,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     );
     membership
         .commit(&added[0])
+        .block_on()
         .expect("the workspace takes her back");
     assert_eq!(
         role_of(&engine, &person),
@@ -406,6 +411,7 @@ fn the_app_the_person_opens_authors_its_records_through_the_workspace() {
 
     Membership::of(&engine, workspace.id())
         .grant_app_authorship(app)
+        .block_on()
         .expect("the workspace admits its person's grant");
 
     let policy = engine
@@ -509,6 +515,7 @@ fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
                 person: stranger.clone(),
                 role: Role::Editor,
             })
+            .block_on()
             .is_err(),
         "the workspace refuses a role for someone it does not have"
     );
@@ -530,6 +537,7 @@ fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
             .commit(&Change::RemoveMember {
                 person: owner.clone(),
             })
+            .block_on()
             .is_err(),
         "the workspace refuses to remove its owner"
     );
@@ -1579,9 +1587,7 @@ fn invite_from_this_device(
     };
     let owner = engine.owner();
     let issued = owner.issue_invitation(workspace_id, cert, &request, &[], key, now);
-    collab_types::signer::at_once(issued)
-        .unwrap()
-        .expect("this device issues the link")
+    pollster::block_on(issued).expect("this device issues the link")
 }
 
 /// The invitations the desk's own action lists for the workspace `workspace` .

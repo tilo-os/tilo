@@ -425,7 +425,7 @@ impl RelayClient {
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
         request: HomePeerManagementRequest,
     ) -> Result<HomePeerManagementResponse, ClientError> {
@@ -459,7 +459,9 @@ impl RelayClient {
         if ack.cert.device_public_key != expected_server_device {
             return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
         }
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = tilo_relay_client::signer::signed_ack2(&own_sk, &ack.server_nonce)
+            .await
+            .map_err(ClientError::Sign)?;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
@@ -486,7 +488,7 @@ impl RelayClient {
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<EndpointAddr, ClientError> {
         Ok(Self::discover_content_peer_with_server_trust(
@@ -512,7 +514,7 @@ impl RelayClient {
         own_user_public_key: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<ContentPeerRegistration, ClientError> {
         Self::discover_content_peer_with_server_trust(
@@ -534,7 +536,7 @@ impl RelayClient {
         workspace_id: u64,
         expected_server: Option<([u8; 32], [u8; 32])>,
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<ContentPeerRegistration, ClientError> {
         let relay_service_id = *relay_addr.id.as_bytes();
@@ -571,7 +573,9 @@ impl RelayClient {
         {
             return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
         }
-        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        let ack2 = tilo_relay_client::signer::signed_ack2(&own_sk, &ack.server_nonce)
+            .await
+            .map_err(ClientError::Sign)?;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
@@ -635,7 +639,7 @@ impl RelayClient {
         relay_addr: EndpointAddr,
         own_user_public_key: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
@@ -696,7 +700,7 @@ impl RelayClient {
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
@@ -722,7 +726,7 @@ impl RelayClient {
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
@@ -784,7 +788,7 @@ impl RelayClient {
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
@@ -815,7 +819,7 @@ impl RelayClient {
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
@@ -854,7 +858,7 @@ impl RelayClient {
         own_user: [u8; 32],
         expected_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         if own_cert.user_public_key != own_user {
@@ -893,7 +897,7 @@ impl RelayClient {
         mut write: W,
         expected_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError>
     where
@@ -953,7 +957,7 @@ impl RelayClient {
         relay_addr: EndpointAddr,
         trust: tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust,
         own_cert: DeviceCert,
-        own_sk: ed25519_dalek::SigningKey,
+        own_sk: impl DeviceSigner,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         if *relay_addr.id.as_bytes() != trust.service_public_key() {

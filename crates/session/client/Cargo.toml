@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+pollster.workspace = true
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
 # The desk's model: the workspaces a participant takes part in, and the windows presence places

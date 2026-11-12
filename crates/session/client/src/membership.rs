@@ -99,18 +99,19 @@ impl<'a> Membership<'a> {
     ///
     /// # Errors
     /// The workspace refused a change, or this device could not publish it.
-    pub fn write(&self, changes: &[Change]) -> Result<(), String> {
+    pub async fn write(&self, changes: &[Change]) -> Result<(), String> {
         for change in changes {
-            self.commit(change)?;
+            self.commit(change).await?;
         }
         Ok(())
     }
 
     /// [`Self::write`] one change, saying why when the workspace refuses it or cannot publish it.
-    pub fn commit(&self, change: &Change) -> Result<(), String> {
+    pub async fn commit(&self, change: &Change) -> Result<(), String> {
         self.command(WorkspaceMembershipCommand::Member {
             change: change.clone(),
         })
+        .await
     }
 
     /// Take back the workspace's request for the bot whose directory entry is
@@ -120,10 +121,11 @@ impl<'a> Membership<'a> {
     /// # Errors
     /// The workspace refused the request — this device's person does not
     /// administer it — or this device could not publish it.
-    pub fn withdraw_bot_request(&self, entry: &str) -> Result<(), String> {
+    pub async fn withdraw_bot_request(&self, entry: &str) -> Result<(), String> {
         self.command(WorkspaceMembershipCommand::WithdrawBotRequest {
             entry: entry.to_owned(),
         })
+        .await
     }
 
     /// Share `node` — one record of the workspace, or one item of it — with its members as `access`
@@ -133,7 +135,7 @@ impl<'a> Membership<'a> {
     /// # Errors
     /// The workspace refused the share — this device's person does not hold what it would give —
     /// or this device could not publish it.
-    pub fn share(
+    pub async fn share(
         &self,
         share: &str,
         node: tilo_action_policy::TreePath,
@@ -144,6 +146,7 @@ impl<'a> Membership<'a> {
             node,
             access,
         })
+        .await
     }
 
     /// End the share `share` in the workspace: the grants of it this device's person gave, or all of
@@ -151,15 +154,16 @@ impl<'a> Membership<'a> {
     ///
     /// # Errors
     /// The workspace refused it, or this device could not publish it.
-    pub fn unshare(&self, share: &str) -> Result<(), String> {
+    pub async fn unshare(&self, share: &str) -> Result<(), String> {
         self.command(WorkspaceMembershipCommand::Unshare {
             share: share.to_owned(),
         })
+        .await
     }
 
     /// Write `command` into the workspace's governance as this device, signed by its custody,
     /// saying why when the workspace refuses it or cannot publish it.
-    fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
+    async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
         let identity = self.engine.identity();
         let request = OwnerCommitRequest {
             workspace: self.workspace_id.to_string(),
@@ -169,13 +173,15 @@ impl<'a> Membership<'a> {
                 command,
             },
         };
-        collab_types::signer::at_once(self.engine.owner().commit_workspace_membership_command(
-            request,
-            identity.signer.as_ref(),
-            tilo_clock::wall(),
-        ))
-        .map_err(|error| error.to_string())?
-        .map(|_receipt| ())
+        self.engine
+            .owner()
+            .commit_workspace_membership_command(
+                request,
+                identity.signer.as_ref(),
+                tilo_clock::wall(),
+            )
+            .await
+            .map(|_receipt| ())
     }
 
     /// Let `app` author its own records in the workspace, as this device: the
@@ -187,10 +193,11 @@ impl<'a> Membership<'a> {
     /// # Errors
     /// The workspace refused the grant — this device's person does not
     /// administer it — or this device could not publish it.
-    pub fn grant_app_authorship(&self, app: &str) -> Result<(), String> {
+    pub async fn grant_app_authorship(&self, app: &str) -> Result<(), String> {
         self.command(WorkspaceMembershipCommand::GrantAppAuthorship {
             app: app.to_owned(),
         })
+        .await
     }
 }
 
@@ -227,7 +234,7 @@ pub fn authorship(
         // people, and asks for nothing here. The workspace's own devices grant it, and what they
         // grant arrives in the projection below like the rest of its grants.
         if !authors(&policy) && engine.administers(workspace) {
-            Membership::of(engine, id).grant_app_authorship(app)?;
+            pollster::block_on(Membership::of(engine, id).grant_app_authorship(app))?;
         }
         let policy = engine.policy(workspace)?;
         edit_workspace(desk, id, |shown| Ok(project(shown, &policy)))?;

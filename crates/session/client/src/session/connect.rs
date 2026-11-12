@@ -132,7 +132,7 @@ async fn connect_entering(
         .get_or_insert_with(|| {
             Arc::new(Dialer::new(
                 host.clone(),
-                Some(signer.device_signing_key().unwrap_or(dial.key)),
+                Some(signer.endpoint_secret().unwrap_or(dial.key)),
             ))
         })
         .clone();
@@ -184,7 +184,7 @@ async fn sign_delegation(
     endpoint: [u8; 32],
     slot: &mut Option<Vec<u8>>,
 ) -> Result<Vec<u8>, LinkError> {
-    if signer.device_signing_key().is_some() {
+    if signer.endpoint_secret().is_some() {
         return Ok(Vec::new());
     }
     if let Some(delegation) = slot {

@@ -829,10 +829,7 @@ impl Personal {
 
     pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
         self.directory
-            .signed_snapshot(
-                &self.identity.signing_key().ok()?,
-                tilo_clock::unix_now_ns(),
-            )
+            .signed_snapshot(self.identity.signer.as_ref(), tilo_clock::unix_now_ns())
             .ok()
     }
 
@@ -960,12 +957,12 @@ impl crate::Shared {
                 // A workspace made on this desk is a workspace from here on,
                 // not only this desk's: its governance is founded in the
                 // workspace it already has an identity for.
-                engine.found(
+                pollster::block_on(engine.found(
                     workspace.slot,
                     workspace.id(),
                     &workspace.name,
                     endpoint.as_ref(),
-                );
+                ));
             }
             if workspace
                 .owner()
@@ -1818,7 +1815,6 @@ mod tests {
         let identity = identity(0x11, 0x21, "The laptop");
         let mut personal = open(identity.clone(), None);
         assert!(personal.publish_local(&desk));
-        let key = identity.signing_key().expect("the device's key");
         let workspace = first.to_string();
         let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
@@ -1833,7 +1829,7 @@ mod tests {
             host_device_certificate: identity.device_cert.clone(),
             packet_relay_url: "iroh:direct".into(),
         }
-        .transport_hint(&key)
+        .transport_hint(identity.signer.as_ref())
         .expect("a signed address");
         let hint = postcard::to_stdvec(&hint).expect("an address's bytes");
         let list = personal.readable(|asked| (asked == workspace).then(|| hint.clone()));
@@ -1984,7 +1980,7 @@ mod tests {
             opaque,
             identity.device_cert.clone(),
             identity.device_public_key(),
-            &identity.signing_key().expect("a native key"),
+            identity.signer.as_ref(),
         )
         .expect("a host signs its own address")
     }

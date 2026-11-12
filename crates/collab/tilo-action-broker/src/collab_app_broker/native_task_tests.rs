@@ -431,12 +431,11 @@ impl Fixture {
                 },
             },
         };
-        collab_types::signer::at_once(native.owner.commit_workspace_membership_command(
+        futures::executor::block_on(native.owner.commit_workspace_membership_command(
             membership,
             &native.key,
             std::time::SystemTime::now(),
         ))
-        .unwrap()
         .unwrap();
         let task = ISSUE.to_owned();
         let fanout = Arc::new(FanoutState::new());
@@ -530,12 +529,11 @@ impl Fixture {
                 },
             },
         };
-        collab_types::signer::at_once(self.native.owner.commit_workspace_membership_command(
+        futures::executor::block_on(self.native.owner.commit_workspace_membership_command(
             removal,
             &self.native.key,
             std::time::SystemTime::now(),
         ))
-        .unwrap()
         .unwrap();
     }
     /// The person's message `message` was read here, as `conversations.rs` reads the turns of a

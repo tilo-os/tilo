@@ -71,12 +71,12 @@ impl WorkspaceNodes {
                 )?;
                 // What the share gives, as the workspace writes it: the same grants every device
                 // reads, bounded by what this person holds there when the workspace admits them.
-                membership.share(&share, node, access)?;
+                pollster::block_on(membership.share(&share, node, access))?;
                 json!({ "grants": held(&share)? })
             }
             WorkspaceNodeAsk::Unshare { share } => {
                 let before = held(&share)?;
-                membership.unshare(&share)?;
+                pollster::block_on(membership.unshare(&share))?;
                 json!({ "revoked": before.saturating_sub(held(&share)?) })
             }
             WorkspaceNodeAsk::Permits => {

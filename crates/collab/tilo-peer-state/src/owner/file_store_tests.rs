@@ -12,8 +12,8 @@ use super::{index_of, part_bytes, parts_of};
 use crate::owner::{
     NativeAuthorityStorage, NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing,
 };
-use collab_types::signer::at_once;
 use ed25519_dalek::SigningKey;
+use futures::executor::block_on;
 use std::{
     cell::Cell,
     collections::BTreeMap,
@@ -206,8 +206,8 @@ async fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let journals_before = journal_files(&path);
 
     let (created, replaced) =
-        replacements(|| at_once(testing::founded(&owner, "Three", &device, &key, now)));
-    created.unwrap().unwrap();
+        replacements(|| block_on(testing::founded(&owner, "Three", &device, &key, now)));
+    created.unwrap();
     assert_eq!(
         replaced, 3,
         "the workspace's file, its journal and the index"
@@ -259,7 +259,7 @@ async fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was()
     // The workspace's journal and file are written; the index that would
     // name them is not.
     let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
-        at_once(testing::founded(&owner, "Two", &device, &key, now)).unwrap()
+        block_on(testing::founded(&owner, "Two", &device, &key, now))
     });
     assert!(stopped.is_err());
     assert_eq!(index_bytes(&path), durable);

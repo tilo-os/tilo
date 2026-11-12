@@ -1337,7 +1337,7 @@ impl Engine {
     /// The workspace is not held here, this device's person may not invite into it or
     /// hand out that part, or the workspace cannot be published.
     #[cfg(target_os = "linux")]
-    pub fn issue_invitation(
+    pub async fn issue_invitation(
         &self,
         workspace: &str,
         role: MemberRole,
@@ -1364,22 +1364,24 @@ impl Engine {
         let expires_at_ns = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
         let mut request_id = [0; 32];
         getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-        let issued = collab_types::signer::at_once(self.owner.issue_invitation(
-            room,
-            &identity.device_cert,
-            &IssueInvitationRequest {
-                request_id,
-                role,
-                recipient_user_public_key,
-                invitee_name,
-                expires_at_ns,
-                inviter_name: None,
-            },
-            &[hint],
-            identity.signer.as_ref(),
-            now,
-        ))
-        .map_err(|error| error.to_string())??;
+        let issued = self
+            .owner
+            .issue_invitation(
+                room,
+                &identity.device_cert,
+                &IssueInvitationRequest {
+                    request_id,
+                    role,
+                    recipient_user_public_key,
+                    invitee_name,
+                    expires_at_ns,
+                    inviter_name: None,
+                },
+                &[hint],
+                identity.signer.as_ref(),
+                now,
+            )
+            .await?;
         Ok(Issued {
             invite: hex::encode(issued.invite_id),
             link: tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
@@ -1609,7 +1611,7 @@ impl Engine {
             host_device_certificate: identity.device_cert.clone(),
             packet_relay_url,
         }
-        .transport_hint(&identity.signing_key()?)
+        .transport_hint(identity.signer.as_ref())
         .map_err(|error| error.to_string())
     }
 
@@ -1619,7 +1621,7 @@ impl Engine {
     /// the workspace's record keeps as its host's address. A workspace this device may not own, or
     /// one that could not be published, stays the desk's own.
     #[cfg(target_os = "linux")]
-    pub fn found(
+    pub async fn found(
         &self,
         slot: WorkspaceSlot,
         workspace: WorkspaceId,
@@ -1658,8 +1660,7 @@ impl Engine {
             host_hint.as_ref(),
             tilo_clock::wall(),
         );
-        match collab_types::signer::at_once(founded).unwrap_or_else(|error| Err(error.to_string()))
-        {
+        match founded.await {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
@@ -1951,9 +1952,9 @@ mod tests {
         let workspace = WorkspaceId::new();
         let slot = WorkspaceSlot(7);
 
-        engine.found(slot, workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
         // Again, as every pass over the desk does: one workspace, still the one the desk made.
-        engine.found(slot, workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
 
         assert!(
             engine.holds(workspace),
@@ -1981,7 +1982,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         let hint = engine
             .owner
@@ -2008,7 +2009,7 @@ mod tests {
             .expect("a device endpoint");
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
         let named = || {
             engine
                 .owner
@@ -2057,7 +2058,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         let hints = engine.host_hints();
         assert_eq!(hints.len(), 1, "one hint for the one workspace held");
@@ -2076,7 +2077,7 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", None);
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", None));
 
         assert!(
             engine.holds(workspace),
@@ -2101,7 +2102,7 @@ mod tests {
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         assert!(
             engine.may_delete(workspace),
@@ -2140,7 +2141,7 @@ mod tests {
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));

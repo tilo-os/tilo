@@ -58,9 +58,7 @@ impl Approvers for Answering {
         let Some(questions) = self.questions.clone() else {
             return;
         };
-        let Ok(key) = identity.signing_key() else {
-            return;
-        };
+        let key = std::sync::Arc::clone(&identity.signer);
         let id = host.id;
         let session = tokio::spawn(answer_host(
             endpoint.clone(),
@@ -85,7 +83,7 @@ async fn answer_host(
     endpoint: Endpoint,
     host: EndpointAddr,
     cert: DeviceCert,
-    key: ed25519_dalek::SigningKey,
+    key: std::sync::Arc<dyn collab_types::signer::DeviceSigner>,
     questions: Questions,
 ) {
     let mut wait = POLL;
@@ -94,7 +92,7 @@ async fn answer_host(
             &endpoint,
             host.clone(),
             cert.clone(),
-            &key,
+            key.as_ref(),
             &RevocationList::new(),
         )
         .await;

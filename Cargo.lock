@@ -18374,7 +18374,7 @@ name = "tilo-delivery-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "ed25519-dalek 3.0.0",
+ "collab-types",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "iroh-base",
@@ -20432,6 +20432,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "fnv",
+ "futures",
  "getrandom 0.4.3",
  "hex",
  "iroh",
@@ -21588,6 +21589,7 @@ dependencies = [
  "neighbour-wire",
  "oneshot",
  "opus",
+ "pollster",
  "postcard",
  "rand 0.10.3",
  "rand_core 0.10.0",
@@ -22362,6 +22364,7 @@ name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "data-encoding",
  "data-encoding-macro",
  "ed25519-dalek 3.0.0",

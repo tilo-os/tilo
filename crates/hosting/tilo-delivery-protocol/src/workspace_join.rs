@@ -286,7 +286,7 @@ impl IrohWorkspaceHostHintV1 {
     /// Sign this opaque address payload and its distinct Iroh service key with the host device.
     pub fn transport_hint(
         &self,
-        host_key: &ed25519_dalek::SigningKey,
+        host_key: &dyn collab_types::signer::DeviceSigner,
     ) -> Result<TransportHint, WorkspaceJoinError> {
         self.validate()?;
         sign_transport_hint(

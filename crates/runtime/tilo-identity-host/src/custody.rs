@@ -181,18 +181,6 @@ impl HostIdentity {
         self.signer.device_public_key()
     }
 
-    /// The device key itself, for a signing path that cannot wait on custody (a native carrier,
-    /// governance a founder commits).
-    ///
-    /// # Errors
-    /// This device's custody keeps its key unextractable (a page's).
-    pub fn signing_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
-        self.signer
-            .device_signing_key()
-            .map(|key| ed25519_dalek::SigningKey::from_bytes(&key))
-            .ok_or_else(|| "this device's key signs only through its custody".to_owned())
-    }
-
     fn device_verifying_key(&self) -> Result<VerifyingKey, String> {
         VerifyingKey::from_bytes(&self.device_public_key()).map_err(|error| error.to_string())
     }

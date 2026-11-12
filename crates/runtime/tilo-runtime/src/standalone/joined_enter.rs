@@ -109,7 +109,7 @@ impl Entering {
             self.joined.operator(),
             self.relay.device(),
             self.joined.device_cert().clone(),
-            self.joined.device_key()?,
+            self.joined.signer(),
             tilo_user_identity::RevocationList::new(),
         )
         .await

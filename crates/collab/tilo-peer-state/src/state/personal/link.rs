@@ -27,7 +27,7 @@ use crate::NeighbourMsg;
 use crate::frames::{OUTGOING, bump};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::frames::{REFUSED, read_message, send_all};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 #[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::Connection;
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +65,7 @@ pub struct PersonalSync(Arc<Inner>);
 
 struct Inner {
     store: PeerPersonal,
-    key: SigningKey,
+    key: Arc<dyn DeviceSigner>,
     outgoing: broadcast::Sender<NeighbourMsg>,
     admitted: broadcast::Sender<AdmittedFrame>,
     changed: watch::Sender<u64>,
@@ -74,28 +74,25 @@ struct Inner {
 impl std::fmt::Debug for PersonalSync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersonalSync")
-            .field(
-                "device",
-                &hex::encode(self.0.key.verifying_key().as_bytes()),
-            )
+            .field("device", &hex::encode(self.0.key.device_public_key()))
             .finish_non_exhaustive()
     }
 }
 
 impl PersonalSync {
-    /// Share `store`, held by the device whose signing key is `key` (and
+    /// Share `store`, held by the device whose key `key` signs with (and
     /// whose iroh endpoint's secret key it is).
     #[must_use]
-    pub fn new(store: super::PersonalStore, key: SigningKey) -> Self {
+    pub fn new(store: super::PersonalStore, key: impl DeviceSigner + 'static) -> Self {
         Self::over(PeerPersonal::new(store), key)
     }
 
     /// Share `store`, which other parts of the engine read as well.
     #[must_use]
-    pub fn over(store: PeerPersonal, key: SigningKey) -> Self {
+    pub fn over(store: PeerPersonal, key: impl DeviceSigner + 'static) -> Self {
         Self(Arc::new(Inner {
             store,
-            key,
+            key: Arc::new(key),
             outgoing: broadcast::channel(OUTGOING).0,
             admitted: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
@@ -119,12 +116,15 @@ impl PersonalSync {
         &self,
         publish: impl FnOnce(
             &mut super::PersonalStore,
-            &SigningKey,
+            &dyn DeviceSigner,
             SystemTime,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
         let now = tilo_clock::wall();
-        let message = self.0.store.write(|store| publish(store, &self.0.key, now));
+        let message = self
+            .0
+            .store
+            .write(|store| publish(store, self.0.key.as_ref(), now));
         self.publish_refusals();
         Ok(self.published(message?))
     }
@@ -152,7 +152,13 @@ impl PersonalSync {
         envelope: collab_types::SignedOp,
     ) -> Result<NeighbourMsg, String> {
         let message = self.0.store.write(|store| {
-            store.admit_local(app, record, envelope, &self.0.key, tilo_clock::wall())
+            store.admit_local(
+                app,
+                record,
+                envelope,
+                self.0.key.as_ref(),
+                tilo_clock::wall(),
+            )
         });
         self.publish_refusals();
         Ok(self.published(message?))
@@ -241,7 +247,7 @@ impl PersonalSync {
     fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
         self.0
             .store
-            .write(|store| store.catch_up(&self.0.key, remote, tilo_clock::wall()))
+            .write(|store| store.catch_up(self.0.key.as_ref(), remote, tilo_clock::wall()))
     }
 
     /// Admit every frame `remote` sends until its stream ends. A document the
@@ -257,10 +263,9 @@ impl PersonalSync {
         while let Some(message) = read_message(&mut recv).await? {
             let identity = matches!(message, NeighbourMsg::IdentityHello { .. });
             let frame = admitted_frame(&message);
-            let admitted = self
-                .0
-                .store
-                .write(|store| store.receive(&self.0.key, remote, message, tilo_clock::wall()));
+            let admitted = self.0.store.write(|store| {
+                store.receive(self.0.key.as_ref(), remote, message, tilo_clock::wall())
+            });
             // Whatever the store decided, what it now refuses of this
             // device's writes is sent: the verdict reaches its author, live.
             if self.publish_refusals() {

@@ -164,7 +164,7 @@ impl Joined {
             ),
             tilo_room_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
-                device_signing_key: joined.custody.signing_key().expect("a native key"),
+                device_signing_key: native_key(&joined.custody),
                 device_cert: joined.custody.device_cert.clone(),
                 revocations: RevocationList::new(),
             },
@@ -339,7 +339,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     );
     custody = HostIdentity::held(
         custody.device_cert.clone(),
-        custody.signing_key().expect("a native key"),
+        std::sync::Arc::clone(&custody.signer),
         std::sync::Arc::new(
             tilo_identity_host::custody::Kept::new(
                 custody.device_cert.clone(),
@@ -398,7 +398,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
     probe.custody = HostIdentity::held(
         probe.custody.device_cert.clone(),
-        probe.custody.signing_key().expect("a native key"),
+        std::sync::Arc::clone(&probe.custody.signer),
         std::sync::Arc::new(kept),
     );
     assert!(
@@ -1460,7 +1460,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let key = joined.custody.signing_key().expect("a native key");
+    let key = native_key(&joined.custody);
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
@@ -1504,9 +1504,14 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         .commit(signed_write(
             workspace,
             "dev.tilo.declared",
-            &empty.custody.signing_key().expect("a native key"),
+            &native_key(&empty.custody),
         ))
         .await
         .unwrap_err();
     assert!(refused.contains("read only"), "{refused}");
+}
+
+/// The key `custody` holds in the clear, for a test that hands it to a host or writes it to disk.
+pub(super) fn native_key(custody: &HostIdentity) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&custody.signer.endpoint_secret().expect("a native key"))
 }

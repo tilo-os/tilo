@@ -1847,7 +1847,8 @@ fn restored_fabric(
         runtime,
         outgoing,
         identity.device_cert.user_public_key,
-        identity.signing_key().ok()?,
+        // Secrets the person's devices seal to this one open with its endpoint's key.
+        ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret()?),
         continuity,
         kept,
     ))
@@ -1877,7 +1878,12 @@ fn endpoint_for(
             .map_err(|error| format!("no loopback address: {error}"))?;
         return Ok((builder, iroh::RelayMap::empty()));
     };
-    let key = iroh::SecretKey::from_bytes(&identity.signing_key()?.to_bytes());
+    let key = iroh::SecretKey::from_bytes(
+        &identity
+            .signer
+            .endpoint_secret()
+            .ok_or("this device's key dials only through its custody")?,
+    );
     // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network until a workspace this
     // session shows has someone else in it. A peer's key also resolves on the local network

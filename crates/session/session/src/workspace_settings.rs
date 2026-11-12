@@ -408,7 +408,7 @@ fn withdraw_bot(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, entry: &
         tracing::debug!("this device holds no governance to withdraw a bot request in");
         return;
     };
-    if let Err(reason) = governance.withdraw_bot_request(entry) {
+    if let Err(reason) = pollster::block_on(governance.withdraw_bot_request(entry)) {
         refuse(seat, fed, &reason);
     }
 }
@@ -458,7 +458,7 @@ fn govern(
         .map(|engine| crate::membership::Membership::of(engine, workspace_id));
     if let Some(governance) = &governance {
         let writes = governance.changes(workspace, &changed);
-        if let Err(reason) = governance.write(&writes) {
+        if let Err(reason) = pollster::block_on(governance.write(&writes)) {
             return refuse(seat, fed, &reason);
         }
     }

@@ -135,11 +135,11 @@ impl OwnerCommitService for NativeOwnerCommits {
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
             let signer = custody.signer(&owner, room)?;
-            // The device's custody signs at once here, so the commit runs whole on this thread.
-            let committed =
-                owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall());
-            let (committed, receipt) =
-                collab_types::signer::at_once(committed).map_err(|error| error.to_string())??;
+            // The commit runs whole on this blocking thread, waiting here for the custody's
+            // signatures.
+            let (committed, receipt) = tokio::runtime::Handle::current().block_on(
+                owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall()),
+            )?;
             // What search holds of the record is read again from what it now
             // holds.
             if let (Some(changes), CommitOperation::Document { app, record, .. }) =

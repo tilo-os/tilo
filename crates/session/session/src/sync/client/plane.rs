@@ -496,8 +496,8 @@ async fn listening(
     // devices, when it offers one.
     served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
-    if let Some(device) = identity
-        .and_then(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))
+    if let Some(device) =
+        identity.map(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))
     {
         served.push((
             tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),

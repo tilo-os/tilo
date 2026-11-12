@@ -3872,8 +3872,8 @@ impl HostRouteScheduler<'_> {
         let host = addr.id;
         if let Some(expectation) = expectation.clone()
             && !content_discovery_tasks.contains_key(&(ws, host))
-            && let Ok(discovery_key) = identity.signing_key()
         {
+            let discovery_key = Arc::clone(&identity.signer);
             let discovery_endpoint = endpoint.clone();
             let discovery_addr = addr.clone();
             let discovery_identity = identity.clone();
@@ -3931,10 +3931,7 @@ impl HostRouteScheduler<'_> {
         }
         let endpoint = endpoint.clone();
         let identity = identity.clone();
-        let Ok(key) = identity.signing_key() else {
-            connecting.remove(&(ws, host));
-            return;
-        };
+        let key = Arc::clone(&identity.signer);
         let (device_cert, revocation_entries) = identity.material_for(ws);
         // A member's device reaches a workspace host over the v2 stream; a
         // device that can act as a host itself uses the v1 stream.

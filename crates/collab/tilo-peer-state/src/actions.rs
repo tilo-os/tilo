@@ -35,7 +35,7 @@
 //! reports the original invocation.
 
 use crate::direct::Replica;
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -258,7 +258,7 @@ pub struct ActionPlane(Arc<Inner>);
 
 struct Inner {
     /// The device whose signature every request it makes carries.
-    device: SigningKey,
+    device: Arc<dyn DeviceSigner>,
     /// The workspaces this device holds, by workspace id.
     replicas: Mutex<BTreeMap<String, Replica>>,
     /// Where this device keeps its workspaces, when they are not [`Replica`]s
@@ -277,10 +277,7 @@ struct Inner {
 impl std::fmt::Debug for ActionPlane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionPlane")
-            .field(
-                "device",
-                &hex::encode(self.0.device.verifying_key().as_bytes()),
-            )
+            .field("device", &hex::encode(self.0.device.device_public_key()))
             .field("workspaces", &self.0.replicas.lock_recover().len())
             .finish_non_exhaustive()
     }
@@ -298,19 +295,22 @@ impl ActionPlane {
     ///
     /// Outside a runtime context, where there is nothing to answer on.
     #[must_use]
-    pub fn new(device: SigningKey, dispatcher: Arc<dyn ActionHost + Send + Sync>) -> Self {
+    pub fn new(
+        device: impl DeviceSigner + 'static,
+        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+    ) -> Self {
         Self::with_bounds(device, dispatcher, Bounds::default())
     }
 
     /// [`Self::new`] with per-person bounds of the caller's choosing.
     #[must_use]
     pub fn with_bounds(
-        device: SigningKey,
+        device: impl DeviceSigner + 'static,
         dispatcher: Arc<dyn ActionHost + Send + Sync>,
         bounds: Bounds,
     ) -> Self {
         Self(Arc::new(Inner {
-            device,
+            device: Arc::new(device),
             replicas: Mutex::default(),
             workspaces: None,
             dispatcher,
@@ -330,12 +330,12 @@ impl ActionPlane {
     /// Outside a runtime context, where there is nothing to answer on.
     #[must_use]
     pub fn over(
-        device: SigningKey,
+        device: impl DeviceSigner + 'static,
         dispatcher: Arc<dyn ActionHost + Send + Sync>,
         workspaces: Arc<dyn Workspaces>,
     ) -> Self {
         Self(Arc::new(Inner {
-            device,
+            device: Arc::new(device),
             replicas: Mutex::default(),
             workspaces: Some(workspaces),
             dispatcher,
@@ -350,7 +350,7 @@ impl ActionPlane {
     /// This device's public key, as the other devices see it.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
-        self.0.device.verifying_key().to_bytes()
+        self.0.device.device_public_key()
     }
 
     /// Answer requests for `replica`'s workspace.
@@ -426,7 +426,7 @@ impl ActionPlane {
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             target: *addr.id.as_bytes(),
-            key: self.0.device.clone(),
+            key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
             next_correlation: AtomicU64::new(1),
@@ -956,7 +956,7 @@ struct Device {
     addr: EndpointAddr,
     workspace: String,
     target: [u8; 32],
-    key: SigningKey,
+    key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
     /// The connection to this device, kept while it lasts: one per pair.
     connection: Mutex<Option<Connection>>,
@@ -1068,12 +1068,12 @@ impl Device {
             &DeviceAction {
                 workspace: self.workspace.clone(),
                 request_id: uuid::Uuid::new_v4(),
-                source: self.key.verifying_key().to_bytes(),
+                source: self.key.device_public_key(),
                 target: self.target,
                 message,
             },
             now_ns(),
-            &self.key,
+            self.key.as_ref(),
         )
         .map_err(|error| unavailable(&error.to_string()))?;
         let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed)))

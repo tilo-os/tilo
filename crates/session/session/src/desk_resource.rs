@@ -779,17 +779,16 @@ impl Desk {
                     "this session takes part in no transport, so no link can name it".to_owned(),
                 )
             })?;
-        let issued = engine
-            .issue_invitation(
-                &room.to_string(),
-                role,
-                invitee_name,
-                recipient,
-                expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
-                &endpoint,
-                std::time::SystemTime::now(),
-            )
-            .map_err(DoorError::Failed)?;
+        let issued = pollster::block_on(engine.issue_invitation(
+            &room.to_string(),
+            role,
+            invitee_name,
+            recipient,
+            expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
+            &endpoint,
+            std::time::SystemTime::now(),
+        ))
+        .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({
                 "invite": issued.invite,

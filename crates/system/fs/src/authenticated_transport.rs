@@ -191,7 +191,7 @@ where
             credentials.cert().clone(),
             local_endpoint,
             remote_challenge,
-            credentials.signing_key(),
+            credentials.signer(),
         )?;
         let remote_frame = exchange_frame(
             reader,
@@ -610,7 +610,7 @@ mod tests {
                     attacker.credentials.cert().clone(),
                     attacker.endpoint,
                     local_challenge,
-                    attacker.credentials.signing_key(),
+                    attacker.credentials.signer(),
                 )
                 .unwrap();
                 proof.signature[0] ^= 1;

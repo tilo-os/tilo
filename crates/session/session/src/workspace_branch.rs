@@ -760,14 +760,17 @@ impl crate::Shared {
             return;
         };
         let engine = self.engine.clone();
-        if let Some(engine) = &engine {
-            let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
-            engine.found(slot, workspace, &name, endpoint.as_ref());
-        }
+        let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
         let until = Instant::now()
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
+        let founded = name.clone();
         let copied = Polled::new(Arc::clone(&self.wake_handle), async move {
+            if let Some(engine) = &engine {
+                engine
+                    .found(slot, workspace, &founded, endpoint.as_ref())
+                    .await;
+            }
             copy(engine.as_deref(), Places::here(), from, workspace, until).await
         });
         self.telling().show(
@@ -1234,8 +1237,8 @@ mod tests {
         let identity = identity();
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        engine.found(WorkspaceSlot(1), from, "Research", None);
-        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         let keys = channel_crypto::ChannelGroup::create(
             collab_types::workspace_scope(&to.to_string()),
             channel_crypto::MemberKey::generate("owner").unwrap(),
@@ -1319,8 +1322,8 @@ mod tests {
         let identity = identity();
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        engine.found(WorkspaceSlot(1), from, "Research", None);
-        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         let keys = channel_crypto::ChannelGroup::create(
             collab_types::workspace_scope(&to.to_string()),
             channel_crypto::MemberKey::generate("owner").unwrap(),
@@ -1389,8 +1392,8 @@ mod tests {
         let person = hex::encode(identity.device_cert.user_public_key);
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        engine.found(WorkspaceSlot(1), from, "Research", None);
-        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
+        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         assert!(engine.holds(from) && engine.holds(to));
         let channel = collab_types::workspace_scope(&to.to_string());
         let keys = channel_crypto::ChannelGroup::create(

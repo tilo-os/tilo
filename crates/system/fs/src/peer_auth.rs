@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ed25519_dalek::{Signer, Verifier};
+use ed25519_dalek::Verifier;
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -83,9 +83,9 @@ impl PeerAuthProof {
         cert: DeviceCert,
         prover_endpoint: [u8; 32],
         challenge: PeerAuthChallenge,
-        device_signing_key: &ed25519_dalek::SigningKey,
+        device: &dyn collab_types::signer::DeviceSigner,
     ) -> Result<Self, PeerAuthError> {
-        let device_public_key = device_signing_key.verifying_key().to_bytes();
+        let device_public_key = device.device_public_key();
         if cert.device_public_key != device_public_key || prover_endpoint != device_public_key {
             return Err(PeerAuthError::LocalKeyMismatch);
         }
@@ -95,7 +95,8 @@ impl PeerAuthProof {
             challenge,
             signature: [0; 64],
         };
-        proof.signature = device_signing_key.sign(&proof_digest(&proof)?).to_bytes();
+        proof.signature = collab_types::signer::sign_now(device, proof_digest(&proof)?.to_vec())
+            .map_err(|_| PeerAuthError::LocalKeyMismatch)?;
         Ok(proof)
     }
 }

@@ -28,7 +28,7 @@ pub mod sealed;
 pub mod task_delegation;
 
 use base64::Engine as _;
-use ed25519_dalek::{Signer as _, Verifier as _};
+use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
@@ -553,9 +553,9 @@ pub fn sign_transport_hint(
     opaque_json: impl Into<String>,
     host: DeviceCert,
     service_public_key: [u8; 32],
-    host_key: &ed25519_dalek::SigningKey,
+    host_key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<TransportHint, String> {
-    if host_key.verifying_key().to_bytes() != host.device_public_key {
+    if host_key.device_public_key() != host.device_public_key {
         return Err("transport hint signer is not the certified host device".into());
     }
     let kind = kind.into();
@@ -573,7 +573,8 @@ pub fn sign_transport_hint(
         opaque_json,
         host,
         service_public_key,
-        host_signature: host_key.sign(&digest).to_bytes(),
+        host_signature: collab_types::signer::sign_now(host_key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 
@@ -764,15 +765,16 @@ fn validate_decoded(
 /// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_join_proof(
     challenge: JoinChallenge,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<JoinProof, String> {
-    if key.verifying_key().to_bytes() != challenge.device_public_key {
+    if key.device_public_key() != challenge.device_public_key {
         return Err("join proof signer is not the challenged device".into());
     }
     let digest = tagged_digest(JOIN_PROOF_DOMAIN, &challenge)?;
     Ok(JoinProof {
         challenge,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 
@@ -906,15 +908,16 @@ pub fn verify_stored_complete(
 /// Returns an error if the challenge cannot be encoded for signing.
 pub fn sign_membership_proof(
     challenge: MembershipChallenge,
-    key: &ed25519_dalek::SigningKey,
+    key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<MembershipProof, String> {
-    if key.verifying_key().to_bytes() != challenge.device_public_key {
+    if key.device_public_key() != challenge.device_public_key {
         return Err("membership proof signer is not the challenged device".into());
     }
     let digest = tagged_digest(MEMBERSHIP_PROOF_DOMAIN, &challenge)?;
     Ok(MembershipProof {
         challenge,
-        signature: key.sign(&digest).to_bytes(),
+        signature: collab_types::signer::sign_now(key, digest.to_vec())
+            .map_err(|error| error.to_string())?,
     })
 }
 
