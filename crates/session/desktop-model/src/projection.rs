@@ -145,20 +145,21 @@ fn project_blob_map(
 }
 
 /// The values of the map at `key` that decode, with their keys.
+///
+/// The map is walked once, each key with the value a lookup by it reads: a
+/// workspace's member map holds a row per member, and looking each one up
+/// on its own cost a seek per member through a map that grows with them.
 fn blob_map_of<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Vec<(String, T)> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    use automerge::{ROOT, ReadDoc, ScalarValueRef, ValueRef};
 
     let Some((_, map)) = doc.get(&ROOT, key).ok().flatten() else {
         return Vec::new();
     };
-    doc.keys(&map)
-        .filter_map(|name| match doc.get(&map, name.as_str()).ok().flatten() {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(blob) => {
-                    serde_json::from_slice(blob).ok().map(|value| (name, value))
-                }
-                _ => None,
-            },
+    doc.map_range(&map, ..)
+        .filter_map(|item| match &item.value {
+            ValueRef::Scalar(ScalarValueRef::Bytes(blob)) => serde_json::from_slice(blob)
+                .ok()
+                .map(|value| (item.key.into_owned(), value)),
             _ => None,
         })
         .collect()
