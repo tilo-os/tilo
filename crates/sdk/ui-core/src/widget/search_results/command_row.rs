@@ -121,7 +121,12 @@ pub(super) fn draw(
     let avail = (text_right - text_x).max(0.0);
 
     let label = text_renderer.elide_to_width_style(&result.title, f32_of_f64(avail), &label_style);
-    let label_marks = match_ranges(state.highlight, &label, tilo_search::FieldWeight::TITLE);
+    let label_marks = marked_spans(
+        row,
+        state.highlight,
+        &label,
+        tilo_search::FieldWeight::TITLE,
+    );
     let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
     let Some(desc) = result.subtitle.as_deref() else {
         let (_, height) = ctx.text.measure_style(&label, None, &label_style);
@@ -161,7 +166,12 @@ pub(super) fn draw(
     // description, so a row never shouts twice.
     let marks = |text: &str| {
         if label_marks.is_empty() {
-            match_ranges(state.highlight, text, tilo_search::FieldWeight::SUBTITLE)
+            marked_spans(
+                row,
+                state.highlight,
+                text,
+                tilo_search::FieldWeight::SUBTITLE,
+            )
         } else {
             Vec::new()
         }
@@ -393,6 +403,23 @@ pub(super) fn match_ranges(
     merged
 }
 
+/// What `row` sets off in `text`: the query's words where they matched, and
+/// nothing at all in a row that echoes the query. Highlighting says why a row
+/// was found; a row that just says what was typed was found by nothing, and
+/// marking its words marks the person's own sentence ([`CommandRow::echoes_query`]).
+fn marked_spans(
+    row: &CommandRow,
+    query: &str,
+    text: &str,
+    weight: tilo_search::FieldWeight,
+) -> Vec<std::ops::Range<usize>> {
+    if row.echoes_query {
+        Vec::new()
+    } else {
+        match_ranges(query, text, weight)
+    }
+}
+
 /// `text` at `origin`, the parts in `ranges` in a heavier weight.
 fn draw_marked(
     ctx: &mut PaintCtx<'_>,
@@ -475,6 +502,35 @@ pub(super) fn elide_middle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row that says the query back — "Search the web for book a table", "Send to Ada: book a
+    /// table" — is found by nothing: marking its words marks the person's own sentence, so the
+    /// row sets off no span of it, while a row the query really matched keeps its marks.
+    #[test]
+    fn a_row_that_restates_the_query_sets_nothing_off_in_it() {
+        let title = tilo_search::FieldWeight::TITLE;
+        let restated = "Send to Assistant: book a table for two on Friday";
+        let echo = CommandRow {
+            echoes_query: true,
+            ..CommandRow::default()
+        };
+        assert!(
+            marked_spans(&echo, "book a table for two on Friday", restated, title).is_empty(),
+            "an echo sets off nothing"
+        );
+        let found = CommandRow::default();
+        assert_eq!(
+            marked_spans(
+                &found,
+                "book a table",
+                "Search the web for book a table",
+                title
+            )
+            .first(),
+            Some(&(19..23)),
+            "a row the query matched still shows where"
+        );
+    }
 
     #[test]
     fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {

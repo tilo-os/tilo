@@ -615,7 +615,8 @@ impl IndexedContent {
     fn unlock_row(&self, app: &str, needle: &str, score: i32) -> Hit {
         let name = (self.app_name)(app);
         Hit {
-            row: None,
+            // The row says what was typed back, in quotes: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,

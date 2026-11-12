@@ -168,7 +168,8 @@ impl Ask {
         };
         let preview = body.map(|body| SearchPreview::default().body(body));
         Hit {
-            row: None,
+            // The row says the question back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview,
             faces: Vec::new(),
             outcome: Some(tilo_desktop_search::i18n::t("search-ask-copy")),
@@ -419,6 +420,12 @@ mod tests {
         }
         let row = ask.row("what is a CRDT?");
         assert_eq!(row.title, "Ask Anthropic: what is a CRDT?");
+        // The row says the question back, so nothing in it is drawn as a match.
+        assert!(
+            matches!(&row.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
+            "the row declares it echoes the query: {:?}",
+            row.row
+        );
         assert_eq!(row.subtitle.as_deref(), Some("Claude"));
         assert_eq!(
             row.preview

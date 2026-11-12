@@ -1161,7 +1161,8 @@ impl WebSearch {
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
-            row: None,
+            // The row says the query back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -1232,7 +1233,8 @@ impl WebSearch {
             ),
         };
         Hit {
-            row: None,
+            // The row says `query` back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -2325,6 +2327,25 @@ mod tests {
         );
         assert!(WebSearch::default().query("   ").is_empty());
         assert!(Answers::default().query("   ").is_empty());
+    }
+
+    /// The rows that say the query back — to the web, to a service — are found by nothing, and
+    /// say so, so the palette sets off no span of the person's own words in them. A service
+    /// named alone is a result and keeps its match.
+    #[test]
+    fn a_row_that_says_the_query_back_declares_it() {
+        let echoes = |hit: &Hit| matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query);
+        let rows = WebSearch::default().query("youtube cats");
+        assert_eq!(rows.len(), 2, "the service search, then the web: {rows:?}");
+        for hit in &rows {
+            assert!(echoes(hit), "{} restates the query", hit.title);
+        }
+        let service = WebSearch::default().query("youtube");
+        let named = service
+            .iter()
+            .find(|hit| hit.title == "YouTube")
+            .expect("the service named alone");
+        assert!(!echoes(named), "a service found by name is a result");
     }
 
     #[test]

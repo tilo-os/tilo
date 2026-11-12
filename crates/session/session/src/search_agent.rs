@@ -51,7 +51,8 @@ impl Source for AskAgent {
             return Vec::new();
         }
         vec![Hit {
-            row: None,
+            // The row says what was typed back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -106,6 +107,12 @@ mod tests {
         assert_eq!(hit.title, "Send to Tide: book a table for two");
         assert_eq!(hit.kind, ask_agent::kind());
         assert!(ask_agent::is_row(&hit), "the session's own row");
+        // The row says what was typed back, so nothing in it is drawn as a match.
+        assert!(
+            matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query),
+            "the row declares it echoes the query: {:?}",
+            hit.row
+        );
         let Target::Invoke(target) = &hit.target else {
             panic!("the row runs the send");
         };
