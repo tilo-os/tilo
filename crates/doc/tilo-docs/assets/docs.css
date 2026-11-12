@@ -388,6 +388,8 @@ pre .v { color: #8fd6e6; }
 .result-where { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.82rem; color: var(--ink-3); }
 .result-text { margin-top: 0.15rem; font-size: 0.88rem; color: var(--ink-2); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .results mark { background: none; color: var(--accent-ink); font-weight: 640; }
+.search-again { padding: 0.6rem 1rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 560; cursor: pointer; }
+.search-again:hover { border-color: var(--accent); }
 .search-empty { margin: 0; padding: 1.5rem 1.25rem; color: var(--ink-3); font-size: 0.95rem; }
 
 /* Narrower screens */

@@ -107,6 +107,10 @@ pub fn build(book: &Book, out: &Path, options: &Options) -> Result<Report, Error
         });
     }
     writer.write(Path::new("search.json"), search::index(&entries).as_bytes())?;
+    writer.write(
+        Path::new("404.html"),
+        layout::not_found(book, &assets).as_bytes(),
+    )?;
     let summary = book
         .pages
         .first()

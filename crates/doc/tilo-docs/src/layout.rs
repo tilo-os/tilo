@@ -47,30 +47,101 @@ pub fn page(context: &Context<'_>) -> String {
         rendered,
         ..
     } = context;
-    let base = escape(&book.base);
     let mut html = String::with_capacity(rendered.html.len().saturating_add(16 * 1024));
-    let full_title = if page.slug.is_empty() {
+    let title = if page.slug.is_empty() {
         book.title.clone()
     } else {
         format!("{} – {}", page.title, book.title)
     };
-    let canonical = escape(&book.absolute(&page.url));
+    let canonical = book.absolute(&page.url);
+    let markdown = page.markdown_url(&book.base);
+    head(
+        &mut html,
+        book,
+        assets,
+        &Meta {
+            title: &title,
+            description: &page.description,
+            page: Some((&page.title, &canonical, &markdown)),
+        },
+    );
+    html.push_str("<div class=\"layout\">\n");
+    navigation(&mut html, book, Some(page));
+    article(&mut html, context);
+    contents(&mut html, rendered);
+    html.push_str("</div>\n");
+    search_dialog(&mut html);
+    html.push_str("</body>\n</html>\n");
+    html
+}
+
+/// The page for an address in the book that names no page.
+#[must_use]
+pub fn not_found(book: &Book, assets: &Assets) -> String {
+    let mut html = String::with_capacity(16 * 1024);
+    let title = format!("No page here – {}", book.title);
+    head(
+        &mut html,
+        book,
+        assets,
+        &Meta {
+            title: &title,
+            description: "There is no page at this address.",
+            page: None,
+        },
+    );
+    html.push_str("<div class=\"layout\">\n");
+    navigation(&mut html, book, None);
+    let _ = write!(
+        html,
+        "<main id=\"content\" class=\"page\">\n<article>\n<h1>No page here</h1>\n\
+         <p>Nothing in the docs is at this address. It may have moved: search for what you were after, \
+         or start from the <a href=\"{}\">overview</a>.</p>\n\
+         <p><button type=\"button\" class=\"search-again\" data-search>Search the docs</button></p>\n\
+         </article>\n</main>\n<aside class=\"toc\" aria-hidden=\"true\"></aside>\n</div>\n",
+        escape(&book.base)
+    );
+    search_dialog(&mut html);
+    html.push_str("</body>\n</html>\n");
+    html
+}
+
+/// What a page's head says about it; `page` is its title, canonical address
+/// and Markdown address, for a page of the book.
+struct Meta<'a> {
+    title: &'a str,
+    description: &'a str,
+    page: Option<(&'a str, &'a str, &'a str)>,
+}
+
+fn head(html: &mut String, book: &Book, assets: &Assets, meta: &Meta<'_>) {
     let _ = write!(
         html,
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n<meta name=\"description\" content=\"{description}\">\n\
-         <link rel=\"canonical\" href=\"{canonical}\">\n\
-         <link rel=\"alternate\" type=\"text/markdown\" href=\"{markdown}\" title=\"This page as Markdown\">\n\
-         <meta property=\"og:type\" content=\"article\">\n<meta property=\"og:title\" content=\"{og_title}\">\n\
-         <meta property=\"og:description\" content=\"{description}\">\n<meta property=\"og:url\" content=\"{canonical}\">\n\
-         <meta name=\"color-scheme\" content=\"light dark\">\n\
-         <link rel=\"icon\" href=\"{icon}\" type=\"image/svg+xml\">\n",
-        title = escape(&full_title),
-        description = escape(&page.description),
-        markdown = escape(&page.markdown_url(&book.base)),
-        og_title = escape(&page.title),
-        icon = escape(&assets.icon),
+         <title>{}</title>\n<meta name=\"description\" content=\"{}\">\n",
+        escape(meta.title),
+        escape(meta.description),
+    );
+    if let Some((title, canonical, markdown)) = meta.page {
+        let _ = write!(
+            html,
+            "<link rel=\"canonical\" href=\"{canonical}\">\n\
+             <link rel=\"alternate\" type=\"text/markdown\" href=\"{markdown}\" title=\"This page as Markdown\">\n\
+             <meta property=\"og:type\" content=\"article\">\n<meta property=\"og:title\" content=\"{title}\">\n\
+             <meta property=\"og:description\" content=\"{description}\">\n<meta property=\"og:url\" content=\"{canonical}\">\n",
+            canonical = escape(canonical),
+            markdown = escape(markdown),
+            title = escape(title),
+            description = escape(meta.description),
+        );
+    } else {
+        html.push_str("<meta name=\"robots\" content=\"noindex\">\n");
+    }
+    let _ = writeln!(
+        html,
+        "<meta name=\"color-scheme\" content=\"light dark\">\n<link rel=\"icon\" href=\"{}\" type=\"image/svg+xml\">",
+        escape(&assets.icon)
     );
     for font in &assets.preload_fonts {
         let _ = writeln!(
@@ -85,16 +156,9 @@ pub fn page(context: &Context<'_>) -> String {
          <body data-base=\"{base}\">\n<a class=\"skip\" href=\"#content\">Skip to the page</a>\n",
         stylesheet = escape(&assets.stylesheet),
         script = escape(&assets.script),
+        base = escape(&book.base),
     );
-    header(&mut html, book);
-    html.push_str("<div class=\"layout\">\n");
-    navigation(&mut html, book, page);
-    article(&mut html, context);
-    contents(&mut html, rendered);
-    html.push_str("</div>\n");
-    search_dialog(&mut html);
-    html.push_str("</body>\n</html>\n");
-    html
+    header(html, book);
 }
 
 fn header(html: &mut String, book: &Book) {
@@ -111,7 +175,7 @@ fn header(html: &mut String, book: &Book) {
     );
 }
 
-fn navigation(html: &mut String, book: &Book, current: &Page) {
+fn navigation(html: &mut String, book: &Book, current: Option<&Page>) {
     html.push_str("<nav id=\"nav\" class=\"nav\" aria-label=\"Pages\">\n");
     let mut open = None;
     for (number, page) in &book.pages {
@@ -130,7 +194,7 @@ fn navigation(html: &mut String, book: &Book, current: &Page) {
                 escape(title)
             );
         }
-        let here = if page.id == current.id {
+        let here = if current.is_some_and(|current| current.id == page.id) {
             " aria-current=\"page\""
         } else {
             ""
