@@ -130,7 +130,10 @@ const ALONGSIDE_BOOT_GUIDANCE: &str = "installer-storage-boot-guidance";
 const ALONGSIDE_FILES_GUIDANCE: &str = "installer-storage-files-guidance";
 
 fn connect_power_message(percent: u8) -> String {
-    format!("The battery is at {percent}%. Connect this computer to power before installing.")
+    CATALOG.t_args(
+        "installer-battery-power",
+        &[("percent", ArgValue::Number(f64::from(percent)))],
+    )
 }
 
 fn alongside_install_impact(guided: bool, dev: &str) -> String {
@@ -241,9 +244,9 @@ impl ProfileCompletion {
 /// case is never one sentence carrying two facts.
 fn fs_description(i: usize) -> &'static str {
     match i {
-        0 => "Snapshots, compression and rollback.",
-        1 => "Simple and battle-tested, with no snapshot support.",
-        2 => "High throughput for large files, with no snapshot support.",
+        0 => "installer-fs-btrfs",
+        1 => "installer-fs-ext4",
+        2 => "installer-fs-xfs",
         _ => "",
     }
 }
@@ -276,24 +279,15 @@ enum VerifiedBootState {
     TargetVerified,
 }
 
-fn encrypt_description(state: VerifiedBootState) -> &'static str {
-    match state {
-        VerifiedBootState::TargetVerified => {
-            "Tilo encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized Tilo boot measurement. You will use a short startup PIN; a recovery key is shown once during install."
-        }
-        VerifiedBootState::TargetUnverified => {
-            "Tilo always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
-        }
-        VerifiedBootState::KernelLockdownInactive => {
-            "Tilo always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so Tilo cannot treat this boot as verified and uses a strong disk passphrase instead."
-        }
-        VerifiedBootState::SecureBootInactive => {
-            "Tilo always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
-        }
-        VerifiedBootState::NoTpm => {
-            "Tilo always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
-        }
-    }
+fn encrypt_description(state: VerifiedBootState) -> String {
+    let message = match state {
+        VerifiedBootState::TargetVerified => "installer-encrypt-verified",
+        VerifiedBootState::TargetUnverified => "installer-encrypt-target-unverified",
+        VerifiedBootState::KernelLockdownInactive => "installer-encrypt-lockdown-off",
+        VerifiedBootState::SecureBootInactive => "installer-encrypt-secure-boot-off",
+        VerifiedBootState::NoTpm => "installer-encrypt-no-tpm",
+    };
+    CATALOG.t(message)
 }
 
 /// Control sentinels sent over the `External` channel by the install
@@ -1055,11 +1049,14 @@ impl InstallerApp {
 
     fn filesystem_policy_message(&self) -> String {
         if let Some(message) = &self.filesystem_policy_error {
-            return format!("{message}. Installation is unavailable.");
+            return CATALOG.t_args(
+                "installer-install-unavailable",
+                &[("message", ArgValue::Text(message.clone()))],
+            );
         }
-        format!(
-            "{} cannot boot from this image's initramfs; choose a supported filesystem.",
-            self.filesystem()
+        CATALOG.t_args(
+            "installer-filesystem-cannot-boot",
+            &[("filesystem", ArgValue::Text(self.filesystem().to_owned()))],
         )
     }
 
@@ -2856,7 +2853,7 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
-            Text::new(encrypt_description(self.verified_boot_state()))
+            Text::new(&encrypt_description(self.verified_boot_state()))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -3071,7 +3068,7 @@ impl InstallerApp {
             "filesystem_choice",
         )));
         children.push(Box::new(
-            Text::new(fs_description(self.selected_fs))
+            Text::new(&crate::setup::strings::t(fs_description(self.selected_fs)))
                 .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));

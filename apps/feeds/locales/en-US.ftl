@@ -65,3 +65,28 @@ feeds-rename-caption = Choose any name for this feed.
 feeds-rename-label = Feed name
 feeds-tags-caption = Separate tags with commas.
 feeds-tags-label = Tags
+
+## What the overview, a refresh and the reading settings say
+feeds-status-refreshing = Refreshing { $done } of { $total } feeds
+feeds-status-new = { $count ->
+    [one] 1 new article
+   *[other] { $count } new articles
+}
+feeds-status-failed = { $count ->
+    [one] 1 feed could not be refreshed
+   *[other] { $count } feeds could not be refreshed
+}
+feeds-status-up-to-date = All feeds are up to date
+feeds-filter-all = All articles
+feeds-filter-unread = Unread
+feeds-filter-starred = Starred
+feeds-filter-folder = Folder
+feeds-filter-feed = Feed
+feeds-filter-tag = Tag
+feeds-theme-system = System
+feeds-theme-light = Light
+feeds-theme-sepia = Sepia
+feeds-theme-dark = Dark
+feeds-font-sans = Sans
+feeds-font-serif = Serif
+feeds-font-mono = Mono

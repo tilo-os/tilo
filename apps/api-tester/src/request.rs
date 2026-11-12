@@ -224,7 +224,7 @@ pub(crate) fn section(
     let tabs = ui::widget::ViewTabs::new(
         RequestTab::ALL
             .iter()
-            .map(|t| Segment::new(t.label()))
+            .map(|t| Segment::new(crate::locales::CATALOG.t(t.message())))
             .collect(),
         RequestTab::ALL.iter().position(|t| *t == tab).unwrap_or(0),
     )
@@ -297,9 +297,9 @@ fn table_panel(
 // ---------------------------------------------------------------------------
 
 fn auth_kind_index(auth: &Auth) -> usize {
-    Auth::LABELS
+    Auth::SCHEMES
         .iter()
-        .position(|label| *label == auth.label())
+        .position(|scheme| *scheme == auth.scheme())
         .unwrap_or(0)
 }
 
@@ -406,9 +406,9 @@ pub(crate) fn auth_inner(auth: &Auth, sink: &Sink) -> Element {
 fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     let kind_sink = sink.clone();
     let kind = ToggleGroup::new(
-        Auth::LABELS
+        Auth::SCHEMES
             .iter()
-            .map(|label| Segment::new(*label))
+            .map(|scheme| Segment::new(crate::locales::CATALOG.t(Auth::scheme_message(scheme))))
             .collect(),
         auth_kind_index(&request.auth),
     )
@@ -471,7 +471,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
     let modes = ToggleGroup::new(
         BodyMode::ALL
             .iter()
-            .map(|mode| Segment::new(mode.label()))
+            .map(|mode| Segment::new(crate::locales::CATALOG.t(mode.message())))
             .collect(),
         BodyMode::ALL
             .iter()

@@ -361,9 +361,9 @@ impl ConvertPage {
             for label in convert::DIMENSIONS
                 .iter()
                 .map(|dimension| dimension.label())
-                .chain(std::iter::once("Currency"))
+                .chain(std::iter::once(CATALOG.t("calculator-currency")))
             {
-                let face = ButtonFace::new(Rect::ZERO, label)
+                let face = ButtonFace::new(Rect::ZERO, &label)
                     .control_size(ControlSize::Small)
                     .role(ButtonRole::Secondary);
                 widths.push(face.intrinsic_width(text, theme));
@@ -459,7 +459,8 @@ impl ConvertPage {
         let m = self.m;
         // The quantity chips.
         for (dimension, rect) in &self.chips {
-            let face = ButtonFace::new(*rect, dimension.label())
+            let label = dimension.label();
+            let face = ButtonFace::new(*rect, &label)
                 .control_size(ControlSize::Small)
                 .role(ButtonRole::Secondary)
                 .toggled(*dimension == self.dimension);
@@ -645,7 +646,7 @@ impl crate::app::CalculatorApp {
             .map(|dimension| {
                 let target = ConvertAction::Quantity(dimension);
                 let mut node = AccessNode::new(Role::RadioButton)
-                    .with_name(dimension.label())
+                    .with_name(&dimension.label())
                     .with_action_target(ConvertPage::semantic_target(&target))
                     .with_state(
                         AccessState::new()

@@ -1592,3 +1592,25 @@ imager-retained-windows = Windows bleibt installiert und bleibt der Startstandar
 imager-retained-linux = Deine Linux-Installation bleibt, wie sie ist, und bleibt die voreingestellte Sitzung.
 imager-retained-other = Dein jetziges System bleibt installiert und bleibt der Standard.
 imager-desktop-unsupported-component = Eine für den Desktop nötige Komponente wird nicht unterstützt. Behebe das unten und prüfe dann erneut.
+
+## What the destination step and the copy say
+installer-battery-power = Der Akku steht bei { $percent } %. Schließe diesen Computer vor der Installation an das Stromnetz an.
+installer-fs-btrfs = Snapshots, Kompression und Zurückrollen.
+installer-fs-ext4 = Einfach und bewährt, ohne Snapshots.
+installer-fs-xfs = Hoher Durchsatz für große Dateien, ohne Snapshots.
+installer-encrypt-verified = Tilo verschlüsselt die Festplatte mit LUKS2 und bindet das Entsperren an den Secure-Boot-Zustand dieses Computers und die freigegebene Tilo-Startmessung. Du nutzt eine kurze Start-PIN; ein Wiederherstellungsschlüssel wird einmal während der Installation angezeigt.
+installer-encrypt-target-unverified = Tilo verschlüsselt die Festplatte immer mit LUKS2. Für diese Installation ist kein verifizierter Start möglich, nutze daher eine starke Startpassphrase. Eine kurze PIN ist nur sicher, wenn das TPM die vollständige Startkette prüfen kann.
+installer-encrypt-lockdown-off = Tilo verschlüsselt die Festplatte immer mit LUKS2. Secure Boot ist aktiv, der Kernel-Lockdown aber nicht, daher kann Tilo diesen Start nicht als verifiziert behandeln und nutzt stattdessen eine starke Festplattenpassphrase.
+installer-encrypt-secure-boot-off = Tilo verschlüsselt die Festplatte immer mit LUKS2. Kurze PINs über TPM2 setzen einen verifizierten Start voraus, aber Secure Boot ist nicht aktiv, daher nutzt diese Installation eine starke Festplattenpassphrase.
+installer-encrypt-no-tpm = Tilo verschlüsselt die Festplatte immer mit LUKS2. Dieser Computer hat keinen TPM2-Chip, daher gibst du beim Start eine Festplattenpassphrase ein. Ein Wiederherstellungsschlüssel wird einmal während der Installation als Sicherung angezeigt.
+installer-filesystem-cannot-boot = Mit { $filesystem } startet dieses Image nicht; wähle ein unterstütztes Dateisystem.
+installer-image-official = Offizielle Tilo-Version, geprüft
+installer-image-local = Lokales Image, unverändert geschrieben
+installer-copy-awaiting-review = Wartet auf deine Prüfung, bevor etwas kopiert wird.
+installer-copy-ready = Geprüft und bereit zum Start.
+installer-copy-running = Dateien werden kopiert und geprüft
+installer-copy-interrupted = Die Kopie wurde unterbrochen. Prüfe die Ordner und fahre dann fort, wenn du bereit bist.
+installer-copy-stopped = Kopie gestoppt. Geprüfte Dateien wurden behalten.
+installer-copy-incomplete = Einige Elemente brauchen eine Prüfung, bevor die Kopie fertig werden kann.
+installer-copy-failed = Die Kopie konnte nicht starten. Öffne Details, bevor du es erneut versuchst.
+installer-copy-complete = Kopie geprüft und vollständig.

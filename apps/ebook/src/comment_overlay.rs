@@ -196,7 +196,7 @@ fn gather_content(
 fn comment_display(a: &Annotation) -> String {
     let note = a.note.clone();
     if note.trim().is_empty() {
-        "Empty comment".to_string()
+        crate::resource::CATALOG.t("ebook-empty-comment")
     } else {
         note
     }

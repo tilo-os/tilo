@@ -2448,3 +2448,25 @@ imager-retained-windows = Windows stays installed and remains the startup defaul
 imager-retained-linux = Your Linux installation stays as it is and remains the default session.
 imager-retained-other = Your current system stays installed and remains the default.
 imager-desktop-unsupported-component = A component needed for the desktop is unsupported. Resolve it below, then check again.
+
+## What the destination step and the copy say
+installer-battery-power = The battery is at { $percent }%. Connect this computer to power before installing.
+installer-fs-btrfs = Snapshots, compression and rollback.
+installer-fs-ext4 = Simple and battle-tested, with no snapshot support.
+installer-fs-xfs = High throughput for large files, with no snapshot support.
+installer-encrypt-verified = Tilo encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized Tilo boot measurement. You will use a short startup PIN; a recovery key is shown once during install.
+installer-encrypt-target-unverified = Tilo always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain.
+installer-encrypt-lockdown-off = Tilo always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so Tilo cannot treat this boot as verified and uses a strong disk passphrase instead.
+installer-encrypt-secure-boot-off = Tilo always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead.
+installer-encrypt-no-tpm = Tilo always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup.
+installer-filesystem-cannot-boot = { $filesystem } cannot boot this image; choose a supported filesystem.
+installer-image-official = Official Tilo release, verified
+installer-image-local = Local image, written unchanged
+installer-copy-awaiting-review = Waiting for your review before anything is copied.
+installer-copy-ready = Reviewed and ready to start.
+installer-copy-running = Copying and checking files
+installer-copy-interrupted = The copy was interrupted. Check the folders, then continue when ready.
+installer-copy-stopped = Copy stopped. Checked files were kept.
+installer-copy-incomplete = Some items need review before the copy can finish.
+installer-copy-failed = The copy could not start. Open Details before trying again.
+installer-copy-complete = Copy checked and complete.

@@ -84,6 +84,7 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
 use crate::resource::CATALOG;
+mod semantics;
 mod window_bar;
 
 use crate::paint;
@@ -318,6 +319,19 @@ enum SettingsTab {
     Library,
     /// The reader key bindings the person chose.
     Shortcuts,
+}
+
+impl SettingsTab {
+    /// The catalogue message naming this tab, painted on its strip and read
+    /// as its accessible name.
+    fn message_id(self) -> &'static str {
+        match self {
+            SettingsTab::Fonts => "ebook-tab-fonts",
+            SettingsTab::Colours => "ebook-tab-schemes",
+            SettingsTab::Library => "ebook-tab-library",
+            SettingsTab::Shortcuts => "ebook-tab-shortcuts",
+        }
+    }
 }
 
 /// Reader commands whose single-character bindings each person can tailor.
@@ -4117,321 +4131,6 @@ impl BooksApp {
 
     /// Stable identity for a painted affordance. Model identities are used in
     /// preference to display positions so an AT-held reference remains valid
-    /// when the shelf is sorted or annotations are reordered.
-    fn semantic_target(&self, action: &Action) -> Option<String> {
-        let target = match action {
-            Action::OpenBook(index) => format!("book.open:{}", self.shelf_book(*index)?.id),
-            Action::ShareToWorkspace(id) => format!("book.share:{id}"),
-            Action::RemoveFromLibrary(id) => format!("book.remove:{id}"),
-            Action::Back => "reader.back".into(),
-            Action::PrevPage => "reader.previous-page".into(),
-            Action::NextPage => "reader.next-page".into(),
-            Action::SeekProgress => "reader.progress".into(),
-            Action::GotoChapter(index) => format!("reader.chapter:{index}"),
-            Action::ToggleToc => "reader.contents".into(),
-            Action::ToggleNotes => "reader.annotations".into(),
-            Action::ToggleTypePopover => "reader.typography".into(),
-            Action::ToggleBookmark => "reader.bookmark".into(),
-            Action::FontInc => "reader.font-size.increment".into(),
-            Action::FontDec => "reader.font-size.decrement".into(),
-            Action::SpacingInc => "reader.line-spacing.increment".into(),
-            Action::SpacingDec => "reader.line-spacing.decrement".into(),
-            Action::CycleFont => "reader.font.next".into(),
-            Action::SetFont(id) => format!("reader.font:{id}"),
-            Action::SetReadTheme(theme) => format!("reader.theme:{}", theme.as_str()),
-            Action::SetMode(mode) => format!("reader.mode:{}", mode.as_str()),
-            Action::SetComposition(style) => format!("reader.composition:{}", style.as_str()),
-            Action::SetColor(color) => format!("reader.highlight:{color:?}"),
-            Action::AddNote => "reader.add-note".into(),
-            Action::CopySelection => "reader.copy-selection".into(),
-            Action::JumpTo(id) => format!("annotation.reveal:{id}"),
-            Action::Delete(id) => format!("annotation.delete:{id}"),
-            Action::EditNote(id) => format!("annotation.edit:{id}"),
-            Action::OpenComments(id) => format!("highlight.comments:{id}"),
-            Action::CloseComments => "highlight.comments.close".into(),
-            Action::DeleteHighlight(id) => format!("highlight.delete:{id}"),
-            Action::AddComment(id) => format!("highlight.comment.add:{id}"),
-            Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
-            Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
-            Action::OpenViaPortal => "library.open".into(),
-            Action::ToggleWatchFolder(path) => {
-                format!("library.watch:{}", ui::a11y::hash_key(path))
-            }
-            Action::ToggleKeepCatalogues => "library.keep-catalogues".into(),
-            Action::OpenSettings => "settings.open".into(),
-            Action::CloseSettings => "settings.close".into(),
-            Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
-            Action::BeginShortcutCapture(shortcut) => {
-                format!("settings.shortcut:{}", shortcut.id())
-            }
-            Action::SetScheme(id) => format!("settings.scheme.select:{id}"),
-            Action::ToggleSchemeEnabled(id) => format!("settings.scheme.enabled:{id}"),
-            Action::DuplicateScheme(id) => format!("settings.scheme.duplicate:{id}"),
-            Action::DeleteScheme(id) => format!("settings.scheme.delete:{id}"),
-            Action::EditScheme(id) => format!("settings.scheme.edit:{id}"),
-            Action::CloseSchemeEditor => "settings.scheme-editor.close".into(),
-            Action::NewSchemeViaPicker => "settings.scheme.new".into(),
-            Action::PickSchemeColor(id, slot) => format!("settings.scheme.color:{id}:{slot}"),
-            Action::BeginRenameScheme(id) => format!("settings.scheme.rename:{id}"),
-            Action::ToggleFontShown(id) => format!("settings.font.shown:{id}"),
-            Action::RemoveFont(id) => format!("settings.font.remove:{id}"),
-            Action::OpenFontPicker => "settings.font.add".into(),
-            Action::CloseFontPicker => "settings.font-picker.close".into(),
-            Action::AddSystemFont(family) => {
-                format!("settings.font.add:{}", ui::a11y::hash_key(family))
-            }
-            Action::BeginRenameFont(id) => format!("settings.font.rename:{id}"),
-            Action::OpenHit(anchor) => format!("search.open:{anchor}"),
-            Action::GetBook(id) => format!("search.get:{id}"),
-            Action::RetryRemote(source) => format!("search.retry:{}", ui::a11y::hash_key(source)),
-            Action::CloseSearch => "search.back".into(),
-            Action::DismissOverlay
-            | Action::Swallow
-            | Action::SetQuery(_)
-            | Action::OpenFacet(_) => return None,
-        };
-        Some(format!("books.{target}"))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the exhaustive action-to-accessible-label mapping is intentionally co-located"
-    )]
-    fn semantic_label(&self, action: &Action) -> String {
-        match action {
-            Action::OpenBook(index) => self
-                .shelf_book(*index)
-                .map_or_else(|| "Open book".into(), |book| format!("Open {}", book.title)),
-            Action::ShareToWorkspace(id) => {
-                self.library.iter().find(|book| book.id == *id).map_or_else(
-                    || "Share book with workspace".into(),
-                    |book| format!("Share {} with workspace", book.title),
-                )
-            }
-            Action::RemoveFromLibrary(id) => {
-                self.library.iter().find(|book| book.id == *id).map_or_else(
-                    || "Remove book from library".into(),
-                    |book| format!("Remove {} from library", book.title),
-                )
-            }
-            Action::Back | Action::CloseSettings => "Back to library".into(),
-            Action::PrevPage => "Previous page".into(),
-            Action::NextPage => "Next page".into(),
-            Action::SeekProgress => {
-                format!(
-                    "Reading progress: {}",
-                    progress_label(self.reading_progress)
-                )
-            }
-            Action::GotoChapter(index) => self
-                .open_book()
-                .and_then(|book| book.chapters.get(*index))
-                .map_or_else(
-                    || format!("Go to chapter {}", index + 1),
-                    |c| c.title.clone(),
-                ),
-            Action::ToggleToc => "Contents".into(),
-            Action::ToggleNotes => "Annotations".into(),
-            Action::ToggleTypePopover => "Reading appearance".into(),
-            Action::ToggleBookmark => "Bookmark this page".into(),
-            Action::FontInc => "Increase text size".into(),
-            Action::FontDec => "Decrease text size".into(),
-            Action::SpacingInc => "Increase line spacing".into(),
-            Action::SpacingDec => "Decrease line spacing".into(),
-            Action::CycleFont => "Use next typeface".into(),
-            Action::SetFont(id) => self
-                .fonts
-                .iter()
-                .find(|font| font.id == *id)
-                .map_or_else(|| id.clone(), |font| font.name.clone()),
-            Action::SetReadTheme(theme) => format!("{} reading theme", theme.label()),
-            Action::SetMode(mode) => format!("{} layout", mode.label()),
-            Action::SetComposition(style) => format!("{} text", style.label()),
-            Action::SetColor(color) => format!("Highlight {color:?}").to_lowercase(),
-            Action::AddNote => "Add note".into(),
-            Action::CopySelection => "Copy selected text".into(),
-            Action::JumpTo(id) => self.annotation_label(*id, "Reveal annotation"),
-            Action::Delete(id) => self.annotation_label(*id, "Delete annotation"),
-            Action::EditNote(id) => self.annotation_label(*id, "Edit note"),
-            Action::OpenComments(_) => "Open highlight comments".into(),
-            Action::CloseComments => "Close comments".into(),
-            Action::DeleteHighlight(_) => "Delete highlight".into(),
-            Action::AddComment(_) => "Add comment".into(),
-            Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
-            Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
-            Action::OpenViaPortal => "Open book".into(),
-            Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
-            Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
-            Action::OpenSettings => "Book settings".into(),
-            Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
-            Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
-            Action::SetSettingsTab(SettingsTab::Library) => "Library folders".into(),
-            Action::SetSettingsTab(SettingsTab::Shortcuts) => "Keyboard shortcuts".into(),
-            Action::BeginShortcutCapture(shortcut) => {
-                if self.shortcut_capture == Some(*shortcut) {
-                    self.shortcut_capture_error.clone().map_or_else(
-                        || format!("Press a key for {}; Escape cancels", shortcut.label()),
-                        |error| format!("{}: {error}", shortcut.label()),
-                    )
-                } else {
-                    format!(
-                        "Change {} shortcut, currently {}",
-                        shortcut.label(),
-                        self.reader_keys
-                            .shortcut(shortcut.id(), shortcut.default_key())
-                    )
-                }
-            }
-            Action::SetScheme(id) => self.scheme_name(id),
-            Action::ToggleSchemeEnabled(id) => format!("Show {} in reader", self.scheme_name(id)),
-            Action::DuplicateScheme(id) => format!("Duplicate {}", self.scheme_name(id)),
-            Action::DeleteScheme(id) => format!("Delete {}", self.scheme_name(id)),
-            Action::EditScheme(id) => format!("Edit {}", self.scheme_name(id)),
-            Action::CloseSchemeEditor => "Done editing theme".into(),
-            Action::NewSchemeViaPicker => "New colour theme".into(),
-            Action::PickSchemeColor(id, slot) => format!(
-                "Edit {} {} colour",
-                self.scheme_name(id),
-                ["page", "text", "accent"]
-                    .get(*slot)
-                    .copied()
-                    .unwrap_or("custom")
-            ),
-            Action::BeginRenameScheme(id) => format!("Rename {}", self.scheme_name(id)),
-            Action::ToggleFontShown(id) => format!("Show {} in reader", self.font_name(id)),
-            Action::RemoveFont(id) => format!("Remove {}", self.font_name(id)),
-            Action::OpenFontPicker => "Add font".into(),
-            Action::CloseFontPicker => "Close font picker".into(),
-            Action::AddSystemFont(family) => format!("Add {family}"),
-            Action::BeginRenameFont(id) => format!("Rename {}", self.font_name(id)),
-            Action::OpenHit(anchor) => self
-                .query
-                .label_of(anchor)
-                .map_or_else(|| "Open result".into(), str::to_owned),
-            Action::GetBook(id) => self
-                .query
-                .label_of(&format!("gutenberg:{id}"))
-                .map_or_else(|| "Get book".into(), str::to_owned),
-            Action::RetryRemote(_) => crate::resource::CATALOG.t("arriving-retry"),
-            Action::CloseSearch => "Back".into(),
-            Action::DismissOverlay
-            | Action::Swallow
-            | Action::SetQuery(_)
-            | Action::OpenFacet(_) => String::new(),
-        }
-    }
-
-    /// Refresh the hover description from the topmost live hit. The reader
-    /// draws several icon-only affordances on a narrow viewport, and a hit can
-    /// also be covered by a modal; using the final hit stack means the tooltip
-    /// always names the action that would actually receive a click.
-    fn refresh_hover_tooltip(&mut self) {
-        self.hover_tooltip = self
-            .hits
-            .iter()
-            .rev()
-            .find(|hit| hit.rect.contains(self.cursor))
-            .map(|hit| self.semantic_label(&hit.action))
-            .filter(|label| !label.is_empty());
-    }
-
-    fn annotation_label(&self, id: Uuid, fallback: &str) -> String {
-        self.all_annotations
-            .iter()
-            .find(|annotation| annotation.id == id)
-            .map_or_else(
-                || fallback.into(),
-                |annotation| {
-                    let note = annotation.note.clone();
-                    let text = if note.trim().is_empty() {
-                        annotation.excerpt.trim()
-                    } else {
-                        note.trim()
-                    };
-                    if text.is_empty() {
-                        fallback.into()
-                    } else {
-                        format!("{fallback}: {text}")
-                    }
-                },
-            )
-    }
-
-    fn font_name(&self, id: &str) -> String {
-        self.fonts
-            .iter()
-            .find(|font| font.id == id)
-            .map_or_else(|| id.to_string(), |font| font.name.clone())
-    }
-
-    fn scheme_name(&self, id: &str) -> String {
-        self.schemes
-            .iter()
-            .find(|scheme| scheme.id == id)
-            .map_or_else(|| id.to_string(), |scheme| scheme.name.clone())
-    }
-
-    fn semantic_role_state(&self, action: &Action) -> (Role, AccessState) {
-        let focused = self
-            .semantic_target(action)
-            .is_some_and(|target| self.semantic_focus.as_deref() == Some(&target));
-        let base = AccessState::new().focusable(true).focused(focused);
-        match action {
-            Action::SeekProgress => (Role::Slider, base),
-            Action::ToggleToc => (Role::ToggleButton, base.checked(self.toc_open())),
-            Action::ToggleNotes => (Role::ToggleButton, base.checked(self.notes_open())),
-            Action::ToggleTypePopover => (
-                Role::ToggleButton,
-                base.checked(self.reading_settings.is_open()),
-            ),
-            Action::ToggleBookmark => (Role::ToggleButton, base.checked(self.page_bookmarked())),
-            Action::SetSettingsTab(tab) => {
-                (Role::RadioButton, base.checked(self.settings_tab == *tab))
-            }
-            Action::SetReadTheme(theme) => (
-                Role::RadioButton,
-                base.checked(self.settings.theme == *theme && self.settings.scheme_id.is_empty()),
-            ),
-            Action::SetMode(mode) => (Role::RadioButton, base.checked(self.settings.mode == *mode)),
-            Action::SetComposition(style) => (
-                Role::RadioButton,
-                base.checked(self.settings.composition == *style),
-            ),
-            Action::SetFont(id) => (
-                Role::RadioButton,
-                base.checked(self.settings.font_id == *id),
-            ),
-            Action::SetScheme(id) => (
-                Role::RadioButton,
-                base.checked(self.settings.scheme_id == *id),
-            ),
-            Action::ToggleFontShown(id) => (
-                Role::Switch,
-                base.checked(
-                    self.fonts
-                        .iter()
-                        .find(|font| font.id == *id)
-                        .is_some_and(|f| f.shown),
-                ),
-            ),
-            Action::ToggleSchemeEnabled(id) => (
-                Role::Switch,
-                base.checked(
-                    self.schemes
-                        .iter()
-                        .find(|scheme| scheme.id == *id)
-                        .is_some_and(|s| s.enabled),
-                ),
-            ),
-            Action::ToggleWatchFolder(path) => (
-                Role::Checkbox,
-                base.checked(self.watched_folders.contains(path)),
-            ),
-            Action::ToggleKeepCatalogues => (Role::Switch, base.checked(self.keeps_catalogues())),
-            _ => (Role::Button, base),
-        }
-    }
-
     fn page_bookmarked(&self) -> bool {
         self.annotations.iter().any(|annotation| {
             annotation.kind == AnnoKind::Bookmark

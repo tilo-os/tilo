@@ -1044,12 +1044,13 @@ impl ImagerApp {
 
     /// The one fact under an image's name: what it is and whether it was
     /// verified.
-    fn source_secondary(&self, source: &Source) -> &'static str {
-        if self.source_is_official(source) {
-            "Official Tilo release, verified"
+    fn source_secondary(&self, source: &Source) -> String {
+        let message = if self.source_is_official(source) {
+            "installer-image-official"
         } else {
-            "Local image, written unchanged"
-        }
+            "installer-image-local"
+        };
+        CATALOG.t(message)
     }
 
     fn release_selected(&self, index: usize) -> bool {
@@ -1084,12 +1085,13 @@ impl ImagerApp {
         if let Some(source) = &self.source
             && !self.source_listed(source)
         {
+            let secondary = self.source_secondary(source);
             body = body.push(Box::new(Section::titled(
                 CATALOG.t("imager-section-selected-image"),
                 vec![Box::new(
                     ListRow::new("imager.selected", &source.name)
                         .icon(Icon::Disc3)
-                        .secondary(self.source_secondary(source))
+                        .secondary(&secondary)
                         .meta(fmt_size(source.size))
                         .selected(true)
                         .checked(true),
@@ -1114,10 +1116,11 @@ impl ImagerApp {
                 .filter_map(|index| {
                     let source = self.recent.get(index)?;
                     let sink = Rc::clone(&self.commands);
+                    let secondary = self.source_secondary(source);
                     Some(Box::new(
                         ListRow::new(format!("imager.recent.{index}"), &source.name)
                             .icon(Icon::Disc3)
-                            .secondary(self.source_secondary(source))
+                            .secondary(&secondary)
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))

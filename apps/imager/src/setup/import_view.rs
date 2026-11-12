@@ -511,7 +511,7 @@ impl ImportApp {
         conflict.approve();
         conflict.mark_running()?;
         Self::run_shot_worker(&mut conflict, retry)?;
-        self.status = state_summary(conflict.state()).into();
+        self.status = state_summary(conflict.state());
         self.status_is_error = true;
         self.operations = vec![conflict];
         Ok(())
@@ -1886,8 +1886,8 @@ impl ImportApp {
                         *operation = *saved;
                         self.status = operation
                             .failure()
-                            .unwrap_or_else(|| state_summary(operation.state()))
-                            .into();
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| state_summary(operation.state()));
                         self.status_is_error = !matches!(
                             operation.state(),
                             OperationState::Complete | OperationState::Cancelled
@@ -1899,7 +1899,7 @@ impl ImportApp {
                 WorkerEvent::Finished(outcome) => {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_outcome(outcome);
-                        self.status = state_summary(operation.state()).into();
+                        self.status = state_summary(operation.state());
                         self.status_is_error = !matches!(
                             operation.state(),
                             OperationState::Complete | OperationState::Cancelled
@@ -2273,9 +2273,10 @@ impl ImportApp {
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| operation_state_label(state).to_string());
+        let summary = state_summary(state);
         let mut row = ListRow::new(format!("import.operation.{index}.summary"), folder)
             .icon(Icon::Folder)
-            .secondary(state_summary(state))
+            .secondary(&summary)
             .meta(ui::format::size(operation.verified_bytes()));
         row = match state {
             OperationState::Running => row.active(),
@@ -2709,19 +2710,18 @@ const fn choice_mode_key(mode: ChoiceMode) -> &'static str {
     }
 }
 
-fn state_summary(state: OperationState) -> &'static str {
-    match state {
-        OperationState::AwaitingReview => "Waiting for your review before anything is copied.",
-        OperationState::Ready => "Reviewed and ready to start.",
-        OperationState::Running => "Copying and checking files",
-        OperationState::Interrupted => {
-            "The copy was interrupted. Check the folders, then continue when ready."
-        }
-        OperationState::Cancelled => "Copy stopped. Checked files were kept.",
-        OperationState::Incomplete => "Some items need review before the copy can finish.",
-        OperationState::Failed => "The copy could not start. Open Details before trying again.",
-        OperationState::Complete => "Copy checked and complete.",
-    }
+fn state_summary(state: OperationState) -> String {
+    let message = match state {
+        OperationState::AwaitingReview => "installer-copy-awaiting-review",
+        OperationState::Ready => "installer-copy-ready",
+        OperationState::Running => "installer-copy-running",
+        OperationState::Interrupted => "installer-copy-interrupted",
+        OperationState::Cancelled => "installer-copy-stopped",
+        OperationState::Incomplete => "installer-copy-incomplete",
+        OperationState::Failed => "installer-copy-failed",
+        OperationState::Complete => "installer-copy-complete",
+    };
+    crate::resource::CATALOG.t(message)
 }
 
 impl Widget for ImportApp {

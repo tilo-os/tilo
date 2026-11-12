@@ -1069,7 +1069,7 @@ impl ApiTesterApp {
                 value: String::new(),
             },
         };
-        if self.request.auth.label() != next.label() {
+        if self.request.auth.scheme() != next.scheme() {
             let before = self.workspace.request.auth.clone();
             self.request.auth = next;
             let after = Credentials::of(&self.request.auth);

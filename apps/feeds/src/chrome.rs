@@ -87,7 +87,7 @@ pub(crate) fn reader_settings_panel(
     let fonts = ToggleGroup::new(
         ReadFont::ALL
             .iter()
-            .map(|f| Segment::new(f.label()))
+            .map(|f| Segment::new(crate::i18n::t(f.message())))
             .collect(),
         ReadFont::ALL
             .iter()
@@ -99,7 +99,7 @@ pub(crate) fn reader_settings_panel(
     let papers = ToggleGroup::new(
         ReadTheme::ALL
             .iter()
-            .map(|t| Segment::new(t.label()))
+            .map(|t| Segment::new(crate::i18n::t(t.message())))
             .collect(),
         ReadTheme::ALL
             .iter()

@@ -90,7 +90,7 @@ pub(crate) fn response(
     let switch = ui::widget::ViewTabs::new(
         ResponseView::ALL
             .iter()
-            .map(|v| Segment::new(v.label()))
+            .map(|v| Segment::new(crate::locales::CATALOG.t(v.message())))
             .collect(),
         ResponseView::ALL
             .iter()

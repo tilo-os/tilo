@@ -22,9 +22,6 @@ use crate::store::StoreBook;
 /// The name the daemon keeps the catalogue under.
 pub(crate) const CATALOGUE: &str = "gutenberg-catalogue";
 
-/// What the setting is called wherever it shows.
-pub(crate) const KEEP_CATALOGUES: &str = "Keep book catalogues on this device";
-
 /// The most the decompressed catalogue may weigh: it is about 25 MB.
 const MAX_CATALOGUE_BYTES: u64 = 256 * 1024 * 1024;
 

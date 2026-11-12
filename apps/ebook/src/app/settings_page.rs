@@ -97,12 +97,12 @@ pub(super) struct SettingsRow<'a> {
     pub(super) title_family: Option<&'a FontChoice>,
 }
 
-/// The settings tabs, in order.
+/// The settings tabs, in order, each with the catalogue message naming it.
 pub(super) const SETTINGS_TABS: [(SettingsTab, &str); 4] = [
-    (SettingsTab::Library, "Library"),
-    (SettingsTab::Fonts, "Fonts"),
-    (SettingsTab::Colours, "Colour schemes"),
-    (SettingsTab::Shortcuts, "Shortcuts"),
+    (SettingsTab::Library, "ebook-tab-library"),
+    (SettingsTab::Fonts, "ebook-tab-fonts"),
+    (SettingsTab::Colours, "ebook-tab-schemes"),
+    (SettingsTab::Shortcuts, "ebook-tab-shortcuts"),
 ];
 
 // --- Settings screen: the font + colour-scheme managers ---------------------
@@ -175,9 +175,13 @@ impl BooksApp {
         let height = SegmentedFace::height(size, theme);
         // Each tab as wide as a tab strip makes it: packed from the leading
         // edge, its label's own width.
-        let segments: Vec<ui::widget::Segment> = SETTINGS_TABS
+        let tab_labels: Vec<String> = SETTINGS_TABS
             .iter()
-            .map(|(_, label)| ui::widget::Segment::new(*label))
+            .map(|(_, message)| crate::resource::CATALOG.t(message))
+            .collect();
+        let segments: Vec<ui::widget::Segment> = tab_labels
+            .iter()
+            .map(|label| ui::widget::Segment::new(label.clone()))
             .collect();
         let widths: Vec<f64> = SegmentedFace::partition_segments(
             Rect::new(0.0, 0.0, f64::MAX / 4.0, height),
@@ -219,7 +223,7 @@ impl BooksApp {
                 .collect();
             let labels: Vec<&str> = row
                 .iter()
-                .filter_map(|&i| SETTINGS_TABS.get(i).map(|(_, label)| *label))
+                .filter_map(|&i| tab_labels.get(i).map(String::as_str))
                 .collect();
             let selected = row
                 .iter()
