@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
-use tilo_actions::remote::identity_admin::{self, FleetDevice};
+use tilo_actions::remote::identity_admin;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
@@ -22,9 +22,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_lock::MutexRecover as _;
-use tilo_relay_session::workspaces::{
-    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_PERSONAL, PersonalList,
-};
+use tilo_relay_session::workspaces::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_PERSONAL};
 use tilo_session_core::remote::SessionActions;
 
 use crate::agent_door::{Revoked, Revoking};
@@ -112,36 +110,58 @@ impl PageIdentity {
     /// lists.
     fn devices(&self, mut state: InvocationState) -> InvocationState {
         if let InvocationUpdate::Succeeded { output, .. } = &mut state.update {
-            output.value = Some(fleet(output.value.take(), &self.own));
+            output.value = Some(fleet(output.value.as_ref(), &self.own));
         }
         state
     }
 }
 
-/// The person's record `value`, as the devices it lists, `own` marked as
-/// this page's.
-fn fleet(value: Option<Value>, own: &[u8; 32]) -> Value {
-    let devices = value
-        .and_then(|value| serde_json::from_value::<PersonalList>(value).ok())
-        .map(|list| {
-            list.devices
-                .into_iter()
-                .map(|device| FleetDevice {
-                    label: device.cert.device_label.clone(),
-                    key_hex: hex::encode(device.cert.device_public_key),
-                    fingerprint: fingerprint(&device.cert.device_public_key),
-                    current: device.cert.device_public_key == *own,
-                    revoked: device.revoked,
-                    can_host: device.cert.capabilities.can_act_as_host,
-                    kind: identity_admin::KeyKind::of(
-                        device.cert.capabilities.agent.is_some(),
-                        device.cert.capabilities.server_key,
-                    ),
-                })
-                .collect::<Vec<_>>()
+/// The person's record `value` ([`tilo_relay_session::workspaces::PersonalList`]),
+/// as the devices it lists ([`identity_admin::FleetDevice`]), `own` marked
+/// as this page's. Read from the answer's JSON, each certificate by the
+/// fields its JSON form names, rather than parsed whole: a page only shows
+/// them, and parsing every certificate's form would weigh on the code every
+/// page loads first.
+fn fleet(value: Option<&Value>, own: &[u8; 32]) -> Value {
+    let listed = value
+        .and_then(|value| value.get("devices"))
+        .and_then(Value::as_array);
+    let devices = listed
+        .into_iter()
+        .flatten()
+        .filter_map(|device| {
+            let cert = device.get("cert")?;
+            let key: [u8; 32] = cert
+                .get("device_public_key")?
+                .as_array()?
+                .iter()
+                .map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect::<Option<Vec<u8>>>()?
+                .try_into()
+                .ok()?;
+            let capabilities = cert.get("capabilities")?;
+            let flag = |name: &str| {
+                capabilities
+                    .get(name)
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            };
+            let agent = capabilities
+                .get("agent")
+                .is_some_and(|scope| !scope.is_null());
+            let kind = identity_admin::KeyKind::of(agent, flag("server_key"));
+            Some(serde_json::json!({
+                "label": cert.get("device_label")?.as_str()?,
+                "key_hex": hex::encode(key),
+                "fingerprint": fingerprint(&key),
+                "current": key == *own,
+                "revoked": device.get("revoked").and_then(Value::as_bool).unwrap_or(false),
+                "can_host": flag("can_act_as_host"),
+                "kind": kind,
+            }))
         })
-        .unwrap_or_default();
-    serde_json::to_value(devices).unwrap_or(Value::Array(Vec::new()))
+        .collect();
+    Value::Array(devices)
 }
 
 /// A key's short form people compare between screens: its first six bytes.
@@ -191,7 +211,7 @@ impl ActionHost for PageIdentity {
                 self.host.invoke(caller, record).map(move |receipt| {
                     receipt.map(|mut receipt| {
                         if let ReceiptStatus::Completed { output } = &mut receipt.status {
-                            output.value = Some(fleet(output.value.take(), &own));
+                            output.value = Some(fleet(output.value.as_ref(), &own));
                         }
                         receipt
                     })
