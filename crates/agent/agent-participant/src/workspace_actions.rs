@@ -2054,12 +2054,7 @@ impl Worker {
         let (caller, request) = {
             let mut ledger = self.ledger();
             let Some(entry) = ledger.entries.get(&invocation) else {
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected {
-                        error: ActionHostError::UnknownInvocation,
-                    },
-                };
+                return rejected(invocation, ActionHostError::UnknownInvocation);
             };
             if entry.update.is_terminal() {
                 // Cancelled before it started.
@@ -2147,10 +2142,7 @@ impl Worker {
             }
             Err(Outcome::Rejected(error)) => {
                 ledger.forget(&invocation);
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected { error },
-                };
+                return rejected(invocation, error);
             }
         };
         if let Some(entry) = ledger.entries.get_mut(&invocation) {
@@ -2951,6 +2943,14 @@ fn speaks_for_a_member(caller: &Caller) -> bool {
             caller.user_public_key().is_some() && caller.device_public_key().is_some()
         }
         _ => false,
+    }
+}
+
+/// The receipt of an invocation the host turns away outright, with why.
+fn rejected(invocation: InvocationId, error: ActionHostError) -> InvocationReceipt {
+    InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Rejected { error },
     }
 }
 
