@@ -141,7 +141,15 @@ impl<M: ListModel> VirtualList<M> {
             .standing_open(row)
             .then(|| first_page_title(row.widget.as_ref()))
             .flatten()
-            .or_else(|| child.as_ref().and_then(|node| node.name.clone()));
+            .or_else(|| child.as_ref().and_then(|node| node.name.clone()))
+            // A row still on its way has nothing of its own to read: its slot is reserved and
+            // its placeholder paints nothing. It is named for what it is, as a pending row of a
+            // table is, so a reader moving through the list hears a row that is loading rather
+            // than an unnamed slot in it — the row is focusable from the moment it stands.
+            .or_else(|| {
+                matches!(&row.state, MountedRowState::Pending)
+                    .then(|| widget_text("arriving-loading"))
+            });
         let mut item = AccessNode::new(if self.tree.is_some() {
             Role::TreeItem
         } else {
