@@ -28,6 +28,14 @@ impl From<ChannelContentKeys> for HistoryKeys {
 }
 
 impl HistoryKeys {
+    /// Which keys these are: the channel they open and the epoch they seal under now. A rotation,
+    /// which removing a member makes, moves the epoch, so what a reader opened under earlier keys
+    /// is told apart from what it opens under these.
+    #[must_use]
+    pub fn generation(&self) -> (collab_types::ChannelId, u64) {
+        (self.0.channel_id(), self.0.epoch())
+    }
+
     /// Open `envelope`, a write of the record's history (a compaction
     /// included), under any epoch these keys carry.
     pub fn open(&self, envelope: &SignedOp) -> Result<Vec<u8>, String> {

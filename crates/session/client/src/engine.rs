@@ -200,7 +200,24 @@ pub struct Engine {
     channel_keys: std::sync::Mutex<RouteKeys>,
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
-    kept: std::sync::Mutex<BTreeMap<(WorkspaceId, String, String), KeptRecord>>,
+    kept: std::sync::Mutex<KeptRecords>,
+}
+
+/// The sealed records this device keeps opened, by workspace, app and record, with the keys that
+/// opened each.
+type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptRecord)>;
+
+/// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
+/// the channel's history keys. A rotation moves the epoch.
+type KeysUsed = [Option<(collab_types::ChannelId, u64)>; 2];
+
+/// What was kept opened of a record, when it was opened with exactly the keys `used` now: a
+/// record opened under other keys is forgotten.
+fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
+    match kept {
+        Some((opened_with, kept)) if opened_with == *used => kept,
+        _ => K::default(),
+    }
 }
 
 /// Keys of records, by workspace and record.
@@ -380,6 +397,32 @@ impl Engine {
             .map(|read| read.map(|(bytes, _)| bytes))
     }
 
+    /// What `workspace` holds of `app`'s `record` for a reader that merged it last at the sorted
+    /// `heads` an earlier read handed out, or holds nothing of it: only the changes since those
+    /// heads where the record holds them ([`RecordReading::Changes`]), the record whole where it
+    /// does not, so a reader that follows a record merges what changed rather than all of it.
+    /// # Errors
+    /// As [`Self::record`].
+    pub fn record_update(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        heads: Option<&[[u8; 32]]>,
+    ) -> Result<RecordReading, String> {
+        let heads = heads.unwrap_or_default();
+        self.read_record(
+            workspace,
+            (app, record),
+            Holding {
+                revision: (!heads.is_empty())
+                    .then(|| tilo_peer_state::owner::revision_of_heads(heads)),
+                heads,
+            },
+            MAX_DOCUMENT_BYTES,
+        )
+    }
+
     /// [`Self::record`], with the revision the bytes were saved at, and told the revision
     /// `known` this caller already holds: a record whose admitted heads still are those
     /// is answered as unchanged without capturing or saving the document at all.
@@ -543,6 +586,13 @@ impl Engine {
                 None => None,
                 Some(ChannelAccess::Ready(keys)) => Some(keys.into()),
                 Some(ChannelAccess::Waiting | ChannelAccess::Removed) => {
+                    // Nothing opened under keys this device no longer holds answers a read
+                    // until the record's channel gives it keys again.
+                    self.kept.lock_recover().remove(&(
+                        workspace,
+                        app.to_owned(),
+                        record.to_owned(),
+                    ));
                     return Ok(None);
                 }
                 Some(ChannelAccess::NoSecretStore) => {
@@ -571,8 +621,17 @@ impl Engine {
         // keys open the rest.
         let mut unopened = false;
         let key = (workspace, app.to_owned(), record.to_owned());
-        // Taken out while it is read: a read of the same record meanwhile opens it whole.
-        let mut kept = self.kept.lock_recover().remove(&key).unwrap_or_default();
+        // Taken out while it is read: a read of the same record meanwhile opens it whole. What was
+        // opened under other keys than these — the channel rotated, as removing a member rotates
+        // it — is let go, and the record opens whole under the keys held now.
+        let used: KeysUsed = [
+            keys.as_ref().map(tilo_channels::HistoryKeys::generation),
+            history
+                .as_ref()
+                .and_then(|history| history.as_ref().ok())
+                .map(tilo_channels::HistoryKeys::generation),
+        ];
+        let mut kept = kept_under(self.kept.lock_recover().remove(&key), &used);
         let read = read(
             workspace,
             &mut |write| {
@@ -589,12 +648,12 @@ impl Engine {
             },
             &mut kept,
         );
-        if sealed {
+        if sealed && kept.is_open() {
             let mut records = self.kept.lock_recover();
             if records.len() >= KEPT_RECORDS {
                 records.pop_first();
             }
-            records.insert(key, kept);
+            records.insert(key, (used, kept));
         }
         match read {
             Err(_) if unopened => Ok(None),
@@ -1191,6 +1250,9 @@ impl Engine {
     /// # Errors
     /// The record cannot be published.
     pub fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
+        self.kept
+            .lock_recover()
+            .retain(|(held, _, _), _| *held != workspace);
         self.owner.release_workspace(workspace)
     }
 
@@ -1730,6 +1792,22 @@ mod tests {
     )]
 
     tilo_automerge_isolate::test_worker!();
+
+    /// A record opened under keys a rotation replaced, or under keys handed over that changed, is
+    /// opened whole again under the keys held now; the same keys read on what was kept.
+    #[test]
+    fn a_record_kept_under_keys_a_rotation_replaced_is_forgotten() {
+        let channel = collab_types::ChannelId(uuid::Uuid::from_u128(7));
+        let held: super::KeysUsed = [None, Some((channel, 1))];
+        let rotated: super::KeysUsed = [None, Some((channel, 2))];
+        let handed: super::KeysUsed = [Some((channel, 1)), Some((channel, 1))];
+        // Whatever a read kept stands in for the opened record.
+        let opened = || (held, Some("opened"));
+        assert_eq!(super::kept_under(Some(opened()), &held), Some("opened"));
+        assert_eq!(super::kept_under(Some(opened()), &rotated), None);
+        assert_eq!(super::kept_under(Some(opened()), &handed), None);
+        assert_eq!(super::kept_under::<Option<&str>>(None, &held), None);
+    }
 
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
