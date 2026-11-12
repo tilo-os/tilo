@@ -188,7 +188,7 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';
   if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
-  if (code === 'not-loaded') return 'Tilo has not finished loading in this tab. Reload the page to try again.';
+  if (code === 'not-loaded') return 'Tilo didn’t finish loading in this tab.';
   if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') return `Couldn’t reach ${hostOf(site)}. Check your connection, then try again.`;
   return `${hostOf(site)} did not make a code. Try again, or skip for now.`;
 }
@@ -359,8 +359,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const show = kind => {
     const at = codes[kind];
     const text = at.made ? prompts[kind](at.made.code, {site}) : null;
+    // A page that did not load is said once, in the setup's box, whose
+    // button reloads it: the sign-in beside it waits on the same load.
+    const unloaded = !at.make && at.error?.code === 'not-loaded';
     view.offer(kind, at.made ? {text, code: at.made.code}
-      : at.error ? {problem: setupFailure(at.error, {site})} : {note: codeWait(site)});
+      : unloaded && kind !== 'setup' ? {}
+      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: codeWait(site)});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
   };
@@ -819,12 +823,16 @@ export function domView(document) {
   const notes = {setup: 'first-run-offer-note', signIn: 'first-run-sign-in-note'};
   return {
     start() { state(''); this.manual(false); $('first-run-heading').focus({preventScroll: true}); },
-    offer(kind, {text = null, note = null, problem = null}) {
+    offer(kind, {text = null, note = null, problem = null, reload = false}) {
       // Whether a code is ready, for tests and tools driving the page.
       $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
       if (kind === 'setup') {
         showPrompt($('first-run-offer'), text);
         $('first-run-offer-retry').hidden = !problem;
+        // Only reloading the page helps a page that did not load.
+        $('first-run-offer-retry').textContent = reload ? 'Reload' : 'Try again';
+        // Nothing to copy until there is a prompt again.
+        $('first-run-agent').disabled = Boolean(problem);
       }
       const line = $(notes[kind]);
       line.textContent = problem ?? (kind === 'setup' ? note ?? '' : '');

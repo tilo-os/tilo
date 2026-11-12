@@ -175,9 +175,10 @@ test('a host that refuses, or a page that never offers codes, is said, not waite
   const silent = fixture();
   await silent.fire(OFFER_MS);
   const offered = kind => silent.said.findLast(([name, of]) => name === 'offer' && of === kind);
-  assert.deepEqual(offered('setup'), ['offer', 'setup', {problem: setupFailure({code: 'not-loaded'})}]);
-  assert.deepEqual(offered('signIn'), ['offer', 'signIn', {problem: setupFailure({code: 'not-loaded'})}]);
-  assert.match(setupFailure({code: 'not-loaded'}), /Reload/);
+  // Said once, in the setup's box, whose button reloads the page; the
+  // sign-in beside it says nothing more about the same load.
+  assert.deepEqual(offered('setup'), ['offer', 'setup', {problem: setupFailure({code: 'not-loaded'}), reload: true}]);
+  assert.deepEqual(offered('signIn'), ['offer', 'signIn', {}]);
   await silent.run.retry();
   assert.equal(silent.state.reloads, 1, 'trying again loads the page again');
   const gone = fixture();
