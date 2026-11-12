@@ -35,6 +35,11 @@ use crate::render_chat::{MessageColumn, RowM};
 /// longest ago are dropped (and painted again if they come back).
 const KEPT_SCENES: usize = 160;
 
+/// What a row stands for, in the timeline's own height, before it is measured: the
+/// least a row can cost, so a conversation none of whose rows was measured yet is
+/// still laid out where its newest edge is.
+const ROW_ESTIMATE_FLOOR: f64 = 24.0;
+
 /// What the timeline did in its last frame, counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TimelineCounts {
@@ -109,6 +114,9 @@ pub(crate) struct Timeline {
     measure_checked: Option<(u64, u32, usize)>,
     paint_look: Option<PaintLook>,
     rows: HashMap<String, KeptRow>,
+    /// What the rows measured in this conversation cost, in total and in number: the
+    /// mean is what a row not measured this frame is laid out at.
+    measured: (f64, u64),
     frame: u64,
     counts: TimelineCounts,
     /// The rows the last frame showed, top to bottom.
@@ -183,6 +191,26 @@ impl Timeline {
         self.rows.retain(|id, _| fingerprints.contains_key(id));
     }
 
+    /// What a row stands at until it is measured this frame: the mean of the rows
+    /// this conversation has measured, so the timeline's total is laid out from what
+    /// its rows cost rather than laid out again from every row.
+    pub(crate) fn estimate(&self) -> f64 {
+        let (height, count) = self.measured;
+        if count == 0 {
+            return ROW_ESTIMATE_FLOOR;
+        }
+        (height / count as f64).max(ROW_ESTIMATE_FLOOR)
+    }
+
+    /// The height `id`'s row was measured at, unless nothing about it was measured
+    /// since the column last changed.
+    pub(crate) fn kept_height(&self, id: &str) -> Option<f64> {
+        self.rows
+            .get(id)
+            .and_then(|row| row.measured.as_ref())
+            .map(|(_, rm)| rm.height())
+    }
+
     fn fingerprint(&self, id: &str) -> u64 {
         self.fingerprints
             .get(id)
@@ -239,6 +267,7 @@ impl ChatApp {
                 if timeline.measure_look.as_ref() != Some(&look) {
                     timeline.measure_look = Some(look);
                     timeline.rows.clear();
+                    timeline.measured = (0.0, 0);
                 }
             }
             let mut hasher = std::hash::DefaultHasher::new();
@@ -265,6 +294,10 @@ impl ChatApp {
         };
         let rm = self.measure_row(tr, theme, m, show_header, text_w);
         let mut timeline = self.timeline.borrow_mut();
+        timeline.measured = (
+            timeline.measured.0 + rm.height(),
+            timeline.measured.1.saturating_add(1),
+        );
         let row = timeline.rows.entry(m.id.clone()).or_default();
         row.measured = Some((key, rm.clone()));
         // A row measured anew paints anew.
@@ -537,7 +570,9 @@ impl ChatApp {
             theme,
         } = paint;
         let height = rm.height();
-        let Some(m) = self.message(&rm.idx_id).cloned() else {
+        // A row this frame did not measure stands out of view: it is measured, and
+        // painted, by the frame whose window reaches it.
+        let Some(m) = self.message(&rm.idx_id).filter(|_| !rm.unmeasured).cloned() else {
             *y += height;
             return;
         };
