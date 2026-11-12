@@ -3407,7 +3407,10 @@ impl InstallerApp {
                     |host| {
                         CATALOG.t_args(
                             "imager-installer-complete-host",
-                            &[("host", ui::i18n::ArgValue::Text(host.display_name()))],
+                            &[(
+                                "host",
+                                ui::i18n::ArgValue::Text(host.display_name().to_owned()),
+                            )],
                         )
                     },
                 );
