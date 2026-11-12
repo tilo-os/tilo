@@ -23,7 +23,11 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::peniko::{Blob, Fill, ImageBrush, ImageData};
 use ui::taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::time::{Duration, Instant};
-use ui::widget::{AppKind, AppWidget, IconDescriptor, TaffyTreeExt, TileContent, TileHost, Widget};
+use ui::widget::{
+    AppKind, AppWidget, EventCtx, IconDescriptor, TaffyTreeExt, TileContent, TileHost, Widget,
+};
+use ui::winit::event::{ElementState, WindowEvent};
+use ui::winit::keyboard::ModifiersState;
 use ui::{TextRenderer, Theme};
 
 /// How soon a tile looks again for a picture the decoder still owes: about a frame of a page that
@@ -71,6 +75,11 @@ pub(crate) struct Window {
     image: Option<ImageData>,
     /// Why this page cannot show the window's pictures.
     failed: Option<String>,
+    /// Where the window's input goes: the device hosting it, in the workspace its plane is of.
+    host: Option<(u64, [u8; 32])>,
+    /// The person's input on the window since the host was last sent it, each a postcard-encoded
+    /// [`neighbour_wire::input::InputEvent`].
+    input: Vec<Vec<u8>>,
 }
 
 /// What an object did to the window's tile.
@@ -93,6 +102,8 @@ impl Window {
             next: None,
             image: None,
             failed: None,
+            host: None,
+            input: Vec::new(),
         }
     }
 
@@ -178,7 +189,7 @@ thread_local! {
 /// Take one object of the pictures of window `tab`, which `from` publishes on `workspace_id`'s
 /// plane for the page's peer `id`: the mounts drawing that workspace show what it changed.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
+pub(crate) fn heard(id: u32, workspace_id: u64, from: [u8; 32], tab: u64, body: &[u8]) {
     let window = WINDOWS.with_borrow_mut(|windows| {
         Rc::clone(
             windows
@@ -186,6 +197,7 @@ pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
                 .or_insert_with(|| Rc::new(RefCell::new(Window::new()))),
         )
     });
+    window.borrow_mut().host = Some((workspace_id, from));
     let heard = window.borrow_mut().heard(body, page_decoder);
     match heard {
         Heard::Nothing => {}
@@ -211,6 +223,64 @@ pub(crate) fn tile(tab: u64, title: &str, app_id: &str) -> Option<TileHost> {
     Some(TileHost::new(TileContent::App(Box::new(WindowView::new(
         window, title, app_id,
     )))))
+}
+
+/// The person's input on the windows this page draws since the last call, each to the device
+/// hosting its window: `(workspace, host, tab, event)`, `event` a postcard-encoded
+/// [`neighbour_wire::input::InputEvent`].
+pub(crate) fn take_input() -> Vec<(u64, [u8; 32], u64, Vec<u8>)> {
+    WINDOWS.with_borrow(|windows| {
+        let mut out = Vec::new();
+        for (tab, window) in windows {
+            let mut window = window.borrow_mut();
+            let Some((workspace, host)) = window.host else {
+                continue;
+            };
+            out.extend(
+                window
+                    .input
+                    .drain(..)
+                    .map(|event| (workspace, host, *tab, event)),
+            );
+        }
+        out
+    })
+}
+
+/// Send the person's input on the windows this page draws to the devices hosting them, through
+/// the session of this page's peer `id`: the same control message a desktop's tile sends, which the
+/// workspace's host hands to that device alone. Whether any went.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn send_input(id: u32) -> bool {
+    let input = take_input();
+    if input.is_empty() {
+        return false;
+    }
+    let (Some(handle), Some(device)) = (
+        crate::peer_sync::handle_of(id),
+        crate::peer_sync::device_of(id),
+    ) else {
+        return false;
+    };
+    let peer = neighbour_wire::peer_handle(&device);
+    for (workspace, host, tab, event) in input {
+        let Ok(target) = iroh_base::EndpointId::from_bytes(&host) else {
+            continue;
+        };
+        let _ = tilo_session::sync::Outbox::send(
+            &handle,
+            tilo_session::sync::Cmd::SendControl {
+                ws: workspace,
+                msg: Box::new(neighbour_wire::NeighbourMsg::RemoteInput {
+                    peer,
+                    surface: tab,
+                    event,
+                }),
+                target,
+            },
+        );
+    }
+    true
 }
 
 /// The browser's decoder for `codec`.
@@ -284,6 +354,28 @@ impl WindowView {
             title: title.to_owned(),
             app_id: app_id.to_owned(),
         }
+    }
+}
+
+impl WindowView {
+    /// Take `event` as the person's input on the window, at `scale_factor` device pixels per
+    /// point with `modifiers` held. Whether it asked something of the window.
+    fn input(&self, event: &WindowEvent, scale_factor: f64, modifiers: ModifiersState) -> bool {
+        let mut window = self.window.borrow_mut();
+        let Some(input) = tilo_desktop_surface::window_input::translate(
+            event,
+            self.rect,
+            window.size,
+            scale_factor,
+            modifiers,
+        ) else {
+            return false;
+        };
+        let Ok(encoded) = postcard::to_allocvec(&input) else {
+            return false;
+        };
+        window.input.push(encoded);
+        true
     }
 }
 
@@ -374,6 +466,28 @@ impl Widget for WindowView {
             Some(placed),
             &shown,
         );
+    }
+
+    /// A person's pointer, wheel and keys on the picture are the window's: clicking it puts the
+    /// keyboard on it.
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if !self.input(event, ctx.scale_factor, ctx.modifiers.state()) {
+            return;
+        }
+        *ctx.handled = true;
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            *ctx.focus_target = Some(ctx.node_id);
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
     }
 
     /// While the decoder still owes a picture, the tile looks for it again soon.
@@ -545,6 +659,75 @@ mod tests {
             window.heard(&object(2, true, &[2]), counted),
             Heard::Nothing
         );
+    }
+
+    #[test]
+    fn a_click_and_a_key_on_the_picture_go_to_the_host_in_the_windows_pixels() {
+        use neighbour_wire::input::InputEvent;
+        use ui::synthetic_input::{cursor_moved, key_event, keyboard_input, mouse_input};
+        use ui::winit::event::MouseButton;
+        use ui::winit::keyboard::{Key, KeyCode, PhysicalKey};
+        const TAB: u64 = 0x1e7;
+        const HOST: [u8; 32] = [7; 32];
+        let window = Rc::new(RefCell::new(Window::new()));
+        window.borrow_mut().heard(&object(1, true, &[1]), counted);
+        window.borrow_mut().host = Some((3, HOST));
+        WINDOWS.with_borrow_mut(|windows| windows.insert(TAB, Rc::clone(&window)));
+        let mut view = WindowView::new(window, "Calculator", "org.gnome.Calculator");
+        // The 1280 x 720 window drawn at half size in a 640 x 400 tile, 20 points above and below.
+        view.rect = Rect::new(0.0, 0.0, 640.0, 400.0);
+        let none = ModifiersState::empty();
+        assert!(view.input(&cursor_moved(320.0, 200.0), 1.0, none));
+        assert!(view.input(
+            &mouse_input(ElementState::Pressed, MouseButton::Left),
+            1.0,
+            none
+        ));
+        let mut key = key_event(Key::Character("X".into()), None, ElementState::Pressed);
+        key.physical_key = PhysicalKey::Code(KeyCode::KeyX);
+        assert!(view.input(&keyboard_input(key), 1.0, ModifiersState::SHIFT));
+        assert!(
+            !view.input(&cursor_moved(320.0, 5.0), 1.0, none),
+            "the band above the picture is not the window"
+        );
+        let sent: Vec<(u64, [u8; 32], u64, InputEvent)> = take_input()
+            .into_iter()
+            .map(|(workspace, host, tab, event)| {
+                let event = postcard::from_bytes(&event).expect("an input event");
+                (workspace, host, tab, event)
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                (
+                    3,
+                    HOST,
+                    TAB,
+                    InputEvent::PointerMotion { x: 640.0, y: 360.0 }
+                ),
+                (
+                    3,
+                    HOST,
+                    TAB,
+                    InputEvent::PointerButton {
+                        button: 272,
+                        pressed: true
+                    }
+                ),
+                (
+                    3,
+                    HOST,
+                    TAB,
+                    InputEvent::Key {
+                        keysym: 45,
+                        pressed: true,
+                        modifiers: 1
+                    }
+                ),
+            ]
+        );
+        assert!(take_input().is_empty(), "each event goes once");
     }
 
     #[test]
