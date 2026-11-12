@@ -410,7 +410,7 @@ impl Service {
         let runs = existing_entry
             .as_ref()
             .is_some_and(|entry| entry.awake.load(Ordering::SeqCst));
-        if !runs && !self.room_for(&id) {
+        if !runs && !self.room_for(self.budget.expected_mib(), &id) {
             self.waits(&id);
             return Err(EnsureError::HostFull);
         }
@@ -465,22 +465,21 @@ impl Service {
         self.building_mib.load(Ordering::SeqCst)
     }
 
-    /// Whether the host may start one more VM beside every awake one but the
-    /// VM named `except` (one asking for room for itself): what the awake
-    /// ones are measured at, what the new one is expected to take, and the
-    /// host's reserve must fit its memory — and its kernel must have that
-    /// much to hand out now.
-    fn room_for(&self, except: &str) -> bool {
-        let expected = self.budget.expected_mib();
+    /// Whether the host may start one more VM taking `expected_mib` beside
+    /// every awake one but the VM named `except` (one asking for room for
+    /// itself): what the awake ones are measured at, what the new one is
+    /// expected to take, and the host's reserve must fit its memory — and its
+    /// kernel must have that much to hand out now.
+    fn room_for(&self, expected_mib: u64, except: &str) -> bool {
         let used = self.used_mib(except).saturating_add(self.building_mib());
-        if !self.budget.admits(used, expected) {
+        if !self.budget.admits(used, expected_mib) {
             return false;
         }
         // The arithmetic is what this host counted; this is what it really
         // has. The page cache of a hundred VMs' disks is available, but the
         // kernel may not have given it back yet.
         (self.available)()
-            .is_none_or(|free| free >= self.budget.reserve_mib.saturating_add(expected))
+            .is_none_or(|free| free >= self.budget.reserve_mib.saturating_add(expected_mib))
     }
 
     /// Note that `id` waits for room: what a placer starts another machine
@@ -742,14 +741,20 @@ impl Service {
         }
     }
 
-    /// Start making `size`'s template when it has none, there is room for one
-    /// more VM, and it was not tried lately. Until it is a snapshot it is a
-    /// booted VM like any other, and is counted as one.
+    /// Start making `size`'s template when it has none, there is room for it,
+    /// and it was not tried lately.
+    ///
+    /// A template is counted at its guest's whole configured memory, which is
+    /// the one VM whose whole memory is deliberately used: it is booted cold
+    /// and warmed by reading every file of the session, the runtime and the
+    /// apps, so its guest's page cache fills as far as its memory goes. It is
+    /// a VM of that size until it is a snapshot, and a node that cannot spare
+    /// that much makes none and boots its VMs cold.
     fn keep_template(self: &Arc<Self>, size: VmSize, now: u64) {
         let settings = &self.config.settings;
         if super::vm::template_dir(settings, size).is_none()
             || super::vm::template(settings, size).is_some()
-            || !self.room_for("")
+            || !self.room_for(size.memory_mib(), "")
         {
             return;
         }
@@ -763,12 +768,12 @@ impl Service {
             }
             tried.insert(size, now);
         }
-        let expected = self.budget.expected_mib();
-        self.building_mib.fetch_add(expected, Ordering::SeqCst);
+        let counted = size.memory_mib();
+        self.building_mib.fetch_add(counted, Ordering::SeqCst);
         let service = Arc::clone(self);
         std::thread::spawn(move || {
             let made = service.make_template(size);
-            service.building_mib.fetch_sub(expected, Ordering::SeqCst);
+            service.building_mib.fetch_sub(counted, Ordering::SeqCst);
             match made {
                 Ok(()) => eprintln!("tilo-legacy hosted: the {size} template is ready"),
                 Err(error) => eprintln!("tilo-legacy hosted: the {size} template: {error}"),
@@ -1540,6 +1545,28 @@ mod tests {
         service
             .admit(&request("ws9", "acct-ws9", VmSize::Small), true)
             .unwrap();
+    }
+
+    #[test]
+    fn a_template_is_counted_at_the_memory_its_guest_warms() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let (service, world) = fake_host(dir.path(), 4 * 1024);
+        fake_vm(&service, &world, &config, "ws1", CLONE_MIB, true);
+        service.tick();
+        // phase: another workspace's VM would fit beside this one
+        assert!(service.room_for(service.budget.expected_mib(), ""));
+        // phase: a small VM's template would not: warming fills the whole
+        // memory its guest was given, so that is what it is counted at
+        assert!(!service.room_for(VmSize::Small.memory_mib(), ""));
+        service
+            .building_mib
+            .fetch_add(VmSize::Small.memory_mib(), Ordering::SeqCst);
+        assert_eq!(
+            service.load().awake_mib,
+            CLONE_MIB + VmSize::Small.memory_mib()
+        );
+        assert!(!service.room_for(service.budget.expected_mib(), ""));
     }
 
     #[test]
