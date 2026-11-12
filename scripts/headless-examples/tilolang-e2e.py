@@ -341,7 +341,9 @@ def search_beside(session: Session, title: str) -> None:
 def check_windows(session: Session, processes: dict, session_pid: int, out: Path) -> dict:
     """A second window of Tasks, opened from search as a person opens one, is a window of the
     process Tasks' first window is, and its instance runs in the host the first one's does. A
-    task typed into the first window shows in the second at once."""
+    task typed into the first window shows in the second at once, and each window names the
+    controls of its own content: a tool or an assistive technology pressing one presses the
+    window it stands in."""
     tasks = app_id("tasks")
     first = [w for w in session.windows() if w.get("app_id") == tasks]
     if len(first) != 1:
@@ -398,8 +400,35 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     session.control({"op": "key", "key": "Enter"})
     until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
         a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
+    # What each window offers by name, listed while it is the one in front: the desk names the
+    # controls of the window an app drew, so a window whose instance is not a tab of the desk's
+    # names nothing of its content at all.
+    typed = ["Water the plants", "Call the plumber"]
+    listed = {}
+    for window in windows:
+        names = window_controls(session, window)
+        listed[str(window["tab"])] = names
+        missing = [title for title in typed if title not in names]
+        if missing:
+            raise Failed(f"{tasks}'s window {window['tab']} names no control of its own: "
+                         f"{missing} not among the controls it lists: {names}")
     return {"windows": [{"group": w["group"], "tab": w["tab"]} for w in windows],
+            "controls": listed,
             "process": procs[0], "host": hosts[0], "changed": len(after)}
+
+
+def window_controls(session: Session, window: dict) -> list[str]:
+    """The controls the desk names in `window`, with the window in front: what its app drew of its
+    own content — its rows, its lists — named where the window stands."""
+    focus(session, window)
+    until(f"window {window['tab']} in front", lambda: any(
+        shown.get("tab") == window["tab"] and shown.get("active")
+        for shown in session.windows()), 30)
+    time.sleep(0.5)
+    x, y, width, height = next(shown["rect"] for shown in session.windows()
+                               if shown.get("tab") == window["tab"])
+    return [target["name"] for target in session.targets()
+            if x <= target["rect"][0] < x + width and y <= target["rect"][1] < y + height]
 
 
 def today_shown(session: Session, out: Path, name: str) -> bytes:

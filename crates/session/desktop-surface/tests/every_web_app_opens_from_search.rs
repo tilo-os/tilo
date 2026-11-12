@@ -79,7 +79,7 @@ impl TileSource for WebApps {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         let title = self
             .0
             .iter()

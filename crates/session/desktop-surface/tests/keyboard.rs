@@ -681,7 +681,7 @@ impl TileSource for Source {
         TileHost::from_component(component)
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _beside: Option<u64>) -> Option<Tab> {
         match app {
             APP => Some(keyboard_tab(id)),
             NOTES => Some(notes_tab(id)),

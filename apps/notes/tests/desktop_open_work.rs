@@ -32,7 +32,7 @@ impl TileSource for Components {
         }
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         (app == NOTES).then(|| notes_tab(id))
     }
 }

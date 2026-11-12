@@ -109,6 +109,12 @@ pub struct LaunchAsk {
     /// The tab the window takes when it maps. It is the window's instance:
     /// what the app's own continuation reports are addressed by.
     pub tab: Option<TabId>,
+    /// Whether the tab was made for a window of the app's own, beside one it
+    /// shows: the launch opens a window of its own there, as the app's own ask
+    /// for another window does, rather than coming forward in the one the app
+    /// has. A launch in a place of its own opens the window the desk named and
+    /// raises the app's window where it already shows one.
+    pub beside: bool,
 }
 
 /// The launches the desktop asked for and no window is behind: the session
@@ -263,7 +269,13 @@ impl TileSource for Windows {
         )))
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(
+        &mut self,
+        _: &Workspace,
+        id: TabId,
+        app: &str,
+        beside: Option<TabId>,
+    ) -> Option<Tab> {
         let held = app
             .strip_prefix(HELD_BEHIND_PREFIX)
             .map(|app| (app, true))
@@ -320,7 +332,10 @@ impl TileSource for Windows {
             // A Tilo package or one of the machine's apps: this session starts it, and its
             // window takes the tab the desk holds for it. The tab is what the window is known
             // by — an app's continuation reports are addressed by its id — so the launch names
-            // it.
+            // it. A launch that opens a record or content of an app is a window of that app: its
+            // tab is the app's, and the window takes it as every window of the app does.
+            let asked = app;
+            let app = launch_app(asked);
             self.held
                 .borrow_mut()
                 .entry(app.to_owned())
@@ -330,8 +345,9 @@ impl TileSource for Windows {
                     background: false,
                 });
             self.launches.borrow_mut().push(LaunchAsk {
-                app: app.to_owned(),
+                app: asked.to_owned(),
                 tab: Some(id),
+                beside: beside.is_some(),
             });
             Some(self.place(id, app))
         }
@@ -359,6 +375,7 @@ impl TileSource for Windows {
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
             tab: Some(tab.id),
+            beside: false,
         });
     }
 
@@ -1582,7 +1599,19 @@ fn ask_again(
     launches.borrow_mut().push(LaunchAsk {
         app: app.to_owned(),
         tab: Some(tab),
+        beside: false,
     });
+}
+
+/// The app a launch string opens a window of: a launch that opens a record or content of an app
+/// names that app first, and every other launch names the app itself.
+fn launch_app(launch: &str) -> &str {
+    if let Some((app, _)) = tilo_desktop_search::launched_record(launch)
+        .or_else(|| tilo_desktop_surface::session::launched_content(launch))
+    {
+        return app;
+    }
+    launch
 }
 
 /// What the app `app_id` is called to the person. Never the id: an app no

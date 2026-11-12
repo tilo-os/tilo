@@ -465,7 +465,7 @@ impl TileSource for WithHistory {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
         (app == tilo_actions::remote::workspace_activity::APP_ID).then(|| Tab {
             id,
             title: "History".into(),
@@ -611,8 +611,14 @@ impl TileSource for Forms {
         ))))
     }
 
-    fn launch(&mut self, workspace: &Workspace, id: u64, app: &str) -> Option<Tab> {
-        WithHistory.launch(workspace, id, app)
+    fn launch(
+        &mut self,
+        workspace: &Workspace,
+        id: u64,
+        app: &str,
+        beside: Option<u64>,
+    ) -> Option<Tab> {
+        WithHistory.launch(workspace, id, app, beside)
     }
 }
 

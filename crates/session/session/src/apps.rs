@@ -662,7 +662,14 @@ impl Apps {
             }
             let launch = as_this_machine_knows_it(launch);
             let workspace = self.workspace_of(asked.tab);
-            let started = self.start_at(&launch, &workspace, asked.tab);
+            let started = if asked.beside {
+                // A window of the app's own: it opens in the tab the desk made beside the one the
+                // app has, as the app's own ask for another window does, and the window the app
+                // shows is left where it is.
+                self.start_window(&launch, &workspace, true, asked.tab, None)
+            } else {
+                self.start_at(&launch, &workspace, asked.tab)
+            };
             match &started {
                 // The window is coming, or the app's own window came forward in place of a second
                 // one: the tab it was held in takes it.
@@ -1192,14 +1199,17 @@ impl Apps {
             return Ok(true);
         }
         let timed = tilo_startup_metrics::launch_requested(app);
-        let instance = match (&doors, hosted) {
-            (Some(doors), true) => instance.or_else(|| Some(doors.next_instance())),
-            _ => instance,
-        };
         let opens = window_opens(launch, reveal, hosted).map_err(|error| {
             tilo_startup_metrics::launch_failed(timed);
             DoorError::Failed(error)
         })?;
+        // A window of a hosted app whose tab this session named itself, which happens only in a
+        // session with no desk behind it: the tab is the window's instance, and it is the only
+        // name the window has.
+        let instance = match (&doors, hosted) {
+            (Some(doors), true) => instance.or_else(|| Some(doors.next_instance())),
+            _ => instance,
+        };
         let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
         // The window this launch starts is the one the shell asked for: a
@@ -1338,15 +1348,20 @@ impl Apps {
             })
     }
 
-    /// Ask the desk for `launch`'s window: it makes the tab the window takes and asks this session
-    /// again, naming that tab as the window's instance ([`Self::start_asked`]). Whether the desk
-    /// took the ask: a session with no desk behind it starts the launch itself.
+    /// Ask the desk for `launch`'s window: it makes the tab the window takes, beside the app's
+    /// own when the window is one of its own (`new_window`), and asks this session again, naming
+    /// that tab as the window's instance ([`Self::start_asked`]). Whether the desk took the ask: a
+    /// session with no desk behind it starts the launch itself.
     ///
-    /// Only a plain open of an app whose windows are hosted (`hosted`) asks, that names no tab of
-    /// its own and takes no window of its own: a hosted window is shown in a tab of the desk's, and
-    /// that tab is the window's instance, so what it asks about its own window — the controls of
-    /// its content for assistive technology, its bar, its search — is answered for the tab it
-    /// stands in, never for another window of its app (`crate::app_tabs`, `start_held`).
+    /// Every window of an app whose windows are hosted (`hosted`) asks, that names no tab of its
+    /// own: a hosted window is shown in a tab of the desk's, and that tab is the window's
+    /// instance, so what it asks about its own window — the controls of its content for assistive
+    /// technology, its bar, its search — is answered for the tab it stands in, never for another
+    /// window of its app (`crate::app_tabs`, `start_held`). A record the window opens asks too: it
+    /// is the app's window on that record, in a tab of the desk's as every window of the app.
+    ///
+    /// A hosted window that opens a file or a link names no tab: it cannot show what such a launch
+    /// names, and it is refused where it starts rather than shown in a tab nothing fills.
     fn open_at_desk(
         &self,
         hosted: bool,
@@ -1354,20 +1369,35 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
     ) -> bool {
-        if !hosted || new_window || instance.is_some() {
+        if !hosted || instance.is_some() {
             return false;
         }
-        if !matches!(launch, Launch::Package { open: None, .. }) {
-            return false;
-        }
+        let asked = match launch {
+            Launch::Package { open: None, .. } | Launch::Record { visitor: false, .. } => {
+                launch.id()
+            }
+            // A file or a link, and a notice that starts nothing: neither is a window of the app's
+            // this session asks a tab for. Nor is a window opened for whoever works a record rather
+            // than for the person: the launch the desk asks back names no such window.
+            _ => return false,
+        };
         let Some(desktop) = self.desktop.borrow().clone() else {
             return false;
+        };
+        // A window of its own lands beside the one the app has, as the app's own ask for another
+        // of its windows does.
+        let beside = if new_window {
+            desktop
+                .with_policy(|policy| policy.anchor_for(launch.app()))
+                .map(|(tab, ..)| tab.to_string())
+        } else {
+            None
         };
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         handle
             .dispatch(ChromeEffect::OpenApp {
-                app: launch.app().to_owned(),
-                beside: None,
+                app: asked,
+                beside,
                 background: None,
                 float: None,
             })
@@ -1549,7 +1579,12 @@ fn window_opens(
     reveal: Option<&str>,
     hosted: bool,
 ) -> Result<tilo_app_launch::Opens, String> {
-    if hosted && matches!(launch, Launch::Package { open: Some(_), .. }) {
+    if hosted
+        && matches!(
+            launch,
+            Launch::Package { open: Some(_), .. } | Launch::Content { .. }
+        )
+    {
         return Err(format!(
             "{} opens no file or link: its windows show its records",
             launch.app()

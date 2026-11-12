@@ -1270,7 +1270,7 @@ impl TileSource for Tiles {
         }
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         let (app, record, content) =
             if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
                 (app, None, Some(hash))

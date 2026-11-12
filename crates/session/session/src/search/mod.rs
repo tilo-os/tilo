@@ -1384,6 +1384,7 @@ mod tests {
             _: &tilo_desktop_model::Workspace,
             id: u64,
             app: &str,
+            _beside: Option<u64>,
         ) -> Option<tilo_desktop_model::Tab> {
             let (app, record) = tilo_desktop_search::launched_record(app)?;
             self.0
