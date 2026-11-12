@@ -120,7 +120,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
 
     // The agent fails partway: the step it stopped at, not under way, and its reason, with a new prompt to try again.
     await tab.evaluate(`globalThis.polled = {resolved: true, expired: false, agent: 'Claude Code', steps: ['resolved', 'logged-in', 'tools-added', 'restart', 'failed'],
-      detail: 'Logged in, but entering the workspace failed: the host did not answer.'}`);
+      detail: 'Logged in, but this computer could not open the workspace yet: the host could not be reached. Your agent tries again when it next uses Tilo.'}`);
     await tab.waitFor(`document.getElementById('first-run').dataset.agentFailed === 'true'`, {timeout: 5000});
     const failedShown = await tab.evaluate(`({step: document.querySelector('#first-run-steps li:last-child')?.className + ': ' + document.querySelector('#first-run-steps li:last-child')?.textContent,
       problem: document.getElementById('first-run-problem').textContent, retry: getComputedStyle(document.getElementById('first-run-retry')).display !== 'none',

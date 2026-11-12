@@ -749,12 +749,19 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
             }
         }
         Err(error) => {
+            // Said to the person's tab and to the agent alike: what did not
+            // happen, the host's own reason, and what happens next.
             reporter
                 .failed(&format!(
-                    "Logged in, but entering the workspace failed: {error:#}"
+                    "Logged in, but this computer could not open the workspace yet: {error:#}. \
+                     Your agent tries again when it next uses Tilo."
                 ))
                 .await;
-            println!("Entering {place} failed for now ({error:#}); tilo mcp tries again.");
+            println!(
+                "Logged in, but this computer could not open {place} yet: {error:#}. \
+                 tilo mcp tries again each time it starts; if it keeps failing, run tilo login \
+                 with a new code from the person's tab."
+            );
         }
     }
     println!();
