@@ -86,7 +86,7 @@ pub async fn prepare_and_complete(
         }
         // Reuse the recorded proof even when its original challenge has expired.
         // The issuing host alone resolves durable Complete idempotency/current membership.
-        let id = owner.prepare_enrollment_into(&intent, local, SystemTime::now())?;
+        let id = owner.prepare_enrollment_into(&intent, local, tilo_clock::wall())?;
         if &id != pending.id() {
             return Err("native retry changed pending generation".into());
         }
@@ -96,7 +96,7 @@ pub async fn prepare_and_complete(
             &invitation,
             Some(device.user_public_key),
             &revocations,
-            now_ns(SystemTime::now())?,
+            now_ns(tilo_clock::wall())?,
         )?;
         if join::encode_invitation_text(join.signed_invitation()) != invitation {
             return Err("noncanonical native invitation text".into());
@@ -155,7 +155,11 @@ pub async fn prepare_and_complete(
             _ => return Err("pinned native host answered no enrollment challenge".into()),
         };
         current(&identity, identity_topic, &device)?;
-        let prepared = SystemTime::now();
+        // The device's own clock. Checking the host's challenge here with a
+        // reading from a second clock refused a certificate the host had just
+        // admitted, and hid the host's answer for it from the classifications
+        // above, which is what leaves a retained proof unresolved.
+        let prepared = tilo_clock::wall();
         let expected = join::JoinChallenge::new(
             &join,
             &device,
@@ -418,7 +422,7 @@ pub async fn renew_membership(
     )
     .await?;
     current(&identity, topic, &renewed)?;
-    owner.renew_membership(workspace, &renewed, &bootstrap, SystemTime::now())?;
+    owner.renew_membership(workspace, &renewed, &bootstrap, tilo_clock::wall())?;
     Ok(true)
 }
 

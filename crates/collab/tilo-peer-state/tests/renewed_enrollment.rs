@@ -19,7 +19,7 @@ mod common;
 
 use common::endpoint;
 
-use std::time::SystemTime;
+use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::custody::HostIdentity;
@@ -190,14 +190,14 @@ impl Admitted {
                 && !enrollment.bootstrap().certified_roster.contains(replaced),
             "the host holds it in place of the certificate it replaced"
         );
-        self.owner.install(&enrollment, SystemTime::now()).unwrap();
+        self.owner.install(&enrollment, tilo_clock::wall()).unwrap();
         let joined = tilo_desktop_model::WorkspaceId::parse(&self.workspace).unwrap();
         let role = self
             .owner
             .with_current(joined, |view| {
                 Ok(view
                     .peer()
-                    .permissions(self.desk_key.verifying_key().to_bytes(), SystemTime::now())
+                    .permissions(self.desk_key.verifying_key().to_bytes(), tilo_clock::wall())
                     .ok()
                     .map(|member| member.role))
             })
@@ -239,10 +239,32 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
 /// The certificate the host admitted ran out before the device took the
 /// workspace in. The host does not refuse the retained proof for it, forever:
 /// the device proves its membership again with the renewal.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal() {
-    let now = tilo_clock::unix_now_ns();
+#[test]
+fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal() {
+    // The certificate lapses because this test moves the process's wall clock
+    // past its expiry, never because the setup happened to take that long. The
+    // host and the device read that clock from their own threads, so the test
+    // takes the process to itself, with a runtime of its own.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(a_lapsed_certificate_is_answered_by_the_renewal(process));
+        },
+    );
+}
+
+async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::testing::OwnProcess) {
+    let started = tilo_clock::wall();
+    let held = tilo_clock::testing::hold_wall_everywhere(process, started);
     let lifetime = 3 * SECOND;
+    let now = tilo_clock::unix_now_ns();
     let mut lapsing = None;
     let admitted = Admitted::start(|bob, desk_key| {
         let cert = certificate(
@@ -257,11 +279,12 @@ async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal(
     })
     .await;
     let lapsing = lapsing.unwrap();
-    let left = lapsing
-        .expires_at_ns
-        .unwrap()
-        .saturating_sub(tilo_clock::unix_now_ns());
-    tokio::time::sleep(std::time::Duration::from_nanos(left + SECOND / 2)).await;
+    // The device is away for longer than the certificate lasts.
+    drop(held);
+    let _lapsed = tilo_clock::testing::hold_wall_everywhere(
+        process,
+        started + Duration::from_nanos(lifetime + SECOND),
+    );
     let bob = SigningKey::from_bytes(&[2; 32]);
     let now = tilo_clock::unix_now_ns();
     let renewed = certificate(

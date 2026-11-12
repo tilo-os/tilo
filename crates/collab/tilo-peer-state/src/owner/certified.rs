@@ -325,7 +325,7 @@ impl VerifiedNativeEnrollment {
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
-            SystemTime::now(),
+            tilo_clock::wall(),
         )?;
         Ok(Self {
             intent,
