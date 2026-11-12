@@ -357,6 +357,16 @@ if [[ $hosted == 1 ]]; then
     if [[ $hosted_status != 0 ]]; then
       echo '--- the VM host said:' >&2
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+      # The relay dials the host's member by the device key the members file
+      # names; a member answering with another key fails the handshake.
+      echo '--- the members file the relay reads, and the key the member holds:' >&2
+      cat "$state/secrets/vm-host-members.json" >&2 2>/dev/null || true
+      sudo -n sha256sum "$state/vm/member/root/device-private/keypair.bin" >&2 2>/dev/null || true
+      sudo -n podman exec tilo-sh-vm-host-0 sh -c \
+        'sha256sum /var/lib/tilo-hosted/member/root/device-private/keypair.bin; ls -la /var/lib/tilo-hosted/member/root /var/lib/tilo-hosted/member/root/device-private' >&2 2>/dev/null || true
+      echo '--- what the member said of its identity:' >&2
+      sudo -n podman logs tilo-sh-vm-host-0 2>&1 \
+        | grep -iE 'identity|device|endpoint|member|provision|certif|refus|error' | tail -60 >&2 || true
       fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
     fi
     hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
